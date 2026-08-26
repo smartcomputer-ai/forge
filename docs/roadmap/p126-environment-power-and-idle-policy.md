@@ -280,7 +280,7 @@ distinguish the two; the provider keeps them separate internally.
   power_diverges()}`, `EnvironmentIncarnationRecord.power_states`,
   `EnvironmentStatus::{Paused, Suspended}` (+ `power_state()`,
   `is_powered_down()`), `SetEnvironmentPower`, `SetEnvironmentIdlePolicy`;
-  power columns folded into migration `008_environment_origin_session` (008 was not deployed yet); store ops `set_environment_power`,
+  power columns folded into the pre-release `005_environments` baseline; store ops `set_environment_power`,
   `set_environment_idle_policy`, `list_environments_with_idle_policy`;
   `list_environments_needing_reconcile` and the deployment universe scan
   now include power divergence; `list_universes_with_idle_policies`.

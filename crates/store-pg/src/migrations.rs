@@ -83,29 +83,9 @@ pub const MIGRATIONS: &[EmbeddedMigration] = &[
         name: "api_keys",
         sql: include_str!("../migrations/007_api_keys.sql"),
     },
-    EmbeddedMigration {
-        version: 8,
-        name: "environment_origin_session",
-        sql: include_str!("../migrations/008_environment_origin_session.sql"),
-    },
-    EmbeddedMigration {
-        version: 9,
-        name: "auth_kind_cleanup_and_model_endpoints",
-        sql: include_str!("../migrations/009_collapse_github_oauth_kinds.sql"),
-    },
-    EmbeddedMigration {
-        version: 10,
-        name: "grant_exposure",
-        sql: include_str!("../migrations/010_grant_exposure.sql"),
-    },
-    EmbeddedMigration {
-        version: 11,
-        name: "subagent_origin",
-        sql: include_str!("../migrations/011_subagent_origin.sql"),
-    },
 ];
 
-pub const REQUIRED_SCHEMA_REVISION: i64 = 11;
+pub const REQUIRED_SCHEMA_REVISION: i64 = 7;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SchemaStatus {
@@ -375,7 +355,7 @@ mod tests {
         );
         assert!(LIGHTSPEED_TABLES.windows(2).all(|pair| pair[0] < pair[1]));
         // Relations the ledger owns: created by some migration and not
-        // dropped by a later one (`session_links` was retired by 011).
+        // dropped by a later one.
         let dropped_tables: BTreeSet<_> = MIGRATIONS
             .iter()
             .flat_map(|migration| migration.sql.lines())

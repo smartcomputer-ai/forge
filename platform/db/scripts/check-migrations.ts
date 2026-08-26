@@ -118,13 +118,13 @@ async function checkUpgrade(
     await migrateDb(handle);
     await requireTable(handle.pool, "bot_triggers");
     await requireTable(handle.pool, "bot_events");
-    // The rename in 0004 must land on an upgraded database too.
+    // The squashed bots baseline must land on an upgraded database too.
     await requireColumn(handle.pool, "bots", "emit");
     await requireColumn(handle.pool, "bot_events", "reply_to");
-    // 0005 drops channel bindings and re-keys pairings to chat triggers.
+    // Chat connections are triggers; the retired binding table must stay gone.
     await requireColumn(handle.pool, "channel_pairings", "trigger_id");
     await requireNoTable(handle.pool, "channel_bindings");
-    // 0006 folds the activity feed into event outcomes.
+    // Event outcomes replace the retired activity feed.
     await requireColumn(handle.pool, "bot_events", "outcome");
     await requireNoTable(handle.pool, "bot_activity");
     await requireLedgerLength(handle.pool, journal.entries.length);

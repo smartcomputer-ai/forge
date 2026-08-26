@@ -368,9 +368,10 @@ session's context unbounded today. Lands when someone wants silent rooms.
 
 ### Implementation notes (2026-08-26)
 
-- **Records**: migration `0005_channels_as_bot_triggers` (platform schema
-  revision 6) drops `channel_bindings`, recreates `channel_pairings` keyed
-  by `trigger_id`, adds `bot_triggers.session_ttl_ms` (null inherits, 0
+- **Records**: folded into the pre-release `0001_channels` / `0002_bots`
+  baselines (platform schema revision 3): `channel_bindings` is omitted,
+  `channel_pairings` is keyed by `trigger_id`, and
+  `bot_triggers.session_ttl_ms` (null inherits, 0
   never closes) and `bot_events.media` / `tools` / `notify`. The `chat`
   trigger kind lives in `platform/bots/src/config.ts` (`chatSpecInput`,
   `CHAT_COALESCE_DEFAULT`, `mintPairingCode`; route `bot` refused, coalesce
@@ -421,8 +422,8 @@ session's context unbounded today. Lands when someone wants silent rooms.
 
 Lukas asked why bots keep a separate `bot_activity` table when the
 session log exists, and whether admitting filtered events is right for a
-firehose. Both were overdone; both simplified the same day (migration
-`0006_event_outcomes`, platform schema revision 7):
+firehose. Both were overdone; both simplified the same day (folded into
+`0002_bots`, platform schema revision 3):
 
 - **`bot_activity` is gone.** The bot's decisions live in the controller's
   Temporal history; Postgres is a read model. Every `bot_events` row now

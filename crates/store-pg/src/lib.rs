@@ -36,7 +36,6 @@ pub const AUTH_SCHEMA_SQL: &str = include_str!("../migrations/004_auth.sql");
 pub const ENVIRONMENT_SCHEMA_SQL: &str = include_str!("../migrations/005_environments.sql");
 pub const PROFILE_SCHEMA_SQL: &str = include_str!("../migrations/006_agent_profiles.sql");
 pub const API_KEYS_SCHEMA_SQL: &str = include_str!("../migrations/007_api_keys.sql");
-pub const GRANT_EXPOSURE_SCHEMA_SQL: &str = include_str!("../migrations/010_grant_exposure.sql");
 
 pub const DEFAULT_INLINE_THRESHOLD_BYTES: usize = 64 * 1024;
 

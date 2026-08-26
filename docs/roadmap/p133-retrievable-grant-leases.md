@@ -2,7 +2,8 @@
 
 **Status**
 
-- In progress 2026-08-25. Slices 1 and 2 are implemented: migration 010,
+- In progress 2026-08-25. Slices 1 and 2 are implemented: fields folded into
+  the pre-release `004_auth` baseline,
   immutable exposure on grants and OAuth flows, lease audit counters,
   `auth/grants/lease` through the existing refresh/mint broker, service method
   scope and HTTP-edge caller gating, generated Rust/TypeScript contracts,
@@ -60,7 +61,7 @@ only, never through a model-facing surface.
 Set at creation, never updated: there is no grant put/update method today
 and P133 does not add one; a brokered grant that needs to become readable
 is re-created. Persisted as `auth_grants.exposure text NOT NULL DEFAULT
-'brokered'` with a CHECK, migration `010_grant_exposure.sql`; surfaced on
+'brokered'` with a CHECK in the pre-release `004_auth` baseline; surfaced on
 `AuthGrantView`.
 
 Creation surfaces gain an optional `exposure` param: `auth/grants/import`

@@ -409,8 +409,8 @@ through admission or a promise through P134.
 ## Slices
 
 1. **Identity and ids** — **done 2026-08-26.** §9: `bots.display_name`
-   and `bots.description` columns (migration `0003_bot_display_name`,
-   platform schema revision 4); the wire carries `botId` (the authored
+   and `bots.description` columns (folded into the pre-release `0002_bots`
+   baseline, platform schema revision 3); the wire carries `botId` (the authored
    `name`), `displayName`, `description`, and no uuid; routes are
    `/api/v1/universes/:id/bots/:botId/…` with triggers by
    `:triggerName` and webhook triggers carrying `ingestPath`; the web
@@ -429,8 +429,8 @@ through admission or a promise through P134.
    event rendering. Pulled forward from §2: `bot_emit` is **joined**
    (`BOT_TOOLS_REVISION` 9), so the rate-cap refusal reaches the model.
    Temporal and session identities did not change; no stack reset.
-2. **Bus** — **done 2026-08-26.** Migration `0004_bot_federation`
-   (platform schema revision 5): `bots.self_emit` → `emit`;
+2. **Bus** — **done 2026-08-26.** Folded into the pre-release `0002_bots`
+   baseline (platform schema revision 3): the final column is `bots.emit`;
    `bot_events.sender_bot_id`, `hops`, `reply_to` (private route),
    `in_reply_to` (public correlation). `bot` trigger kind with
    `{ from? }`, at most one per bot (validated in `createTrigger`, so both

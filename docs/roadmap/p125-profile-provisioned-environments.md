@@ -385,8 +385,8 @@ rules shared with `environments/create`).
       (not `sessionId`: the contract reserves that name for `session/*`),
       `ProfileApplySummary.environmentProvisioned`; contract exported.
 - [x] `environments` + `store-pg`: `EnvironmentOriginSession`,
-      `EnvironmentProvisionRequestId::for_session`, migration
-      `008_environment_origin_session` (later extended by P126 with power columns before its first deployment), list filter, close-with-session query;
+      `EnvironmentProvisionRequestId::for_session`, fields folded into the
+      pre-release `005_environments` baseline, list filter, close-with-session query;
       the deployment reconciler scan now also selects universes holding such
       environments whose session is closed.
 - [x] `profiles`: document validation for both variants.

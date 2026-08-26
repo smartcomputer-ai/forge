@@ -2,7 +2,8 @@
 
 **Status**
 
-- Slices 1–3 implemented 2026-08-25: migration 011 (`session_links` dropped,
+- Slices 1–3 implemented 2026-08-25: schema folded into the pre-release
+  `001_core` baseline (`session_links` omitted,
   `origin_json` + two indexed keys, transactional root-scoped reservation), `SessionOrigin`
   on views and `session/list` filters, `features.subagents` replacing the
   fleet family across engine/api/projection/contract/TS/web,
@@ -312,8 +313,8 @@ SessionOrigin {
   `SessionOrigin`) plus the two facts queries need, denormalized and
   indexed — `origin_root_session_id` (reservation counts, `rootSessionId`
   filter) and `origin_parent_session_id` (`parentSessionId` filter) — with a
-  shape CHECK (all null or all present); `session_links` dropped. Migration
-  `011_subagent_origin.sql`. `source_session_id` / `source_seq` stay what
+  shape CHECK (all null or all present); `session_links` omitted from the
+  pre-release `001_core` baseline. `source_session_id` / `source_seq` stay what
   they are: clone/fork content ancestry, empty for profile spawns.
 - API: `SessionView.origin?` and `SessionSummaryView.origin?`;
   `session/list` gains `rootSessionId?` and `parentSessionId?` filters.
@@ -421,15 +422,15 @@ said the same).
 
 ## Migration (greenfield)
 
-`crates/store-pg/migrations/011_subagent_origin.sql`: `DROP TABLE
-session_links`; `ALTER TABLE sessions ADD origin_json jsonb,
-origin_root_session_id text, origin_parent_session_id text` with the shape
-CHECK and the two partial indexes. Existing dev databases are reset
+`crates/store-pg/migrations/001_core.sql` creates `sessions` with
+`origin_json jsonb`, `origin_root_session_id text`, and
+`origin_parent_session_id text`, plus the shape CHECK and two partial indexes;
+the retired `session_links` table is absent. Existing dev databases are reset
 (`./dev.sh reset`); nothing is backfilled.
 
 ## Slices
 
-1. **Store + API lineage** (½ day): migration 011, `SessionRecord.origin`,
+1. **Store + API lineage** (½ day): `001_core` baseline, `SessionRecord.origin`,
    `CreateSession` with origin and the transactional root reservation,
    `SessionOrigin` on both views, `session/list` filters, link traits
    deleted, contract regenerated.
