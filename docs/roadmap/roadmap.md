@@ -1,6 +1,15 @@
 # Lightspeed Roadmap
 
 ## Work
+- [ ] [P139](p139-channels-as-bot-triggers.md) — Channels as bot triggers
+  (proposed 2026-08-26): a chat connection is a `chat` trigger on a bot,
+  `channel_bindings` is deleted, every message is an admitted event
+  (`perKey` session per conversation, trigger coalescing, media refs),
+  the conversation workflow stays the receiver for `message_*` through
+  declarations carried on the event, and the controller sends
+  `started`/`finished` receipts to the endpoint for typing and the
+  no-tool-used reply fallback. Chat sessions never expire by default.
+  Replaces P131 §5.
 - [x] [P138](p138-model-facing-ids.md) — model-facing ids (implemented
   2026-08-26): `PromiseId` is a session counter (`promise_7`) numbered by
   executors from the tool batch's `promise_id_base` and checked by the

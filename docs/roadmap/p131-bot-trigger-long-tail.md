@@ -150,7 +150,11 @@ the transport is shared. The GitHub App installation story
 (`later/pNNN-platform-github-app-installations.md`) slots here as the one
 preset needing real credential plumbing.
 
-### 5. Channels bridge — DEFERRED 2026-08-25
+### 5. Channels bridge — SUPERSEDED by [P139](p139-channels-as-bot-triggers.md) 2026-08-26
+
+P139 goes further than the shape below: a chat connection *is* a `chat`
+trigger on a bot, `channel_bindings` is deleted, and Channels never owns a
+session. The sketch stays as history.
 
 Chat platforms as an event *source*: a Channels binding that forwards
 messages into a bot (`kind: "chat"`, thread-based route key, coalescing for
