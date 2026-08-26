@@ -145,15 +145,15 @@ export function AppShell({ user, admin }: { user: SessionUser; admin: boolean })
                   <SidebarGroupContent>
                     <SidebarMenu>
                       <NavItem
-                        to={`/u/${active.slug}/sessions`}
-                        icon={MessagesSquare}
-                        label="Sessions"
-                        prefix
-                      />
-                      <NavItem
                         to={`/u/${active.slug}/bots`}
                         icon={BotFaceIcon}
                         label="Bots"
+                        prefix
+                      />
+                      <NavItem
+                        to={`/u/${active.slug}/sessions`}
+                        icon={MessagesSquare}
+                        label="Sessions"
                         prefix
                       />
                       <NavItem
