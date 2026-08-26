@@ -2,447 +2,327 @@
 
 **Status**
 
-- Proposed 2026-08-26, recommendation-first design for discussion, not a
-  plan. Written after P134 landed, from the question "now that sub-agents
-  are simple, what makes bots a powerful coordination system — how do bots
-  talk to each other, and can a bot create and set up another bot?"
-- Revised the same day after review. The first draft allowed bot → bot
-  *configuration* behind a `manage` grant while deferring bot → bot
-  *creation*; Lukas asked why one and not the other. The asymmetry does not
-  hold: a poll trigger put on a neighbour is as durable and as costly as a
-  new bot, and `selfConfig` already lets a bot mint such triggers on itself.
-  The real question is whether any bot has authority over another bot, and
-  configuration and creation are the same answer to it. Adopted position:
-  **neither** — bot ↔ bot is events only; authority over a bot belongs to
-  the bot itself (`selfConfig`) and to humans. The `manage` grant
-  (configure *and* create, one grant) is kept below as the alternative to
-  reach for if an ops-bot use case ever demands authority.
-- Same day, second review question: how does bot A know about B, and when?
-  Answered in §1 — a derived `bot:directory` in context (the P134 catalog
-  idea) replaces the pull-shaped `bot_list`. A keyed rewrite mid-context
-  would invalidate the provider prefix cache from the old position on a
-  session that lives for months, so the directory is published through
-  [P136](p136-context-catalogs.md)'s external catalog (supersede at the
-  tail, never a rewrite); the interim snapshot-plus-deltas design is
-  dropped. The brief says *when*, the directory says *who*, subscriptions
-  say *whether*. The caching work itself is
-  [P137](p137-prompt-caching.md). P135 slice 1 needs P136 slice 4 first.
-- Absorbs P131 workstream 6 (bot → bot events; its bot → bot configuration
-  item is withdrawn by the position above) and the "Bot federation" note in
-  `later/pNNN-fleet-vs-bots.md`.
-- Builds on P130 (controller, store-then-wake admission, `#N` events,
-  CEL filters, routing, coalescing, breakers, `selfConfig` / `selfEmit`)
-  and P134 (the two-tier rule: durable orchestration above, attached
-  delegation below; provenance not ownership; deterministic identities;
-  no new transports).
+- Proposed 2026-08-26, recommendation-first design. Not implemented.
+- Three revisions the same day, each after review:
+  1. The first draft allowed bot → bot *configuration* behind a `manage`
+     grant while deferring *creation*. Lukas asked why one and not the
+     other; the asymmetry does not hold (a trigger put on a neighbour is as
+     durable as a new bot). Adopted: **no cross-bot authority** — bot ↔ bot
+     is events only; authority over a bot belongs to the bot itself
+     (`selfConfig`) and to humans. The `manage` alternative is recorded in
+     [later/pNNN-bot-manage-grant.md](later/pNNN-bot-manage-grant.md).
+  2. "How does A learn of B, and is it cache-safe?" Answered by a
+     `bot:directory` catalog published through
+     [P136](p136-context-catalogs.md)'s external catalog (supersede at the
+     tail, never a prefix rewrite). P136 and [P137](p137-prompt-caching.md)
+     are done; nothing blocks this item.
+  3. An outside review of the wire contract found four real defects
+     (verified against the code): addressed fan-out over several matching
+     triggers collides with the `(bot_id, event_id)` uniqueness index and is
+     silently deduped; `bot_emit` is `accepted-push`, so no typed refusal
+     ever reaches the model — true today for the self-emit rate cap; the
+     proposed deterministic reply reported "finished" for `append`/`steer`
+     deliveries, which finish before any run; and the return address was a
+     concrete session id although routed sessions rotate generations from a
+     logical base. Adopted, simpler than the review proposed: **one inbox
+     trigger per bot, one event per addressed emit, joined admission, no
+     automatic replies in v1**. Resolution receipts are slice 2 with a
+     logical return route; publish/subscribe is deferred until a use case
+     asks for fan-out.
+- Absorbs P131 workstream 6 (bot → bot events) and the "Bot federation"
+  note in `later/pNNN-fleet-vs-bots.md`. What else "make bots really good"
+  means, unrelated to federation, is in
+  [later/pNNN-bots-beyond-federation.md](later/pNNN-bots-beyond-federation.md).
+- Builds on P130 (controller, store-then-wake admission, `#N` events, CEL
+  filters, routing, coalescing, breakers, `selfConfig` / `selfEmit`) and
+  P134 (durable orchestration above, attached delegation below; provenance
+  not ownership; deterministic identities; no new transports).
 - Greenfield: no wire, schema, or event back-compat; `bot:self` and
-  `self-<uuid>` event ids go away rather than being kept.
+  `self-<uuid>` event ids go away.
 
 ## Why
 
-After P134 the product has exactly two ways to get more than one session's
-worth of work done, and they no longer overlap:
+After P134 there are exactly two ways to get more than one session's worth
+of work done, and they do not overlap: **attached delegation** (a run fans
+out to one-shot children over promises and joins them inside its own loop —
+vertical, synchronous for the model, bounded by tree limits) and **durable
+orchestration** (a deterministic controller admits, filters, routes,
+coalesces, budgets, and drives managed sessions for months — horizontal,
+asynchronous, bounded by budgets and breakers).
 
-- **Attached delegation** (P134): a run fans out to one-shot children over
-  promises and joins their results inside its own reasoning loop. Vertical,
-  synchronous from the model's point of view, bounded by root-scoped tree
-  limits.
-- **Durable orchestration** (P130): a deterministic controller admits
-  events, filters, routes, coalesces, budgets, and drives managed sessions
-  for months. Horizontal, asynchronous, bounded by budgets and breakers.
+The second stops at the edge of one bot. A bot can receive from the world
+and emit to itself, but cannot address another bot or hear from one, so a
+team — triage hands incidents to infra, comms narrates what the others
+decide — can only be wired through webhooks by hand.
 
-The second story stops at the edge of one bot. A bot today is an island: it
-can receive from the world and emit to itself, but it cannot address
-another bot or hear from one. Every real deployment wants a *team* — a
-triage bot that hands incidents to an infra bot, a comms bot that narrates
-what the others decide, an ops bot that notices when a bot misbehaves — and
-the only way to build one today is to route everything through webhooks the
-operator wires by hand.
-
-The design insight that keeps this small is the same one that made P134
-small: **do not add a transport**. Sessions already speak one protocol to
-durable work that finishes later (a promise); bots already speak one
-protocol to the world (an event through admission). Bot ↔ bot is events
-through admission, with three additions the existing machinery lacks:
-subscriptions, a deterministic return path, and a loop bound. Nothing else.
-
-What this deliberately does *not* add is authority: no bot configures,
-enables, or creates another bot. Coordination needs communication and
-per-bot policy, not a manager; the deterministic layer (breakers, budgets,
-auto-disable) already plays the manager, and P130 chose it over a prompted
-one for exactly this reason. A bot that wants a neighbour to change asks;
-the neighbour's human-written brief decides whether to listen.
+What keeps this small is what kept P134 small: **do not add a transport**.
+Bots already speak one protocol to the world, an event through admission.
+Bot ↔ bot is that same event, admitted by the receiver's own trigger, plus
+a loop bound. And no authority: no bot configures, enables, or creates
+another. The deterministic layer (breakers, budgets, auto-disable) is the
+manager; a bot that wants a neighbour to change asks, and the neighbour's
+human-written brief decides.
 
 ## The shape
 
 ```text
-                       universe event bus
-   ┌──────────────┐  bot_emit {to?, reply?}   ┌──────────────┐
+   ┌──────────────┐   bot_emit { to: "b" }    ┌──────────────┐
    │ bot a        │ ────────────────────────▶ │ bot b        │
-   │ controller   │   subscription trigger    │ controller   │
+   │ controller   │  b's inbox trigger:       │ controller   │
+   │              │  filter/route/coalesce    │              │
    │              │ ◀──────────────────────── │              │
-   └──┬───────────┘   reply (deterministic:   └──┬───────────┘
-      │               b's delivery outcome)      │
-   sessions (roots)                           sessions (roots)
-      ├─ agent_run  ▶ child (one-shot, joined)   ├─ agent_run ▶ child
-      └─ agent_spawn ▶ child (promise)           └─ …
+   └──┬───────────┘   bot_emit { to: "a" }    └──┬───────────┘
+      │               (slice 2: receipt when    │
+   sessions           b's delivery finishes)  sessions
+      └─ agent_run / agent_spawn ▶ children      └─ …
 ```
 
 Horizontal edges are events: durable, asynchronous, never park a session,
-bounded by hops and rate. Vertical edges are promises: attached, joined,
-one-shot, bounded by tree limits. The two never cross — a session never
-parks on another bot, and a child never emits a bot event.
+bounded by hops and rate. Vertical edges are promises (P134). A session
+never parks on another bot, and a child never emits a bot event.
 
 ## Design
 
-### 1. The bus: a `bot` trigger kind and `bot_emit { to, reply }`
+### 1. One inbox per bot: the `bot` trigger
 
-A bot controls its inputs through triggers; nothing reaches an inbox
-without one (webhooks need an ingest URL, the endpoint is operator-authed,
-self-emission is a grant). Bot → bot keeps that rule: **the receiver
-subscribes.**
-
-```text
-trigger kind: "bot"
-spec: {
-  from?: string[],          // sender bot names; absent = any bot in the universe
-  addressedOnly?: boolean   // default true: only events with `to` == this bot
-}
-filter / route / coalesce / deliver: unchanged, and this is the point —
-every knob a receiver has for webhooks it has for bots.
-```
-
-The common case is one trigger: `bot_trigger_put { name: "inbox", kind:
-"bot" }` — accept events other bots address to me. "Watch what
-`release-bot` publishes" is `{ kind: "bot", from: ["release-bot"],
-addressedOnly: false }`. The create-bot dialog offers "accept events from
-other bots" as a checkbox that creates the `inbox` trigger; there is no
-implicit subscription.
-
-`bot_emit` grows two fields and drops its self-only framing:
+Nothing reaches a bot without a trigger it declared (webhooks need an
+ingest URL, self-emission is a grant). Bot → bot keeps the rule — **the
+receiver declares an inbox** — and adds one constraint: **a bot has at most
+one trigger of kind `bot`.**
 
 ```text
-bot_emit { kind, summary, data?, to?: botName, reply?: boolean, sessionKey? }
+kind: "bot"
+spec: { from?: string[] }        // sender bot names; absent = any bot in the universe
+filter / route / coalesce / deliver: unchanged — every knob a receiver has
+for webhooks it has for bots. The CEL filter sees `event.sender`.
 ```
 
-- `to` absent: **publish**. Admission finds every enabled `bot` trigger in
-  the universe whose `from` admits the sender and whose `addressedOnly` is
-  false, and admits one event per matching trigger through the normal path
-  (filter, route, coalesce, breaker, store-then-wake). Zero receivers is
-  fine; the sender's activity records `emitted <kind> → nobody`.
-- `to` present: **addressed**. Same fan-out, restricted to that bot's
-  triggers that accept the sender (addressed-only triggers match here;
-  published-only ones do too). Zero receivers is a typed tool error the
-  model reads: "`b` has no bot-kind trigger accepting events from `a`".
-- Self-addressing (`to` == self, or `sessionKey`) is the existing
-  self-emit behaviour through the same code: the sender is also a receiver
-  when its own `inbox` trigger admits it. `source: "bot:self"` becomes
-  `source: "bot:<sender>"` for every bot-originated event; "self" is a
-  comparison, not a string.
-- `reply: true` asks for the return path in §2.
+Conventionally named `inbox`; the create-bot dialog offers "accept events
+from other bots" as a checkbox that creates it. The one-per-bot rule is
+validated in the API trigger put and in `bot_trigger_put`.
 
-The stored document (`BotEventDocumentV1`) gains `sender: { bot, seq?,
-sessionId }`, `to?`, `causationId?`, `hops`, `reply?`; `bot_events` gains
-the two columns queries need, `sender_bot_id` and `causation_id`. The
-per-receiver event id is `bot:<senderBotId>:<digest(invocationId)>` — the
-tool invocation id is stable across activity retries, so a retried emit
-converges on one event per receiver (today's `self-<uuid>` does not).
+Why exactly one: `to: "b"` must mean one logical message to B. With several
+matching triggers the per-receiver event id would collide with
+`bot_events_bot_event_idx` and the extra copies would be silently treated
+as duplicates by `onConflictDoNothing` — the worst of both worlds. One
+inbox makes the identity unique by construction and removes any need for
+trigger "modes"; a receiver that wants different handling per sender or
+kind writes it in the filter and the route key, which already see the
+whole envelope.
 
-Grant: `selfEmit` is renamed `emit` — it gates whether this bot may emit at
-all, self or otherwise; receivers protect themselves with subscriptions.
-The emission rate cap stays (breaker rate, else 60/hour) and counts every
-emit by the sender, not only self-addressed ones.
+### 2. `bot_emit { to }`, joined for admission
 
-**How a sender knows whom it can address** follows P134's answer for the
-agent menu — a catalog in context, not a tool the model must remember to
-call and not an enum in a schema — published through
-[P136](p136-context-catalogs.md)'s external catalog so it never rewrites
-the prefix of a session that lives for months:
+```text
+bot_emit { kind, summary, data?, to?: botName, sessionKey? }
+```
+
+- `to` absent: **self**, exactly today's path — grant-gated, bypasses
+  triggers, `sessionKey` picks a keyed session. No behaviour change for
+  existing bots.
+- `to` present: **addressed**. `sessionKey` is rejected — a sender never
+  chooses another bot's routing; the receiver's inbox owns it. The tool
+  activity admits the event through B's inbox with the same pipeline
+  webhook ingest uses: enabled bot → enabled `bot` trigger → `from` →
+  hop bound → sender rate cap → filter → route → coalesce params →
+  `whenBusy` → store-then-wake. That pipeline (`admitBotEvent` and
+  the breaker check) moves from `platform/server` routes into the bots
+  package so ingest, poll, self-emit, and addressed emit share one
+  function; today the self-emit activity duplicates the insert without it.
+- **Joined.** The tool waits for validation and durable storage only —
+  never for B — and returns `{ eventId, seq, to }` or a typed refusal the
+  model reads: `unknown_bot`, `bot_disabled`, `no_inbox`, `not_accepted`
+  (`from`), `filtered` (B's filter archived it), `breaker_tripped`,
+  `rate_limited`, `loop_cut`. This changes the spec's completion from
+  `accepted-push` to `joined` and makes the controller signal the result
+  back for `bot_emit` too. It also fixes the current defect that the
+  self-emit rate-cap refusal is only an activity row while the model sees
+  "accepted".
+- Grant: `selfEmit` becomes `emit` — may this bot emit at all, self or
+  otherwise. Receivers protect themselves with their inbox.
+
+### 3. Envelope, identity, bounds
+
+- **Document** (`BotEventDocumentV1`): `source: "bot:<sender name>"` for
+  every bot-originated event, self included ("self" is a comparison, not
+  a string); `sender: { bot }`; `hops`. No session ids in the document —
+  the receiver's model sees the sender's name and nothing about its
+  internals.
+- **One column**: `bot_events.sender_bot_id` (null for world events). It is
+  what the rate cap counts and what the "from `a` #12" chip reads.
+- **Identity**: the per-receiver event id is
+  `bot:<senderBotId>:<digest(invocationId)>`. The tool invocation id is
+  stable across activity retries, so a retried emit converges on one event;
+  with one inbox per bot the id is unique per receiver.
+- **Hops**: `hops` = the causing delivery's highest `hops` + 1 (0 for
+  events from the world). The inbox value (`BotEvent`) carries `hops`, so
+  the controller can put the active delivery's maximum into the summary
+  the tool activity already receives. Admission refuses `hops >
+  MAX_BOT_HOPS` (8) with `loop_cut`, recorded on the sender.
+- **Rate**: the sender's cap (breaker rate, else 60/hour) counts every emit
+  by `sender_bot_id` across the universe, self or addressed. There is no
+  fan-out in v1, so this is the whole amplification bound.
+
+### 4. The directory: how a sender knows whom it can address
+
+A catalog in context, not a tool the model must remember and not an enum in
+a schema — the P134 answer — published as P136's external catalog so it
+never rewrites the prefix of a session that lives for months:
 
 - **One key, `bot:directory`.** Before a delivery, the controller derives
   the directory and puts it as `InputItem::Catalog` on
-  `session/context/append`; a same-content put is a no-op. One line per
-  bot in the universe — name, a one-line `description` (a new column — the
-  brief is the job description *for* the bot, the description is what
-  *other* bots see, the `whenToUse` line), enabled state, and its relation
-  to the reader, **derived from the receivers' `bot` triggers**: accepts
-  events addressed by me / subscribes to what I publish / not listening to
-  me.
-- **A change lands at the tail.** The engine keeps the previous version
-  rendered byte-for-byte and appends the new one with a "supersedes"
-  header; superseded copies are the first thing compaction drops and the
-  current one survives it. A bot therefore learns of a neighbour at the
-  tail of its context, at its next run, exactly as it learns of events
-  and replies — and nothing in the prefix moves.
-- **No run, no budget.** A directory change never wakes the bot; it is
-  read when the next delivery does.
+  `session/context/append`; a same-content put is a no-op. It lists
+  **only enabled bots whose inbox accepts this bot** — name and a one-line
+  `description` (new column: the brief is the job description *for* a bot,
+  the description is what *other* bots see) — or one line saying no bot
+  accepts its events. Bots that are not listening do not help the model
+  and cost context.
+- **A change lands at the tail** as a superseding version; the previous one
+  stays rendered byte-for-byte and is the first thing compaction drops. A
+  bot learns of a neighbour at its next run, as it learns of events.
+- **No run, no budget.** A directory change never wakes the bot.
 
-One declaration — the subscription — drives both routing and discovery, so
-there is no sender-side allowlist to keep in sync (an optional `emit: { to:
-[...] }` narrowing can be added if a deployment wants it). The universe is
-the trust boundary and the directory carries no authority; the brief says
-*when* to use a neighbour, the directory says *who* is there. Beyond ~50
-bots the directory lists the listening ones and points at the UI.
+One declaration — the inbox — drives both routing and discovery, so there
+is no sender-side allowlist to keep in sync. The universe is the trust
+boundary and the directory carries no authority: the brief says *when* to
+use a neighbour, the directory says *who* is there.
 
-### 2. Replies are deterministic: the delivery outcome is the return path
+### 5. Replies
 
-The question "can bot A ask bot B and get an answer" is where the P134
-simplifications matter most. A joined `bot_ask` that parks A's session on
-B is the wrong primitive: bots are singletons, so A→B→A parks both
-forever; a parked lane blocks every other delivery to that session; and B's
-latency is unbounded by design (coalescing windows, budget parking,
-breakers, retention). Attached delegation earned its one-shot, depth-bounded
-shape exactly to avoid this. So: **no parking, ever**. Replies are events.
+**v1 has no reply mechanism.** The sender is in every event; if B's brief
+says to answer, B answers with `bot_emit { to: event.sender.bot }`, which
+lands through A's inbox like anything else. Symmetric, and nothing new.
 
-But the reply must not depend on B's model remembering to emit one. The
-controller already knows when a delivery finishes and what the model
-decided (`bot_event_resolve { outcome, summary }`), so the reply is
-deterministic:
+**Slice 2 adds resolution receipts** — a deterministic answer that does not
+depend on B's model remembering to emit one. The whole thing, in order:
 
-- When B's controller finishes a delivery containing events with `reply:
-  true`, it admits into each such event's sender a `bot.reply` event:
-  `{ kind: "bot.reply", source: "bot:b", correlationId: <the original
-  event id>, causationId: <the delivery id>, summary: resolution.summary ??
-  status, data: { status: resolved | run_failed | unresolved, outcome?,
-  summary?, runId, events: [#N…] } }`.
-- When admission **drops** the event before any run — filter did not
-  match, receiver disabled, breaker tripped, budget-parked bot disabled
-  later — the drop itself replies: `data: { status: "dropped", reason }`.
-  Cheap, immediate, and the single most useful feedback a model can get
-  ("`b` filtered your event").
-- **The event carries its own return address.** The emitting session is
-  known at the tool invocation (`ExecuteBotToolInput.sessionId`), so the
-  reply is routed to *that* session (main or keyed; generation rotation
-  applies as for any routed target). The sender's controller tracks
-  nothing; replies need no subscription trigger and bypass the sender's
-  filters (you always hear back on your own asks). They coalesce per
-  asking session under a fixed short window (debounce 5 s, max wait 30 s,
-  max 20) so a fan-out ask comes back as one batch, and deliver with
-  `whenBusy: queue`.
+1. A calls `bot_emit { to: "b", kind, summary, reply: true }`. Admission
+   stores, on B's event row, a private `reply_to`: A's bot id plus the
+   emitting session's *logical* route — absent for the main session, or
+   `{ sessionId: <base id>, label }` for a keyed one, the same
+   `BotEventSession` shape routing uses. Never a concrete generation, never
+   in the document. A resolves its own delivery `deferred` ("I asked and am
+   waiting"), which gives that label its meaning.
+2. B's controller delivers the event as usual; B's model handles it and
+   calls `bot_event_resolve { outcome, summary }`.
+3. When the delivery finishes, B's controller calls one activity,
+   `sendReceipts({ deliveryId, eventIds, status, summary })`. It reads the
+   rows that carry `reply_to` and admits into A one event per asked event:
+   kind `bot.reply`, `source: "bot:b"`, `correlationId` = A's event id,
+   `summary` = B's summary or the status, `data: { status, outcome? }`,
+   id `reply:<bBotId>:<deliveryId>:<eventId>` (deterministic; retries
+   converge). It is routed to `reply_to.session` — A's controller resolves
+   the current generation on delivery as for any routed target — with
+   `whenBusy: queue`, and bypasses A's inbox and filter: you always hear
+   back on your own asks.
+4. A's next run reads "reply to #12 from `b`: …" and resolves `handled`.
 
-This gives `deferred` — a label with no mechanism today — its meaning: "I
-asked and am waiting". Run 1 emits and resolves `deferred`; the reply
-arrives as a new delivery to the same session; run 2 resolves `handled`.
-Both bots' activity feeds show the whole exchange.
+`status` is whatever the delivery finished with: B's outcome (`handled`,
+`deferred`, `ignored`, `blocked`) with its summary, `run_failed`,
+`unresolved`, or — for inboxes that deliver by `append`/`steer` — `appended`
+/ `steered`, which is an acknowledgement, not an answer, because those
+deliveries finish before any run. A bot that wants to be askable keeps
+`queue`, the default. Refusals at admission are the tool result (§2), not
+receipts. A receiver that is budget-parked and then disabled never replies;
+deadlines are added on evidence, not in advance.
 
-Reply timeouts (a `status: "timeout"` reply if nothing comes back within a
-window) need sender-side outstanding-ask state and timers; deliberately
-left for later, once hanging asks prove confusing in practice.
+What slice 2 deliberately lacks: sender-side outstanding-ask state, timers,
+per-session reply coalescing (a fan-out ask comes back as one delivery per
+answer), and any reply B's model authors — the receipt *is* the reply, and
+B's `summary` carries the answer.
 
-### 3. Loop bounds: causation, hops, rate
+### 6. Influence without authority
 
-Provenance tagging plus per-receiver breakers rate-limit A→B→A cycles but
-do not stop them (P131's own note). Two additions close that:
+An ops bot works without configuring anyone: it **asks** (`bot_emit { to:
+"comms", kind: "tuning.request", summary: "…", reply: true }`); the receiver
+**decides** — the event is untrusted data, and `comms`'s human-written brief
+says whether to honour tuning requests from `ops`; with `selfConfig` it
+applies the change itself and its feed reads "ops asked, comms agreed". The
+**hard stops stay deterministic** — flood breaker, `runsPerDay`, poll
+auto-disable, hop cut — and re-enabling stays human. Each bot is sovereign
+over its own configuration; the human over every bot's scope.
 
-- Every bot-originated event carries `causationId` (the delivery the
-  emitting session was handling, taken from the controller summary the
-  tool activity already receives) and `hops` = the causing delivery's
-  highest `hops` + 1 (0 for events from the world). The `bot_events` chain
-  is a trace of the whole team's reaction to one external event.
-- Admission cuts events with `hops > MAX_BOT_HOPS` (8, a universe
-  constant to start) and records `loop_cut` on the sender. Together with
-  the sender's rate cap and the receiver's breaker, a runaway exchange
-  ends within one hop budget instead of one daily budget.
-
-### 4. Influence without authority
-
-How an "ops bot" works when no bot may configure another:
-
-- It **subscribes** to what it cares about — replies with `status:
-  dropped`, `loop_cut`, `blocked` outcomes, budget exhaustion — cheap for
-  the controller to publish as events on the bus (a small, fixed
-  vocabulary of `bot.*` system kinds, rendered like any event).
-- It **asks**: `bot_emit { to: "comms", kind: "tuning.request", summary:
-  "your incident filter admits every comment; suggest …", reply: true }`.
-- The receiver **decides**. The event is untrusted data like every event;
-  `comms`'s brief, written by a human, says "honour tuning requests from
-  bot `ops`" — or does not. With `selfConfig`, `comms` applies the change
-  itself and its activity feed records `self_configured` with the causing
-  event, so the trail reads "ops asked, comms agreed". The reply tells
-  `ops` what happened.
-- The **hard stops stay deterministic**: the flood breaker, `runsPerDay`,
-  poll auto-disable, and the hop cut act without any model in the loop,
-  and re-enabling stays human. An ops bot that wants a neighbour stopped
-  tells a human — through a reply, a Channels receiver later, or the UI —
-  it does not pull the plug.
-
-Each bot stays sovereign over its own configuration and the human stays
-sovereign over every bot's scope. Coordination is by messages and
-per-bot policy, which is also how teams of people work.
-
-### 5. Alternative, not adopted: a `manage` grant
-
-Recorded so the decision can be revisited with evidence rather than
-re-derived. If a real use case demands cross-bot *authority* — an ops bot
-that must act on neighbours without waiting for their briefs to agree, or
-must stand up bots on demand — the grant is one document and covers both
-halves at once, because they are the same question:
-
-```text
-manage: {
-  bots: string[],                             // names this bot may configure
-  ops: ("trigger" | "brief" | "enable")[],
-  create?: { profiles: string[], maxBots: number }
-} | null
-```
-
-- Configure: the `selfConfig` tools grow an optional `bot?` target;
-  `bot_enable { bot, enabled }` is target-only (a bot never un-pauses
-  itself); both feeds record `managed` / `configured_by`; the target's
-  controller gets the config signal as after a UI edit.
-- Create: `bot_create { name, profileId, brief?, runsPerDay?,
-  acceptsBotEvents? }` with `profileId` ∈ `create.profiles` (the profile
-  is the capability container, so the allowlist is the authority — the
-  `features.subagents.agents[]` idea one tier up); attenuation fixed at
-  one level (created bots get `selfConfig` / `emit` only if the creator
-  has them, `runsPerDay` ≤ the creator's, `manage: null` always);
-  `maxBots` counts *live* bots whose origin is the creator, because a bot
-  is standing cost; `bots.origin = { botId, botName, seq, sessionId,
-  runId }` as provenance never ownership (deleting the creator nulls it);
-  management authority = `manage.bots ∪ { bots whose origin is me }`;
-  deletion stays human.
-
-Build it whole or not at all. Half of it — configuration without creation,
-or the reverse — has no principled boundary.
-
-### 6. Observability across bots
-
-- Event chips: "from `a` #12", "addressed to `b`", "reply to #12".
-- Sender activity: `emitted <kind> → b, c` / `→ nobody`; `loop_cut`;
-  `replied`.
-- Causation chain: from any event, walk `causationId` back to the external
-  event and forward to every reply — the team's trace of one incident.
-- The Bots page draws the wiring graph from the same `bot` trigger rows
-  the directory is derived from (who listens to whom); later polish.
-
-### 7. How it composes with sub-agents — the rules
+### 7. Rules
 
 1. **Horizontal is events, vertical is promises.** A session never parks on
-   another bot. To get an answer with a bot's *context* (its inbox, brief,
-   memory), emit with `reply: true` and resolve `deferred`. To get an
-   answer *synchronously*, `agent_run` the bot's **profile** — the caller's
-   `features.subagents.agents[]` may list it — and accept that the child
-   has the profile only: no inbox, no brief, no bot tools.
-2. **Children never emit.** `bot_*` tools are bindings on the bot's managed
-   sessions; a child is created from the pinned profile without them. The
-   bot session emits after `agent_run` returns. Every bot event's sender is
-   a bot session, so provenance is never ambiguous.
-3. **No cross-bot authority.** A bot reshapes itself within `selfConfig`
-   and nothing else; humans set every bot's scope. Neighbours ask.
-4. **Budgets stay in their tiers.** Run budget per bot, tree limits per root
-   (P134), hop bound and emit rate per exchange. No cross-bot budget; an
-   operator who wants a team ceiling sets each bot's `runsPerDay`.
-5. **Provenance, never ownership**: `SessionOrigin`,
-   `environment.origin_session`, and — if the alternative is ever built —
-   `bots.origin`. No cascades, no lifecycle trees.
-6. **Deterministic identities everywhere**: per-receiver event id from
-   (sender, invocation), reply id from (receiver, delivery, original event
-   id).
-7. **A child is never a bot and a bot is never a child** (P134 §8) —
-   unchanged; federation adds bot ↔ bot only.
+   another bot. An answer with a bot's *context* is an event and `deferred`;
+   a *synchronous* answer is `agent_run` on the bot's profile (no inbox, no
+   brief, no bot tools).
+2. **Children never emit.** `bot_*` tools are bindings on managed sessions;
+   a child has the profile only. Every bot event's sender is a bot session.
+3. **No cross-bot authority.** Neighbours ask.
+4. **Budgets stay in their tiers**: run budget per bot, tree limits per root,
+   hops and emit rate per exchange. No cross-bot budget.
+5. **Provenance, never ownership.** No cascades, no lifecycle trees.
+6. **Deterministic identities**: event id from (sender, invocation); receipt
+   id from (receiver, delivery, event).
+7. **A child is never a bot and a bot is never a child** (P134 §8).
 
 ## Worked example: an incident team
 
-- `triage` — webhook triggers from Sentry and PagerDuty (`perKey` on
-  incident id), `emit` granted. On an incident it publishes
-  `incident.opened` and, if it wants a root cause, addresses
-  `investigate` to `infra` with `reply: true`, resolving `deferred`.
-- `infra` — `inbox` trigger (`from: ["triage"]`), profile with a standing
-  `existing` environment and `features.subagents` (`log-reader`,
-  `deploy-diff`). It `agent_run`s two children in one turn, joins their
-  results, writes a finding, resolves `handled` with the finding as
-  summary. The controller replies to `triage`'s incident session
-  deterministically; `triage`'s next run posts the finding.
-- `comms` — `{ kind: "bot", from: ["triage", "infra"], addressedOnly:
-  false }` with filter `event.kind.startsWith("incident.")` and a 30 s
-  coalescing window, so a burst of incident events becomes one Slack
-  digest (once the Channels receiver exists; until then a webhook to
-  Slack). `selfConfig` on; its brief says tuning requests from `ops` are
-  to be applied when they narrow, never when they widen.
-- `ops` — subscribed to `bot.*` system events (`dropped` replies,
-  `loop_cut`, `blocked` outcomes). When `comms` floods, `ops` asks it to
-  tighten its filter; `comms` does and replies; if the flood continues the
-  breaker trips deterministically and a human re-enables. Both feeds show
-  who asked, who agreed, and what stopped it.
+- `triage` — Sentry/PagerDuty webhooks (`perKey` on incident id), `emit`.
+  On an incident it addresses `investigate` to `infra` with `reply: true`
+  and resolves `deferred`.
+- `infra` — inbox `{ from: ["triage"] }`, a standing `existing`
+  environment, `features.subagents` (`log-reader`, `deploy-diff`). It
+  `agent_run`s two children, writes a finding, resolves `handled` with the
+  finding as summary. The receipt lands in `triage`'s incident session;
+  `triage`'s next run posts it.
+- `comms` — inbox `{ from: ["triage", "infra"] }`, filter
+  `event.kind.startsWith("incident.")`, 30 s coalescing; `triage` and
+  `infra` address it explicitly (no publish in v1). Its brief says tuning
+  requests from `ops` are applied when they narrow, never when they widen.
 
-Nothing in this example touches the core, no bot holds authority over
-another, and every arrow is an event through admission or a promise
-through P134.
+No core change, no bot with authority over another, every arrow an event
+through admission or a promise through P134.
 
 ## What is deliberately not built
 
-- **Cross-bot authority** — no configuring, enabling, or creating another
-  bot. The `manage` alternative in §5 is the whole of it, if ever.
+- **Cross-bot authority** — see the later note.
 - **`bot_ask` / any joined cross-bot call** — deadlock between singletons,
-  lane starvation, unbounded latency. Replies are events (§2); synchronous
-  answers are `agent_run` on a profile (§7.1).
-- **Bot-per-entity spawning** — that is `perKey` routing inside one bot.
-- **Cross-bot session or event access** — `bot_status`, `bot_event_read`,
-  `bot_event_list`, `bot_trigger_list`, `bot_filter_test` stay self-only;
-  a bot's outputs are its events.
-- **A universe-wide message bus product** (topics, retention, consumers).
-  Subscriptions are triggers; the "bus" is admission fan-out over trigger
-  rows, nothing more.
-- **Cross-universe federation.**
-- **The A2A adapter** — later, as another emit target / subscription source
-  behind the same `bot_emit` and `bot` trigger, not a new tool family.
-- **Reply timeouts** — later, on evidence.
+  lane starvation, unbounded latency.
+- **Publish/subscribe** — `to` is required for other bots in v1. If a
+  use case wants fan-out, it is a `published: true` flag on the same inbox
+  trigger plus a recipients-per-emission cap; not before.
+- **Reply deadlines, per-session reply coalescing, sender-side ask state.**
+- **`bot.*` system events on the bus** — activity rows and the UI already
+  observe the deterministic layer; publishing telemetry back onto the bus
+  raises loop and amplification questions before there is a consumer.
+- **Causation trace UI** — coalescing makes causation a DAG and delivery
+  membership is not persisted; `hops` is the bound, the trace is later.
+- **Cross-bot session/event access**, **bot-per-entity spawning** (that is
+  `perKey`), **cross-universe federation**, **the A2A adapter** (later, as
+  another target behind the same `bot_emit`).
 
 ## Slices
 
-1. **Bus** (1.5 d): `bot` trigger kind (spec, validation, UI form, create
-   dialog checkbox), `bot_emit { to, reply }` with fan-out admission over
-   trigger rows, envelope fields and the two columns, deterministic
-   per-receiver ids, `emit` grant rename, the `description` column and the
-   `bot:directory` catalog (P136 external catalog), `emitted` /
-   `loop_cut` activity, `hops` cut, event chips. Migration replaces
-   `self_emit` and adds the columns; dev databases reset.
-2. **Replies** (1 d): controller-side reply admission on delivery finish,
-   admission-side dropped replies, return-address routing to the asking
-   session, per-session reply coalescing, `replied` activity, reply chip,
-   the `bot.*` system event vocabulary published on the bus.
-3. Later: reply timeouts, wiring view, A2A target;
-   the `manage` alternative only on demonstrated demand.
+1. **Bus** (~1 d): `bot` trigger kind, one per bot (spec, validation, UI
+   form, create-dialog checkbox); `bot_emit { to }` joined with typed
+   refusals; shared admission function in the bots package; `emit` grant
+   rename; `sender_bot_id`, `hops`, `description` columns; deterministic
+   ids; hop cut and rate cap; `bot:directory`; `emitted → b` / `loop_cut`
+   activity; "from `a` #12" chip. Migration replaces `self_emit`; dev
+   databases reset.
+2. **Receipts** (~0.5 d): `reply` flag, `reply_to` column, `sendReceipts`
+   on delivery finish, `bot.reply` rendering, `replied` activity, reply
+   chip.
+3. On demand: publish/subscribe, wiring view, A2A target, deadlines.
 
-1 → 2 in order, after P136 slice 4; each is independently shippable and dogfoodable (a two-bot
-exchange is visible after slice 1, useful after 2).
+1 → 2 in order; a two-bot exchange is visible after 1 and complete after 2.
 
 ## Tests
 
-- **Unit** (`platform/bots/test`): subscription matching (published vs
-  addressed, `from` allowlist, disabled trigger, self-subscription);
-  deterministic per-receiver ids across a retried invocation; `hops`
-  propagation and the cut; reply document shape for each status;
-  directory rendering (relations derived from subscription rows) and the
-  no-op put when nothing changed.
-- **Integration** (`BOTS_TEMPORAL_INTEGRATION=1`): `a` addresses `b` with
-  `reply: true` from a keyed session → `b` runs and resolves → the reply
-  lands in `a`'s same keyed session as one delivery; `b`'s filter rejects
-  → `a` receives `dropped: filtered` without a run on `b`; `a`→`b`→`a`
-  ping-pong stops at `MAX_BOT_HOPS` with `loop_cut` on the sender;
-  history replay for the controller changes.
-- **Platform**: `test:migrations` asserts the new columns; `npm run check`
-  and `check:identity` green; the bots integration suite keeps its nine
-  scenarios.
-
-## The rest of the bot list (not federation)
-
-For completeness, what else "make bots really good" means, ordered by how
-often it has already bitten:
-
-1. **`bot_trigger_put` raw secrets** — P133 removes the field; until then
-   webhook/poll secrets transit CAS and history.
-2. **Descendant-aware budgets** — the bot budget is an activation budget;
-   counting P134 descendants through `session/list { rootSessionId }` makes
-   it a real one. Small.
-3. **Tier-2 per-trigger CEL projections** — the generic renderer covers
-   current needs; revisit when a preset is not enough.
-4. **Declaration rotation cost** — every grant flip or tool revision rotates
-   the main session. In-place add-only declaration admission in core is
-   the one core change worth its price, still "decide after v1 contact".
-5. **Email trigger, more presets, Channels bridge** — P131 ws2/4/5, parked
-   or deferred by decision.
-6. **Push transport for the UI** — long-poll everywhere; fine until it is
-   not.
-7. **Triage stage** — cheap model-side wake-vs-archive for ambient
-   sources; still out until deterministic filters demonstrably fall short.
+- **Unit** (`platform/bots/test`): inbox matching (`from` allowlist,
+  disabled trigger, disabled bot, missing inbox, one-per-bot validation);
+  deterministic ids across a retried invocation; `hops` propagation and the
+  cut; sender rate cap across self and addressed emits; typed refusal for
+  each admission failure; directory rendering (only accepting bots, the
+  empty line) and the no-op put; receipt document and id per finish status;
+  `reply_to` route for main and keyed senders.
+- **Integration** (`BOTS_TEMPORAL_INTEGRATION=1`): `a` addresses `b` from a
+  keyed session with `reply: true` → `b` runs and resolves → the receipt
+  lands in `a`'s keyed session (after a generation rotation too); `b`'s
+  filter rejects → `a`'s tool result says `filtered` and `b` never runs;
+  `a`→`b`→`a` ping-pong stops at `MAX_BOT_HOPS` with `loop_cut`; controller
+  history replay.
+- **Platform**: `test:migrations` asserts the columns; `npm run check` and
+  `check:identity` green; the bots integration suite keeps its scenarios.

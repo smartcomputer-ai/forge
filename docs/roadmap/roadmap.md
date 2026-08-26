@@ -1,6 +1,14 @@
 # Lightspeed Roadmap
 
 ## Work
+- [ ] [P138](p138-model-facing-ids.md) — model-facing ids (proposed
+  2026-08-26): `PromiseId` becomes a session counter (`promise_7`) allocated
+  from a base on the tool batch request, with the producer token and the
+  `sourceResolution` emission id following; workflow-tool acknowledgements
+  show only the promise(s) the model needs; `job_submit` promises keyed by
+  the model's own `job_id` (`ArrayItemField` key source); job handles
+  default to the active environment; `bot_emit` returns `seq`. Environment
+  names left as a separate decision.
 - [x] [P137](p137-prompt-caching.md) — prompt caching (implemented 2026-08-26):
   adapter-placed Anthropic breakpoints (system / last tool / moving
   last-message, `prompt_cache_ttl` param for `1h`), `prompt_cache_key` =
@@ -21,16 +29,16 @@
   `session/context/append` (external catalogs; P135's bot directory is
   the first consumer).
 - [ ] [P135](p135-bot-federation.md) — bot federation (proposed 2026-08-26,
-  recommendation-first): bot ↔ bot as events through admission only — a
-  `bot` subscription trigger kind, `bot_emit { to, reply }` fan-out,
-  deterministic replies from the receiver's delivery outcome (no joined
-  cross-bot call, sessions never park on bots), causation + hop bound, a
-  `bot:directory` catalog derived from subscriptions and published through
-  P136's external catalog (supersede at the tail, never a rewrite). No
-  cross-bot authority: neither configuring nor creating other bots; a bot
-  reshapes only itself (`selfConfig`), neighbours ask, humans set scope. A
-  `manage` grant (configure + create, one grant) is recorded as the
-  alternative if authority is ever demanded.
+  revised three times the same day): bot ↔ bot as events through admission
+  only — one `bot` inbox trigger per bot (`from` allowlist; filter, route,
+  coalesce, deliver as for webhooks), `bot_emit { to }` joined for
+  admission with typed refusals, deterministic per-receiver ids, `hops`
+  bound, sender rate cap, a `bot:directory` catalog (only bots whose inbox
+  accepts the reader) through P136's external catalog. No automatic
+  replies in v1 (B answers by emitting back); slice 2 adds deterministic
+  resolution receipts with a logical return route. No cross-bot authority
+  (the `manage` grant is a later note), no `bot_ask`, no publish/subscribe
+  until a use case asks.
 - [x] [P134](p134-subagents.md) — sub-agents (all slices done 2026-08-25): the fleet control plane is
   replaced by a governed, profile-grantable delegation kernel. Two tools
   shaped like the job pair (`agent_run` joined, `agent_spawn` promise) over
