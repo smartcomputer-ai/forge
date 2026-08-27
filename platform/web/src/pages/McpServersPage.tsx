@@ -47,6 +47,8 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Field, FieldDescription, FieldLabel } from "@/components/ui/field";
+import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -116,6 +118,9 @@ function ServerList({ universeId }: { universeId: string }) {
   const rows = (servers.data ?? [])
     .slice()
     .sort((a, b) => a.serverId.localeCompare(b.serverId));
+  const grantLabels = new Map(
+    (authGrants.data ?? []).map((grant) => [grant.grantId, authGrantLabel(grant)]),
+  );
 
   return (
     <>
@@ -168,24 +173,37 @@ function ServerList({ universeId }: { universeId: string }) {
                       <span className="text-xs text-muted-foreground">{server.transport}</span>
                     </div>
                   </TableCell>
-                  <TableCell className="max-w-48">
+                  <TableCell className="max-w-56">
                     <div className="grid gap-0.5">
                       <span className="text-xs">{authPolicyLabel(server.authPolicy.type)}</span>
                       {server.credential && (
-                        <span className="text-xs text-muted-foreground">Connected</span>
+                        <span
+                          className="truncate text-xs text-muted-foreground"
+                          title={server.credential.grantId}
+                        >
+                          Connected · {grantLabels.get(server.credential.grantId) ?? server.credential.grantId}
+                        </span>
                       )}
                     </div>
                   </TableCell>
                   <TableCell>
-                    <StatusBadge status={server.status} />
+                    <div className="flex items-center gap-2">
+                      <StatusBadge status={server.status} />
+                      {/* The one thing to do on a row that needs auth is right here, not behind an icon. */}
+                      {isOAuthPolicy(server.authPolicy.type) && !server.credential && (
+                        <Button variant="outline" size="xs" onClick={() => setOAuthServer(server)}>
+                          <LogIn data-icon="inline-start" /> Connect
+                        </Button>
+                      )}
+                    </div>
                   </TableCell>
                   <TableActionsCell>
-                    {isOAuthPolicy(server.authPolicy.type) && (
+                    {isOAuthPolicy(server.authPolicy.type) && server.credential && (
                       <Button
                         variant="ghost"
                         size="icon-sm"
-                        aria-label={`${server.credential ? "Reconnect" : "Connect"} ${server.serverId} with OAuth`}
-                        title={server.credential ? "Reconnect OAuth" : "Connect OAuth"}
+                        aria-label={`Reconnect ${server.serverId} with OAuth`}
+                        title="Sign in again"
                         onClick={() => setOAuthServer(server)}
                       >
                         <LogIn />
@@ -536,9 +554,9 @@ function ServerDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[calc(100vh-2rem)] overflow-y-auto sm:max-w-xl">
-        <DialogHeader>
-          <DialogTitle>{editing ? `Edit ${server.serverId}` : "Add MCP server"}</DialogTitle>
+      <DialogContent className="max-h-[min(92dvh,860px)] grid-rows-[auto_minmax(0,1fr)_auto] gap-0 p-0 sm:max-w-xl">
+        <DialogHeader className="border-b p-6 pr-14">
+          <DialogTitle>{editing ? `Edit ${server.displayName || server.serverId}` : "Add MCP server"}</DialogTitle>
           <DialogDescription>
             {editing
               ? "Update how Lightspeed connects to this server."
@@ -548,18 +566,18 @@ function ServerDialog({
           </DialogDescription>
         </DialogHeader>
 
-        {!editing && (
-          <div className="grid grid-cols-2 gap-2 text-xs">
-            <div className={`rounded-md px-3 py-2 ${step === 1 ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground"}`}>
-              1 · Server
+        <form onSubmit={submit} className="contents">
+          <div className="grid min-h-0 content-start gap-5 overflow-y-auto p-6">
+          {!editing && (
+            <div className="grid grid-cols-2 gap-2 text-xs">
+              <div className={`rounded-md px-3 py-2 ${step === 1 ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground"}`}>
+                1 · Server
+              </div>
+              <div className={`rounded-md px-3 py-2 ${step === 2 ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground"}`}>
+                2 · Connection
+              </div>
             </div>
-            <div className={`rounded-md px-3 py-2 ${step === 2 ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground"}`}>
-              2 · Connection
-            </div>
-          </div>
-        )}
-
-        <form onSubmit={submit} className="grid gap-5">
+          )}
           {(!editing && step === 1) ? (
             <>
               <Field>
@@ -575,6 +593,16 @@ function ServerDialog({
                   placeholder="GitHub"
                   autoFocus
                 />
+                <FieldDescription>
+                  {serverId ? (
+                    <>
+                      Profiles reference it as <code className="font-mono">{serverId}</code>
+                      {idTouched ? "" : " — change it under Advanced if you need to"}.
+                    </>
+                  ) : (
+                    "Profiles reference the server by an id derived from this name."
+                  )}
+                </FieldDescription>
               </Field>
               <Field>
                 <FieldLabel htmlFor="mcp-url">Server URL</FieldLabel>
@@ -683,10 +711,15 @@ function ServerDialog({
 
               <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen}>
                 <CollapsibleTrigger className="flex w-full items-center justify-between rounded-md border px-3 py-2 text-left text-sm font-medium outline-none hover:bg-muted/40 focus-visible:ring-3 focus-visible:ring-ring/50">
-                  <span>
+                  <span className="min-w-0">
                     Advanced options
                     <span className="ml-2 text-xs font-normal text-muted-foreground">
-                      Auto transport · all tools
+                      {[
+                        ...(!editing ? [`id ${serverId || "…"}`] : []),
+                        transportLabel(transport),
+                        approval === "providerDefault" ? "provider approval" : approvalLabel(approval).toLowerCase(),
+                        parsedTools.length > 0 ? `${parsedTools.length} allowed tool${parsedTools.length === 1 ? "" : "s"}` : "all tools",
+                      ].join(" · ")}
                     </span>
                   </span>
                   <ChevronDown className={`size-4 transition-transform ${advancedOpen ? "rotate-180" : ""}`} />
@@ -810,28 +843,33 @@ function ServerDialog({
                     </>
                   )}
 
-                  {editing && (
-                    <Field>
-                      <FieldLabel>Status</FieldLabel>
-                      <Select value={status} onValueChange={(value) => setStatus(value as McpServer["status"])}>
-                        <SelectTrigger className="w-full" aria-label="Status">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="active">Active</SelectItem>
-                          <SelectItem value="disabled">Disabled</SelectItem>
-                          {["needsAuthConfig", "unverified"].includes(status) && (
-                            <SelectItem value={status}>{status}</SelectItem>
-                          )}
-                        </SelectContent>
-                      </Select>
-                    </Field>
-                  )}
                 </CollapsibleContent>
               </Collapsible>
+
+              {editing && (
+                <div className="flex items-center justify-between gap-3 rounded-md border p-3">
+                  <Label htmlFor="mcp-enabled" className="text-sm">
+                    Enabled
+                    <span className="block text-xs font-normal text-muted-foreground">
+                      {status === "needsAuthConfig"
+                        ? "Needs a credential before sessions can link it; it activates once one is connected."
+                        : status === "unverified"
+                          ? "Unverified: enable it once you have confirmed the connection."
+                          : "Disabled servers stay configured but cannot be linked into new sessions."}
+                    </span>
+                  </Label>
+                  <Switch
+                    id="mcp-enabled"
+                    checked={status === "active"}
+                    onCheckedChange={(checked) => setStatus(checked ? "active" : "disabled")}
+                  />
+                </div>
+              )}
             </>
           )}
+          </div>
 
+          <div className="grid gap-2 border-t p-4">
           {error && <p className="text-sm text-destructive">{error}</p>}
           <DialogFooter>
             {!editing && step === 2 && (
@@ -850,6 +888,7 @@ function ServerDialog({
                     : editing ? "Save" : "Add server"}
             </Button>
           </DialogFooter>
+          </div>
         </form>
       </DialogContent>
     </Dialog>
@@ -1016,9 +1055,9 @@ function OAuthDialog({
   };
 
   const terminalError = flow.data?.status === "failed"
-    ? flow.data.error || "The authorization server rejected the login."
+    ? flow.data.error || "The provider refused the sign-in."
     : flow.data?.status === "expired"
-      ? "This authorization attempt expired."
+      ? "This sign-in attempt expired — start it again."
       : null;
 
   return (
@@ -1027,21 +1066,21 @@ function OAuthDialog({
         <DialogHeader>
           <DialogTitle>Connect {server?.displayName ?? server?.serverId} with OAuth</DialogTitle>
           <DialogDescription>
-            Lightspeed discovers the server's OAuth configuration, registers a client when
-            needed, and stores the resulting access grant for this universe.
+            Sign in with the provider once; Lightspeed keeps the connection for this universe and
+            every session that uses the server.
           </DialogDescription>
         </DialogHeader>
 
         {(start.isPending || (attempt && flow.isLoading)) && (
-          <p className="text-sm text-muted-foreground">
-            Discovering OAuth metadata and preparing a secure PKCE login…
+          <p className="flex items-center gap-2 text-sm text-muted-foreground">
+            <Loader2 className="size-4 animate-spin" /> Preparing the sign-in…
           </p>
         )}
         {attempt && flow.data?.status === "pending" && (
           <div className="grid gap-3 rounded-lg border p-4">
             <p className="text-sm">
-              Continue to the authorization server, approve access, then return here. This
-              dialog will finish setup automatically.
+              Sign in with the provider in the tab that opens and approve access, then come back —
+              this dialog finishes on its own.
             </p>
             <Button
               type="button"
@@ -1052,23 +1091,24 @@ function OAuthDialog({
               }}
             >
               <ExternalLink data-icon="inline-start" />
-              {authorizationOpened ? "Open authorization again" : "Open authorization"}
+              {authorizationOpened ? "Open the sign-in again" : "Open the sign-in"}
             </Button>
-            <p className="text-xs text-muted-foreground">
-              Waiting for the authorization callback…
+            <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
+              <Loader2 className="size-3 animate-spin" /> Waiting for you to approve access…
             </p>
           </div>
         )}
         {flow.data?.status === "completed" && complete.isPending && (
-          <p className="text-sm text-muted-foreground">
-            Authorization complete. Binding the credential to the MCP server…
+          <p className="flex items-center gap-2 text-sm text-muted-foreground">
+            <Loader2 className="size-4 animate-spin" /> Access approved — connecting the server…
           </p>
         )}
         {complete.data && (
           <div className="grid gap-1 rounded-lg border border-emerald-500/40 bg-emerald-500/5 p-4">
-            <p className="text-sm font-medium">OAuth connected</p>
+            <p className="text-sm font-medium">Connected</p>
             <p className="text-sm text-muted-foreground">
-              The brokered credential is bound to {complete.data.serverId} and ready for sessions.
+              {complete.data.displayName || complete.data.serverId} is signed in; profiles that link it
+              get its tools in their next sessions.
             </p>
           </div>
         )}
