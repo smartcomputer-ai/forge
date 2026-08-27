@@ -41,7 +41,7 @@ function SetupList({ universeId }: { universeId: string }) {
   return (
     <>
       <PageHeader
-        title="Setups"
+        title="Templates"
         description="Install ready-to-use profiles and resources maintained by Lightspeed."
       />
       {setups.isLoading && <LoadingNote />}

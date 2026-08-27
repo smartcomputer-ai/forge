@@ -728,11 +728,21 @@ export function SessionDetail({
   slug,
   sessionId,
   backTo = `/u/${slug}/sessions`,
+  embedded = false,
+  sessionHref,
 }: {
   universeId: string;
   slug: string;
   sessionId: string;
   backTo?: string;
+  /**
+   * Rendered inside another surface (a bot's Chat tab): no back link, and a
+   * managed session takes plain input — the bot page is where its operator
+   * talks to it, so there is nothing to override.
+   */
+  embedded?: boolean;
+  /** Where lineage links go; defaults to the Sessions page. */
+  sessionHref?: (sessionId: string) => string;
 }) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
@@ -959,7 +969,7 @@ export function SessionDetail({
   // session (they queue like any client run), so the gate here is policy,
   // not capability. Off by default because direct input bypasses the
   // manager's ingress; resets when the operator navigates away.
-  const managedGate = managed;
+  const managedGate = managed && !embedded;
   const [directInput, setDirectInput] = useState(false);
   useEffect(() => {
     setDirectInput(false);
@@ -1140,10 +1150,13 @@ export function SessionDetail({
 
   return (
     <>
+      {!embedded && (
       <header className="flex h-12 shrink-0 items-center gap-3 border-b px-4">
-        <NavLink to={backTo} className="md:hidden">
-          <ArrowLeft className="size-4" />
-        </NavLink>
+        {!embedded && (
+          <NavLink to={backTo} className="md:hidden">
+            <ArrowLeft className="size-4" />
+          </NavLink>
+        )}
         <h1 className="min-w-0 truncate text-sm font-semibold">
           {session.data?.displayName ?? sessionId.slice(0, 24)}
         </h1>
@@ -1302,12 +1315,14 @@ export function SessionDetail({
           {sessionIdCopied ? <Check /> : <Copy />}
         </Button>
       </header>
+      )}
       <SessionLineage
         universeId={universeId}
         slug={slug}
         sessionId={sessionId}
         origin={session.data?.origin ?? null}
         runRevision={runRevision}
+        sessionHref={sessionHref}
       />
       <MessageScrollerProvider autoScroll defaultScrollPosition="end">
         <MessageScroller className="min-h-0 flex-1">
@@ -1411,17 +1426,19 @@ export function SessionDetail({
         onSend={(text, mode) => void send(text, mode)}
         onStop={() => void stop()}
       />
-      <SessionSettingsDialog
-        universeId={universeId}
-        sessionId={sessionId}
-        session={session.data}
-        runActive={runActive}
-        open={settingsOpen}
-        onOpenChange={(open) => {
-          setSettingsOpen(open);
-          if (open) void session.refetch();
-        }}
-      />
+      {!embedded && (
+        <SessionSettingsDialog
+          universeId={universeId}
+          sessionId={sessionId}
+          session={session.data}
+          runActive={runActive}
+          open={settingsOpen}
+          onOpenChange={(open) => {
+            setSettingsOpen(open);
+            if (open) void session.refetch();
+          }}
+        />
+      )}
     </>
   );
 }
@@ -1503,13 +1520,16 @@ function SessionLineage({
   sessionId,
   origin,
   runRevision,
+  sessionHref,
 }: {
   universeId: string;
   slug: string;
   sessionId: string;
   origin: SessionOrigin | null;
   runRevision: number;
+  sessionHref?: (sessionId: string) => string;
 }) {
+  const href = sessionHref ?? ((id: string) => `/u/${slug}/sessions/${id}`);
   const children = useQuery({
     queryKey: ["session-children", universeId, sessionId, runRevision],
     queryFn: () =>
@@ -1525,7 +1545,7 @@ function SessionLineage({
       {origin && (
         <span className="flex min-w-0 items-center gap-1">
           <span>Sub-agent of</span>
-          <NavLink to={`/u/${slug}/sessions/${origin.parentSessionId}`} className="truncate font-mono text-foreground hover:underline">
+          <NavLink to={href(origin.parentSessionId)} className="truncate font-mono text-foreground hover:underline">
             {origin.parentSessionId.slice(0, 18)}…
           </NavLink>
           <span>
@@ -1540,7 +1560,7 @@ function SessionLineage({
           {list.map((child) => (
             <NavLink
               key={child.id}
-              to={`/u/${slug}/sessions/${child.id}`}
+              to={href(child.id)}
               className={cn(
                 "rounded-full border px-2 py-0.5 font-mono text-foreground hover:bg-muted",
                 child.lifecycleStatus === "closed" && "text-muted-foreground",

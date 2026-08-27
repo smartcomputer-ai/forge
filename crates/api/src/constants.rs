@@ -81,6 +81,7 @@ pub const METHOD_VFS_WORKSPACES_DELETE: &str = "vfs/workspaces/delete";
 // ── Universe: MCP server catalog ────────────────────────────────────────────
 
 pub const METHOD_MCP_SERVERS_PUT: &str = "mcp/servers/put";
+pub const METHOD_MCP_SERVERS_AUTH_DISCOVER: &str = "mcp/servers/auth/discover";
 pub const METHOD_MCP_SERVERS_READ: &str = "mcp/servers/read";
 pub const METHOD_MCP_SERVERS_LIST: &str = "mcp/servers/list";
 pub const METHOD_MCP_SERVERS_DELETE: &str = "mcp/servers/delete";

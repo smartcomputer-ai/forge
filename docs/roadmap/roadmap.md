@@ -1,6 +1,14 @@
 # Lightspeed Roadmap
 
 ## Work
+- [x] [P141](p141-bot-console.md) — bots as the product (implemented
+  2026-08-27): a three-tab bot page (Chat with the main conversation and
+  threads inline, Activity timeline, one Setup page with per-section
+  saves), a four-step creation wizard that writes a profile named after
+  the bot plus the bot and its triggers in one go, the composer as plain
+  input on the main session, a roster-style list fed from `bot_events`,
+  trigger cards with plain-language summaries, and person-facing labels.
+  Profile ownership is deliberately not tracked.
 - [x] [P140](p140-bot-environments-and-bot-lifecycle.md) — bot environments
   and bot lifecycle (implemented 2026-08-27, v2; live dogfood of
   close/delete still open): a bot's

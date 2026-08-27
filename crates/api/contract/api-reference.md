@@ -526,6 +526,15 @@ Stores the complete universe catalog document, including its optional universe a
 - Params: `McpServerPutParams`
 - Result: `AgentApiOutcome<McpServerPutResponse>`
 
+### `mcp/servers/auth/discover`
+
+**Discover MCP server authentication**
+
+Looks for standards-based OAuth protected-resource metadata without creating a server, OAuth client, flow, or grant. An absent OAuth result is inconclusive and callers must allow manual auth selection.
+
+- Params: `McpServerAuthDiscoverParams`
+- Result: `AgentApiOutcome<McpServerAuthDiscoverResponse>`
+
 ### `mcp/servers/read`
 
 **Read an MCP server record**

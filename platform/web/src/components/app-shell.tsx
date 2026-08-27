@@ -193,7 +193,7 @@ export function AppShell({ user, admin }: { user: SessionUser; admin: boolean })
                         <NavItem
                           to={`/u/${active.slug}/settings/setups`}
                           icon={PackageOpen}
-                          label="Setups"
+                          label="Templates"
                         />
                         <NavItem
                           to={`/u/${active.slug}/settings/environments`}

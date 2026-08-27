@@ -1045,6 +1045,24 @@
       "summary": "Create or replace an MCP server record"
     },
     {
+      "description": "Looks for standards-based OAuth protected-resource metadata without creating a server, OAuth client, flow, or grant. An absent OAuth result is inconclusive and callers must allow manual auth selection.",
+      "method": "mcp/servers/auth/discover",
+      "params": {
+        "schema": {
+          "$ref": "#/definitions/McpServerAuthDiscoverParams"
+        },
+        "type": "McpServerAuthDiscoverParams"
+      },
+      "result": {
+        "schema": {
+          "$ref": "#/definitions/AgentApiOutcomeOfMcpServerAuthDiscoverResponse"
+        },
+        "type": "AgentApiOutcome<McpServerAuthDiscoverResponse>"
+      },
+      "scope": "universe",
+      "summary": "Discover MCP server authentication"
+    },
+    {
       "description": "Returns one catalog document with defaults, auth policy, non-secret grant binding, status, and revision; no credential value is exposed.",
       "method": "mcp/servers/read",
       "params": {

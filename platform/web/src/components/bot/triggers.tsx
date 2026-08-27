@@ -1,6 +1,6 @@
 import { useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, CalendarClock, Check, Copy, Inbox, MessageCircle, Pause, Pencil, Play, Plus, RefreshCw, RotateCw, Terminal, Trash2, Webhook } from "lucide-react";
+import { ArrowLeft, CalendarClock, Check, ChevronRight, Copy, Inbox, MessageCircle, Pause, Pencil, Play, Plus, RefreshCw, RotateCw, Send, Terminal, Trash2, Webhook } from "lucide-react";
 import {
   api,
   botLabel,
@@ -17,6 +17,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import {
   Combobox,
   ComboboxChip,
@@ -47,14 +48,16 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
+import { cn } from "@/lib/utils";
 import { CronBuilder } from "./cron-builder";
+import { deliverySentence, deliveryShapeOf, triggerSummary } from "./trigger-summary";
 
-const NAME_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
+export const NAME_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
 
 /// Temporal Schedules take classic 5-field crontab (minute hour day month
 /// weekday) or an @-macro. Catch Quartz-style pastes (seconds field, `?`)
 /// before they round-trip to a confusing server error.
-function cronProblem(value: string): string | null {
+export function cronProblem(value: string): string | null {
   const cron = value.trim();
   if (!cron || cron.startsWith("@")) return null;
   const fields = cron.split(/\s+/);
@@ -63,6 +66,207 @@ function cronProblem(value: string): string | null {
   }
   if (fields.length !== 5) return "Expected 5 fields: minute hour day month weekday.";
   return null;
+}
+
+export type TriggerKind = BotTrigger["kind"];
+
+export interface ScheduleFormState {
+  once: boolean;
+  at: string;
+  cron: string;
+  timezone: string;
+  summary: string;
+}
+
+function localTimezone(): string {
+  try {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+  } catch {
+    return "UTC";
+  }
+}
+
+export const defaultScheduleForm: ScheduleFormState = {
+  once: false,
+  at: "",
+  cron: "0 9 * * 1-5",
+  timezone: localTimezone(),
+  summary: "",
+};
+
+export function scheduleFormProblem(form: ScheduleFormState): string | null {
+  if (form.once) {
+    const at = new Date(form.at).getTime();
+    if (!form.at || Number.isNaN(at)) return "Pick when it fires.";
+    if (at < Date.now() + 30_000) return "A one-shot fires at least 30 seconds from now.";
+  } else {
+    if (!form.cron.trim()) return "Set a schedule.";
+    const issue = cronProblem(form.cron);
+    if (issue) return issue;
+  }
+  if (!form.summary.trim()) return "Say what the bot should do when this fires.";
+  return null;
+}
+
+export function scheduleSpecPayload(form: ScheduleFormState): BotScheduleSpec {
+  return form.once
+    ? { at: new Date(form.at).toISOString(), timezone: "UTC", summary: form.summary.trim() }
+    : { cron: form.cron.trim(), timezone: form.timezone.trim() || "UTC", summary: form.summary.trim() };
+}
+
+/** Schedule essentials: when, and what the bot should do when it fires. */
+export function ScheduleFields({
+  form,
+  setForm,
+  lockedAt = null,
+  idPrefix = "trigger",
+}: {
+  form: ScheduleFormState;
+  setForm: (next: ScheduleFormState) => void;
+  /** Editing a one-shot that already has its time: only the task is editable. */
+  lockedAt?: string | null;
+  idPrefix?: string;
+}) {
+  const cronIssue = form.once || lockedAt ? null : cronProblem(form.cron);
+  return (
+    <>
+      {lockedAt ? (
+        <p className="text-xs text-muted-foreground">
+          Fires once at {new Date(lockedAt).toLocaleString()}; only the task is editable.
+        </p>
+      ) : (
+        <Field>
+          <FieldLabel>When</FieldLabel>
+          <Select value={form.once ? "once" : "cron"} onValueChange={(value) => setForm({ ...form, once: value === "once" })}>
+            <SelectTrigger>
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="cron">On a recurring schedule</SelectItem>
+              <SelectItem value="once">Once, at a specific time</SelectItem>
+            </SelectContent>
+          </Select>
+        </Field>
+      )}
+      {!lockedAt && form.once && (
+        <Field>
+          <FieldLabel htmlFor={`${idPrefix}-at`}>Fire at</FieldLabel>
+          <Input
+            id={`${idPrefix}-at`}
+            type="datetime-local"
+            value={form.at}
+            onChange={(event) => setForm({ ...form, at: event.target.value })}
+          />
+          <FieldDescription>Local time; the trigger pauses itself after firing once.</FieldDescription>
+        </Field>
+      )}
+      {!lockedAt && !form.once && (
+        <>
+          <CronBuilder value={form.cron} onChange={(cron) => setForm({ ...form, cron })} />
+          <div className="grid gap-3 sm:grid-cols-[1fr_10rem]">
+            <Field>
+              <FieldLabel htmlFor={`${idPrefix}-cron`}>Cron</FieldLabel>
+              <Input
+                id={`${idPrefix}-cron`}
+                value={form.cron}
+                onChange={(event) => setForm({ ...form, cron: event.target.value })}
+                placeholder="0 9 * * 1-5"
+                className="font-mono"
+                aria-invalid={cronIssue !== null || undefined}
+              />
+            </Field>
+            <Field>
+              <FieldLabel htmlFor={`${idPrefix}-timezone`}>Timezone</FieldLabel>
+              <Input
+                id={`${idPrefix}-timezone`}
+                value={form.timezone}
+                onChange={(event) => setForm({ ...form, timezone: event.target.value })}
+                placeholder="UTC"
+              />
+            </Field>
+          </div>
+          {cronIssue ? (
+            <p className="-mt-2 text-xs text-destructive">{cronIssue}</p>
+          ) : (
+            <p className="-mt-2 text-xs text-muted-foreground">
+              5 fields: minute, hour, day, month, weekday — or a macro like @daily.
+            </p>
+          )}
+        </>
+      )}
+      <Field>
+        <FieldLabel htmlFor={`${idPrefix}-summary`}>Task</FieldLabel>
+        <Textarea
+          id={`${idPrefix}-summary`}
+          value={form.summary}
+          onChange={(event) => setForm({ ...form, summary: event.target.value })}
+          rows={4}
+          placeholder="What should the bot do each time this fires?"
+        />
+      </Field>
+    </>
+  );
+}
+
+export function TriggerKindIcon({
+  kind,
+  exec = false,
+  className,
+}: {
+  kind: TriggerKind;
+  exec?: boolean;
+  className?: string;
+}) {
+  const classes = cn("size-3.5 shrink-0 text-muted-foreground", className);
+  if (kind === "schedule") return <CalendarClock className={classes} />;
+  if (kind === "bot") return <Inbox className={classes} />;
+  if (kind === "chat") return <MessageCircle className={classes} />;
+  if (kind === "poll") return exec ? <Terminal className={classes} /> : <RefreshCw className={classes} />;
+  return <Webhook className={classes} />;
+}
+
+export function defaultTriggerName(kind: TriggerKind, pollSource?: "http" | "exec"): string {
+  if (kind === "bot") return "inbox";
+  if (kind === "poll") return pollSource === "exec" ? "command-poll" : "poll";
+  return kind;
+}
+
+/** A sample delivery for a token-verified webhook, so a person sees the loop close without leaving the page. */
+const GITHUB_SAMPLE = {
+  action: "opened",
+  number: 1,
+  pull_request: {
+    number: 1,
+    title: "Sample pull request",
+    html_url: "https://github.com/acme/api/pull/1",
+    state: "open",
+    draft: false,
+    body: "A sample delivery sent from the bot page.",
+    user: { login: "sample" },
+    head: { ref: "feature/sample", sha: "0000000" },
+    base: { ref: "main" },
+  },
+  repository: { full_name: "acme/api", html_url: "https://github.com/acme/api" },
+  sender: { login: "sample" },
+};
+const PLAIN_SAMPLE = {
+  kind: "sample",
+  summary: "A sample event sent from the bot page.",
+  data: { message: "Hello from the bot page." },
+};
+
+export async function sendSampleWebhook(trigger: BotTrigger): Promise<void> {
+  const spec = trigger.spec as BotWebhookSpec;
+  const github = spec.preset === "github";
+  const response = await fetch(ingestUrl(trigger), {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      ...(github ? { "x-github-event": "pull_request", "x-github-delivery": crypto.randomUUID() } : {}),
+    },
+    body: JSON.stringify(github ? GITHUB_SAMPLE : PLAIN_SAMPLE),
+  });
+  if (!response.ok) throw new Error(`The webhook answered ${response.status}.`);
 }
 
 function ingestUrl(trigger: BotTrigger): string {
@@ -107,7 +311,7 @@ export type BotEnvStatus =
   | { kind: "existing"; environmentId: string };
 
 /** A paused trigger says why: the breaker, a failed poll, a one-shot that fired, or an operator. */
-function pausedLabel(reason: BotTrigger["disabledReason"]): string {
+export function pausedLabel(reason: BotTrigger["disabledReason"]): string {
   switch (reason) {
     case "breaker":
       return "paused by breaker";
@@ -124,7 +328,7 @@ function pausedLabel(reason: BotTrigger["disabledReason"]): string {
   }
 }
 
-function pausedVariant(reason: BotTrigger["disabledReason"]): "destructive" | "outline" {
+export function pausedVariant(reason: BotTrigger["disabledReason"]): "destructive" | "outline" {
   return reason === "breaker" || reason === "poll_failed" ? "destructive" : "outline";
 }
 
@@ -133,11 +337,16 @@ export function TriggersSection({
   botId,
   manage,
   env,
+  id,
+  headless = false,
 }: {
   universeId: string;
   botId: string;
   manage: boolean;
   env: BotEnvStatus;
+  id?: string;
+  /** Rendered inside a section that already has a title; the add button moves under the list. */
+  headless?: boolean;
 }) {
   const queryClient = useQueryClient();
   const [addOpen, setAddOpen] = useState(false);
@@ -146,6 +355,10 @@ export function TriggersSection({
   const triggers = useQuery({
     queryKey: ["bot-triggers", universeId, botId],
     queryFn: () => api<{ triggers: BotTrigger[] }>("GET", `/api/v1/universes/${universeId}/bots/${botId}/triggers`),
+    // The bot may add or change triggers itself (self-configuration); keep
+    // the cards current while the page is open.
+    refetchInterval: 5_000,
+    refetchIntervalInBackground: false,
   });
   const bots = useQuery({
     queryKey: ["bots", universeId],
@@ -169,109 +382,148 @@ export function TriggersSection({
       return invalidate();
     },
   });
+  const sample = useMutation({
+    mutationFn: sendSampleWebhook,
+    onSuccess: () =>
+      Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["bot-events", universeId, botId] }),
+        queryClient.invalidateQueries({ queryKey: ["bot-state", universeId, botId] }),
+      ]),
+  });
 
   return (
-    <section className="grid min-w-0 max-w-full gap-2">
-      <div className="flex min-w-0 items-end gap-3">
-        <div className="grid min-w-0 gap-0.5">
-          <h2 className="text-sm font-semibold">Triggers</h2>
-          <p className="text-xs text-muted-foreground">Schedules, webhooks, and chats that wake this bot.</p>
+    <section id={id} className="grid min-w-0 max-w-full scroll-mt-4 gap-2">
+      {!headless && (
+        <div className="flex min-w-0 items-end gap-3">
+          <div className="grid min-w-0 gap-0.5">
+            <h2 className="text-sm font-semibold">Triggers</h2>
+            <p className="text-xs text-muted-foreground">When this bot wakes up: schedules, webhooks, polls, chats, other bots.</p>
+          </div>
+          {manage && (
+            <Button variant="outline" size="xs" className="ml-auto" onClick={() => setAddOpen(true)}>
+              <Plus data-icon="inline-start" /> Add trigger
+            </Button>
+          )}
         </div>
-        {manage && (
-          <Button variant="outline" size="xs" className="ml-auto" onClick={() => setAddOpen(true)}>
-            <Plus data-icon="inline-start" /> Trigger
-          </Button>
-        )}
-      </div>
+      )}
       {triggers.data?.triggers.length === 0 && (
-        <p className="text-xs text-muted-foreground">
-          No triggers yet{manage ? " — add a schedule, webhook, or chat to make this bot reachable." : "."}
+        <p className="rounded-md border border-dashed p-3 text-xs text-muted-foreground">
+          Nothing wakes this bot yet{manage ? " — add a schedule, a webhook, or a chat account. You can always message it from Chat." : "."}
         </p>
       )}
       {triggers.error && <p className="text-xs text-destructive">{triggers.error.message}</p>}
-      {triggers.data?.triggers.map((trigger) => (
-        <div key={trigger.name} className="min-w-0 max-w-full overflow-hidden rounded-md border p-2 text-xs">
-          <div className="flex min-w-0 items-center gap-2">
-            {trigger.kind === "schedule" ? (
-              <CalendarClock className="size-3.5 shrink-0 text-muted-foreground" />
-            ) : trigger.kind === "bot" ? (
-              <Inbox className="size-3.5 shrink-0 text-muted-foreground" />
-            ) : trigger.kind === "chat" ? (
-              <MessageCircle className="size-3.5 shrink-0 text-muted-foreground" />
-            ) : (
-              <Webhook className="size-3.5 shrink-0 text-muted-foreground" />
-            )}
-            <span className="min-w-0 flex-1 truncate font-medium">{trigger.name}</span>
-            {!trigger.enabled && (
-              <Badge
-                variant={pausedVariant(trigger.disabledReason)}
-                title={trigger.disabledAt ? `since ${new Date(trigger.disabledAt).toLocaleString()}` : undefined}
-              >
-                {pausedLabel(trigger.disabledReason)}
-              </Badge>
-            )}
-            {manage && (
-              <span className="flex shrink-0 items-center">
-                <Button
-                  variant="ghost"
-                  size="icon-sm"
-                  onClick={() => setEditing(trigger)}
-                  aria-label="Edit trigger"
-                >
-                  <Pencil />
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="icon-sm"
-                  onClick={() => toggle.mutate(trigger)}
-                  disabled={toggle.isPending}
-                  aria-label={trigger.enabled ? "Pause trigger" : "Resume trigger"}
-                >
-                  {trigger.enabled ? <Pause /> : <Play />}
-                </Button>
-                {pendingDelete === trigger.name ? (
-                  <Button
-                    variant="destructive"
-                    size="xs"
-                    onClick={() => remove.mutate(trigger.name)}
-                    disabled={remove.isPending}
-                  >
-                    Delete?
-                  </Button>
-                ) : (
+      {toggle.error && <p className="text-xs text-destructive">{toggle.error.message}</p>}
+      {remove.error && <p className="text-xs text-destructive">{remove.error.message}</p>}
+      {sample.error && <p className="text-xs text-destructive">{sample.error.message}</p>}
+      {sample.isSuccess && (
+        <p className="text-xs text-muted-foreground">Sample sent — it shows up under Activity in a moment.</p>
+      )}
+      {triggers.data?.triggers.map((trigger) => {
+        const exec = trigger.kind === "poll" && (trigger.spec as BotPollSpec).source.kind === "exec";
+        const summary = triggerSummary(trigger);
+        const delivery = deliverySentence(deliveryShapeOf(trigger), trigger.kind === "chat");
+        const sampleable =
+          trigger.kind === "webhook" && (trigger.spec as BotWebhookSpec).verification.scheme === "token";
+        return (
+          <div key={trigger.name} className="min-w-0 max-w-full overflow-hidden rounded-md border p-3 text-xs">
+            <div className="flex min-w-0 items-start gap-2">
+              <TriggerKindIcon kind={trigger.kind} exec={exec} className="mt-0.5" />
+              <div className="min-w-0 flex-1">
+                <div className="flex min-w-0 flex-wrap items-center gap-2">
+                  <span className="truncate font-medium">{trigger.name}</span>
+                  {!trigger.enabled && (
+                    <Badge
+                      variant={pausedVariant(trigger.disabledReason)}
+                      title={trigger.disabledAt ? `since ${new Date(trigger.disabledAt).toLocaleString()}` : undefined}
+                    >
+                      {pausedLabel(trigger.disabledReason)}
+                    </Badge>
+                  )}
+                </div>
+                <p className="truncate text-muted-foreground" title={summary}>{summary}</p>
+                <p className="truncate text-muted-foreground/80" title={delivery}>{delivery}</p>
+              </div>
+              {manage && (
+                <span className="flex shrink-0 items-center">
+                  {sampleable && (
+                    <Button
+                      variant="ghost"
+                      size="xs"
+                      onClick={() => sample.mutate(trigger)}
+                      disabled={sample.isPending || !trigger.enabled}
+                      title="Post a sample payload to this webhook"
+                    >
+                      <Send data-icon="inline-start" /> Send sample
+                    </Button>
+                  )}
                   <Button
                     variant="ghost"
                     size="icon-sm"
-                    onClick={() => setPendingDelete(trigger.name)}
-                    aria-label="Delete trigger"
+                    onClick={() => setEditing(trigger)}
+                    aria-label="Edit trigger"
                   >
-                    <Trash2 />
+                    <Pencil />
                   </Button>
-                )}
-              </span>
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    onClick={() => toggle.mutate(trigger)}
+                    disabled={toggle.isPending}
+                    aria-label={trigger.enabled ? "Pause trigger" : "Resume trigger"}
+                  >
+                    {trigger.enabled ? <Pause /> : <Play />}
+                  </Button>
+                  {pendingDelete === trigger.name ? (
+                    <Button
+                      variant="destructive"
+                      size="xs"
+                      onClick={() => remove.mutate(trigger.name)}
+                      disabled={remove.isPending}
+                    >
+                      Delete?
+                    </Button>
+                  ) : (
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
+                      onClick={() => setPendingDelete(trigger.name)}
+                      aria-label="Delete trigger"
+                    >
+                      <Trash2 />
+                    </Button>
+                  )}
+                </span>
+              )}
+            </div>
+            {trigger.lastFilterError && (
+              <p
+                className="mt-2 rounded-md bg-destructive/10 p-2 text-destructive wrap-anywhere"
+                title={trigger.lastFilterErrorAt ? `at ${new Date(trigger.lastFilterErrorAt).toLocaleString()}` : undefined}
+              >
+                filter error: {trigger.lastFilterError}
+              </p>
             )}
+            <div className="mt-2 border-t pt-2">
+              {trigger.kind === "schedule" ? (
+                <ScheduleRowDetail spec={trigger.spec as BotScheduleSpec} />
+              ) : trigger.kind === "poll" ? (
+                <PollRowDetail trigger={trigger} />
+              ) : trigger.kind === "bot" ? (
+                <InboxRowDetail trigger={trigger} />
+              ) : trigger.kind === "chat" ? (
+                <ChatRowDetail universeId={universeId} botId={botId} trigger={trigger} manage={manage} />
+              ) : (
+                <WebhookRowDetail trigger={trigger} manage={manage} />
+              )}
+            </div>
           </div>
-          {trigger.lastFilterError && (
-            <p
-              className="mt-1 rounded-md bg-destructive/10 p-2 text-destructive wrap-anywhere"
-              title={trigger.lastFilterErrorAt ? `at ${new Date(trigger.lastFilterErrorAt).toLocaleString()}` : undefined}
-            >
-              filter error: {trigger.lastFilterError}
-            </p>
-          )}
-          {trigger.kind === "schedule" ? (
-            <ScheduleRowDetail spec={trigger.spec as BotScheduleSpec} />
-          ) : trigger.kind === "poll" ? (
-            <PollRowDetail trigger={trigger} />
-          ) : trigger.kind === "bot" ? (
-            <InboxRowDetail trigger={trigger} />
-          ) : trigger.kind === "chat" ? (
-            <ChatRowDetail universeId={universeId} botId={botId} trigger={trigger} manage={manage} />
-          ) : (
-            <WebhookRowDetail trigger={trigger} manage={manage} />
-          )}
-        </div>
-      ))}
+        );
+      })}
+      {manage && headless && (
+        <Button variant="outline" size="sm" className="justify-self-start" onClick={() => setAddOpen(true)}>
+          <Plus data-icon="inline-start" /> Add trigger
+        </Button>
+      )}
       {manage && (
         <AddTriggerDialog
           universeId={universeId}
@@ -332,7 +584,7 @@ export interface InboxFormState extends DeliveryFormState {
 }
 
 /** Lazy: `defaultDeliveryForm` is declared further down the module. */
-function defaultInboxForm(): InboxFormState {
+export function defaultInboxForm(): InboxFormState {
   return { ...defaultDeliveryForm, fromMode: "any", fromBotIds: [] };
 }
 
@@ -352,11 +604,11 @@ export function inboxSelectionSpec(
   return mode === "any" ? {} : { from: botIds };
 }
 
-function inboxPayload(form: InboxFormState) {
+export function inboxPayload(form: InboxFormState) {
   return { spec: inboxSelectionSpec(form.fromMode, form.fromBotIds), ...deliveryPayload(form) };
 }
 
-function inboxFormProblem(form: InboxFormState): string | null {
+export function inboxFormProblem(form: InboxFormState): string | null {
   if (form.fromMode === "selected" && form.fromBotIds.length === 0) {
     return "Choose at least one bot, or allow any bot.";
   }
@@ -374,7 +626,7 @@ export function inboxBotOptionIds(
   ])];
 }
 
-function BotMultiSelect({
+export function BotMultiSelect({
   currentBotId,
   bots,
   value,
@@ -436,7 +688,7 @@ function BotMultiSelect({
   );
 }
 
-function InboxFields({
+export function InboxFields({
   currentBotId,
   bots,
   form,
@@ -567,7 +819,7 @@ function WebhookRowDetail({ trigger, manage }: { trigger: BotTrigger; manage: bo
   );
 }
 
-interface DeliveryFormState {
+export interface DeliveryFormState {
   routePolicy: "bot" | "perKey" | "perEvent";
   routeKey: string;
   filter: string;
@@ -580,7 +832,7 @@ interface DeliveryFormState {
   ttlHours: string;
 }
 
-interface ChatFormState extends DeliveryFormState {
+export interface ChatFormState extends DeliveryFormState {
   channelAccountId: string;
   scope: "any" | "direct" | "group";
   groupActivation: "mention" | "always";
@@ -733,11 +985,11 @@ export function chatSpecPayload(
   };
 }
 
-function chatPayload(form: ChatFormState, existingCode: string | null | undefined) {
+export function chatPayload(form: ChatFormState, existingCode: string | null | undefined) {
   return { spec: chatSpecPayload(form, existingCode), ...deliveryPayload(form) };
 }
 
-function chatFormProblem(form: ChatFormState): string | null {
+export function chatFormProblem(form: ChatFormState): string | null {
   if (!form.channelAccountId.trim()) return "Choose the messaging account this bot answers on.";
   if (splitList(form.prefixesText).some((prefix) => prefix.length > 40)) {
     return "Trigger prefixes are at most 40 characters.";
@@ -754,7 +1006,7 @@ function chatFormProblem(form: ChatFormState): string | null {
   return deliveryFormProblem(form);
 }
 
-function ChatFields({
+export function ChatFields({
   form,
   setForm,
 }: {
@@ -932,7 +1184,7 @@ function ChatFields({
   );
 }
 
-interface WebhookFormState extends DeliveryFormState {
+export interface WebhookFormState extends DeliveryFormState {
   scheme: "token" | "hmac-sha256";
   grantId: string;
   header: string;
@@ -940,7 +1192,7 @@ interface WebhookFormState extends DeliveryFormState {
   preset: boolean;
 }
 
-interface PollFormState extends DeliveryFormState {
+export interface PollFormState extends DeliveryFormState {
   sourceKind: "http" | "exec";
   url: string;
   grantId: string;
@@ -957,7 +1209,7 @@ interface PollFormState extends DeliveryFormState {
   dedupeField: string;
 }
 
-const defaultDeliveryForm: DeliveryFormState = {
+export const defaultDeliveryForm: DeliveryFormState = {
   routePolicy: "bot",
   routeKey: "",
   filter: "",
@@ -971,7 +1223,7 @@ const defaultDeliveryForm: DeliveryFormState = {
 
 /// Chat defaults mirror the server's: a session per conversation kept
 /// forever, batched over a short quiet period, pairing required.
-const defaultChatForm: ChatFormState = {
+export const defaultChatForm: ChatFormState = {
   ...defaultDeliveryForm,
   routePolicy: "perKey",
   debounceSeconds: "0.4",
@@ -1009,7 +1261,7 @@ export function sessionTtlMs(form: Pick<DeliveryFormState, "ttlMode" | "ttlHours
   return Math.round(Number(form.ttlHours) * 3_600_000);
 }
 
-const defaultPollForm: PollFormState = {
+export const defaultPollForm: PollFormState = {
   ...defaultDeliveryForm,
   sourceKind: "http",
   url: "",
@@ -1046,7 +1298,7 @@ function pollFormFromTrigger(trigger: BotTrigger): PollFormState {
   };
 }
 
-function deliveryPayload(form: DeliveryFormState) {
+export function deliveryPayload(form: DeliveryFormState) {
   const debounce = Number(form.debounceSeconds);
   const coalesceOn = form.debounceSeconds.trim() !== "" && debounce > 0;
   return {
@@ -1076,7 +1328,7 @@ function pollArgv(form: PollFormState): string[] {
     .filter((line) => line.length > 0);
 }
 
-function pollPayload(form: PollFormState) {
+export function pollPayload(form: PollFormState) {
   return {
     spec: {
       source:
@@ -1118,7 +1370,7 @@ function pollPayload(form: PollFormState) {
 /// `env` is the bot profile's environment intent when known: a blank
 /// environment is fine when the profile activates an existing one (the poll
 /// runs there), and left to the server otherwise.
-function pollFormProblem(form: PollFormState, env?: BotEnvStatus): string | null {
+export function pollFormProblem(form: PollFormState, env?: BotEnvStatus): string | null {
   if (form.sourceKind === "http") {
     if (!/^https?:\/\//.test(form.url.trim())) return "The poll URL must be http(s).";
   } else {
@@ -1138,7 +1390,7 @@ function pollFormProblem(form: PollFormState, env?: BotEnvStatus): string | null
   return deliveryFormProblem(form);
 }
 
-function deliveryFormProblem(form: DeliveryFormState): string | null {
+export function deliveryFormProblem(form: DeliveryFormState): string | null {
   if (form.debounceSeconds.trim() !== "") {
     const debounce = Number(form.debounceSeconds);
     if (!Number.isFinite(debounce) || debounce < 0.1) {
@@ -1156,7 +1408,7 @@ function deliveryFormProblem(form: DeliveryFormState): string | null {
   return null;
 }
 
-const defaultWebhookForm: WebhookFormState = {
+export const defaultWebhookForm: WebhookFormState = {
   ...defaultDeliveryForm,
   scheme: "token",
   grantId: "",
@@ -1177,7 +1429,7 @@ function webhookFormFromTrigger(trigger: BotTrigger): WebhookFormState {
   };
 }
 
-function webhookPayload(form: WebhookFormState) {
+export function webhookPayload(form: WebhookFormState) {
   return {
     spec: {
       verification:
@@ -1195,14 +1447,14 @@ function webhookPayload(form: WebhookFormState) {
   };
 }
 
-function webhookFormProblem(form: WebhookFormState): string | null {
+export function webhookFormProblem(form: WebhookFormState): string | null {
   if (form.scheme === "hmac-sha256" && !form.grantId.trim()) {
     return "Choose a retrievable credential grant for HMAC verification.";
   }
   return deliveryFormProblem(form);
 }
 
-function WebhookFields({
+export function WebhookFields({
   form,
   setForm,
 }: {
@@ -1278,16 +1530,52 @@ function WebhookFields({
   );
 }
 
-function DeliveryFields<T extends DeliveryFormState>({
+/**
+ * Routing, filtering, coalescing, busy handling, and retention live behind
+ * one disclosure. Closed, it reads as a sentence, so the vocabulary is
+ * learned before the fields are.
+ */
+export function DeliveryFields<T extends DeliveryFormState>({
+  form,
+  setForm,
+  chat = false,
+  defaultOpen = false,
+}: {
+  form: T;
+  setForm: (next: T) => void;
+  /** Chat triggers route per conversation; the main session is not an option. */
+  chat?: boolean;
+  defaultOpen?: boolean;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <Collapsible open={open} onOpenChange={setOpen} className="rounded-md border">
+      <CollapsibleTrigger className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm">
+        <ChevronRight
+          className={cn("size-4 shrink-0 text-muted-foreground transition-transform", open && "rotate-90")}
+        />
+        <span className="shrink-0 font-medium">Advanced</span>
+        {!open && (
+          <span className="min-w-0 truncate text-xs text-muted-foreground">{deliverySentence(form, chat)}</span>
+        )}
+      </CollapsibleTrigger>
+      <CollapsibleContent className="grid gap-4 border-t p-3">
+        <DeliveryFieldsBody form={form} setForm={setForm} chat={chat} />
+      </CollapsibleContent>
+    </Collapsible>
+  );
+}
+
+function DeliveryFieldsBody<T extends DeliveryFormState>({
   form,
   setForm,
   chat = false,
 }: {
   form: T;
   setForm: (next: T) => void;
-  /** Chat triggers route per conversation; the main session is not an option. */
   chat?: boolean;
 }) {
+
   return (
     <>
       <Field>
@@ -1444,7 +1732,7 @@ function DeliveryFields<T extends DeliveryFormState>({
   );
 }
 
-function PollFields({
+export function PollFields({
   form,
   setForm,
 }: {
@@ -1614,6 +1902,147 @@ function PollFields({
   );
 }
 
+export interface TriggerForms {
+  schedule: ScheduleFormState;
+  webhook: WebhookFormState;
+  poll: PollFormState;
+  inbox: InboxFormState;
+  chat: ChatFormState;
+}
+
+export function defaultTriggerForms(): TriggerForms {
+  return {
+    schedule: defaultScheduleForm,
+    webhook: defaultWebhookForm,
+    poll: defaultPollForm,
+    inbox: defaultInboxForm(),
+    chat: defaultChatForm,
+  };
+}
+
+export function triggerFormProblem(kind: TriggerKind, forms: TriggerForms, env?: BotEnvStatus): string | null {
+  switch (kind) {
+    case "schedule":
+      return scheduleFormProblem(forms.schedule);
+    case "webhook":
+      return webhookFormProblem(forms.webhook);
+    case "poll":
+      return pollFormProblem(forms.poll, env);
+    case "bot":
+      return inboxFormProblem(forms.inbox);
+    case "chat":
+      return chatFormProblem(forms.chat);
+  }
+}
+
+/** The create body for one trigger, the shape `POST …/triggers` and the bot create's `triggers` take. */
+export function triggerCreateBody(kind: TriggerKind, name: string, forms: TriggerForms): Record<string, unknown> {
+  switch (kind) {
+    case "schedule":
+      return { name, kind, spec: scheduleSpecPayload(forms.schedule) };
+    case "webhook":
+      return { name, kind, ...webhookPayload(forms.webhook) };
+    case "poll":
+      return { name, kind, ...pollPayload(forms.poll) };
+    case "bot":
+      return { name, kind, ...inboxPayload(forms.inbox) };
+    case "chat":
+      return { name, kind, ...chatPayload(forms.chat, undefined) };
+  }
+}
+
+/** The per-kind essentials; the Advanced disclosure is inside each kind's fields. */
+export function TriggerKindFields({
+  kind,
+  forms,
+  patch,
+  botId,
+  bots,
+}: {
+  kind: TriggerKind;
+  forms: TriggerForms;
+  patch: <K extends keyof TriggerForms>(key: K, next: TriggerForms[K]) => void;
+  botId: string;
+  bots: BotListItem[];
+}) {
+  switch (kind) {
+    case "schedule":
+      return <ScheduleFields form={forms.schedule} setForm={(next) => patch("schedule", next)} />;
+    case "poll":
+      return <PollFields form={forms.poll} setForm={(next) => patch("poll", next)} />;
+    case "bot":
+      return (
+        <InboxFields currentBotId={botId} bots={bots} form={forms.inbox} setForm={(next) => patch("inbox", next)} />
+      );
+    case "chat":
+      return <ChatFields form={forms.chat} setForm={(next) => patch("chat", next)} />;
+    case "webhook":
+      return <WebhookFields form={forms.webhook} setForm={(next) => patch("webhook", next)} />;
+  }
+}
+
+/** The six ways a bot can be woken, as pickable cards. */
+export function TriggerKindPicker({
+  env,
+  onPick,
+  className,
+}: {
+  env: BotEnvStatus;
+  onPick: (kind: TriggerKind, options?: { pollSource: "http" | "exec" }) => void;
+  className?: string;
+}) {
+  return (
+    <div className={cn("grid content-start gap-3 sm:grid-cols-2", className)}>
+      <TriggerKindChoice
+        icon={<CalendarClock className="size-5" />}
+        title="Schedule"
+        description="At fixed times: every morning, weekdays at nine, once next Tuesday."
+        onClick={() => onPick("schedule")}
+      />
+      <TriggerKindChoice
+        icon={<Webhook className="size-5" />}
+        title="Webhook"
+        description="When something happens elsewhere: GitHub, an alerting tool, your own systems."
+        onClick={() => onPick("webhook")}
+      />
+      <TriggerKindChoice
+        icon={<MessageCircle className="size-5" />}
+        title="Chat account"
+        description="Messages from people on Telegram or WhatsApp; each conversation becomes a thread."
+        onClick={() => onPick("chat")}
+      />
+      <TriggerKindChoice
+        icon={<Inbox className="size-5" />}
+        title="Other bots"
+        description="Let bots in this universe message this one (at most one inbox)."
+        onClick={() => onPick("bot")}
+      />
+      <TriggerKindChoice
+        icon={<RefreshCw className="size-5" />}
+        title="Check a URL"
+        description="Fetch an HTTP endpoint on a timer and wake only for new items."
+        onClick={() => onPick("poll", { pollSource: "http" })}
+      />
+      <TriggerKindChoice
+        icon={<Terminal className="size-5" />}
+        title="Run a command"
+        description="Run a command in the bot's environment on a timer; its JSON output is diffed."
+        disabled={env.kind !== "existing"}
+        disabledReason={
+          env.kind === "none"
+            ? "The bot has no environment yet."
+            : env.kind === "provision"
+              ? "The bot gets a fresh environment per session; command polls need a lasting one."
+              : env.kind === "unknown"
+                ? "Checking the bot's environment…"
+                : undefined
+        }
+        onClick={() => onPick("poll", { pollSource: "exec" })}
+      />
+    </div>
+  );
+}
+
 function AddTriggerDialog({
   universeId,
   botId,
@@ -1630,65 +2059,39 @@ function AddTriggerDialog({
   onOpenChange: (open: boolean) => void;
 }) {
   const queryClient = useQueryClient();
-  const [kind, setKind] = useState<"schedule" | "webhook" | "poll" | "bot" | "chat" | null>(null);
+  const [kind, setKind] = useState<TriggerKind | null>(null);
   const [name, setName] = useState("");
-  const [once, setOnce] = useState(false);
-  const [at, setAt] = useState("");
-  const [cron, setCron] = useState("");
-  const [timezone, setTimezone] = useState("UTC");
-  const [summary, setSummary] = useState("");
-  const [webhook, setWebhook] = useState<WebhookFormState>(defaultWebhookForm);
-  const [poll, setPoll] = useState<PollFormState>(defaultPollForm);
-  const [inbox, setInbox] = useState<InboxFormState>(defaultInboxForm);
-  const [chat, setChat] = useState<ChatFormState>(defaultChatForm);
+  const [forms, setForms] = useState<TriggerForms>(defaultTriggerForms);
   const [error, setError] = useState<string | null>(null);
   const nameInvalid = name.trim().length > 0 && !NAME_PATTERN.test(name.trim());
-  const cronIssue = kind === "schedule" && !once ? cronProblem(cron) : null;
-  const webhookIssue = kind === "webhook" ? webhookFormProblem(webhook) : null;
-  const pollIssue = kind === "poll" ? pollFormProblem(poll, env) : null;
-  const inboxIssue = kind === "bot" ? inboxFormProblem(inbox) : null;
-  const chatIssue = kind === "chat" ? chatFormProblem(chat) : null;
-  const formIssue = webhookIssue ?? pollIssue ?? inboxIssue ?? chatIssue;
+  const formIssue = kind === null ? null : triggerFormProblem(kind, forms, env);
+  const patch = <K extends keyof TriggerForms>(key: K, next: TriggerForms[K]) =>
+    setForms((current) => ({ ...current, [key]: next }));
   const reset = () => {
     setKind(null);
     setName("");
-    setOnce(false);
-    setAt("");
-    setCron("");
-    setTimezone("UTC");
-    setSummary("");
-    setWebhook(defaultWebhookForm);
-    setPoll(defaultPollForm);
-    setInbox(defaultInboxForm());
-    setChat(defaultChatForm);
+    setForms(defaultTriggerForms());
     setError(null);
   };
   const changeOpen = (next: boolean) => {
     if (!next) reset();
     onOpenChange(next);
   };
+  const pick = (next: TriggerKind, options?: { pollSource: "http" | "exec" }) => {
+    if (next === "poll") {
+      patch("poll", {
+        ...defaultPollForm,
+        sourceKind: options?.pollSource ?? "http",
+        environmentId: options?.pollSource === "exec" && env.kind === "existing" ? env.environmentId : "",
+      });
+    }
+    if (!name.trim()) setName(defaultTriggerName(next, options?.pollSource));
+    setKind(next);
+  };
   const create = useMutation({
     mutationFn: () => {
       if (!kind) throw new Error("Choose a trigger type.");
-      return api(
-        "POST",
-        `/api/v1/universes/${universeId}/bots/${botId}/triggers`,
-        kind === "schedule"
-          ? {
-              name: name.trim(),
-              kind,
-              spec: once
-                ? { at: new Date(at).toISOString(), timezone: "UTC", summary: summary.trim() }
-                : { cron: cron.trim(), timezone: timezone.trim() || "UTC", summary: summary.trim() },
-            }
-          : kind === "poll"
-            ? { name: name.trim(), kind, ...pollPayload(poll) }
-            : kind === "bot"
-              ? { name: name.trim(), kind, ...inboxPayload(inbox) }
-              : kind === "chat"
-                ? { name: name.trim(), kind, ...chatPayload(chat, undefined) }
-                : { name: name.trim(), kind, ...webhookPayload(webhook) },
-      );
+      return api("POST", `/api/v1/universes/${universeId}/bots/${botId}/triggers`, triggerCreateBody(kind, name.trim(), forms));
     },
     onSuccess: async () => {
       await Promise.all([
@@ -1700,20 +2103,7 @@ function AddTriggerDialog({
     },
     onError: (err) => setError(err.message),
   });
-  const incomplete =
-    kind === null ||
-    !name.trim() ||
-    nameInvalid ||
-    (kind === "schedule"
-      ? (once ? !at || Number.isNaN(new Date(at).getTime()) : !cron.trim() || cronIssue !== null) ||
-        !summary.trim()
-      : kind === "poll"
-        ? pollIssue !== null
-        : kind === "bot"
-          ? inboxIssue !== null
-          : kind === "chat"
-            ? chatIssue !== null
-            : webhookIssue !== null);
+  const incomplete = kind === null || !name.trim() || nameInvalid || formIssue !== null;
 
   return (
     <Dialog open={open} onOpenChange={changeOpen}>
@@ -1725,88 +2115,35 @@ function AddTriggerDialog({
         <DialogHeader className="border-b p-6 pr-14">
           <DialogTitle>
             {kind === "poll"
-              ? poll.sourceKind === "exec"
-                ? "Add command poll"
-                : "Add HTTP/API poll"
+              ? forms.poll.sourceKind === "exec"
+                ? "Run a command"
+                : "Check a URL"
               : kind === "bot"
-                ? "Add inbox"
-                : kind
-                  ? `Add ${kind}`
-                  : "Add trigger"}
+                ? "Other bots"
+                : kind === "chat"
+                  ? "Chat account"
+                  : kind
+                    ? `Add ${kind}`
+                    : "Add trigger"}
           </DialogTitle>
           <DialogDescription>
             {kind === "schedule"
-              ? "Run the bot on a recurring cron or once at a specific time."
+              ? "Wake the bot on a recurring schedule, or once at a specific time."
               : kind === "webhook"
-                ? "Give the bot a protected ingest URL for external events."
+                ? "Give the bot a protected URL that external systems post to."
                 : kind === "poll"
                   ? "Fetch a source on an interval and wake the bot with new items."
                   : kind === "bot"
-                    ? "Let other bots in this universe address this bot with bot_emit."
+                    ? "Let other bots in this universe message this bot."
                     : kind === "chat"
-                      ? "Answer Telegram or WhatsApp conversations on an account, one session per conversation."
-                      : "Choose how this bot should receive events."}
+                      ? "Answer Telegram or WhatsApp conversations on an account, one thread per conversation."
+                      : "How should this bot wake up?"}
           </DialogDescription>
         </DialogHeader>
         {!kind ? (
           <>
-            <div className="grid min-h-0 content-start gap-3 overflow-y-auto p-6 sm:grid-cols-2">
-              <TriggerKindChoice
-                icon={<CalendarClock className="size-5" />}
-                title="Schedule"
-                description="Run on a recurring cron or once at a specific time."
-                onClick={() => setKind("schedule")}
-              />
-              <TriggerKindChoice
-                icon={<Webhook className="size-5" />}
-                title="Webhook"
-                description="Receive token-protected or signed events from external systems."
-                onClick={() => setKind("webhook")}
-              />
-              <TriggerKindChoice
-                icon={<MessageCircle className="size-5" />}
-                title="Chat"
-                description="Connect a Telegram or WhatsApp account; each conversation becomes a session with reply tools."
-                onClick={() => setKind("chat")}
-              />
-              <TriggerKindChoice
-                icon={<Inbox className="size-5" />}
-                title="Inbox"
-                description="Accept events other bots address to this bot (at most one inbox)."
-                onClick={() => setKind("bot")}
-              />
-              <TriggerKindChoice
-                icon={<RefreshCw className="size-5" />}
-                title="HTTP/API poll"
-                description="Check an HTTP endpoint on an interval and deliver only new items."
-                onClick={() => {
-                  setPoll({ ...defaultPollForm, sourceKind: "http" });
-                  setKind("poll");
-                }}
-              />
-              <TriggerKindChoice
-                icon={<Terminal className="size-5" />}
-                title="Command poll"
-                description="Run a command in the bot's environment on an interval; its JSON output is diffed."
-                disabled={env.kind !== "existing"}
-                disabledReason={
-                  env.kind === "none"
-                    ? "The bot's profile has no environment attached."
-                    : env.kind === "provision"
-                      ? "The profile provisions per-session environments; pollers need a stable existing environment."
-                      : env.kind === "unknown"
-                        ? "Checking the profile's environment…"
-                        : undefined
-                }
-                onClick={() => {
-                  setPoll({
-                    ...defaultPollForm,
-                    sourceKind: "exec",
-                    environmentId: env.kind === "existing" ? env.environmentId : "",
-                  });
-                  setKind("poll");
-                }}
-              />
+            <div className="min-h-0 overflow-y-auto p-6">
+              <TriggerKindPicker env={env} onPick={pick} />
             </div>
             <DialogFooter className="border-t p-4">
               <Button type="button" variant="outline" onClick={() => changeOpen(false)}>
@@ -1831,95 +2168,18 @@ function AddTriggerDialog({
                   value={name}
                   onChange={(event) => setName(event.target.value)}
                   aria-invalid={nameInvalid || undefined}
+                  className="font-mono"
                   autoFocus
                 />
+                {nameInvalid ? (
+                  <p className="text-xs text-destructive">
+                    Use lowercase letters, numbers, and dashes, starting with a letter or number.
+                  </p>
+                ) : (
+                  <FieldDescription>How the bot and the API refer to this trigger.</FieldDescription>
+                )}
               </Field>
-              {nameInvalid && (
-                <p className="-mt-2 text-xs text-destructive">
-                  Use lowercase letters, numbers, and dashes, starting with a letter or number.
-                </p>
-              )}
-              {kind === "schedule" ? (
-                <>
-                  <Field>
-                    <FieldLabel>When</FieldLabel>
-                    <Select value={once ? "once" : "cron"} onValueChange={(value) => setOnce(value === "once")}>
-                      <SelectTrigger>
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="cron">On a recurring cron</SelectItem>
-                        <SelectItem value="once">Once, at a specific time</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </Field>
-                  {once ? (
-                    <Field>
-                      <FieldLabel htmlFor="trigger-at">Fire at</FieldLabel>
-                      <Input
-                        id="trigger-at"
-                        type="datetime-local"
-                        value={at}
-                        onChange={(event) => setAt(event.target.value)}
-                      />
-                      <FieldDescription>
-                        Local time; the trigger disables itself after firing once.
-                      </FieldDescription>
-                    </Field>
-                  ) : (
-                    <>
-                      <div className="grid gap-3 sm:grid-cols-[1fr_10rem]">
-                        <Field>
-                          <FieldLabel htmlFor="trigger-cron">Cron</FieldLabel>
-                          <Input
-                            id="trigger-cron"
-                            value={cron}
-                            onChange={(event) => setCron(event.target.value)}
-                            placeholder="0 8 * * 1-5"
-                            className="font-mono"
-                            aria-invalid={cronIssue !== null || undefined}
-                          />
-                        </Field>
-                        <Field>
-                          <FieldLabel htmlFor="trigger-timezone">Timezone</FieldLabel>
-                          <Input
-                            id="trigger-timezone"
-                            value={timezone}
-                            onChange={(event) => setTimezone(event.target.value)}
-                            placeholder="UTC"
-                          />
-                        </Field>
-                      </div>
-                      <CronBuilder value={cron} onChange={setCron} />
-                      {cronIssue ? (
-                        <p className="-mt-2 text-xs text-destructive">{cronIssue}</p>
-                      ) : (
-                        <p className="-mt-2 text-xs text-muted-foreground">
-                          5 fields: minute, hour, day, month, weekday — or a macro like @daily.
-                        </p>
-                      )}
-                    </>
-                  )}
-                  <Field>
-                    <FieldLabel htmlFor="trigger-summary">Task</FieldLabel>
-                    <Textarea
-                      id="trigger-summary"
-                      value={summary}
-                      onChange={(event) => setSummary(event.target.value)}
-                      rows={4}
-                      placeholder="What should the bot do each time this fires?"
-                    />
-                  </Field>
-                </>
-              ) : kind === "poll" ? (
-                <PollFields form={poll} setForm={setPoll} />
-              ) : kind === "bot" ? (
-                <InboxFields currentBotId={botId} bots={bots} form={inbox} setForm={setInbox} />
-              ) : kind === "chat" ? (
-                <ChatFields form={chat} setForm={setChat} />
-              ) : (
-                <WebhookFields form={webhook} setForm={setWebhook} />
-              )}
+              <TriggerKindFields kind={kind} forms={forms} patch={patch} botId={botId} bots={bots} />
             </div>
             <div className="grid gap-2 border-t p-4">
               {formIssue && <p className="text-xs text-destructive">{formIssue}</p>}
@@ -1929,7 +2189,7 @@ function AddTriggerDialog({
                   <ArrowLeft data-icon="inline-start" /> Back
                 </Button>
                 <Button type="submit" disabled={create.isPending || incomplete}>
-                  {create.isPending ? "Adding…" : kind === "bot" ? "Add inbox" : `Add ${kind}`}
+                  {create.isPending ? "Adding…" : "Add trigger"}
                 </Button>
               </DialogFooter>
             </div>
@@ -1940,7 +2200,7 @@ function AddTriggerDialog({
   );
 }
 
-function TriggerKindChoice({
+export function TriggerKindChoice({
   icon,
   title,
   description,
@@ -1992,28 +2252,30 @@ function EditTriggerDialog({
   const queryClient = useQueryClient();
   const scheduleSpec = trigger.kind === "schedule" ? (trigger.spec as BotScheduleSpec) : null;
   const oneShotAt = scheduleSpec?.at ?? null;
-  const [cron, setCron] = useState(scheduleSpec?.cron ?? "");
-  const [timezone, setTimezone] = useState(scheduleSpec?.timezone ?? "UTC");
-  const [summary, setSummary] = useState(scheduleSpec?.summary ?? "");
-  const [webhook, setWebhook] = useState<WebhookFormState>(() =>
-    trigger.kind === "webhook" ? webhookFormFromTrigger(trigger) : defaultWebhookForm,
-  );
-  const [poll, setPoll] = useState<PollFormState>(() =>
-    trigger.kind === "poll" ? pollFormFromTrigger(trigger) : defaultPollForm,
-  );
-  const [inbox, setInbox] = useState<InboxFormState>(() =>
-    trigger.kind === "bot" ? inboxFormFromTrigger(trigger) : defaultInboxForm(),
-  );
-  const [chat, setChat] = useState<ChatFormState>(() =>
-    trigger.kind === "chat" ? chatFormFromTrigger(trigger) : defaultChatForm,
-  );
+  const [forms, setForms] = useState<TriggerForms>(() => ({
+    schedule: scheduleSpec
+      ? {
+          once: Boolean(scheduleSpec.at),
+          at: scheduleSpec.at ?? "",
+          cron: scheduleSpec.cron ?? "",
+          timezone: scheduleSpec.timezone,
+          summary: scheduleSpec.summary,
+        }
+      : defaultScheduleForm,
+    webhook: trigger.kind === "webhook" ? webhookFormFromTrigger(trigger) : defaultWebhookForm,
+    poll: trigger.kind === "poll" ? pollFormFromTrigger(trigger) : defaultPollForm,
+    inbox: trigger.kind === "bot" ? inboxFormFromTrigger(trigger) : defaultInboxForm(),
+    chat: trigger.kind === "chat" ? chatFormFromTrigger(trigger) : defaultChatForm,
+  }));
   const [error, setError] = useState<string | null>(null);
-  const cronIssue = trigger.kind === "schedule" && !oneShotAt ? cronProblem(cron) : null;
-  const webhookIssue = trigger.kind === "webhook" ? webhookFormProblem(webhook) : null;
-  const pollIssue = trigger.kind === "poll" ? pollFormProblem(poll) : null;
-  const inboxIssue = trigger.kind === "bot" ? inboxFormProblem(inbox) : null;
-  const chatIssue = trigger.kind === "chat" ? chatFormProblem(chat) : null;
-  const formIssue = webhookIssue ?? pollIssue ?? inboxIssue ?? chatIssue;
+  const patch = <K extends keyof TriggerForms>(key: K, next: TriggerForms[K]) =>
+    setForms((current) => ({ ...current, [key]: next }));
+  const formIssue =
+    trigger.kind === "schedule" && oneShotAt
+      ? forms.schedule.summary.trim()
+        ? null
+        : "Say what the bot should do when this fires."
+      : triggerFormProblem(trigger.kind, forms);
   const save = useMutation({
     mutationFn: () =>
       api(
@@ -2022,16 +2284,16 @@ function EditTriggerDialog({
         trigger.kind === "schedule"
           ? {
               spec: oneShotAt
-                ? { at: oneShotAt, timezone: "UTC", summary: summary.trim() }
-                : { cron: cron.trim(), timezone: timezone.trim() || "UTC", summary: summary.trim() },
+                ? { at: oneShotAt, timezone: "UTC", summary: forms.schedule.summary.trim() }
+                : scheduleSpecPayload({ ...forms.schedule, once: false }),
             }
           : trigger.kind === "poll"
-            ? pollPayload(poll)
+            ? pollPayload(forms.poll)
             : trigger.kind === "bot"
-              ? inboxPayload(inbox)
+              ? inboxPayload(forms.inbox)
               : trigger.kind === "chat"
-                ? chatPayload(chat, (trigger.spec as BotChatSpec).pairingCode)
-                : webhookPayload(webhook),
+                ? chatPayload(forms.chat, (trigger.spec as BotChatSpec).pairingCode)
+                : webhookPayload(forms.webhook),
       ),
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ["bot-triggers", universeId, botId] });
@@ -2040,32 +2302,22 @@ function EditTriggerDialog({
     },
     onError: (err) => setError(err.message),
   });
-  const incomplete =
-    trigger.kind === "schedule"
-      ? (!oneShotAt && (!cron.trim() || cronIssue !== null)) || !summary.trim()
-      : trigger.kind === "poll"
-        ? pollIssue !== null
-        : trigger.kind === "bot"
-          ? inboxIssue !== null
-          : trigger.kind === "chat"
-            ? chatIssue !== null
-            : webhookIssue !== null;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="h-[min(92dvh,900px)] grid-rows-[auto_minmax(0,1fr)_auto] gap-0 p-0 sm:max-w-xl">
         <DialogHeader className="border-b p-6 pr-14">
-          <DialogTitle>Edit {trigger.kind === "bot" ? "inbox" : trigger.kind}</DialogTitle>
+          <DialogTitle>Edit {trigger.name}</DialogTitle>
           <DialogDescription>
             {trigger.kind === "schedule"
-              ? "Changes reconcile to the Temporal Schedule immediately; the next fire uses them."
+              ? "Changes apply to the next fire."
               : trigger.kind === "poll"
-                ? "Spec changes reset the cursor: the next fire re-baselines against the source."
+                ? "Source changes reset the cursor: the next check re-baselines against the source."
                 : trigger.kind === "bot"
-                  ? "Sender and routing changes apply to the next event another bot addresses here."
+                  ? "Sender and routing changes apply to the next message another bot sends here."
                   : trigger.kind === "chat"
-                    ? "Account, activation, and access changes apply to the next message; paired conversations keep their sessions."
-                    : "The ingest URL keeps its token; verification and routing changes apply to the next delivery."}
+                    ? "Account, activation, and access changes apply to the next message; paired conversations keep their threads."
+                    : "The URL keeps its token; verification and routing changes apply to the next delivery."}
           </DialogDescription>
         </DialogHeader>
         <form
@@ -2078,59 +2330,14 @@ function EditTriggerDialog({
         >
           <div className="grid min-h-0 content-start gap-4 overflow-y-auto p-6">
             {trigger.kind === "schedule" ? (
-              <>
-                {oneShotAt && (
-                  <p className="text-xs text-muted-foreground">
-                    One-shot trigger at {new Date(oneShotAt).toLocaleString()}; only the task text is editable.
-                  </p>
-                )}
-                <div className={oneShotAt ? "hidden" : "grid gap-3 sm:grid-cols-[1fr_10rem]"}>
-                  <Field>
-                    <FieldLabel htmlFor="edit-trigger-cron">Cron</FieldLabel>
-                    <Input
-                      id="edit-trigger-cron"
-                      value={cron}
-                      onChange={(event) => setCron(event.target.value)}
-                      className="font-mono"
-                      aria-invalid={cronIssue !== null || undefined}
-                      autoFocus
-                    />
-                  </Field>
-                  <Field>
-                    <FieldLabel htmlFor="edit-trigger-timezone">Timezone</FieldLabel>
-                    <Input
-                      id="edit-trigger-timezone"
-                      value={timezone}
-                      onChange={(event) => setTimezone(event.target.value)}
-                    />
-                  </Field>
-                </div>
-                {!oneShotAt && <CronBuilder value={cron} onChange={setCron} />}
-                {cronIssue ? (
-                  <p className="-mt-2 text-xs text-destructive">{cronIssue}</p>
-                ) : (
-                  <p className="-mt-2 text-xs text-muted-foreground">
-                    5 fields: minute, hour, day, month, weekday — or a macro like @daily.
-                  </p>
-                )}
-                <Field>
-                  <FieldLabel htmlFor="edit-trigger-summary">Task</FieldLabel>
-                  <Textarea
-                    id="edit-trigger-summary"
-                    value={summary}
-                    onChange={(event) => setSummary(event.target.value)}
-                    rows={4}
-                  />
-                </Field>
-              </>
-            ) : trigger.kind === "poll" ? (
-              <PollFields form={poll} setForm={setPoll} />
-            ) : trigger.kind === "bot" ? (
-              <InboxFields currentBotId={botId} bots={bots} form={inbox} setForm={setInbox} />
-            ) : trigger.kind === "chat" ? (
-              <ChatFields form={chat} setForm={setChat} />
+              <ScheduleFields
+                form={forms.schedule}
+                setForm={(next) => patch("schedule", next)}
+                lockedAt={oneShotAt}
+                idPrefix="edit-trigger"
+              />
             ) : (
-              <WebhookFields form={webhook} setForm={setWebhook} />
+              <TriggerKindFields kind={trigger.kind} forms={forms} patch={patch} botId={botId} bots={bots} />
             )}
           </div>
           <div className="grid gap-2 border-t p-4">
@@ -2140,7 +2347,7 @@ function EditTriggerDialog({
               <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
                 Cancel
               </Button>
-              <Button type="submit" disabled={save.isPending || incomplete}>
+              <Button type="submit" disabled={save.isPending || formIssue !== null}>
                 {save.isPending ? "Saving…" : "Save"}
               </Button>
             </DialogFooter>

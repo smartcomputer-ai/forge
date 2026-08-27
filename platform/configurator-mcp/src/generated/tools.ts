@@ -7812,6 +7812,27 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
     }
   },
   {
+    "name": "lightspeed_mcp_servers_auth_discover",
+    "method": "mcp/servers/auth/discover",
+    "summary": "Discover MCP server authentication",
+    "description": "Looks for standards-based OAuth protected-resource metadata without creating a server, OAuth client, flow, or grant. An absent OAuth result is inconclusive and callers must allow manual auth selection.",
+    "paramsType": "McpServerAuthDiscoverParams",
+    "resultType": "AgentApiOutcome<McpServerAuthDiscoverResponse>",
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "description": "Read-only authentication discovery for a prospective MCP endpoint. A\nmissing OAuth result is deliberately inconclusive: the server may be\npublic, use bearer auth, or expose OAuth metadata only through an explicit\nURL. No catalog or auth records are created by this probe.",
+      "properties": {
+        "serverUrl": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "serverUrl"
+      ],
+      "type": "object"
+    }
+  },
+  {
     "name": "lightspeed_mcp_servers_read",
     "method": "mcp/servers/read",
     "summary": "Read an MCP server record",

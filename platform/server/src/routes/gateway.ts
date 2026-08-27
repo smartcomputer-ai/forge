@@ -4,6 +4,7 @@ import {
   LightspeedClient,
   LightspeedRpcError,
   type AgentProfileInput,
+  type AuthFlowStatusResponse,
   type AuthGrantImportParams,
   type AuthGitHubInstallationGrantParams,
   type AuthGitHubInstallationListParams,
@@ -13,6 +14,8 @@ import {
   type EnvironmentExternalCreateParams,
   type EnvironmentListParams,
   type McpServerInput,
+  type McpServerAuthDiscoverParams,
+  type McpServerView,
   type ModelListParams,
   type ProfileSource,
   type SessionConfig,
@@ -266,6 +269,19 @@ const mcpServerDocumentSchema = z
     updatedAtMs: z.number().optional(),
   })
   .catchall(z.unknown());
+
+const mcpOAuthFlowStartSchema = z.object({
+  scopes: z.array(z.string().trim().min(1)).optional(),
+  audience: z.string().trim().min(1).optional(),
+});
+
+const mcpServerAuthDiscoverSchema = z.object({
+  serverUrl: z.string().trim().url(),
+});
+
+const mcpOAuthFlowCompleteSchema = z.object({
+  expectedRevision: z.number().int().min(0),
+});
 
 type UniverseRow = typeof schema.universes.$inferSelect;
 
@@ -711,6 +727,26 @@ export function gatewayRoutes(ctx: AppContext) {
       const client = engineClientFor(ctx, access.universe);
       const response = await client.call("mcp/servers/list", {});
       return c.json(response.result.servers ?? []);
+    });
+  });
+
+  /// Advisory auth discovery for the add-server flow. An empty OAuth result
+  /// does not classify the server as public; it only means the standard
+  /// protected-resource document was not found and the user must choose.
+  app.post("/:id/mcp-servers/discover-auth", async (c) => {
+    const access = await universeForSession(ctx, c, c.req.param("id"), true);
+    if (!access) {
+      return c.json({ error: "not found" }, 404);
+    }
+    const body = await parseBody(c, mcpServerAuthDiscoverSchema);
+    if (!body.ok) {
+      return body.response;
+    }
+    return withGateway(c, async () => {
+      const client = engineClientFor(ctx, access.universe);
+      const params: McpServerAuthDiscoverParams = body.data;
+      const response = await client.call("mcp/servers/auth/discover", params);
+      return c.json(response.result);
     });
   });
 
@@ -1176,6 +1212,100 @@ export function gatewayRoutes(ctx: AppContext) {
     });
   });
 
+  /// Start the engine-owned MCP OAuth flow. `mcp:<serverId>` is a virtual
+  /// client id: the engine discovers protected-resource and authorization
+  /// server metadata, then reuses CIMD/dynamic client registration as
+  /// appropriate before creating the PKCE flow.
+  app.post("/:id/mcp-servers/:serverId/oauth/start", async (c) => {
+    const access = await universeForSession(ctx, c, c.req.param("id"), true);
+    if (!access) {
+      return c.json({ error: "not found" }, 404);
+    }
+    const body = await parseBody(c, mcpOAuthFlowStartSchema);
+    if (!body.ok) {
+      return body.response;
+    }
+    return withGateway(c, async () => {
+      const client = engineClientFor(ctx, access.universe);
+      const server = await client.call("mcp/servers/read", {
+        serverId: c.req.param("serverId"),
+      });
+      const response = await client.call("auth/flows/start", {
+        clientId: `mcp:${c.req.param("serverId")}`,
+        exposure: "brokered",
+        scopes: body.data.scopes,
+        audience: body.data.audience,
+      });
+      return c.json({
+        ...response.result,
+        serverRevision: server.result.server.revision,
+      }, 201);
+    });
+  });
+
+  app.get("/:id/mcp-servers/:serverId/oauth/flows/:flowId", async (c) => {
+    const access = await universeForSession(ctx, c, c.req.param("id"), true);
+    if (!access) {
+      return c.json({ error: "not found" }, 404);
+    }
+    return withGateway(c, async () => {
+      const client = engineClientFor(ctx, access.universe);
+      const response = await client.call("auth/flows/read", {
+        flowId: c.req.param("flowId"),
+      });
+      return c.json(response.result.flow);
+    });
+  });
+
+  /// Bind the grant minted by a completed flow with the revision captured
+  /// when login started. A concurrent catalog or credential edit returns a
+  /// conflict instead of being overwritten after the user comes back.
+  app.post("/:id/mcp-servers/:serverId/oauth/flows/:flowId/complete", async (c) => {
+    const access = await universeForSession(ctx, c, c.req.param("id"), true);
+    if (!access) {
+      return c.json({ error: "not found" }, 404);
+    }
+    const body = await parseBody(c, mcpOAuthFlowCompleteSchema);
+    if (!body.ok) {
+      return body.response;
+    }
+    return withGateway(c, async () => {
+      const client = engineClientFor(ctx, access.universe);
+      const flowResponse = await client.call("auth/flows/read", {
+        flowId: c.req.param("flowId"),
+      });
+      const flow = flowResponse.result.flow;
+      const flowError = mcpOAuthFlowCompletionError(flowResponse.result);
+      if (flowError) {
+        return c.json({ error: flowError }, 409);
+      }
+      const grantId = flow.grantId!;
+      const serverResponse = await client.call("mcp/servers/read", {
+        serverId: c.req.param("serverId"),
+      });
+      const current = serverResponse.result.server;
+      if (
+        current.authPolicy.type !== "optionalOAuth" &&
+        current.authPolicy.type !== "requiredOAuth"
+      ) {
+        return c.json({ error: "MCP server does not use OAuth" }, 409);
+      }
+      if (current.credential?.grantId === grantId) {
+        return c.json(current);
+      }
+      if (current.revision !== body.data.expectedRevision) {
+        return c.json({
+          error: "MCP server changed while OAuth authorization was in progress; retry the login against the latest server configuration",
+        }, 409);
+      }
+      const response = await client.call("mcp/servers/put", {
+        server: mcpServerInputWithOAuthGrant(current, grantId),
+        expectedRevision: body.data.expectedRevision,
+      });
+      return c.json(response.result.server);
+    });
+  });
+
   /// Universe-scoped admission bindings. Physical provider registration is
   /// deployment/operator state and is never exposed through this member API.
   app.get("/:id/environment-provider-bindings", async (c) => {
@@ -1616,6 +1746,43 @@ export function gitHubAppProviderId(appId: string): string {
 
 export function modelProviderCredentialId(providerId: string): string {
   return providerId.startsWith("model:") ? providerId : `model:${providerId}`;
+}
+
+export function mcpOAuthFlowCompletionError(
+  response: AuthFlowStatusResponse,
+): string | null {
+  switch (response.flow.status) {
+    case "completed":
+      return response.flow.grantId ? null : "completed OAuth flow returned no access grant";
+    case "pending":
+      return "OAuth authorization is still pending";
+    case "failed":
+      return response.flow.error
+        ? `OAuth authorization failed: ${response.flow.error}`
+        : "OAuth authorization failed";
+    case "expired":
+      return "OAuth authorization expired; start a new login";
+  }
+}
+
+export function mcpServerInputWithOAuthGrant(
+  server: McpServerView,
+  grantId: string,
+): McpServerInput {
+  return {
+    serverId: server.serverId,
+    displayName: server.displayName,
+    serverUrl: server.serverUrl,
+    transport: server.transport,
+    defaultServerLabel: server.defaultServerLabel,
+    description: server.description,
+    allowedTools: server.allowedTools,
+    approvalDefault: server.approvalDefault,
+    deferLoadingDefault: server.deferLoadingDefault,
+    authPolicy: server.authPolicy,
+    credential: { type: "authGrant", grantId },
+    status: server.status === "needsAuthConfig" ? "active" : server.status,
+  };
 }
 
 export function credentialIdConflictMessage(grantId: string, status?: string): string {

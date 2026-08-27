@@ -332,6 +332,32 @@ export interface McpServer {
   updatedAtMs: number;
 }
 
+export interface McpOAuthFlowStart {
+  flowId: string;
+  authorizeUrl: string;
+  expiresAtMs: number;
+  serverRevision: number;
+}
+
+export interface McpOAuthFlow {
+  flowId: string;
+  clientId: string;
+  providerId: string;
+  status: "pending" | "completed" | "failed" | "expired";
+  grantId?: string | null;
+  error?: string | null;
+  expiresAtMs: number;
+  createdAtMs: number;
+  updatedAtMs: number;
+}
+
+export interface McpServerAuthDiscovery {
+  oauth?: {
+    resource: string;
+    authorizationServers: string[];
+  } | null;
+}
+
 /// Exact projections of the generated Lightspeed environment contract.
 export type Environment = EnvironmentView;
 export type EnvironmentProviderBinding = EnvironmentProviderBindingView;
@@ -571,6 +597,21 @@ export interface Bot {
 
 export interface BotListItem extends Bot {
   triggerCount: number;
+  /** Events admitted but not yet resolved: queued, buffered, or a run in flight. */
+  pendingCount: number;
+  /** The newest event, for the roster's one line of "what it is doing". */
+  lastEvent: BotLastEvent | null;
+}
+
+export interface BotLastEvent {
+  seq: number | null;
+  kind: string;
+  source: string;
+  outcome: BotEventOutcome | null;
+  outcomeDetail: string | null;
+  receivedAt: string;
+  resolvedAt: string | null;
+  session: { sessionId: string; label: string } | null;
 }
 
 export function botLabel(bot: Pick<Bot, "botId" | "displayName">): string {

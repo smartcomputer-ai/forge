@@ -8,6 +8,7 @@ import { AdminUniversesPage } from "@/pages/AdminUniversesPage";
 import { AdminUsersPage } from "@/pages/AdminUsersPage";
 import { AdminChannelsPage } from "@/pages/AdminChannelsPage";
 import { AdminEnvironmentProvidersPage } from "@/pages/AdminEnvironmentProvidersPage";
+import { BotCreatePage } from "@/pages/BotCreatePage";
 import { BotsPage } from "@/pages/BotsPage";
 import { EnvironmentsPage } from "@/pages/EnvironmentsPage";
 import { GeneralSettingsPage } from "@/pages/GeneralSettingsPage";
@@ -96,7 +97,17 @@ export function App() {
           element={<WorkspacesPage admin={admin} />}
         />
         <Route path="u/:slug/bots" element={<BotsPage admin={admin} />} />
-        <Route path="u/:slug/bots/:botId" element={<BotsPage admin={admin} />} />
+        <Route path="u/:slug/bots/new" element={<BotCreatePage admin={admin} />} />
+        <Route path="u/:slug/bots/:botId" element={<BotsPage admin={admin} view="chat" />} />
+        <Route
+          path="u/:slug/bots/:botId/chat/:sessionId"
+          element={<BotsPage admin={admin} view="chat" />}
+        />
+        <Route
+          path="u/:slug/bots/:botId/activity"
+          element={<BotsPage admin={admin} view="activity" />}
+        />
+        <Route path="u/:slug/bots/:botId/setup" element={<BotsPage admin={admin} view="setup" />} />
         <Route path="u/:slug/profiles" element={<ProfilesPage admin={admin} />} />
         <Route
           path="u/:slug/environments"

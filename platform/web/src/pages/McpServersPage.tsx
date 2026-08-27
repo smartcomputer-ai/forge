@@ -1,8 +1,25 @@
-import { useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { slugify } from "@lightspeed/platform-shared";
-import { Pencil, Plus, Trash2 } from "lucide-react";
-import { api, type AuthGrantOption, type McpServer } from "@/api";
+import {
+  CheckCircle2,
+  ChevronDown,
+  ExternalLink,
+  Loader2,
+  LogIn,
+  Pencil,
+  Plus,
+  RotateCcw,
+  Trash2,
+} from "lucide-react";
+import {
+  api,
+  type AuthGrantOption,
+  type McpOAuthFlow,
+  type McpOAuthFlowStart,
+  type McpServer,
+  type McpServerAuthDiscovery,
+} from "@/api";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -16,6 +33,11 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible";
 import {
   Dialog,
   DialogContent,
@@ -66,9 +88,6 @@ export function McpServersPage({ admin }: { admin: boolean }) {
 
 const TRANSPORTS = ["auto", "streamableHttp", "sse"] as const;
 const APPROVALS = ["providerDefault", "always", "never"] as const;
-/// The form covers none/bearer; OAuth policies tie into the engine's auth
-/// broker and are managed via the lightspeed CLI for now.
-const FORM_AUTH_POLICIES = ["none", "optionalBearer", "requiredBearer"] as const;
 
 function ServerList({ universeId }: { universeId: string }) {
   const queryClient = useQueryClient();
@@ -86,6 +105,7 @@ function ServerList({ universeId }: { universeId: string }) {
 
   const [createOpen, setCreateOpen] = useState(false);
   const [editing, setEditing] = useState<McpServer | null>(null);
+  const [oauthServer, setOAuthServer] = useState<McpServer | null>(null);
 
   const remove = useMutation({
     mutationFn: (serverId: string) =>
@@ -101,7 +121,7 @@ function ServerList({ universeId }: { universeId: string }) {
     <>
       <PageHeader
         title="MCP servers"
-        description="Remote tool servers sessions can link — profiles reference them by id."
+        description="Connect remote tools once, then make them available to profiles and sessions."
         actions={
           <Button onClick={() => setCreateOpen(true)}>
             <Plus data-icon="inline-start" />
@@ -131,7 +151,6 @@ function ServerList({ universeId }: { universeId: string }) {
                 <TableHead>Server</TableHead>
                 <TableHead>URL</TableHead>
                 <TableHead>Authentication</TableHead>
-                <TableHead>Approval</TableHead>
                 <TableHead>Status</TableHead>
                 <TableHead className="w-0" />
               </TableRow>
@@ -153,17 +172,25 @@ function ServerList({ universeId }: { universeId: string }) {
                     <div className="grid gap-0.5">
                       <span className="text-xs">{authPolicyLabel(server.authPolicy.type)}</span>
                       {server.credential && (
-                        <IdText className="text-muted-foreground">{server.credential.grantId}</IdText>
+                        <span className="text-xs text-muted-foreground">Connected</span>
                       )}
                     </div>
-                  </TableCell>
-                  <TableCell className="text-muted-foreground">
-                    {server.approvalDefault}
                   </TableCell>
                   <TableCell>
                     <StatusBadge status={server.status} />
                   </TableCell>
                   <TableActionsCell>
+                    {isOAuthPolicy(server.authPolicy.type) && (
+                      <Button
+                        variant="ghost"
+                        size="icon-sm"
+                        aria-label={`${server.credential ? "Reconnect" : "Connect"} ${server.serverId} with OAuth`}
+                        title={server.credential ? "Reconnect OAuth" : "Connect OAuth"}
+                        onClick={() => setOAuthServer(server)}
+                      >
+                        <LogIn />
+                      </Button>
+                    )}
                     <Button
                       variant="ghost"
                       size="icon-sm"
@@ -216,19 +243,24 @@ function ServerList({ universeId }: { universeId: string }) {
       )}
       <p className="mt-4 text-sm text-muted-foreground">
         Authentication is configured once on the universe server. Sessions and profiles only
-        select its id. OAuth login remains available through{" "}
-        <code className="font-mono text-xs">lightspeed mcp server login &lt;server-id&gt;</code>.
+        select its id. OAuth servers discover their authorization metadata and store a brokered
+        universe credential after you approve access.
       </p>
       <ServerDialog
+        key={createOpen ? "create-open" : "create-closed"}
         universeId={universeId}
         open={createOpen}
         server={null}
         authGrants={authGrants.data ?? []}
         authGrantsLoading={authGrants.isLoading}
         onOpenChange={setCreateOpen}
-        onDone={invalidate}
+        onDone={(server, connectOAuth) => {
+          invalidate();
+          if (connectOAuth) setOAuthServer(server);
+        }}
       />
       <ServerDialog
+        key={`edit-${editing?.serverId ?? "closed"}`}
         universeId={universeId}
         open={editing !== null}
         server={editing}
@@ -239,7 +271,22 @@ function ServerList({ universeId }: { universeId: string }) {
             setEditing(null);
           }
         }}
-        onDone={invalidate}
+        onDone={(server, connectOAuth) => {
+          invalidate();
+          if (connectOAuth) setOAuthServer(server);
+        }}
+      />
+      <OAuthDialog
+        key={oauthServer?.serverId ?? "closed"}
+        universeId={universeId}
+        server={oauthServer}
+        onOpenChange={(open) => {
+          if (!open) setOAuthServer(null);
+        }}
+        onDone={() => {
+          invalidate();
+          queryClient.invalidateQueries({ queryKey: ["auth-grants", universeId] });
+        }}
       />
     </>
   );
@@ -282,6 +329,8 @@ function StatusBadge({ status }: { status: McpServer["status"] }) {
 
 /// One dialog for both modes: `server === null` creates; otherwise edits by
 /// replacing the loaded document with its revision as the CAS guard.
+type McpAuthKind = "none" | "bearer" | "oauth";
+
 function ServerDialog({
   universeId,
   open,
@@ -297,69 +346,106 @@ function ServerDialog({
   authGrants: AuthGrantOption[];
   authGrantsLoading: boolean;
   onOpenChange: (open: boolean) => void;
-  onDone: () => void;
+  onDone: (server: McpServer, connectOAuth: boolean) => void;
 }) {
   const editing = server !== null;
-  const [displayName, setDisplayName] = useState("");
-  const [serverId, setServerId] = useState("");
+  const [step, setStep] = useState<1 | 2>(editing ? 2 : 1);
+  const [advancedOpen, setAdvancedOpen] = useState(false);
+  const [displayName, setDisplayName] = useState(server?.displayName ?? "");
+  const [serverId, setServerId] = useState(server?.serverId ?? "");
   const [idTouched, setIdTouched] = useState(false);
-  const [serverUrl, setServerUrl] = useState("");
-  const [transport, setTransport] = useState<string>("auto");
-  const [approval, setApproval] = useState<string>("providerDefault");
-  const [allowedTools, setAllowedTools] = useState("");
-  const [description, setDescription] = useState("");
-  const [authPolicy, setAuthPolicy] = useState<string>("none");
-  const [credentialGrantId, setCredentialGrantId] = useState("");
-  const [status, setStatus] = useState<McpServer["status"]>("active");
-  const [error, setError] = useState<string | null>(null);
-  const [seeded, setSeeded] = useState<string | null>(null);
-
-  // Seed the form when the edit dialog opens for a server (keyed by id so
-  // switching rows re-seeds).
-  const seedKey = server ? server.serverId : null;
-  if (seedKey !== seeded) {
-    setSeeded(seedKey);
-    setDisplayName(server?.displayName ?? "");
-    setServerId(server?.serverId ?? "");
-    setIdTouched(false);
-    setServerUrl(server?.serverUrl ?? "");
-    setTransport(server?.transport ?? "auto");
-    setApproval(server?.approvalDefault ?? "providerDefault");
-    setAllowedTools((server?.allowedTools ?? []).join(", "));
-    setDescription(server?.description ?? "");
-    setAuthPolicy(server?.authPolicy.type ?? "none");
-    setCredentialGrantId(server?.credential?.grantId ?? "");
-    setStatus(server?.status ?? "active");
-    setError(null);
-  }
-
-  const oauthManaged = editing && !FORM_AUTH_POLICIES.includes(
-    server.authPolicy.type as (typeof FORM_AUTH_POLICIES)[number],
+  const [serverUrl, setServerUrl] = useState(server?.serverUrl ?? "");
+  const [transport, setTransport] = useState<string>(server?.transport ?? "auto");
+  const [approval, setApproval] = useState<string>(
+    server?.approvalDefault ?? "providerDefault",
   );
-  const effectiveAuthPolicy = oauthManaged ? server.authPolicy.type : authPolicy;
+  const [allowedTools, setAllowedTools] = useState(
+    (server?.allowedTools ?? []).join(", "),
+  );
+  const [description, setDescription] = useState(server?.description ?? "");
+  const [authPolicy, setAuthPolicy] = useState<string>(server?.authPolicy.type ?? "none");
+  const [authTouched, setAuthTouched] = useState(Boolean(server));
+  const [oauthResource, setOAuthResource] = useState(
+    oauthPolicyString(server?.authPolicy, "resource"),
+  );
+  const [oauthScopes, setOAuthScopes] = useState(
+    oauthPolicyScopes(server?.authPolicy).join(", "),
+  );
+  const [oauthMetadataUrl, setOAuthMetadataUrl] = useState(
+    oauthPolicyString(server?.authPolicy, "protectedResourceMetadataUrl"),
+  );
+  const [oauthAuthorizationServer, setOAuthAuthorizationServer] = useState(
+    oauthPolicyString(server?.authPolicy, "authorizationServer"),
+  );
+  const [credentialGrantId, setCredentialGrantId] = useState(
+    server?.credential?.grantId ?? "",
+  );
+  const [status, setStatus] = useState<McpServer["status"]>(server?.status ?? "active");
+  const [discovery, setDiscovery] = useState<McpServerAuthDiscovery | null>(null);
+  const [lastProbedUrl, setLastProbedUrl] = useState("");
+  const [error, setError] = useState<string | null>(null);
+
+  const authKind = mcpAuthKind(authPolicy);
   const compatibleGrants = authGrants
-    .filter((grant) => mcpGrantCompatible(effectiveAuthPolicy, grant.providerKind))
+    .filter((grant) => mcpGrantCompatible(authPolicy, grant.providerKind))
     .slice()
     .sort((left, right) => authGrantLabel(left).localeCompare(authGrantLabel(right)));
   const boundGrantAvailable = compatibleGrants.some(
     (grant) => grant.grantId === credentialGrantId,
   );
-
   const parsedTools = allowedTools
     .split(",")
     .map((tool) => tool.trim())
     .filter(Boolean);
 
+  const probe = useMutation({
+    mutationFn: (url: string) => api<McpServerAuthDiscovery>(
+      "POST",
+      `/api/v1/universes/${universeId}/mcp-servers/discover-auth`,
+      { serverUrl: url },
+    ),
+    onSuccess: (result, url) => {
+      setDiscovery(result);
+      setLastProbedUrl(url);
+      if (result.oauth && !authTouched) {
+        setAuthPolicy("requiredOAuth");
+        setOAuthResource(result.oauth.resource);
+      }
+    },
+    onError: (_probeError, url) => {
+      setDiscovery(null);
+      setLastProbedUrl(url);
+    },
+  });
+
+  const discoverAuth = async () => {
+    const url = serverUrl.trim();
+    if (editing || !isValidMcpUrl(url) || url === lastProbedUrl || probe.isPending) return;
+    try {
+      await probe.mutateAsync(url);
+    } catch {
+      // Detection is advisory. Step two always keeps the manual choices.
+    }
+  };
+
   const save = useMutation({
     mutationFn: () => {
-      const credential = effectiveAuthPolicy === "none" || !credentialGrantId
+      const credential = authPolicy === "none" || !credentialGrantId
         ? null
         : { type: "authGrant" as const, grantId: credentialGrantId };
       const nextStatus = mcpServerStatusForCredential(
-        effectiveAuthPolicy,
+        authPolicy,
         editing ? status : "active",
         credentialGrantId,
       );
+      const policy = mcpAuthPolicyInput({
+        type: authPolicy,
+        serverUrl,
+        resource: oauthResource,
+        scopes: oauthScopes,
+        metadataUrl: oauthMetadataUrl,
+        authorizationServer: oauthAuthorizationServer,
+      });
       if (!editing) {
         return api<McpServer>("POST", `/api/v1/universes/${universeId}/mcp-servers`, {
           serverId,
@@ -367,10 +453,10 @@ function ServerDialog({
           defaultServerLabel: serverId,
           transport,
           approvalDefault: approval,
-          authPolicy: { type: authPolicy },
+          authPolicy: policy,
           credential,
           status: nextStatus,
-          ...(displayName.trim() ? { displayName: displayName.trim() } : {}),
+          displayName: displayName.trim(),
           ...(description.trim() ? { description: description.trim() } : {}),
           ...(parsedTools.length > 0 ? { allowedTools: parsedTools } : {}),
         });
@@ -385,7 +471,7 @@ function ServerDialog({
           revision: server.revision,
           transport,
           approvalDefault: approval,
-          authPolicy: oauthManaged ? server.authPolicy : { type: authPolicy },
+          authPolicy: policy,
           credential,
           status: nextStatus,
           displayName: displayName.trim() || null,
@@ -395,32 +481,40 @@ function ServerDialog({
         },
       );
     },
-    onSuccess: () => {
+    onSuccess: (savedServer) => {
+      const connectOAuth = isOAuthPolicy(savedServer.authPolicy.type) &&
+        !savedServer.credential;
       onOpenChange(false);
-      setSeeded(null);
-      setDisplayName("");
-      setServerId("");
-      setIdTouched(false);
-      setServerUrl("");
-      setAllowedTools("");
-      setDescription("");
-      setCredentialGrantId("");
-      setError(null);
-      onDone();
+      onDone(savedServer, connectOAuth);
     },
-    onError: (err) => setError(err.message),
+    onError: (saveError) => setError(saveError.message),
   });
+
+  const continueToConnection = async () => {
+    if (!displayName.trim()) {
+      setError("Give this server a name.");
+      return;
+    }
+    if (!serverId.trim()) {
+      setError("The server needs an ID.");
+      return;
+    }
+    if (!isValidMcpUrl(serverUrl.trim())) {
+      setError("Enter a valid http:// or https:// MCP server URL.");
+      return;
+    }
+    setError(null);
+    await discoverAuth();
+    setStep(2);
+  };
 
   const submit = (event: FormEvent) => {
     event.preventDefault();
-    if (!serverId.trim() || !serverUrl.trim()) {
-      setError("an id and a URL are required");
+    if (!editing && step === 1) {
+      void continueToConnection();
       return;
     }
-    const credentialError = mcpServerCredentialError(
-      effectiveAuthPolicy,
-      credentialGrantId,
-    );
+    const credentialError = mcpServerCredentialError(authPolicy, credentialGrantId);
     if (credentialError) {
       setError(credentialError);
       return;
@@ -428,214 +522,655 @@ function ServerDialog({
     save.mutate();
   };
 
+  const chooseAuth = (kind: McpAuthKind) => {
+    setAuthTouched(true);
+    setCredentialGrantId("");
+    setAuthPolicy(kind === "oauth" ? "requiredOAuth" : kind === "bearer" ? "requiredBearer" : "none");
+    if (kind === "oauth" && !oauthResource) {
+      setOAuthResource(discovery?.oauth?.resource ?? serverUrl.trim());
+    }
+  };
+
+  const discoveryCurrent = lastProbedUrl === serverUrl.trim();
+  const detectedOAuth = discoveryCurrent ? discovery?.oauth : null;
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent>
+      <DialogContent className="max-h-[calc(100vh-2rem)] overflow-y-auto sm:max-w-xl">
         <DialogHeader>
           <DialogTitle>{editing ? `Edit ${server.serverId}` : "Add MCP server"}</DialogTitle>
           <DialogDescription>
             {editing
-              ? "Changes apply to new session links; running sessions keep their spec."
-              : "Registers a remote MCP server profiles can link into sessions."}
+              ? "Update how Lightspeed connects to this server."
+              : step === 1
+                ? "Start with the server address. Lightspeed will check how it expects you to connect."
+                : "Confirm the connection. Everything else is optional."}
           </DialogDescription>
         </DialogHeader>
-        <form onSubmit={submit} className="grid gap-4">
-          <div className="grid gap-4 sm:grid-cols-2">
-            <Field>
-              <FieldLabel htmlFor="mcp-name">Display name</FieldLabel>
-              <Input
-                id="mcp-name"
-                value={displayName}
-                onChange={(e) => {
-                  setDisplayName(e.target.value);
-                  if (!editing && !idTouched) {
-                    setServerId(e.target.value ? slugify(e.target.value) : "");
-                  }
-                }}
-                placeholder="GitHub"
-                autoFocus={!editing}
-              />
-            </Field>
-            <Field>
-              <FieldLabel htmlFor="mcp-id">Server id</FieldLabel>
-              <Input
-                id="mcp-id"
-                value={serverId}
-                onChange={(e) => {
-                  setServerId(e.target.value);
-                  setIdTouched(e.target.value.length > 0);
-                }}
-                placeholder="github"
-                className="font-mono"
-                disabled={editing}
-              />
-            </Field>
+
+        {!editing && (
+          <div className="grid grid-cols-2 gap-2 text-xs">
+            <div className={`rounded-md px-3 py-2 ${step === 1 ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground"}`}>
+              1 · Server
+            </div>
+            <div className={`rounded-md px-3 py-2 ${step === 2 ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground"}`}>
+              2 · Connection
+            </div>
           </div>
-          <Field>
-            <FieldLabel htmlFor="mcp-url">Server URL</FieldLabel>
-            <Input
-              id="mcp-url"
-              value={serverUrl}
-              onChange={(e) => setServerUrl(e.target.value)}
-              placeholder="https://mcp.example.com/mcp"
-              className="font-mono"
-            />
-          </Field>
-          <div className="grid gap-4 sm:grid-cols-2">
-            <Field>
-              <FieldLabel>Transport</FieldLabel>
-              <Select value={transport} onValueChange={(v) => setTransport(v as string)}>
-                <SelectTrigger className="w-full" aria-label="Transport">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {TRANSPORTS.map((value) => (
-                    <SelectItem key={value} value={value}>
-                      {value}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </Field>
-            <Field>
-              <FieldLabel>Approval default</FieldLabel>
-              <Select value={approval} onValueChange={(v) => setApproval(v as string)}>
-                <SelectTrigger className="w-full" aria-label="Approval default">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {APPROVALS.map((value) => (
-                    <SelectItem key={value} value={value}>
-                      {value}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </Field>
-          </div>
-          <div className="grid gap-4 sm:grid-cols-2">
-            <Field>
-              <FieldLabel>Auth policy</FieldLabel>
-              {oauthManaged ? (
-                <p className="text-sm text-muted-foreground">
-                  <span className="font-mono text-xs">{server.authPolicy.type}</span> —
-                  managed via the lightspeed CLI.
-                </p>
-              ) : (
-                <Select
-                  value={authPolicy}
-                  onValueChange={(v) => {
-                    setAuthPolicy(v as string);
-                    setCredentialGrantId("");
-                  }}
-                >
-                  <SelectTrigger className="w-full" aria-label="Auth policy">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {FORM_AUTH_POLICIES.map((value) => (
-                      <SelectItem key={value} value={value}>
-                        {value}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              )}
-            </Field>
-            {editing && (
+        )}
+
+        <form onSubmit={submit} className="grid gap-5">
+          {(!editing && step === 1) ? (
+            <>
               <Field>
-                <FieldLabel>Status</FieldLabel>
-                <Select
-                  value={status}
-                  onValueChange={(v) => setStatus(v as McpServer["status"])}
-                >
-                  <SelectTrigger className="w-full" aria-label="Status">
+                <FieldLabel htmlFor="mcp-name">Name</FieldLabel>
+                <Input
+                  id="mcp-name"
+                  value={displayName}
+                  onChange={(event) => {
+                    setDisplayName(event.target.value);
+                    if (!idTouched) setServerId(slugify(event.target.value));
+                    setError(null);
+                  }}
+                  placeholder="GitHub"
+                  autoFocus
+                />
+              </Field>
+              <Field>
+                <FieldLabel htmlFor="mcp-url">Server URL</FieldLabel>
+                <Input
+                  id="mcp-url"
+                  value={serverUrl}
+                  onChange={(event) => {
+                    setServerUrl(event.target.value);
+                    setDiscovery(null);
+                    setLastProbedUrl("");
+                    if (!authTouched) {
+                      setAuthPolicy("none");
+                      setOAuthResource("");
+                    }
+                    setError(null);
+                  }}
+                  onBlur={() => void discoverAuth()}
+                  placeholder="https://mcp.example.com/mcp"
+                  className="font-mono"
+                />
+                <AuthDiscoveryNote
+                  pending={probe.isPending}
+                  checked={discoveryCurrent}
+                  oauth={detectedOAuth}
+                  error={probe.error?.message}
+                />
+              </Field>
+            </>
+          ) : (
+            <>
+              {!editing && (
+                <div className="flex items-start justify-between gap-4 rounded-lg border bg-muted/15 p-3">
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium">{displayName}</p>
+                    <p className="truncate font-mono text-xs text-muted-foreground">{serverUrl}</p>
+                  </div>
+                  <Button type="button" variant="ghost" size="sm" onClick={() => setStep(1)}>
+                    Change
+                  </Button>
+                </div>
+              )}
+
+              {editing && (
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <Field>
+                    <FieldLabel htmlFor="mcp-name">Name</FieldLabel>
+                    <Input
+                      id="mcp-name"
+                      value={displayName}
+                      onChange={(event) => setDisplayName(event.target.value)}
+                    />
+                  </Field>
+                  <Field>
+                    <FieldLabel htmlFor="mcp-url">Server URL</FieldLabel>
+                    <Input
+                      id="mcp-url"
+                      value={serverUrl}
+                      onChange={(event) => setServerUrl(event.target.value)}
+                      className="font-mono"
+                    />
+                  </Field>
+                </div>
+              )}
+
+              <Field>
+                <FieldLabel>Authentication</FieldLabel>
+                {detectedOAuth && (
+                  <div className="mb-2 flex items-center gap-2 rounded-md border border-emerald-500/30 bg-emerald-500/5 px-3 py-2 text-sm text-emerald-700 dark:text-emerald-300">
+                    <CheckCircle2 className="size-4" />
+                    OAuth sign-in detected from the server
+                  </div>
+                )}
+                <Select value={authKind} onValueChange={(value) => chooseAuth(value as McpAuthKind)}>
+                  <SelectTrigger className="w-full" aria-label="Authentication">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="active">active</SelectItem>
-                    <SelectItem value="disabled">disabled</SelectItem>
-                    {["needsAuthConfig", "unverified"].includes(status) && (
-                      <SelectItem value={status}>{status}</SelectItem>
-                    )}
+                    <SelectItem value="none">No authentication</SelectItem>
+                    <SelectItem value="bearer">Bearer token</SelectItem>
+                    <SelectItem value="oauth">OAuth sign-in</SelectItem>
                   </SelectContent>
                 </Select>
+                <FieldDescription>
+                  {authKind === "oauth"
+                    ? credentialGrantId
+                      ? "An existing OAuth connection is selected."
+                      : "After saving, Lightspeed will open the provider sign-in and finish setup automatically."
+                    : authKind === "bearer"
+                      ? "Choose a universe credential to send as a bearer token."
+                      : detectedOAuth
+                        ? "The server advertises OAuth, so unauthenticated access may fail."
+                        : "Use this for public MCP servers."}
+                </FieldDescription>
               </Field>
-            )}
-          </div>
-          {effectiveAuthPolicy !== "none" && (
-            <Field>
-              <FieldLabel>Access credential</FieldLabel>
-              <Select
-                value={credentialGrantId || "none"}
-                onValueChange={(value) =>
-                  setCredentialGrantId(value === "none" ? "" : value as string)
-                }
-              >
-                <SelectTrigger className="w-full" aria-label="Access credential">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="none">No access credential</SelectItem>
-                  {credentialGrantId && !boundGrantAvailable && (
-                    <SelectItem value={credentialGrantId}>
-                      {credentialGrantId} (unavailable)
-                    </SelectItem>
+
+              {authKind === "bearer" && (
+                <CredentialSelect
+                  grants={compatibleGrants}
+                  loading={authGrantsLoading}
+                  value={credentialGrantId}
+                  boundAvailable={boundGrantAvailable}
+                  onChange={setCredentialGrantId}
+                  emptyCopy="Create a bearer credential on the Secrets page, then return here."
+                />
+              )}
+
+              <Collapsible open={advancedOpen} onOpenChange={setAdvancedOpen}>
+                <CollapsibleTrigger className="flex w-full items-center justify-between rounded-md border px-3 py-2 text-left text-sm font-medium outline-none hover:bg-muted/40 focus-visible:ring-3 focus-visible:ring-ring/50">
+                  <span>
+                    Advanced options
+                    <span className="ml-2 text-xs font-normal text-muted-foreground">
+                      Auto transport · all tools
+                    </span>
+                  </span>
+                  <ChevronDown className={`size-4 transition-transform ${advancedOpen ? "rotate-180" : ""}`} />
+                </CollapsibleTrigger>
+                <CollapsibleContent className="grid gap-4 border-x border-b p-4">
+                  {!editing && (
+                    <Field>
+                      <FieldLabel htmlFor="mcp-id">Server ID</FieldLabel>
+                      <Input
+                        id="mcp-id"
+                        value={serverId}
+                        onChange={(event) => {
+                          setServerId(event.target.value);
+                          setIdTouched(true);
+                        }}
+                        className="font-mono"
+                      />
+                      <FieldDescription>Stable identifier used by profiles and sessions.</FieldDescription>
+                    </Field>
                   )}
-                  {compatibleGrants.map((grant) => (
-                    <SelectItem key={grant.grantId} value={grant.grantId}>
-                      {authGrantLabel(grant)}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <FieldDescription>
-                Owned by this universe server and used by every session that selects it.
-                {effectiveAuthPolicy.startsWith("required") && !credentialGrantId
-                  ? " The server will remain in needs-auth-config until one is bound."
-                  : ""}
-                {authGrantsLoading
-                  ? " Loading access credentials…"
-                  : compatibleGrants.length === 0 && !credentialGrantId
-                    ? " Create a compatible access credential on the Secrets page first."
-                    : ""}
-              </FieldDescription>
-            </Field>
+                  <Field>
+                    <FieldLabel htmlFor="mcp-description">Description</FieldLabel>
+                    <Input
+                      id="mcp-description"
+                      value={description}
+                      onChange={(event) => setDescription(event.target.value)}
+                      placeholder="What this server offers"
+                    />
+                  </Field>
+                  <div className="grid gap-4 sm:grid-cols-2">
+                    <Field>
+                      <FieldLabel>Transport</FieldLabel>
+                      <Select value={transport} onValueChange={(value) => setTransport(value as string)}>
+                        <SelectTrigger className="w-full" aria-label="Transport">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {TRANSPORTS.map((value) => (
+                            <SelectItem key={value} value={value}>{transportLabel(value)}</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </Field>
+                    <Field>
+                      <FieldLabel>Tool approval</FieldLabel>
+                      <Select value={approval} onValueChange={(value) => setApproval(value as string)}>
+                        <SelectTrigger className="w-full" aria-label="Tool approval">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {APPROVALS.map((value) => (
+                            <SelectItem key={value} value={value}>{approvalLabel(value)}</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </Field>
+                  </div>
+                  <Field>
+                    <FieldLabel htmlFor="mcp-tools">Allowed tools</FieldLabel>
+                    <Input
+                      id="mcp-tools"
+                      value={allowedTools}
+                      onChange={(event) => setAllowedTools(event.target.value)}
+                      placeholder="All tools"
+                    />
+                    <FieldDescription>Comma-separated. Blank allows every tool.</FieldDescription>
+                  </Field>
+
+                  {authKind === "oauth" && (
+                    <>
+                      <CredentialSelect
+                        grants={compatibleGrants}
+                        loading={authGrantsLoading}
+                        value={credentialGrantId}
+                        boundAvailable={boundGrantAvailable}
+                        onChange={setCredentialGrantId}
+                        emptyCopy="Leave blank to start a new OAuth sign-in after saving."
+                        optional
+                      />
+                      <Field>
+                        <FieldLabel htmlFor="mcp-oauth-resource">OAuth resource</FieldLabel>
+                        <Input
+                          id="mcp-oauth-resource"
+                          value={oauthResource}
+                          onChange={(event) => setOAuthResource(event.target.value)}
+                          placeholder={serverUrl}
+                          className="font-mono"
+                        />
+                      </Field>
+                      <Field>
+                        <FieldLabel htmlFor="mcp-oauth-scopes">Requested scopes</FieldLabel>
+                        <Input
+                          id="mcp-oauth-scopes"
+                          value={oauthScopes}
+                          onChange={(event) => setOAuthScopes(event.target.value)}
+                          placeholder="Use server defaults"
+                        />
+                      </Field>
+                      <div className="grid gap-4 sm:grid-cols-2">
+                        <Field>
+                          <FieldLabel htmlFor="mcp-oauth-metadata">Resource metadata URL</FieldLabel>
+                          <Input
+                            id="mcp-oauth-metadata"
+                            value={oauthMetadataUrl}
+                            onChange={(event) => setOAuthMetadataUrl(event.target.value)}
+                            placeholder="Discover automatically"
+                            className="font-mono"
+                          />
+                        </Field>
+                        <Field>
+                          <FieldLabel htmlFor="mcp-oauth-issuer">Authorization server</FieldLabel>
+                          <Input
+                            id="mcp-oauth-issuer"
+                            value={oauthAuthorizationServer}
+                            onChange={(event) => setOAuthAuthorizationServer(event.target.value)}
+                            placeholder="Discover automatically"
+                            className="font-mono"
+                          />
+                        </Field>
+                      </div>
+                    </>
+                  )}
+
+                  {editing && (
+                    <Field>
+                      <FieldLabel>Status</FieldLabel>
+                      <Select value={status} onValueChange={(value) => setStatus(value as McpServer["status"])}>
+                        <SelectTrigger className="w-full" aria-label="Status">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="active">Active</SelectItem>
+                          <SelectItem value="disabled">Disabled</SelectItem>
+                          {["needsAuthConfig", "unverified"].includes(status) && (
+                            <SelectItem value={status}>{status}</SelectItem>
+                          )}
+                        </SelectContent>
+                      </Select>
+                    </Field>
+                  )}
+                </CollapsibleContent>
+              </Collapsible>
+            </>
           )}
-          <Field>
-            <FieldLabel htmlFor="mcp-tools">Allowed tools</FieldLabel>
-            <Input
-              id="mcp-tools"
-              value={allowedTools}
-              onChange={(e) => setAllowedTools(e.target.value)}
-              placeholder="search, get_issue (comma-separated; empty = all)"
-            />
-            <FieldDescription>
-              Provider-side allowlist applied by default when linking.
-            </FieldDescription>
-          </Field>
-          <Field>
-            <FieldLabel htmlFor="mcp-description">Description</FieldLabel>
-            <Input
-              id="mcp-description"
-              value={description}
-              onChange={(e) => setDescription(e.target.value)}
-              placeholder="What this server offers"
-            />
-          </Field>
+
           {error && <p className="text-sm text-destructive">{error}</p>}
           <DialogFooter>
+            {!editing && step === 2 && (
+              <Button type="button" variant="outline" onClick={() => setStep(1)}>Back</Button>
+            )}
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
               Cancel
             </Button>
-            <Button type="submit" disabled={save.isPending}>
-              {save.isPending ? "Saving…" : editing ? "Save" : "Add server"}
+            <Button type="submit" disabled={save.isPending || probe.isPending}>
+              {save.isPending
+                ? "Saving…"
+                : !editing && step === 1
+                  ? probe.isPending ? "Checking…" : "Continue"
+                  : !credentialGrantId && authKind === "oauth"
+                    ? editing ? "Save and connect" : "Add and connect"
+                    : editing ? "Save" : "Add server"}
             </Button>
           </DialogFooter>
         </form>
       </DialogContent>
     </Dialog>
   );
+}
+
+function AuthDiscoveryNote({
+  pending,
+  checked,
+  oauth,
+  error,
+}: {
+  pending: boolean;
+  checked: boolean;
+  oauth: McpServerAuthDiscovery["oauth"];
+  error?: string;
+}) {
+  if (pending) {
+    return (
+      <FieldDescription className="flex items-center gap-1.5">
+        <Loader2 className="size-3.5 animate-spin" /> Checking for OAuth sign-in…
+      </FieldDescription>
+    );
+  }
+  if (checked && oauth) {
+    return (
+      <FieldDescription className="flex items-center gap-1.5 text-emerald-700 dark:text-emerald-300">
+        <CheckCircle2 className="size-3.5" /> OAuth sign-in detected
+      </FieldDescription>
+    );
+  }
+  if (checked) {
+    return (
+      <FieldDescription>
+        {error
+          ? "Automatic detection was unavailable. You can choose authentication on the next step."
+          : "No standard OAuth metadata was found. You can choose authentication on the next step."}
+      </FieldDescription>
+    );
+  }
+  return <FieldDescription>Lightspeed will check the server without saving it.</FieldDescription>;
+}
+
+function CredentialSelect({
+  grants,
+  loading,
+  value,
+  boundAvailable,
+  onChange,
+  emptyCopy,
+  optional = false,
+}: {
+  grants: AuthGrantOption[];
+  loading: boolean;
+  value: string;
+  boundAvailable: boolean;
+  onChange: (value: string) => void;
+  emptyCopy: string;
+  optional?: boolean;
+}) {
+  return (
+    <Field>
+      <FieldLabel>Credential</FieldLabel>
+      <Select
+        value={value || "none"}
+        onValueChange={(next) => onChange(next === "none" ? "" : next as string)}
+      >
+        <SelectTrigger className="w-full" aria-label="Credential">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value="none">{optional ? "Start a new sign-in" : "Choose a credential"}</SelectItem>
+          {value && !boundAvailable && (
+            <SelectItem value={value}>{value} (unavailable)</SelectItem>
+          )}
+          {grants.map((grant) => (
+            <SelectItem key={grant.grantId} value={grant.grantId}>
+              {authGrantLabel(grant)}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+      <FieldDescription>
+        {loading
+          ? "Loading credentials…"
+          : grants.length === 0 && !value
+            ? emptyCopy
+            : optional
+              ? "Reuse a compatible connection, or start a new sign-in."
+              : "This credential will be used whenever the server is selected."}
+      </FieldDescription>
+    </Field>
+  );
+}
+
+function OAuthDialog({
+  universeId,
+  server,
+  onOpenChange,
+  onDone,
+}: {
+  universeId: string;
+  server: McpServer | null;
+  onOpenChange: (open: boolean) => void;
+  onDone: () => void;
+}) {
+  const [attempt, setAttempt] = useState<McpOAuthFlowStart | null>(null);
+  const [authorizationOpened, setAuthorizationOpened] = useState(false);
+  const started = useRef(false);
+  const finishStarted = useRef<string | null>(null);
+
+  const start = useMutation({
+    mutationFn: () => api<McpOAuthFlowStart>(
+      "POST",
+      `/api/v1/universes/${universeId}/mcp-servers/${server!.serverId}/oauth/start`,
+      {},
+    ),
+    onSuccess: (nextAttempt) => setAttempt(nextAttempt),
+  });
+  const flow = useQuery({
+    queryKey: ["mcp-oauth-flow", universeId, server?.serverId, attempt?.flowId],
+    enabled: Boolean(server && attempt),
+    queryFn: () => api<McpOAuthFlow>(
+      "GET",
+      `/api/v1/universes/${universeId}/mcp-servers/${server!.serverId}/oauth/flows/${attempt!.flowId}`,
+    ),
+    refetchInterval: (query) => query.state.data?.status === "pending" ? 1_500 : false,
+  });
+  const complete = useMutation({
+    mutationFn: (flowId: string) => api<McpServer>(
+      "POST",
+      `/api/v1/universes/${universeId}/mcp-servers/${server!.serverId}/oauth/flows/${flowId}/complete`,
+      { expectedRevision: attempt!.serverRevision },
+    ),
+    onSuccess: onDone,
+  });
+
+  useEffect(() => {
+    if (server && !started.current) {
+      started.current = true;
+      start.mutate();
+    }
+  }, [server?.serverId]);
+
+  useEffect(() => {
+    const current = flow.data;
+    if (
+      current?.status === "completed" &&
+      current.grantId &&
+      finishStarted.current !== current.flowId
+    ) {
+      finishStarted.current = current.flowId;
+      complete.mutate(current.flowId);
+    }
+  }, [flow.data?.status, flow.data?.flowId, flow.data?.grantId]);
+
+  const retry = () => {
+    finishStarted.current = null;
+    setAttempt(null);
+    setAuthorizationOpened(false);
+    start.reset();
+    complete.reset();
+    start.mutate();
+  };
+
+  const terminalError = flow.data?.status === "failed"
+    ? flow.data.error || "The authorization server rejected the login."
+    : flow.data?.status === "expired"
+      ? "This authorization attempt expired."
+      : null;
+
+  return (
+    <Dialog open={server !== null} onOpenChange={onOpenChange}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Connect {server?.displayName ?? server?.serverId} with OAuth</DialogTitle>
+          <DialogDescription>
+            Lightspeed discovers the server's OAuth configuration, registers a client when
+            needed, and stores the resulting access grant for this universe.
+          </DialogDescription>
+        </DialogHeader>
+
+        {(start.isPending || (attempt && flow.isLoading)) && (
+          <p className="text-sm text-muted-foreground">
+            Discovering OAuth metadata and preparing a secure PKCE login…
+          </p>
+        )}
+        {attempt && flow.data?.status === "pending" && (
+          <div className="grid gap-3 rounded-lg border p-4">
+            <p className="text-sm">
+              Continue to the authorization server, approve access, then return here. This
+              dialog will finish setup automatically.
+            </p>
+            <Button
+              type="button"
+              className="w-fit"
+              onClick={() => {
+                window.open(attempt.authorizeUrl, "_blank", "noopener,noreferrer");
+                setAuthorizationOpened(true);
+              }}
+            >
+              <ExternalLink data-icon="inline-start" />
+              {authorizationOpened ? "Open authorization again" : "Open authorization"}
+            </Button>
+            <p className="text-xs text-muted-foreground">
+              Waiting for the authorization callback…
+            </p>
+          </div>
+        )}
+        {flow.data?.status === "completed" && complete.isPending && (
+          <p className="text-sm text-muted-foreground">
+            Authorization complete. Binding the credential to the MCP server…
+          </p>
+        )}
+        {complete.data && (
+          <div className="grid gap-1 rounded-lg border border-emerald-500/40 bg-emerald-500/5 p-4">
+            <p className="text-sm font-medium">OAuth connected</p>
+            <p className="text-sm text-muted-foreground">
+              The brokered credential is bound to {complete.data.serverId} and ready for sessions.
+            </p>
+          </div>
+        )}
+        {(start.error || flow.error || complete.error || terminalError) && (
+          <div className="grid gap-3">
+            <p className="text-sm text-destructive">
+              {terminalError || start.error?.message || flow.error?.message || complete.error?.message}
+            </p>
+            <Button type="button" variant="outline" className="w-fit" onClick={retry}>
+              <RotateCcw data-icon="inline-start" />
+              Try again
+            </Button>
+          </div>
+        )}
+        <DialogFooter>
+          <Button type="button" variant={complete.data ? "default" : "outline"} onClick={() => onOpenChange(false)}>
+            {complete.data ? "Done" : "Close"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+export function isOAuthPolicy(authPolicy: string): boolean {
+  return authPolicy === "optionalOAuth" || authPolicy === "requiredOAuth";
+}
+
+export function mcpAuthKind(authPolicy: string): McpAuthKind {
+  if (isOAuthPolicy(authPolicy)) return "oauth";
+  if (authPolicy === "optionalBearer" || authPolicy === "requiredBearer") return "bearer";
+  return "none";
+}
+
+export function isValidMcpUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return (url.protocol === "http:" || url.protocol === "https:") &&
+      Boolean(url.hostname) && !url.username && !url.password && !url.hash;
+  } catch {
+    return false;
+  }
+}
+
+function transportLabel(value: string): string {
+  if (value === "auto") return "Auto-detect";
+  if (value === "streamableHttp") return "Streamable HTTP";
+  return "Server-sent events (SSE)";
+}
+
+function approvalLabel(value: string): string {
+  if (value === "providerDefault") return "Use provider default";
+  if (value === "always") return "Always require approval";
+  return "Never require approval";
+}
+
+export function mcpAuthPolicyInput({
+  type,
+  serverUrl,
+  resource,
+  scopes,
+  metadataUrl,
+  authorizationServer,
+}: {
+  type: string;
+  serverUrl: string;
+  resource: string;
+  scopes: string;
+  metadataUrl: string;
+  authorizationServer: string;
+}): McpServer["authPolicy"] {
+  if (!isOAuthPolicy(type)) return { type };
+  const scopesDefault = Array.from(new Set(
+    scopes
+      .split(",")
+      .map((scope) => scope.trim())
+      .filter(Boolean),
+  ));
+  return {
+    type,
+    resource: resource.trim() || serverUrl.trim(),
+    ...(scopesDefault.length > 0 ? { scopesDefault } : {}),
+    ...(metadataUrl.trim()
+      ? { protectedResourceMetadataUrl: metadataUrl.trim() }
+      : {}),
+    ...(authorizationServer.trim()
+      ? { authorizationServer: authorizationServer.trim() }
+      : {}),
+  };
+}
+
+function oauthPolicyString(
+  policy: McpServer["authPolicy"] | undefined,
+  field: string,
+): string {
+  const value = policy?.[field];
+  return typeof value === "string" ? value : "";
+}
+
+function oauthPolicyScopes(policy: McpServer["authPolicy"] | undefined): string[] {
+  const value = policy?.scopesDefault;
+  return Array.isArray(value) ? value.filter((scope): scope is string => typeof scope === "string") : [];
 }
 
 export function mcpGrantCompatible(authPolicy: string, providerKind: string): boolean {

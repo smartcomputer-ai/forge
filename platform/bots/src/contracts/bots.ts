@@ -41,6 +41,12 @@ export const BOT_TOOLS_REVISION = 11;
 export const BOT_TOOL_REPLY_DEADLINE_MS = 60_000;
 /** ApplicationFailure type: the session exists under another tool declaration. */
 export const BOT_SESSION_DECLARATION_MISMATCH = "bot_session_declaration_mismatch";
+/**
+ * ApplicationFailure type: the session cannot take the profile's new
+ * config (its provider api kind is pinned for its lifetime); the controller
+ * rotates to a successor session that starts on the new profile.
+ */
+export const BOT_SESSION_PROFILE_UNAPPLICABLE = "bot_session_profile_unapplicable";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const NAME = /^[a-z0-9][a-z0-9-]*$/;

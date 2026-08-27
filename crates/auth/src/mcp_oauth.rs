@@ -430,7 +430,10 @@ impl McpOAuthDriver {
         }
     }
 
-    async fn discover_protected_resource(
+    /// Read and validate RFC 9728 metadata for an MCP resource without
+    /// registering a client or mutating auth state. Management surfaces use
+    /// this as an advisory OAuth probe before a server is catalogued.
+    pub async fn discover_protected_resource(
         &self,
         target: &McpOAuthTarget,
     ) -> Result<ProtectedResourceMetadata, McpOAuthError> {
