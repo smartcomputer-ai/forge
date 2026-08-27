@@ -226,8 +226,12 @@ function ProfileEditor({
   }, [draft, original, tab, jsonText]);
 
   const save = useMutation({
-    mutationFn: (document: ProfileDocument) =>
-      api("PUT", `/api/v1/universes/${universeId}/profiles/${profileId}`, document),
+    mutationFn: async (document: ProfileDocument) => {
+      await api("PUT", `/api/v1/universes/${universeId}/profiles/${profileId}`, document);
+      // Bots applying this profile learn about the new revision now, not at
+      // their next unrelated config change.
+      await api("POST", `/api/v1/universes/${universeId}/bots/reconcile`, { profileId });
+    },
     onSuccess: () => {
       setError(null);
       void queryClient.invalidateQueries({ queryKey: ["profiles", universeId] });

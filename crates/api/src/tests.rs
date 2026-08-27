@@ -1063,6 +1063,27 @@ async fn dispatch_json_rpc_routes_mcp_server_put() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn dispatch_json_rpc_routes_mcp_server_auth_discovery() {
+    let response = dispatch_json_rpc(
+        &TestService,
+        JsonRpcRequest {
+            id: RequestId::Number(1),
+            method: METHOD_MCP_SERVERS_AUTH_DISCOVER.to_owned(),
+            params: Some(json!({
+                "serverUrl": "https://mcp.example.com/mcp"
+            })),
+        },
+    )
+    .await;
+
+    assert!(response.error.is_none());
+    assert_eq!(
+        response.result.expect("result")["result"]["oauth"]["resource"],
+        json!("https://mcp.example.com/mcp")
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn dispatch_json_rpc_routes_auth_grant_lease() {
     let response = dispatch_json_rpc(
         &TestService,
@@ -2302,6 +2323,18 @@ impl AgentApiService for TestService {
     ) -> Result<AgentApiOutcome<McpServerPutResponse>, AgentApiError> {
         Ok(AgentApiOutcome::new(McpServerPutResponse {
             server: test_mcp_server(params.server.server_id),
+        }))
+    }
+
+    async fn discover_mcp_server_auth(
+        &self,
+        params: McpServerAuthDiscoverParams,
+    ) -> Result<AgentApiOutcome<McpServerAuthDiscoverResponse>, AgentApiError> {
+        Ok(AgentApiOutcome::new(McpServerAuthDiscoverResponse {
+            oauth: Some(McpOAuthDiscoveryView {
+                resource: params.server_url,
+                authorization_servers: vec!["https://auth.example.com".to_owned()],
+            }),
         }))
     }
 

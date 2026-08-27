@@ -64,6 +64,8 @@ const botCreateSchema = z.object({
   emit: z.boolean().optional(),
   /** Create the `inbox` trigger (kind bot) so other bots can address this one. */
   acceptsBotEvents: z.boolean().optional(),
+  /** Triggers created with the bot, in order; one refusal fails the whole create. */
+  triggers: z.array(triggerCreateInput).max(20).optional(),
 });
 const botUpdateSchema = z
   .object({
@@ -154,7 +156,45 @@ export function botRoutes(ctx: AppContext) {
       .where(eq(bots.universeId, access.universe.id))
       .groupBy(bots.id);
     rows.sort(compareBotListItems);
-    return c.json({ bots: rows.map(botView) });
+    // The roster's "what is it doing" line comes from the event log alone:
+    // the newest event per bot and how many are still unresolved. No
+    // controller query per row.
+    const ids = rows.map((row) => row.id);
+    const pending =
+      ids.length === 0
+        ? []
+        : await ctx.db
+            .select({ botId: botEvents.botId, count: count() })
+            .from(botEvents)
+            .where(and(inArray(botEvents.botId, ids), isNull(botEvents.outcome)))
+            .groupBy(botEvents.botId);
+    const latest =
+      ids.length === 0
+        ? []
+        : await ctx.db
+            .selectDistinctOn([botEvents.botId], {
+              botId: botEvents.botId,
+              seq: botEvents.seq,
+              kind: botEvents.kind,
+              source: botEvents.source,
+              outcome: botEvents.outcome,
+              outcomeDetail: botEvents.outcomeDetail,
+              receivedAt: botEvents.receivedAt,
+              resolvedAt: botEvents.resolvedAt,
+              session: botEvents.session,
+            })
+            .from(botEvents)
+            .where(inArray(botEvents.botId, ids))
+            .orderBy(botEvents.botId, desc(botEvents.receivedAt), desc(botEvents.id));
+    const pendingByBot = new Map(pending.map((row) => [row.botId, row.count]));
+    const latestByBot = new Map(latest.map(({ botId, ...event }) => [botId, event]));
+    return c.json({
+      bots: rows.map((row) => ({
+        ...botView(row),
+        pendingCount: pendingByBot.get(row.id) ?? 0,
+        lastEvent: latestByBot.get(row.id) ?? null,
+      })),
+    });
   });
 
   byUniverse.post("/:id/bots", async (c) => {
@@ -164,7 +204,14 @@ export function botRoutes(ctx: AppContext) {
     if (!body.ok) return body.response;
 
     const engine = engineClientFor(ctx, access.universe);
-    await engine.call("profiles/read", { profileId: body.data.profileId });
+    try {
+      await engine.call("profiles/read", { profileId: body.data.profileId });
+    } catch (error) {
+      if (error instanceof LightspeedRpcError && error.kind === "not_found") {
+        return c.json({ error: `profile ${body.data.profileId} does not exist` }, 400);
+      }
+      throw error;
+    }
 
     const [bot] = await ctx.db
       .insert(bots)
@@ -185,24 +232,74 @@ export function botRoutes(ctx: AppContext) {
       .returning();
     if (!bot) return c.json({ error: "a bot with that id already exists" }, 409);
 
+    // Everything after the row is undone on failure, newest first, so a
+    // refused trigger or an unreachable controller leaves no half-made bot.
+    const universeId = access.universe.lightspeedUniverseId;
+    const created: BotTriggerRow[] = [];
     try {
-      await signalBotConfig(botStart(bot, access.universe.lightspeedUniverseId));
-      if (body.data.acceptsBotEvents === true) {
-        const temporal = await getTemporal();
-        await createTrigger(triggerConfigDeps(access.universe, temporal), {
-          bot,
-          universeId: access.universe.lightspeedUniverseId,
-          input: triggerCreateInput.parse({ name: "inbox", kind: "bot" }),
-        });
+      await signalBotConfig(botStart(bot, universeId));
+      const inputs = [
+        ...(body.data.acceptsBotEvents === true
+          ? [triggerCreateInput.parse({ name: "inbox", kind: "bot" })]
+          : []),
+        ...(body.data.triggers ?? []),
+      ];
+      if (inputs.length > 0) {
+        const deps = triggerConfigDeps(access.universe, await getTemporal());
+        for (const input of inputs) {
+          created.push(await createTrigger(deps, { bot, universeId, input }));
+        }
       }
     } catch (error) {
+      if (created.length > 0) {
+        const deps = triggerConfigDeps(access.universe, await getTemporal());
+        for (const trigger of [...created].reverse()) {
+          await deleteTrigger(deps, { bot, universeId, existing: trigger }).catch(() => undefined);
+        }
+      }
       await ctx.db.delete(bots).where(eq(bots.id, bot.id));
+      if (error instanceof BotConfigError) return configErrorResponse(c, error);
       return c.json(
         { error: "failed to start the bot controller", failure: errorMessage(error) },
         502,
       );
     }
     return c.json({ bot: botView(bot) }, 201);
+  });
+
+  /**
+   * Nudge every open bot that applies a profile to re-read it. Profile edits
+   * bump the profile's revision but signal nobody; the controller notices a
+   * new revision only when its own config is signalled, so a Capabilities
+   * save calls this and the bots apply the profile at their next idle moment.
+   */
+  byUniverse.post("/:id/bots/reconcile", async (c) => {
+    const access = await universeForSession(ctx, c, c.req.param("id"), true);
+    if (!access) return c.json({ error: "not found" }, 404);
+    const body = await parseBody(c, z.object({ profileId: z.string().trim().min(1) }));
+    if (!body.ok) return body.response;
+    const rows = await ctx.db
+      .select()
+      .from(bots)
+      .where(
+        and(
+          eq(bots.universeId, access.universe.id),
+          eq(bots.profileId, body.data.profileId),
+          isNull(bots.closedAt),
+        ),
+      );
+    const failures: string[] = [];
+    for (const bot of rows) {
+      try {
+        await signalBotConfig(botStart(bot, access.universe.lightspeedUniverseId));
+      } catch (error) {
+        failures.push(`${bot.name}: ${errorMessage(error)}`);
+      }
+    }
+    if (failures.length > 0) {
+      return c.json({ error: "some bot controllers could not be signalled", failure: failures.join("; ") }, 502);
+    }
+    return c.json({ signalled: rows.map((bot) => bot.name) });
   });
 
   async function botForUniverse(c: BotContext, write: boolean) {

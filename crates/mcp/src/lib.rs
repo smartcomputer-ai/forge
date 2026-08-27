@@ -520,7 +520,8 @@ fn validate_scope_defaults(values: &[String]) -> Result<(), McpRegistryError> {
     Ok(())
 }
 
-fn validate_remote_mcp_server_url(value: &str) -> Result<(), McpRegistryError> {
+/// Validate the remote MCP URL at registry and read-only discovery boundaries.
+pub fn validate_remote_mcp_server_url(value: &str) -> Result<(), McpRegistryError> {
     if value.is_empty() {
         return Err(McpRegistryError::InvalidInput {
             message: "remote MCP server URL must not be empty".to_owned(),

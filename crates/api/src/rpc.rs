@@ -426,6 +426,8 @@ api_methods! {
         ["Delete a VFS workspace", "Deletes the mutable workspace record; immutable snapshots and blobs remain content-addressed resources."],
     METHOD_MCP_SERVERS_PUT => put_mcp_server(McpServerPutParams) -> McpServerPutResponse =>
         ["Create or replace an MCP server record", "Stores the complete universe catalog document, including its optional universe auth-grant credential. Use expectedRevision when replacing; token material is never accepted or returned."],
+    METHOD_MCP_SERVERS_AUTH_DISCOVER => discover_mcp_server_auth(McpServerAuthDiscoverParams) -> McpServerAuthDiscoverResponse =>
+        ["Discover MCP server authentication", "Looks for standards-based OAuth protected-resource metadata without creating a server, OAuth client, flow, or grant. An absent OAuth result is inconclusive and callers must allow manual auth selection."],
     METHOD_MCP_SERVERS_READ => read_mcp_server(McpServerReadParams) -> McpServerReadResponse =>
         ["Read an MCP server record", "Returns one catalog document with defaults, auth policy, non-secret grant binding, status, and revision; no credential value is exposed."],
     METHOD_MCP_SERVERS_LIST => list_mcp_servers(McpServerListParams) -> McpServerListResponse =>

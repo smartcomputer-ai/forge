@@ -25,6 +25,31 @@ pub struct McpServerView {
     pub updated_at_ms: i64,
 }
 
+/// Read-only authentication discovery for a prospective MCP endpoint. A
+/// missing OAuth result is deliberately inconclusive: the server may be
+/// public, use bearer auth, or expose OAuth metadata only through an explicit
+/// URL. No catalog or auth records are created by this probe.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct McpServerAuthDiscoverParams {
+    pub server_url: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct McpOAuthDiscoveryView {
+    pub resource: String,
+    #[serde(default)]
+    pub authorization_servers: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct McpServerAuthDiscoverResponse {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oauth: Option<McpOAuthDiscoveryView>,
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub enum RemoteMcpTransport {

@@ -780,6 +780,23 @@
         ],
         "type": "object"
       },
+      "AgentApiOutcomeOfMcpServerAuthDiscoverResponse": {
+        "properties": {
+          "notifications": {
+            "items": {
+              "$ref": "#/components/schemas/AgentNotification"
+            },
+            "type": "array"
+          },
+          "result": {
+            "$ref": "#/components/schemas/McpServerAuthDiscoverResponse"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "type": "object"
+      },
       "AgentApiOutcomeOfMcpServerDeleteResponse": {
         "properties": {
           "notifications": {
@@ -5653,6 +5670,51 @@
             "format": "uint32",
             "minimum": 0,
             "type": "integer"
+          }
+        },
+        "type": "object"
+      },
+      "McpOAuthDiscoveryView": {
+        "properties": {
+          "authorizationServers": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "resource": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "resource"
+        ],
+        "type": "object"
+      },
+      "McpServerAuthDiscoverParams": {
+        "description": "Read-only authentication discovery for a prospective MCP endpoint. A\nmissing OAuth result is deliberately inconclusive: the server may be\npublic, use bearer auth, or expose OAuth metadata only through an explicit\nURL. No catalog or auth records are created by this probe.",
+        "properties": {
+          "serverUrl": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "serverUrl"
+        ],
+        "type": "object"
+      },
+      "McpServerAuthDiscoverResponse": {
+        "properties": {
+          "oauth": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/McpOAuthDiscoveryView"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "type": "object"
@@ -13139,6 +13201,27 @@
         }
       },
       "summary": "Create or replace an MCP server record"
+    },
+    {
+      "description": "Looks for standards-based OAuth protected-resource metadata without creating a server, OAuth client, flow, or grant. An absent OAuth result is inconclusive and callers must allow manual auth selection.",
+      "name": "mcp/servers/auth/discover",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "params",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/McpServerAuthDiscoverParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/AgentApiOutcomeOfMcpServerAuthDiscoverResponse"
+        }
+      },
+      "summary": "Discover MCP server authentication"
     },
     {
       "description": "Returns one catalog document with defaults, auth policy, non-secret grant binding, status, and revision; no credential value is exposed.",

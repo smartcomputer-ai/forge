@@ -63,6 +63,7 @@ export const METHODS = [
   "vfs/workspaces/update",
   "vfs/workspaces/delete",
   "mcp/servers/put",
+  "mcp/servers/auth/discover",
   "mcp/servers/read",
   "mcp/servers/list",
   "mcp/servers/delete",
@@ -389,6 +390,11 @@ export const METHOD_INFO = {
     scope: "universe",
     summary: "Create or replace an MCP server record",
     description: "Stores the complete universe catalog document, including its optional universe auth-grant credential. Use expectedRevision when replacing; token material is never accepted or returned.",
+  },
+  "mcp/servers/auth/discover": {
+    scope: "universe",
+    summary: "Discover MCP server authentication",
+    description: "Looks for standards-based OAuth protected-resource metadata without creating a server, OAuth client, flow, or grant. An absent OAuth result is inconclusive and callers must allow manual auth selection.",
   },
   "mcp/servers/read": {
     scope: "universe",
@@ -1096,6 +1102,15 @@ export interface MethodMap {
   "mcp/servers/put": {
     params: Api.McpServerPutParams;
     result: Api.AgentApiOutcomeOfMcpServerPutResponse;
+  };
+  /**
+   * Discover MCP server authentication
+   *
+   * Looks for standards-based OAuth protected-resource metadata without creating a server, OAuth client, flow, or grant. An absent OAuth result is inconclusive and callers must allow manual auth selection.
+   */
+  "mcp/servers/auth/discover": {
+    params: Api.McpServerAuthDiscoverParams;
+    result: Api.AgentApiOutcomeOfMcpServerAuthDiscoverResponse;
   };
   /**
    * Read an MCP server record
@@ -1876,6 +1891,14 @@ export const rpc = {
    */
   mcpServersPut(client: RpcCaller, params: Api.McpServerPutParams): Promise<Api.AgentApiOutcomeOfMcpServerPutResponse> {
     return client.call("mcp/servers/put", params);
+  },
+  /**
+   * Discover MCP server authentication
+   *
+   * Looks for standards-based OAuth protected-resource metadata without creating a server, OAuth client, flow, or grant. An absent OAuth result is inconclusive and callers must allow manual auth selection.
+   */
+  mcpServersAuthDiscover(client: RpcCaller, params: Api.McpServerAuthDiscoverParams): Promise<Api.AgentApiOutcomeOfMcpServerAuthDiscoverResponse> {
+    return client.call("mcp/servers/auth/discover", params);
   },
   /**
    * Read an MCP server record

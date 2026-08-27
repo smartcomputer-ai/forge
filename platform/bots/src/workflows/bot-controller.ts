@@ -27,6 +27,7 @@ import {
   BOT_EVENT_SIGNAL,
   BOT_PUSHED_TOOL_IDS,
   BOT_SESSION_DECLARATION_MISMATCH,
+  BOT_SESSION_PROFILE_UNAPPLICABLE,
   BOT_SESSION_ROTATE_SIGNAL,
   BOT_STATE_QUERY,
   BOT_TOOLS_REVISION,
@@ -580,11 +581,17 @@ export async function botControllerWorkflowV1(
     lastError,
   }));
 
+  /**
+   * The session cannot be brought in line in place — its tool declarations
+   * are immutable, or its pinned provider api kind refuses the new profile —
+   * so the controller continues in a successor session.
+   */
   function isDeclarationMismatch(error: unknown): boolean {
     return (
       error instanceof ActivityFailure &&
       error.cause instanceof ApplicationFailure &&
-      error.cause.type === BOT_SESSION_DECLARATION_MISMATCH
+      (error.cause.type === BOT_SESSION_DECLARATION_MISMATCH ||
+        error.cause.type === BOT_SESSION_PROFILE_UNAPPLICABLE)
     );
   }
 

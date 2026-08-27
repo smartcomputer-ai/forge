@@ -1,27 +1,19 @@
-import { useState, type ReactNode } from "react";
-import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useState } from "react";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
+  Activity,
   ArrowUpRight,
+  ChevronDown,
   ChevronRight,
-  Inbox,
-  LayoutDashboard,
+  Copy,
   LoaderCircle,
+  Pause,
+  Play,
   RotateCcw,
-  Settings2,
-  Webhook,
+  SlidersHorizontal,
 } from "lucide-react";
-import { Link, NavLink, useNavigate } from "react-router-dom";
-import {
-  api,
-  botLabel,
-  type Bot,
-  type BotEventEnvelope,
-  type BotEventPage,
-  type BotRecentEvent,
-  type BotLineage,
-  type BotState,
-  type ProfileDocument,
-} from "@/api";
+import { NavLink, useNavigate } from "react-router-dom";
+import { api, botLabel, type Bot, type BotLineage, type BotState } from "@/api";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -31,21 +23,100 @@ import {
   AlertDialogFooter,
   AlertDialogHeader,
   AlertDialogTitle,
-  AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
-import { Badge } from "@/components/ui/badge";
-import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { BotEnvironmentCard } from "./environment-card";
-import { BotSettingsDialog } from "./settings-dialog";
-import { SendEventDialog } from "./send-event-dialog";
-import { BotStatusBadge, DetailSection, KeyValue } from "./status";
-import { TriggersSection, type BotEnvStatus } from "./triggers";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuGroup,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { cn } from "@/lib/utils";
+import { BotActivity } from "./activity";
+import { BotChat } from "./chat";
+import { BotAvatar } from "./face";
+import { idIsRedundant } from "./identity";
+import { BotSetup } from "./setup";
+import { StatusDot, botStatus, relativeTime } from "./status";
 
-type BotView = "overview" | "events";
+export type BotView = "chat" | "activity" | "setup";
 
-/** Bot workspace: live routing state plus paginated event history with outcomes. */
+/** Threads shown as tabs before the rest fold into the +N menu. */
+const INLINE_THREADS = 3;
+
+export interface ConversationTab {
+  id: string;
+  label: string;
+  hint: string;
+  live: boolean;
+  closed: boolean;
+  kind: "main" | "thread" | "subagent";
+  lastActiveMs?: number;
+}
+
+/**
+ * A bot's conversations as tabs: Main, then the most recently active
+ * threads inline, everything else — older threads and sub-agents under
+ * their parent — behind +N. The selected conversation is always inline, so
+ * a deep link never lands in the overflow.
+ */
+export function conversationTabs(
+  state: BotState | undefined,
+  lineage: BotLineage | undefined,
+  selectedId: string | undefined,
+): { inline: ConversationTab[]; overflow: ConversationTab[] } {
+  if (!state) return { inline: [], overflow: [] };
+  const active = new Set(state.activeDeliveries.map((delivery) => delivery.sessionId));
+  const labelOf = new Map(state.sessions.map((session) => [session.sessionId, session.kind === "main" ? "Main" : session.label]));
+  const main: ConversationTab = {
+    id: state.sessionId,
+    label: "Main",
+    hint: state.sessionReady ? "the bot's desk" : state.controllerStatus === "degraded" ? "needs attention" : "starting…",
+    live: active.has(state.sessionId),
+    closed: false,
+    kind: "main",
+  };
+  const threads: ConversationTab[] = state.sessions
+    .filter((session) => session.kind !== "main")
+    .sort((left, right) => (right.lastActiveAtMs ?? 0) - (left.lastActiveAtMs ?? 0))
+    .map((session) => ({
+      id: session.sessionId,
+      label: session.label,
+      hint: session.kind === "keyed" ? "thread" : "one-off",
+      live: active.has(session.sessionId),
+      closed: false,
+      kind: "thread",
+      ...(session.lastActiveAtMs === undefined ? {} : { lastActiveMs: session.lastActiveAtMs }),
+    }));
+  const subagents: ConversationTab[] = Object.entries(lineage ?? {}).flatMap(([parentId, entry]) =>
+    entry.children.map((child) => ({
+      id: child.id,
+      label: child.displayName ?? child.id.slice(0, 14),
+      hint: `sub-agent of ${labelOf.get(parentId) ?? parentId.slice(0, 12)}`,
+      live: child.lifecycleStatus !== "closed",
+      closed: child.lifecycleStatus === "closed",
+      kind: "subagent" as const,
+      lastActiveMs: child.updatedAtMs,
+    })),
+  );
+  const inline = [main, ...threads.slice(0, INLINE_THREADS)];
+  const overflow = [...threads.slice(INLINE_THREADS), ...subagents];
+  if (selectedId !== undefined && !inline.some((tab) => tab.id === selectedId)) {
+    const index = overflow.findIndex((tab) => tab.id === selectedId);
+    if (index >= 0) inline.push(...overflow.splice(index, 1));
+    else inline.push({ id: selectedId, label: `${selectedId.slice(0, 14)}…`, hint: "conversation", live: false, closed: false, kind: "thread" });
+  }
+  return { inline, overflow };
+}
+
+/**
+ * One bot: a header that answers "is it working?", then one row of tabs —
+ * its conversations, then Activity and Setup. Nothing about a bot lives
+ * elsewhere, and there is no third level.
+ */
 export function BotDetail({
   slug,
   bot,
@@ -53,6 +124,8 @@ export function BotDetail({
   lineage,
   stateError,
   manage,
+  view,
+  sessionId,
 }: {
   slug: string;
   bot: Bot;
@@ -60,555 +133,338 @@ export function BotDetail({
   lineage?: BotLineage;
   stateError?: string;
   manage: boolean;
+  view: BotView;
+  sessionId: string | undefined;
 }) {
-  const [settingsOpen, setSettingsOpen] = useState(false);
-  const [eventOpen, setEventOpen] = useState(false);
-  const [view, setView] = useState<BotView>("overview");
   const queryClient = useQueryClient();
-  const navigate = useNavigate();
-  const eventPages = useInfiniteQuery({
-    queryKey: ["bot-events", bot.universeId, bot.botId],
-    queryFn: ({ pageParam }) =>
-      api<BotEventPage>(
-        "GET",
-        `/api/v1/universes/${bot.universeId}/bots/${bot.botId}/events?limit=50${
-          pageParam ? `&cursor=${encodeURIComponent(pageParam)}` : ""
-        }`,
-      ),
-    initialPageParam: "",
-    getNextPageParam: (last) => last.nextCursor ?? undefined,
-    enabled: view === "events",
-  });
-  const events = eventPages.data?.pages.flatMap((page) => page.events) ?? [];
-  const replay = useMutation({
-    mutationFn: (eventId: string) =>
-      api("POST", `/api/v1/universes/${bot.universeId}/bots/${bot.botId}/events/replay`, { eventId }),
-    onSuccess: async () => {
+  const base = `/u/${slug}/bots/${bot.botId}`;
+  const status = botStatus(bot, state, stateError);
+  const selected = view === "chat" ? (sessionId ?? state?.sessionId) : undefined;
+  const { inline, overflow } = conversationTabs(state, lineage, view === "chat" ? selected : undefined);
+  const sessionHref = (id: string) => (id === state?.sessionId ? base : `${base}/chat/${encodeURIComponent(id)}`);
+  const togglePause = useMutation({
+    mutationFn: () =>
+      api<{ bot: Bot }>("PATCH", `/api/v1/universes/${bot.universeId}/bots/${bot.botId}`, {
+        enabled: !bot.enabled,
+      }),
+    onSuccess: async ({ bot: updated }) => {
+      queryClient.setQueryData(["bot", bot.universeId, bot.botId], { bot: updated });
       await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["bots", bot.universeId] }),
         queryClient.invalidateQueries({ queryKey: ["bot-state", bot.universeId, bot.botId] }),
-        queryClient.invalidateQueries({ queryKey: ["bot-events", bot.universeId, bot.botId] }),
       ]);
     },
   });
+  const pending = state?.pendingEventCount ?? 0;
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-      <div className="flex h-12 shrink-0 items-center gap-2 border-b px-4">
+      <div className="flex h-12 shrink-0 items-center gap-2.5 border-b px-4">
         <NavLink to={`/u/${slug}/bots`} className="md:hidden" aria-label="Back to bots">
           <ChevronRight className="size-4 rotate-180" />
         </NavLink>
+        <BotAvatar botId={bot.botId} size={26} />
         <span className="min-w-0 truncate text-sm font-semibold">{botLabel(bot)}</span>
-        {bot.displayName && (
+        {!idIsRedundant(bot.displayName, bot.botId) && (
           <code className="hidden truncate text-xs text-muted-foreground sm:inline">{bot.botId}</code>
         )}
-        <BotStatusBadge status={state?.controllerStatus} />
-        {manage && (
+        <span
+          className={cn(
+            "flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground",
+            status.tone === "attention" && "text-destructive",
+          )}
+          title={stateError ?? state?.lastError ?? undefined}
+        >
+          <StatusDot tone={status.tone} />
+          <span className="truncate">{status.label}</span>
+        </span>
+        {manage && !bot.closedAt && (
           <div className="ml-auto flex items-center gap-1">
-            <Button variant="outline" size="xs" onClick={() => setEventOpen(true)}>
-              <Webhook data-icon="inline-start" /> Send event
-            </Button>
-            <Button variant="ghost" size="icon-sm" onClick={() => setSettingsOpen(true)} aria-label="Bot settings">
-              <Settings2 />
+            <Button
+              variant="outline"
+              size="xs"
+              disabled={togglePause.isPending}
+              onClick={() => togglePause.mutate()}
+              title={bot.enabled ? "Pause: schedules stop and events wait; nothing is lost." : "Resume schedules and delivery."}
+            >
+              {togglePause.isPending ? (
+                <LoaderCircle data-icon="inline-start" className="animate-spin" />
+              ) : bot.enabled ? (
+                <Pause data-icon="inline-start" />
+              ) : (
+                <Play data-icon="inline-start" />
+              )}
+              {bot.enabled ? "Pause" : "Resume"}
             </Button>
           </div>
         )}
       </div>
-      <div className="shrink-0 border-b px-4">
-        <Tabs value={view} onValueChange={(next) => setView(next as BotView)} className="gap-0">
-          <TabsList variant="line" className="h-10">
-            <TabsTrigger value="overview"><LayoutDashboard /> Overview</TabsTrigger>
-            <TabsTrigger value="events">
-              <Inbox /> Events
-              {state && state.pendingEventCount > 0 && <Badge variant="outline">{state.pendingEventCount}</Badge>}
-            </TabsTrigger>
-          </TabsList>
-        </Tabs>
-      </div>
-      <div className="min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto">
-        <div className="mx-auto w-full min-w-0 max-w-5xl px-4 py-6 text-sm md:px-8">
-          {view === "overview" ? (
-            <BotOverview
-              slug={slug}
-              lineage={lineage}
-              bot={bot}
-              state={state}
-              stateError={stateError}
-              manage={manage}
-            />
-          ) : (
-            <EventHistory
-              events={events}
-              state={state}
-              loading={eventPages.isLoading}
-              error={eventPages.error?.message}
-              hasMore={eventPages.hasNextPage}
-              loadingMore={eventPages.isFetchingNextPage}
-              onLoadMore={() => void eventPages.fetchNextPage()}
-              onReplay={manage ? (eventId) => replay.mutate(eventId) : undefined}
-            />
+      {togglePause.error && (
+        <p className="border-b bg-destructive/10 px-4 py-1.5 text-xs text-destructive">{togglePause.error.message}</p>
+      )}
+      <nav className="flex h-10 shrink-0 items-stretch gap-0.5 overflow-x-auto border-b px-2" aria-label="Bot conversations and sections">
+        {state ? (
+          inline.map((tab) => {
+            const active = view === "chat" && selected === tab.id;
+            return (
+              <span
+                key={tab.id}
+                className={cn(
+                  "-mb-px flex shrink-0 items-stretch border-b-2",
+                  active ? "border-primary" : "border-transparent",
+                )}
+              >
+                <NavLink
+                  to={sessionHref(tab.id)}
+                  end
+                  title={tab.hint}
+                  className={cn(
+                    "flex max-w-48 items-center gap-1.5 px-2.5 pt-2.5 pb-2 text-sm whitespace-nowrap",
+                    active ? "pr-1 font-medium text-foreground" : "text-muted-foreground hover:text-foreground",
+                  )}
+                >
+                  <StatusDot tone={tab.closed ? "closed" : tab.live ? "live" : "idle"} />
+                  <span className={cn("truncate", tab.kind === "subagent" && "text-muted-foreground")}>
+                    {tab.kind === "subagent" ? `↳ ${tab.label}` : tab.label}
+                  </span>
+                  {tab.kind === "main" && !state.sessionReady && (
+                    <span className={cn("text-[11px]", state.controllerStatus === "degraded" ? "text-destructive" : "text-muted-foreground")}>
+                      {state.controllerStatus === "degraded" ? "needs attention" : "starting…"}
+                    </span>
+                  )}
+                </NavLink>
+                {active && (
+                  <ConversationMenu slug={slug} bot={bot} state={state} sessionId={tab.id} tab={tab} manage={manage} />
+                )}
+              </span>
+            );
+          })
+        ) : (
+          <span className="self-center px-2 text-xs text-muted-foreground">
+            {stateError ? "Controller unavailable" : "Starting…"}
+          </span>
+        )}
+        {overflow.length > 0 && <OverflowTabs tabs={overflow} sessionHref={sessionHref} />}
+        <span className="my-2.5 mx-1.5 w-px shrink-0 bg-border" aria-hidden />
+        <TabLink to={`${base}/activity`} active={view === "activity"}>
+          <Activity className="size-4" />
+          Activity
+          {pending > 0 && (
+            <span className="rounded-full bg-primary px-1.5 text-[10px] font-semibold text-primary-foreground">{pending}</span>
           )}
-        </div>
-      </div>
-      {manage && (
-        <>
-          <BotSettingsDialog
-            universeId={bot.universeId}
-            bot={bot}
-            open={settingsOpen}
-            onOpenChange={setSettingsOpen}
-            onDeleted={() => navigate(`/u/${slug}/bots`)}
-          />
-          <SendEventDialog universeId={bot.universeId} botId={bot.botId} open={eventOpen} onOpenChange={setEventOpen} />
-        </>
+        </TabLink>
+        <TabLink to={`${base}/setup`} active={view === "setup"}>
+          <SlidersHorizontal className="size-4" />
+          Setup
+        </TabLink>
+      </nav>
+      {view === "chat" ? (
+        <BotChat slug={slug} bot={bot} state={state} stateError={stateError} sessionId={sessionId} />
+      ) : view === "activity" ? (
+        <BotActivity slug={slug} bot={bot} state={state} stateError={stateError} manage={manage} />
+      ) : (
+        <BotSetup slug={slug} bot={bot} state={state} manage={manage} />
       )}
     </div>
   );
 }
 
-function BotOverview({
+function TabLink({
+  to,
+  active,
+  title,
+  children,
+}: {
+  to: string;
+  active: boolean;
+  title?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <NavLink
+      to={to}
+      end
+      title={title}
+      className={cn(
+        "-mb-px flex max-w-48 shrink-0 items-center gap-1.5 border-b-2 px-2.5 pt-2.5 pb-2 text-sm whitespace-nowrap",
+        active
+          ? "border-primary font-medium text-foreground"
+          : "border-transparent text-muted-foreground hover:text-foreground",
+      )}
+    >
+      {children}
+    </NavLink>
+  );
+}
+
+function OverflowTabs({ tabs, sessionHref }: { tabs: ConversationTab[]; sessionHref: (id: string) => string }) {
+  const navigate = useNavigate();
+  const threads = tabs.filter((tab) => tab.kind !== "subagent");
+  const subagents = tabs.filter((tab) => tab.kind === "subagent");
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger
+        render={
+          <button
+            type="button"
+            className="-mb-px flex shrink-0 items-center gap-1 border-b-2 border-transparent px-2 pt-2.5 pb-2 text-sm text-muted-foreground hover:text-foreground"
+          />
+        }
+      >
+        +{tabs.length}
+        <ChevronDown className="size-3.5" />
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" className="max-h-96 min-w-64 overflow-y-auto">
+        {threads.length > 0 && (
+          <DropdownMenuGroup>
+            <DropdownMenuLabel>Threads</DropdownMenuLabel>
+            {threads.map((tab) => (
+              <OverflowItem key={tab.id} tab={tab} onSelect={() => navigate(sessionHref(tab.id))} />
+            ))}
+          </DropdownMenuGroup>
+        )}
+        {threads.length > 0 && subagents.length > 0 && <DropdownMenuSeparator />}
+        {subagents.length > 0 && (
+          <DropdownMenuGroup>
+            <DropdownMenuLabel>Sub-agents</DropdownMenuLabel>
+            {subagents.map((tab) => (
+              <OverflowItem key={tab.id} tab={tab} onSelect={() => navigate(sessionHref(tab.id))} />
+            ))}
+          </DropdownMenuGroup>
+        )}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+function OverflowItem({ tab, onSelect }: { tab: ConversationTab; onSelect: () => void }) {
+  return (
+    <DropdownMenuItem onClick={onSelect} className="gap-2">
+      <StatusDot tone={tab.closed ? "closed" : tab.live ? "live" : "idle"} />
+      <span className="min-w-0 flex-1">
+        <span className={cn("block truncate", tab.closed && "text-muted-foreground")}>{tab.label}</span>
+        <span className="block truncate text-[11px] text-muted-foreground">{tab.hint}</span>
+      </span>
+      {tab.lastActiveMs !== undefined && (
+        <span className="shrink-0 text-[11px] text-muted-foreground">{relativeTime(tab.lastActiveMs)}</span>
+      )}
+    </DropdownMenuItem>
+  );
+}
+
+/**
+ * What the session header used to carry, as a chevron on the active
+ * conversation's tab — next to the thing it acts on: the id, the full-page
+ * view, and (for the bot's own sessions) a reset. Configuration is not
+ * here on purpose: a bot's sessions are configured through Setup (profile
+ * and brief), and a per-session edit would drift from it unseen — the
+ * Sessions page keeps that escape hatch under its "Managed by" framing.
+ */
+function ConversationMenu({
   slug,
   bot,
   state,
-  lineage,
-  stateError,
+  sessionId,
+  tab,
   manage,
 }: {
   slug: string;
   bot: Bot;
-  state?: BotState;
-  lineage?: BotLineage;
-  stateError?: string;
+  state: BotState;
+  sessionId: string;
+  tab: ConversationTab | undefined;
   manage: boolean;
 }) {
-  // The profile's environment intent decides whether exec pollers (and
-  // environment tools) have a stable machine to run on; surface it here so
-  // an operator learns about the gap before a trigger fails.
-  const profile = useQuery({
-    queryKey: ["profile", bot.universeId, bot.profileId],
-    // The route returns the profile document directly (not wrapped).
-    queryFn: () =>
-      api<ProfileDocument>(
-        "GET",
-        `/api/v1/universes/${bot.universeId}/profiles/${encodeURIComponent(bot.profileId)}`,
-      ),
-    staleTime: 60_000,
-    retry: false,
-  });
-  // Unreadable profile (e.g. a viewer without write access) stays
-  // "unknown": no warning banner, and the exec-poll card explains itself.
-  const env: BotEnvStatus =
-    profile.isLoading || profile.isError || profile.data === undefined
-      ? { kind: "unknown" }
-      : profile.data.environment == null
-        ? { kind: "none" }
-        : profile.data.environment.type === "existing"
-          ? { kind: "existing", environmentId: profile.data.environment.environmentId }
-          : { kind: "provision" };
-  return (
-    <div className="grid gap-10">
-      <div className="grid min-w-0 gap-10 lg:grid-cols-2">
-        <DetailSection title="Bot" description="Configuration and current controller health.">
-          <KeyValue label="Profile" value={bot.profileId} />
-          <KeyValue label="Budget" value={budgetLabel(bot.runsPerDay, state)} />
-          <KeyValue label="Processed" value={String(state?.eventsProcessed ?? 0)} />
-          {bot.closedAt ? (
-            <p className="rounded-md bg-muted p-2 text-xs text-muted-foreground">
-              Closed {new Date(bot.closedAt).toLocaleString()}: sessions and schedules were
-              released and events are refused. The record and its history stay until the bot is
-              deleted.
-            </p>
-          ) : (
-            !bot.enabled && (
-              <p className="rounded-md bg-muted p-2 text-xs text-muted-foreground">
-                Disabled: schedules are paused and pending events wait.
-              </p>
-            )
-          )}
-          {stateError && (
-            <p className="rounded-md bg-destructive/10 p-2 text-xs text-destructive">
-              Controller unavailable: {stateError}
-            </p>
-          )}
-          {state?.lastError && (
-            <p className="rounded-md bg-destructive/10 p-2 text-xs text-destructive">{state.lastError}</p>
-          )}
-          {env.kind === "none" && (
-            <p className="rounded-md border border-dashed p-2 text-xs text-muted-foreground">
-              Profile <code>{bot.profileId}</code> has no environment: environment tools and
-              command (exec) pollers are unavailable to this bot.
-            </p>
-          )}
-          {env.kind === "provision" && (
-            <p className="rounded-md bg-amber-500/10 p-2 text-xs text-amber-700 dark:text-amber-400">
-              Profile <code>{bot.profileId}</code> provisions a fresh environment per session
-              (a sandbox per event). Command (exec) pollers need a stable environment — a
-              per-session machine closes with its session and would strand the trigger. Point
-              the profile at an existing environment to author pollers.
-            </p>
-          )}
-        </DetailSection>
-
-        {env.kind === "existing" && (
-          <BotEnvironmentCard
-            slug={slug}
-            universeId={bot.universeId}
-            environmentId={env.environmentId}
-            manage={manage}
-          />
-        )}
-
-        <DetailSection title="Inbox now" description="Events waiting, coalescing, or actively delivering.">
-          {state ? (
-            <>
-              <KeyValue label="Pending" value={String(state.pendingEventCount)} />
-              <KeyValue label="Deliveries" value={String(state.pendingDeliveryCount)} />
-              {state.buffers.map((buffer) => (
-                <p key={buffer.key} className="rounded-md border border-dashed p-2 text-xs text-muted-foreground">
-                  Coalescing {buffer.count} event(s) · flushes {flushLabel(buffer.flushAtMs)}
-                </p>
-              ))}
-              {state.activeDeliveries.map((active) => (
-                <EventRow
-                  key={active.id}
-                  id={active.id}
-                  status="active"
-                  eventCount={active.eventCount}
-                  summary={active.sessionId === state.sessionId ? undefined : `→ ${active.sessionId}`}
-                />
-              ))}
-              {state.pendingEventCount === 0 && state.pendingDeliveryCount === 0 &&
-                state.buffers.length === 0 && state.activeDeliveries.length === 0 && (
-                  <p className="text-xs text-muted-foreground">Inbox is clear.</p>
-                )}
-            </>
-          ) : (
-            <p className="text-xs text-muted-foreground">Waiting for the controller…</p>
-          )}
-        </DetailSection>
-      </div>
-
-      {bot.brief && (
-        <DetailSection title="Standing brief" description="The persistent instruction applied to every event this bot handles.">
-          <div className="rounded-lg border bg-muted/30 p-4">
-            <p className="whitespace-pre-wrap text-sm leading-relaxed text-foreground">{bot.brief}</p>
-          </div>
-        </DetailSection>
-      )}
-
-      <DetailSection
-        title="Sessions"
-        description="Runtime sessions currently managed by this bot, with the sub-agents they delegated to."
-      >
-        {state ? state.sessions.map((session) => {
-          const isMain = session.kind === "main";
-          const ready = !isMain || state.sessionReady;
-          const rotating = state.rotatingSessionIds?.includes(session.sessionId) ?? false;
-          const descendants = lineage?.[session.sessionId];
-          return (
-            <div
-              key={session.sessionId}
-              className="min-w-0 max-w-full overflow-hidden rounded-md border p-2 text-xs"
-            >
-              <div className="flex min-w-0 items-center gap-2">
-                <span className="min-w-0 flex-1">
-                  <code className="block truncate">{session.sessionId}</code>
-                  <span className="text-muted-foreground">
-                    {isMain ? "Main session" : session.kind === "keyed" ? `Key: ${session.label}` : session.label}
-                  </span>
-                </span>
-                {descendants && descendants.total > 0 && (
-                  <Badge variant="outline" title="Sub-agent sessions under this session: open / lifetime">
-                    {descendants.open}/{descendants.total} sub-agents
-                  </Badge>
-                )}
-                <Badge variant={ready && !rotating ? "secondary" : "outline"}>
-                  {rotating ? "resetting" : ready ? "ready" : "starting"}
-                </Badge>
-                {ready && (
-                  <Button variant="outline" size="xs" render={<Link to={`/u/${slug}/sessions/${session.sessionId}`} />}>
-                    Open <ArrowUpRight data-icon="inline-end" />
-                  </Button>
-                )}
-                {manage && (
-                  <SessionResetButton
-                    universeId={bot.universeId}
-                    botId={bot.botId}
-                    sessionId={session.sessionId}
-                    label={isMain ? "main session" : session.label}
-                    rotating={rotating}
-                  />
-                )}
-              </div>
-              {descendants && descendants.children.length > 0 && (
-                <ul className="mt-2 flex flex-wrap gap-1 border-t pt-2">
-                  {descendants.children.map((child) => (
-                    <li key={child.id}>
-                      <Link
-                        to={`/u/${slug}/sessions/${child.id}`}
-                        className={cn(
-                          "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 font-mono hover:bg-muted",
-                          child.lifecycleStatus === "closed" && "text-muted-foreground",
-                        )}
-                        title={`${child.id} · ${child.profileId ?? "sub-agent"} · depth ${child.depth} · ${child.lifecycleStatus}`}
-                      >
-                        {"↳ ".repeat(Math.max(0, child.depth - 1))}
-                        {child.displayName ?? child.id.slice(0, 14)}
-                        {child.lifecycleStatus !== "closed" ? " ●" : ""}
-                      </Link>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </div>
-          );
-        }) : <p className="text-xs text-muted-foreground">Waiting for the controller…</p>}
-      </DetailSection>
-      <TriggersSection universeId={bot.universeId} botId={bot.botId} manage={manage} env={env} />
-    </div>
-  );
-}
-
-function SessionResetButton({
-  universeId,
-  botId,
-  sessionId,
-  label,
-  rotating,
-}: {
-  universeId: string;
-  botId: string;
-  sessionId: string;
-  label: string;
-  rotating: boolean;
-}) {
   const queryClient = useQueryClient();
-  const [open, setOpen] = useState(false);
+  const navigate = useNavigate();
+  const [resetOpen, setResetOpen] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const managedHere = state.sessions.some((entry) => entry.sessionId === sessionId);
+  const rotating = state.rotatingSessionIds?.includes(sessionId) ?? false;
   const reset = useMutation({
     mutationFn: () =>
       api(
         "POST",
-        `/api/v1/universes/${universeId}/bots/${botId}/sessions/${encodeURIComponent(sessionId)}/rotate`,
+        `/api/v1/universes/${bot.universeId}/bots/${bot.botId}/sessions/${encodeURIComponent(sessionId)}/rotate`,
       ),
     onSuccess: () => {
-      setOpen(false);
-      return queryClient.invalidateQueries({ queryKey: ["bot-state", universeId, botId] });
+      setResetOpen(false);
+      return queryClient.invalidateQueries({ queryKey: ["bot-state", bot.universeId, bot.botId] });
     },
   });
-  const pending = rotating || reset.isPending;
+  const label = tab?.kind === "main" ? "Main" : (tab?.label ?? "this conversation");
   return (
-    <div className="flex shrink-0 flex-col items-end gap-1">
-      <AlertDialog
-        open={open}
-        onOpenChange={(next) => {
-          setOpen(next);
-          if (next) reset.reset();
-        }}
-      >
-        <AlertDialogTrigger
+    <>
+      <DropdownMenu>
+        <DropdownMenuTrigger
           render={
-            <Button
-              variant="ghost"
-              size="icon-xs"
-              disabled={pending}
-              aria-label={`Reset ${label}`}
-              title="Close this session and continue with a fresh generation"
+            <button
+              type="button"
+              aria-label="Conversation menu"
+              title="Conversation menu"
+              className="flex items-center rounded-sm pr-2 pl-0.5 text-muted-foreground hover:text-foreground"
             />
           }
         >
-          {pending ? <LoaderCircle className="animate-spin" /> : <RotateCcw />}
-        </AlertDialogTrigger>
+          {rotating ? <LoaderCircle className="size-3.5 animate-spin" /> : <ChevronDown className="size-3.5" />}
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="start" className="min-w-56">
+          {/* A label is a group label in base-ui: it must sit inside a group. */}
+          <DropdownMenuGroup>
+            <DropdownMenuLabel className="truncate font-mono text-xs font-normal text-muted-foreground">
+              {sessionId}
+            </DropdownMenuLabel>
+            <DropdownMenuItem
+              onClick={() => {
+                void navigator.clipboard
+                  .writeText(sessionId)
+                  .then(() => setCopied(true))
+                  .catch(() => undefined);
+                window.setTimeout(() => setCopied(false), 1_500);
+              }}
+            >
+              <Copy /> {copied ? "Copied" : "Copy session id"}
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => navigate(`/u/${slug}/sessions/${sessionId}`)}>
+              <ArrowUpRight /> Open on the Sessions page
+            </DropdownMenuItem>
+          </DropdownMenuGroup>
+          {manage && managedHere && !bot.closedAt && (
+            <>
+              <DropdownMenuSeparator />
+              <DropdownMenuGroup>
+                <DropdownMenuItem disabled={rotating} onClick={() => setResetOpen(true)}>
+                  <RotateCcw /> Reset {label}…
+                </DropdownMenuItem>
+              </DropdownMenuGroup>
+            </>
+          )}
+        </DropdownMenuContent>
+      </DropdownMenu>
+      <AlertDialog
+        open={resetOpen}
+        onOpenChange={(open) => {
+          setResetOpen(open);
+          if (open) reset.reset();
+        }}
+      >
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Reset {label}?</AlertDialogTitle>
             <AlertDialogDescription>
-              The current session and its open sub-agents will close, and the bot will continue
-              in a fresh session with no prior conversation history. Active work finishes first;
-              already admitted events remain queued.
+              The conversation and its open sub-agents close, and the bot continues in a fresh one
+              with no prior history. Active work finishes first; events already admitted stay queued.
             </AlertDialogDescription>
           </AlertDialogHeader>
+          {reset.error && <p className="text-sm text-destructive">{reset.error.message}</p>}
           <AlertDialogFooter>
-            <AlertDialogCancel>Keep session</AlertDialogCancel>
+            <AlertDialogCancel>Keep</AlertDialogCancel>
             <AlertDialogAction disabled={reset.isPending} onClick={() => reset.mutate()}>
-              {reset.isPending ? "Resetting…" : "Reset session"}
+              {reset.isPending ? "Resetting…" : "Reset"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
-      {reset.error && (
-        <span className="max-w-48 text-right text-xs text-destructive">{reset.error.message}</span>
-      )}
-    </div>
+    </>
   );
-}
-
-function EventHistory({
-  events,
-  state,
-  loading,
-  error,
-  hasMore,
-  loadingMore,
-  onLoadMore,
-  onReplay,
-}: {
-  events: BotEventEnvelope[];
-  state?: BotState;
-  loading: boolean;
-  error?: string;
-  hasMore: boolean;
-  loadingMore: boolean;
-  onLoadMore: () => void;
-  onReplay?: (eventId: string) => void;
-}) {
-  // Live controller state fills in rows whose stored outcome is still null
-  // (a delivery in flight); the stored outcome wins once written.
-  const decisions = new Map(state?.recentEvents.map((event) => [event.id, event]) ?? []);
-  const batchSizes = new Map<string, number>();
-  for (const event of events) {
-    if (event.deliveryId) batchSizes.set(event.deliveryId, (batchSizes.get(event.deliveryId) ?? 0) + 1);
-  }
-  return (
-    <DetailSection
-      title="Event history"
-      description="Every stored event envelope, newest first, with its outcome: what came of each event — the bot's decision, or the system's. Replay creates a new delivery from the same payload."
-    >
-      {loading && <p className="text-xs text-muted-foreground">Loading events…</p>}
-      {error && <p className="text-xs text-destructive">{error}</p>}
-      {events.map((event) => (
-        <StoredEventRow
-          key={event.id}
-          event={event}
-          decision={decisions.get(event.eventId)}
-          batchSize={event.deliveryId ? batchSizes.get(event.deliveryId) ?? 1 : 1}
-          onReplay={onReplay ? () => onReplay(event.eventId) : undefined}
-        />
-      ))}
-      {!loading && !error && events.length === 0 && <p className="text-xs text-muted-foreground">No events received yet.</p>}
-      {hasMore && <LoadMoreButton loading={loadingMore} onClick={onLoadMore} />}
-    </DetailSection>
-  );
-}
-
-function LoadMoreButton({ loading, onClick }: { loading: boolean; onClick: () => void }) {
-  return (
-    <Button variant="outline" size="sm" className="w-full" disabled={loading} onClick={onClick}>
-      {loading ? "Loading…" : "Load more"}
-    </Button>
-  );
-}
-
-function StoredEventRow({
-  event,
-  decision,
-  batchSize,
-  onReplay,
-}: {
-  event: BotEventEnvelope;
-  decision?: BotRecentEvent;
-  /** Visible events sharing this event's delivery; > 1 marks a coalesced batch. */
-  batchSize: number;
-  onReplay?: () => void;
-}) {
-  const outcome = event.outcome ?? decision?.outcome ?? null;
-  const detail = event.outcomeDetail ?? decision?.summary ?? decision?.failure;
-  const runId = event.runId ?? decision?.runId;
-  return (
-    <div className="rounded-md border p-3 text-xs">
-      <div className="flex min-w-0 items-center gap-2">
-        <code className="min-w-0 flex-1 truncate" title={event.eventId}>
-          {event.seq != null ? `#${event.seq}` : event.eventId}
-        </code>
-        {batchSize > 1 && (
-          <Badge variant="outline" title={event.deliveryId ?? undefined}>batch of {batchSize}</Badge>
-        )}
-        {runId && <code className="shrink-0 text-muted-foreground">{runId}</code>}
-        <Badge
-          variant={eventStatusVariant(outcome ?? undefined)}
-          title={event.resolvedAt ? `resolved ${timeLabel(event.resolvedAt)}` : undefined}
-        >
-          {outcome ? outcome.replaceAll("_", " ") : "pending"}
-        </Badge>
-        {onReplay && (
-          <Button variant="ghost" size="icon-xs" onClick={onReplay} aria-label="Replay event"><RotateCcw /></Button>
-        )}
-      </div>
-      <p className="mt-1 text-muted-foreground wrap-anywhere">
-        {event.kind} · {event.source} · received {timeLabel(event.receivedAt)}
-      </p>
-      {(event.sender || event.inReplyTo) && (
-        <p className="mt-1 flex flex-wrap gap-1">
-          {event.sender && <Badge variant="outline">from {event.sender}</Badge>}
-          {event.inReplyTo && (
-            <Badge variant="outline">
-              reply to #{event.inReplyTo.seq} at {event.inReplyTo.bot}
-            </Badge>
-          )}
-          {event.hops > 0 && <Badge variant="outline">{event.hops} hop{event.hops === 1 ? "" : "s"}</Badge>}
-        </p>
-      )}
-      {detail && <p className="mt-1 line-clamp-2 text-muted-foreground wrap-anywhere">{detail}</p>}
-      {decision?.usage && (
-        <p className="mt-1 text-muted-foreground">
-          {Math.round((decision.usage.cachedInputTokens / decision.usage.inputTokens) * 100)}% of{" "}
-          {decision.usage.inputTokens.toLocaleString()} prompt tokens cached
-        </p>
-      )}
-      {event.session && <p className="mt-1 truncate text-muted-foreground">Session: {event.session.label}</p>}
-    </div>
-  );
-}
-
-function EventRow({
-  id,
-  status,
-  eventCount,
-  summary,
-  onReplay,
-}: {
-  id: string;
-  status: string;
-  eventCount?: number;
-  summary?: string;
-  onReplay?: () => void;
-}) {
-  return (
-    <div className="rounded-md border p-2 text-xs">
-      <div className="flex min-w-0 items-center gap-2">
-        <code className="min-w-0 flex-1 truncate">{id}</code>
-        {eventCount !== undefined && eventCount > 1 && <Badge variant="outline">{eventCount} events</Badge>}
-        <Badge variant={eventStatusVariant(status)}>{status.replaceAll("_", " ")}</Badge>
-        {onReplay && <Button variant="ghost" size="icon-xs" onClick={onReplay} aria-label="Replay event"><RotateCcw /></Button>}
-      </div>
-      {summary && <p className="mt-1 line-clamp-2 text-muted-foreground wrap-anywhere">{summary}</p>}
-    </div>
-  );
-}
-
-function flushLabel(flushAtMs: number): string {
-  const deltaSeconds = Math.round((flushAtMs - Date.now()) / 1000);
-  if (deltaSeconds <= 0) return "now";
-  if (deltaSeconds < 120) return `in ${deltaSeconds}s`;
-  return `in ${Math.round(deltaSeconds / 60)}m`;
-}
-
-function eventStatusVariant(status: string | undefined): "destructive" | "secondary" | "outline" {
-  if (status === "run_failed" || status === "blocked") return "destructive";
-  if (status === "handled") return "secondary";
-  return "outline";
-}
-
-function timeLabel(iso: string): string {
-  const date = new Date(iso);
-  if (Number.isNaN(date.getTime())) return iso;
-  return date.toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
-}
-
-
-/** `runsPerDay` is spent by bot runs and by sub-agent sessions the runs delegate. */
-function budgetLabel(runsPerDay: number | null, state: BotState | null | undefined): string {
-  if (runsPerDay === null) return "Unlimited";
-  const runs = state?.runsToday ?? 0;
-  const descendants = state?.descendantsToday ?? 0;
-  const used = `${runs + descendants} / ${runsPerDay} today`;
-  return descendants > 0 ? `${used} (${runs} runs, ${descendants} sub-agents)` : `${used}`;
 }

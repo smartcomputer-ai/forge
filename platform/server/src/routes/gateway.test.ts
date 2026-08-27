@@ -3,6 +3,8 @@ import {
   credentialIdConflictMessage,
   environmentSecretGrantParams,
   gitHubAppProviderId,
+  mcpOAuthFlowCompletionError,
+  mcpServerInputWithOAuthGrant,
   modelProviderCredentialId,
   modelProviderCredentialView,
 } from "./gateway.js";
@@ -77,6 +79,59 @@ describe("github app provider ids", () => {
   it("derives a stable provider id from the numeric App ID", () => {
     expect(gitHubAppProviderId("123456")).toBe("github-app:123456");
     expect(gitHubAppProviderId(" 123456 ")).toBe("github-app:123456");
+  });
+});
+
+describe("MCP OAuth completion", () => {
+  const flow = {
+    flowId: "authflow_1",
+    clientId: "mcp:github",
+    providerId: "github",
+    status: "pending" as const,
+    expiresAtMs: 2_000,
+    createdAtMs: 1_000,
+    updatedAtMs: 1_000,
+  };
+
+  it("requires a completed flow with a minted grant", () => {
+    expect(mcpOAuthFlowCompletionError({ flow })).toContain("still pending");
+    expect(mcpOAuthFlowCompletionError({
+      flow: { ...flow, status: "failed", error: "access denied" },
+    })).toContain("access denied");
+    expect(mcpOAuthFlowCompletionError({
+      flow: { ...flow, status: "completed", grantId: "authgrant_1" },
+    })).toBeNull();
+  });
+
+  it("binds the grant without losing the latest server document", () => {
+    const input = mcpServerInputWithOAuthGrant({
+      serverId: "github",
+      displayName: "GitHub",
+      serverUrl: "https://api.githubcopilot.com/mcp",
+      transport: "auto",
+      defaultServerLabel: "github",
+      description: "Current description",
+      allowedTools: ["search"],
+      approvalDefault: "never",
+      deferLoadingDefault: true,
+      authPolicy: {
+        type: "requiredOAuth",
+        resource: "https://api.githubcopilot.com/mcp",
+        scopes_default: ["repo"],
+      },
+      status: "needsAuthConfig",
+      revision: 3,
+      createdAtMs: 1_000,
+      updatedAtMs: 2_000,
+    }, "authgrant_1");
+
+    expect(input).toMatchObject({
+      description: "Current description",
+      allowedTools: ["search"],
+      credential: { type: "authGrant", grantId: "authgrant_1" },
+      status: "active",
+    });
+    expect(input).not.toHaveProperty("revision");
   });
 });
 

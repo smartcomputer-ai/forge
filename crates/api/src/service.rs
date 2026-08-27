@@ -310,6 +310,11 @@ pub trait AgentApiService: Send + Sync {
         params: McpServerPutParams,
     ) -> Result<AgentApiOutcome<McpServerPutResponse>, AgentApiError>;
 
+    async fn discover_mcp_server_auth(
+        &self,
+        params: McpServerAuthDiscoverParams,
+    ) -> Result<AgentApiOutcome<McpServerAuthDiscoverResponse>, AgentApiError>;
+
     async fn list_mcp_servers(
         &self,
         params: McpServerListParams,

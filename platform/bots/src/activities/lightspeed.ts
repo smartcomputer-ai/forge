@@ -9,6 +9,7 @@ import {
 
 import {
   BOT_SESSION_DECLARATION_MISMATCH,
+  BOT_SESSION_PROFILE_UNAPPLICABLE,
   BOT_TOOL_DESCRIPTIONS,
   BOT_TOOL_NAMES,
   BOT_TOOL_SCHEMAS,
@@ -175,6 +176,18 @@ async function isSessionClosed(
   }
 }
 
+/**
+ * The engine refused the profile's config for this session in a way no
+ * retry fixes: an invalid document, or a command rejection of the
+ * provider-compatibility kind (the rejection kind leads the message).
+ */
+export function isProfileUnapplicable(error: LightspeedRpcError): boolean {
+  return (
+    error.kind === "invalid_request" ||
+    (error.kind === "rejected" && /^ProviderCompatibility\b/.test(error.message))
+  );
+}
+
 export function isBotSessionDeclarationMismatch(error: unknown): boolean {
   return (
     error instanceof LightspeedRpcError &&
@@ -228,10 +241,38 @@ export function createBotLightspeedActivities(
         throw error;
       }
       if (input.appliedProfileRevision !== profile.revision) {
-        await client.call("session/profiles/apply", {
-          sessionId: input.sessionId,
-          profile: { kind: "inline", profile: resolvedProfile },
-        });
+        // A session's provider api kind is pinned for its lifetime. A profile
+        // that moved to another kind is valid for a fresh session but not for
+        // this one: report that as unapplicable so the controller rotates,
+        // rather than retrying into a degraded bot. Checked structurally
+        // first; the engine's rejection is the backstop.
+        const proposedKind = resolvedProfile.config?.model?.apiKind;
+        if (proposedKind !== undefined) {
+          const current = (await client.call("session/read", { sessionId: input.sessionId })).result.session;
+          const pinnedKind = current.config?.model?.apiKind;
+          if (pinnedKind !== undefined && pinnedKind !== proposedKind) {
+            throw ApplicationFailure.nonRetryable(
+              `session ${input.sessionId} is pinned to provider api kind ${pinnedKind}; profile revision ${profile.revision} needs ${proposedKind}`,
+              BOT_SESSION_PROFILE_UNAPPLICABLE,
+            );
+          }
+        }
+        try {
+          await client.call("session/profiles/apply", {
+            sessionId: input.sessionId,
+            profile: { kind: "inline", profile: resolvedProfile },
+          });
+        } catch (error) {
+          if (error instanceof LightspeedRpcError && isProfileUnapplicable(error)) {
+            throw ApplicationFailure.nonRetryable(
+              `session ${input.sessionId} cannot take profile revision ${profile.revision}: ${error.message}`,
+              BOT_SESSION_PROFILE_UNAPPLICABLE,
+            );
+          }
+          // A busy session (`rejected`, no run may be active) is transient
+          // and stays retryable.
+          throw error;
+        }
       }
       return {
         profileRevision: profile.revision,

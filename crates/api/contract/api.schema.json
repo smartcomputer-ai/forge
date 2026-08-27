@@ -780,6 +780,23 @@
       ],
       "type": "object"
     },
+    "AgentApiOutcomeOfMcpServerAuthDiscoverResponse": {
+      "properties": {
+        "notifications": {
+          "items": {
+            "$ref": "#/definitions/AgentNotification"
+          },
+          "type": "array"
+        },
+        "result": {
+          "$ref": "#/definitions/McpServerAuthDiscoverResponse"
+        }
+      },
+      "required": [
+        "result"
+      ],
+      "type": "object"
+    },
     "AgentApiOutcomeOfMcpServerDeleteResponse": {
       "properties": {
         "notifications": {
@@ -5653,6 +5670,51 @@
           "format": "uint32",
           "minimum": 0,
           "type": "integer"
+        }
+      },
+      "type": "object"
+    },
+    "McpOAuthDiscoveryView": {
+      "properties": {
+        "authorizationServers": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "resource": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "resource"
+      ],
+      "type": "object"
+    },
+    "McpServerAuthDiscoverParams": {
+      "description": "Read-only authentication discovery for a prospective MCP endpoint. A\nmissing OAuth result is deliberately inconclusive: the server may be\npublic, use bearer auth, or expose OAuth metadata only through an explicit\nURL. No catalog or auth records are created by this probe.",
+      "properties": {
+        "serverUrl": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "serverUrl"
+      ],
+      "type": "object"
+    },
+    "McpServerAuthDiscoverResponse": {
+      "properties": {
+        "oauth": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/McpOAuthDiscoveryView"
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "type": "object"

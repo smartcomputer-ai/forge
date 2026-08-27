@@ -2865,6 +2865,29 @@ export interface ServerInfo {
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "AgentApiOutcomeOfMcpServerAuthDiscoverResponse".
+ */
+export interface AgentApiOutcomeOfMcpServerAuthDiscoverResponse {
+  notifications?: AgentNotification[];
+  result: McpServerAuthDiscoverResponse;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "McpServerAuthDiscoverResponse".
+ */
+export interface McpServerAuthDiscoverResponse {
+  oauth?: McpOAuthDiscoveryView | null;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "McpOAuthDiscoveryView".
+ */
+export interface McpOAuthDiscoveryView {
+  authorizationServers?: string[];
+  resource: string;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "AgentApiOutcomeOfMcpServerDeleteResponse".
  */
 export interface AgentApiOutcomeOfMcpServerDeleteResponse {
@@ -4465,6 +4488,18 @@ export interface ManagedSessionStartParams {
    * changed through `session/config/put`.
    */
   workflowTools: ManagedSessionWorkflowToolsInput;
+}
+/**
+ * Read-only authentication discovery for a prospective MCP endpoint. A
+ * missing OAuth result is deliberately inconclusive: the server may be
+ * public, use bearer auth, or expose OAuth metadata only through an explicit
+ * URL. No catalog or auth records are created by this probe.
+ *
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "McpServerAuthDiscoverParams".
+ */
+export interface McpServerAuthDiscoverParams {
+  serverUrl: string;
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema

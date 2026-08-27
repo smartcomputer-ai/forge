@@ -3345,6 +3345,38 @@ impl AgentApiService for GatewayAgentApi {
         }))
     }
 
+    async fn discover_mcp_server_auth(
+        &self,
+        params: McpServerAuthDiscoverParams,
+    ) -> Result<AgentApiOutcome<McpServerAuthDiscoverResponse>, AgentApiError> {
+        mcp::validate_remote_mcp_server_url(&params.server_url).map_err(map_mcp_error)?;
+        let target = auth::McpOAuthTarget {
+            server_id: "discovery".to_owned(),
+            server_url: params.server_url,
+            scopes_default: Vec::new(),
+            protected_resource_metadata_url: None,
+            authorization_server_hint: None,
+        };
+        let discovered = tokio::time::timeout(
+            Duration::from_secs(5),
+            self.mcp_oauth.discover_protected_resource(&target),
+        )
+        .await;
+        let oauth = match discovered {
+            Ok(Ok(metadata)) => Some(McpOAuthDiscoveryView {
+                resource: metadata.resource,
+                authorization_servers: metadata.authorization_servers,
+            }),
+            Ok(Err(auth::McpOAuthError::ProtectedResourceMetadataUnavailable { .. })) | Err(_) => {
+                None
+            }
+            Ok(Err(error)) => return Err(map_mcp_oauth_error(error)),
+        };
+        Ok(AgentApiOutcome::new(McpServerAuthDiscoverResponse {
+            oauth,
+        }))
+    }
+
     async fn list_mcp_servers(
         &self,
         params: McpServerListParams,
