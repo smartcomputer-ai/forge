@@ -118,12 +118,7 @@ export type AgentNotification =
  * via the `definition` "ToolItemStatus".
  */
 export type ToolItemStatus =
-  | "requested"
-  | "running"
-  | "succeeded"
-  | "failed"
-  | "cancelled"
-  | "unavailable";
+  "requested" | "running" | "succeeded" | "failed" | "cancelled" | "unavailable";
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "ToolCallDisplayGroup".
