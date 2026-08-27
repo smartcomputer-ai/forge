@@ -45,7 +45,7 @@ function inbox(overrides: Partial<BotTriggerRow> = {}): BotTriggerRow {
 }
 
 function target(overrides: Partial<InboxTarget> = {}): InboxTarget {
-  return { bot: { name: "infra", enabled: true }, inbox: inbox(), ...overrides };
+  return { bot: { name: "infra", enabled: true, closedAt: null }, inbox: inbox(), ...overrides };
 }
 
 function refusalCode(fn: () => unknown): string | null {
@@ -70,7 +70,21 @@ describe("addressed emit admission", () => {
 
   it("refuses with a typed code for every admission failure", () => {
     expect(refusalCode(() => resolveInbox(sender, "ghost", null))).toBe("unknown_bot");
-    expect(refusalCode(() => resolveInbox(sender, "infra", target({ bot: { name: "infra", enabled: false } })))).toBe(
+    // Closed is terminal and wins over disabled: a sender should stop, not retry.
+    expect(
+      refusalCode(() =>
+        resolveInbox(
+          sender,
+          "infra",
+          target({ bot: { name: "infra", enabled: false, closedAt: new Date("2026-08-27T09:00:00Z") } }),
+        ),
+      ),
+    ).toBe("bot_closed");
+    expect(
+      refusalCode(() =>
+        resolveInbox(sender, "infra", target({ bot: { name: "infra", enabled: false, closedAt: null } })),
+      ),
+    ).toBe(
       "bot_disabled",
     );
     expect(refusalCode(() => resolveInbox(sender, "infra", target({ inbox: null })))).toBe("no_inbox");

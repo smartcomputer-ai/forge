@@ -121,7 +121,8 @@ export const pollSourceInput = z.discriminatedUnion("kind", [
   pollHttpSourceInput,
   z.object({
     kind: z.literal("exec"),
-    environmentId: z.string().trim().min(1).max(300),
+    /** Absent: the bot's own environment (the profile's `existing` one), resolved at fire time. */
+    environmentId: z.string().trim().min(1).max(300).nullish(),
     argv: z.array(z.string().min(1).max(10_000)).min(1).max(64),
     cwd: z.string().trim().min(1).max(2_000).nullish(),
     timeoutMs: z.number().int().min(1_000).max(600_000).nullish(),
@@ -342,7 +343,7 @@ type PollSpecRow = {
         auth?: { grantId: string; header?: string; scheme?: string; audience?: string };
         body?: string;
       }
-    | { kind: "exec"; environmentId: string; argv: string[]; cwd?: string | null; timeoutMs?: number | null };
+    | { kind: "exec"; environmentId: string | null; argv: string[]; cwd?: string | null; timeoutMs?: number | null };
   intervalMs: number;
   items: string | null;
   cursor: { kind: "idSet"; id: string } | { kind: "watermark"; field: string };
@@ -370,7 +371,7 @@ function normalizePollSpec(spec: z.infer<typeof pollSpecInput>): PollSpecRow {
         }
       : {
           kind: "exec" as const,
-          environmentId: spec.source.environmentId,
+          environmentId: spec.source.environmentId ?? null,
           argv: spec.source.argv,
           cwd: spec.source.cwd ?? null,
           timeoutMs: spec.source.timeoutMs ?? null,

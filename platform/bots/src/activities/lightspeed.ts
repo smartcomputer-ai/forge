@@ -140,11 +140,14 @@ export interface BotLightspeedActivities {
   steerBotRun(input: SteerBotRunInput): Promise<{ steered: boolean; runId?: string }>;
   appendBotContext(input: AppendBotContextInput): Promise<void>;
   /**
-   * Close an idle managed session (non-force: a busy session is left alone)
-   * together with its open sub-agent descendants (P134 lineage). A busy
-   * descendant blocks the close; the sweep retries later.
+   * Close a managed session together with its open sub-agent descendants
+   * (P134 lineage). Non-force (the default) leaves a busy session alone and
+   * the sweep retries later; `force` cancels the active run and drops queued
+   * ones — what a bot close does, matching `session/delete`.
    */
-  closeBotSession(input: ReadSessionInput): Promise<{ closed: boolean; descendantsClosed?: number }>;
+  closeBotSession(
+    input: ReadSessionInput & { force?: boolean },
+  ): Promise<{ closed: boolean; descendantsClosed?: number }>;
   /**
    * Sub-agent sessions delegated under the bot's sessions since `sinceMs`
    * (P134 lineage). Every descendant counts against the bot's daily run
@@ -159,6 +162,18 @@ export interface BotLightspeedActivities {
 
 /** Bound on lineage pages read per root when counting descendants. */
 const DESCENDANT_COUNT_MAX_PAGES = 10;
+
+async function isSessionClosed(
+  client: Pick<LightspeedClient, "call">,
+  sessionId: string,
+): Promise<boolean> {
+  try {
+    const read = await client.call("session/read", { sessionId });
+    return read.result.session.status === "closed";
+  } catch {
+    return false;
+  }
+}
 
 export function isBotSessionDeclarationMismatch(error: unknown): boolean {
   return (
@@ -288,10 +303,11 @@ export function createBotLightspeedActivities(
         rootSessionId: input.sessionId,
         limit: 200,
       });
+      const force = input.force === true;
       for (const child of descendants.result.sessions ?? []) {
         if (child.lifecycleStatus === "closed") continue;
         try {
-          await client.call("session/close", { sessionId: child.id });
+          await client.call("session/close", { sessionId: child.id, force });
           descendantsClosed += 1;
         } catch (error) {
           if (error instanceof LightspeedRpcError) return { closed: false, descendantsClosed };
@@ -299,11 +315,17 @@ export function createBotLightspeedActivities(
         }
       }
       try {
-        await client.call("session/close", { sessionId: input.sessionId });
+        await client.call("session/close", { sessionId: input.sessionId, force });
       } catch (error) {
         // Active work or an already-closed session: report and let the
-        // retention sweep try again later.
-        if (error instanceof LightspeedRpcError) return { closed: false, descendantsClosed };
+        // retention sweep try again later. A forced close treats an
+        // already-closed session as done — teardown must converge.
+        if (error instanceof LightspeedRpcError) {
+          if (force && (await isSessionClosed(client, input.sessionId))) {
+            return { closed: true, descendantsClosed };
+          }
+          return { closed: false, descendantsClosed };
+        }
         throw error;
       }
       return { closed: true, descendantsClosed };

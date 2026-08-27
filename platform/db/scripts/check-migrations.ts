@@ -77,6 +77,8 @@ async function checkEmptyInstall(connectionString: string): Promise<void> {
     await requireTable(handle.pool, "bot_events");
     await requireColumn(handle.pool, "bots", "emit");
     await requireColumn(handle.pool, "bots", "display_name");
+    await requireColumn(handle.pool, "bots", "closed_at");
+    await requireColumn(handle.pool, "bots", "closed_sessions");
     await requireColumn(handle.pool, "bot_events", "sender_bot_id");
     await requireColumn(handle.pool, "bot_events", "notify");
     await requireColumn(handle.pool, "bot_triggers", "session_ttl_ms");

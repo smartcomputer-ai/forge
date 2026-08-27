@@ -39,6 +39,8 @@ const bot: BotRow = {
   selfConfig: true,
   emit: true,
   enabled: true,
+  closedAt: null,
+  closedSessions: null,
   createdAt: new Date("2026-08-26T10:00:00Z"),
   updatedAt: new Date("2026-08-26T10:00:00Z"),
 };

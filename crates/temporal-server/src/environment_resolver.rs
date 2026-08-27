@@ -201,6 +201,23 @@ impl EnvironmentResolver {
                     environment_id: environment.environment_id.as_str().to_owned(),
                 });
             }
+            EnvironmentStatus::Ready if environment.desired_power != PowerState::Running => {
+                // Use cancels a pending power-down: the idle reaper has asked
+                // for a lower power state but the reconciler has not converged
+                // yet. Keeping the intent at `running` stops the reconciler
+                // from freezing the environment under the call about to
+                // start; the reaper re-evaluates from the daemon's next idle
+                // report. Sessions are not consulted — any use counts.
+                return self
+                    .environments
+                    .set_environment_power(SetEnvironmentPower {
+                        environment_id: environment.environment_id.clone(),
+                        desired_power: PowerState::Running,
+                        updated_at_ms: now_ms.max(0),
+                    })
+                    .await
+                    .map_err(EnvironmentResolveError::from);
+            }
             EnvironmentStatus::Ready
             | EnvironmentStatus::Paused
             | EnvironmentStatus::Suspended
@@ -373,6 +390,42 @@ mod tests {
             resolver.selectable(&environment_id, None, 111).await,
             Err(EnvironmentResolveError::EnvironmentUnavailable { .. })
         ));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn use_cancels_a_pending_power_down() {
+        let (resolver, environment_id) = resolver().await;
+        let store = resolver.environments.clone();
+        store
+            .observe_provisioned_environment(ObserveProvisionedEnvironment {
+                environment_id: environment_id.clone(),
+                provider_target_id: ProviderTargetId::new("target-1"),
+                status: EnvironmentStatus::Ready,
+                power_states: vec![PowerState::Running, PowerState::Paused],
+                observed_at_ms: 20,
+            })
+            .await
+            .expect("observe");
+        // The reaper decided to pause; the reconciler has not acted yet.
+        store
+            .set_environment_power(SetEnvironmentPower {
+                environment_id: environment_id.clone(),
+                desired_power: PowerState::Paused,
+                updated_at_ms: 21,
+            })
+            .await
+            .expect("pause intent");
+
+        let resolved = resolver
+            .resolve_for_connection(&environment_id, None, 30)
+            .await
+            .expect("a ready environment resolves for use");
+        assert_eq!(resolved.status, EnvironmentStatus::Ready);
+        assert_eq!(resolved.desired_power, PowerState::Running);
+        let stored = store.read_environment(&environment_id).await.expect("read");
+        assert_eq!(stored.desired_power, PowerState::Running);
+        assert!(!stored.power_diverges());
+        assert_eq!(stored.updated_at_ms, 30);
     }
 
     #[tokio::test(flavor = "current_thread")]

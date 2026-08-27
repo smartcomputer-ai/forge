@@ -117,6 +117,8 @@ function pausedLabel(reason: BotTrigger["disabledReason"]): string {
       return "paused: one-shot fired";
     case "operator":
       return "paused by operator";
+    case "bot_closed":
+      return "bot closed";
     default:
       return "paused";
   }
@@ -1033,7 +1035,7 @@ function pollFormFromTrigger(trigger: BotTrigger): PollFormState {
     authHeader: spec.source.kind === "http" ? (spec.source.auth?.header ?? "authorization") : "authorization",
     authScheme: spec.source.kind === "http" ? (spec.source.auth?.scheme ?? "Bearer") : "Bearer",
     authAudience: spec.source.kind === "http" ? (spec.source.auth?.audience ?? "") : "",
-    environmentId: spec.source.kind === "exec" ? spec.source.environmentId : "",
+    environmentId: spec.source.kind === "exec" ? (spec.source.environmentId ?? "") : "",
     argvText: spec.source.kind === "exec" ? spec.source.argv.join("\n") : "",
     cwd: spec.source.kind === "exec" ? (spec.source.cwd ?? "") : "",
     intervalMinutes: String(Math.round(spec.intervalMs / 60_000)),
@@ -1097,7 +1099,8 @@ function pollPayload(form: PollFormState) {
             }
           : {
               kind: "exec" as const,
-              environmentId: form.environmentId.trim(),
+              // Blank runs in the bot's own environment (the profile's existing one).
+              ...(form.environmentId.trim() ? { environmentId: form.environmentId.trim() } : {}),
               argv: pollArgv(form),
               ...(form.cwd.trim() ? { cwd: form.cwd.trim() } : {}),
             },
@@ -1112,11 +1115,17 @@ function pollPayload(form: PollFormState) {
   };
 }
 
-function pollFormProblem(form: PollFormState): string | null {
+/// `env` is the bot profile's environment intent when known: a blank
+/// environment is fine when the profile activates an existing one (the poll
+/// runs there), and left to the server otherwise.
+function pollFormProblem(form: PollFormState, env?: BotEnvStatus): string | null {
   if (form.sourceKind === "http") {
     if (!/^https?:\/\//.test(form.url.trim())) return "The poll URL must be http(s).";
   } else {
-    if (!form.environmentId.trim()) return "Name the environment the command runs in.";
+    const ownEnvironment = env === undefined || env.kind === "existing";
+    if (!form.environmentId.trim() && !ownEnvironment) {
+      return "Name the environment the command runs in.";
+    }
     if (pollArgv(form).length === 0) return "Give the command to run (one argv entry per line).";
   }
   const minutes = Number(form.intervalMinutes);
@@ -1507,12 +1516,13 @@ function PollFields({
               id="poll-environment"
               value={form.environmentId}
               onChange={(event) => setForm({ ...form, environmentId: event.target.value })}
-              placeholder="environment_…"
+              placeholder="Blank: the bot's own environment"
               className="font-mono"
             />
             <FieldDescription>
               The command runs as a one-shot job here with the environment's credentials; a
-              sleeping environment wakes for the poll and idles back down after.
+              sleeping environment wakes for the poll and idles back down after. Leave it blank
+              to run in the environment the bot's profile activates.
             </FieldDescription>
           </Field>
           <div className="grid grid-cols-[2fr_1fr] gap-3">
@@ -1635,7 +1645,7 @@ function AddTriggerDialog({
   const nameInvalid = name.trim().length > 0 && !NAME_PATTERN.test(name.trim());
   const cronIssue = kind === "schedule" && !once ? cronProblem(cron) : null;
   const webhookIssue = kind === "webhook" ? webhookFormProblem(webhook) : null;
-  const pollIssue = kind === "poll" ? pollFormProblem(poll) : null;
+  const pollIssue = kind === "poll" ? pollFormProblem(poll, env) : null;
   const inboxIssue = kind === "bot" ? inboxFormProblem(inbox) : null;
   const chatIssue = kind === "chat" ? chatFormProblem(chat) : null;
   const formIssue = webhookIssue ?? pollIssue ?? inboxIssue ?? chatIssue;

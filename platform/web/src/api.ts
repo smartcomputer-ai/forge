@@ -561,6 +561,10 @@ export interface Bot {
   /** Whether this bot's sessions get bot_emit: events to itself or to other bots' inboxes (rate-capped). */
   emit: boolean;
   enabled: boolean;
+  /** Terminal: set by close; sessions and schedules are released, history stays. */
+  closedAt: string | null;
+  /** The sessions the controller closed on the way out; erased by delete. */
+  closedSessions: string[] | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -599,7 +603,14 @@ export type BotPollSource =
       auth?: { grantId: string; header?: string; scheme?: string; audience?: string };
       body?: string;
     }
-  | { kind: "exec"; environmentId: string; argv: string[]; cwd?: string | null; timeoutMs?: number | null };
+  | {
+      kind: "exec";
+      /** Absent: the bot's own environment (the profile's `existing` one), resolved when the poll fires. */
+      environmentId?: string | null;
+      argv: string[];
+      cwd?: string | null;
+      timeoutMs?: number | null;
+    };
 
 export interface BotPollSpec {
   source: BotPollSource;
@@ -673,7 +684,7 @@ export interface BotTrigger {
   cursor?: BotPollCursorState | null;
   enabled: boolean;
   /** Why the trigger is paused; null while enabled. */
-  disabledReason: "breaker" | "poll_failed" | "one_shot" | "operator" | null;
+  disabledReason: "breaker" | "poll_failed" | "one_shot" | "operator" | "bot_closed" | null;
   disabledAt: string | null;
   /** The filter's last evaluation error; it refuses events until the filter is fixed. */
   lastFilterError: string | null;
@@ -754,7 +765,9 @@ export interface BotState {
     | "session_busy"
     | "delivering_event"
     | "budget_exhausted"
-    | "degraded";
+    | "degraded"
+    | "closing"
+    | "closed";
   activeDeliveries: { id: string; eventCount: number; sessionId: string; runId: string | null }[];
   sessionReady: boolean;
   pendingEventCount: number;

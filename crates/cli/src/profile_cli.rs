@@ -617,11 +617,30 @@ async fn validate_environments(
         .into_iter()
         .map(|binding| (binding.binding_id.clone(), binding))
         .collect::<BTreeMap<_, _>>();
-    if environment.status != EnvironmentLifecycleStatusView::Ready {
-        report.warning(format!(
-            "profile environment is {:?}, not ready",
+    match environment.status {
+        EnvironmentLifecycleStatusView::Ready => {}
+        EnvironmentLifecycleStatusView::Closing
+        | EnvironmentLifecycleStatusView::Closed
+        | EnvironmentLifecycleStatusView::Failed => report.error(format!(
+            "profile environment {environment_id} is {:?}; applying the profile will be rejected until it points at an open environment",
             environment.status
-        ));
+        )),
+        status => report.warning(format!("profile environment is {status:?}, not ready")),
+    }
+    // A long-lived box (a bot's, or one shared by several sessions) sleeps
+    // only through its own idle policy; nothing on the profile can add one.
+    match &environment.source {
+        EnvironmentSourceView::Provisioned { .. } if environment.idle_policy.is_none() => {
+            report.warning(format!(
+                "profile environment {environment_id} has no idle policy: it never pauses, suspends, or stops while idle (set one with `env idle-policy` or on the Environments page)"
+            ));
+        }
+        EnvironmentSourceView::External { .. } => {
+            report.warning(format!(
+                "profile environment {environment_id} is external: no power control, so it can never be paused or stopped while idle"
+            ));
+        }
+        _ => {}
     }
     if let EnvironmentSourceView::Provisioned { binding_id, .. } = &environment.source {
         match bindings.get(binding_id) {

@@ -13,6 +13,8 @@ CREATE TABLE "bots" (
 	"self_config" boolean DEFAULT false NOT NULL,
 	"emit" boolean DEFAULT false NOT NULL,
 	"enabled" boolean DEFAULT true NOT NULL,
+	"closed_at" timestamp with time zone,
+	"closed_sessions" jsonb,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
 	"updated_at" timestamp with time zone DEFAULT now() NOT NULL
 );

@@ -63,6 +63,8 @@ export interface AdmissionDeps {
 export const BOT_REFUSAL_CODES = [
   "unknown_bot",
   "bot_disabled",
+  /** Terminal, unlike `bot_disabled`: the target was closed and will not come back. */
+  "bot_closed",
   "no_inbox",
   "not_accepted",
   "filtered",
@@ -98,6 +100,7 @@ export function botStartFor(bot: BotRow, universeId: string): BotStartV1 {
     selfConfig: bot.selfConfig,
     emit: bot.emit,
     enabled: bot.enabled,
+    ...(bot.closedAt === null ? {} : { closed: true }),
   };
 }
 
@@ -137,14 +140,16 @@ export function deliveryHops(events: Pick<BotEvent, "hops">[]): number {
 }
 
 export interface InboxTarget {
-  bot: Pick<BotRow, "name" | "enabled">;
+  bot: Pick<BotRow, "name" | "enabled" | "closedAt">;
   /** The target's `bot`-kind trigger, if any. */
   inbox: BotTriggerRow | null;
 }
 
 /**
  * Resolve the inbox an addressed emit goes through: the target must exist,
- * be enabled, declare an enabled inbox, and list the sender (or nobody).
+ * be open and enabled, declare an enabled inbox, and list the sender (or
+ * nobody). A closed bot is refused with its own code so a sending model
+ * stops retrying.
  */
 export function resolveInbox(
   sender: Pick<BotRow, "name">,
@@ -153,6 +158,9 @@ export function resolveInbox(
 ): BotTriggerRow {
   if (target === null) {
     throw new BotAdmissionRefusal("unknown_bot", `no bot named ${targetName} in this universe`);
+  }
+  if (target.bot.closedAt !== null) {
+    throw new BotAdmissionRefusal("bot_closed", `${targetName} was closed and no longer accepts events`);
   }
   if (!target.bot.enabled) {
     throw new BotAdmissionRefusal("bot_disabled", `${targetName} is disabled`);
@@ -299,6 +307,15 @@ export async function storeBotEvent(
   deps: AdmissionDeps,
   input: StoreBotEventInput,
 ): Promise<{ event: BotEvent; duplicate: boolean }> {
+  // The resurrection guard: waking is a signal-with-start, so a closed bot
+  // must be refused on its row before anything is stored — otherwise a late
+  // event would start a fresh controller for a bot that no longer exists.
+  if (input.bot.closedAt !== null) {
+    throw new BotAdmissionRefusal(
+      "bot_closed",
+      `${input.bot.name} was closed and no longer accepts events`,
+    );
+  }
   const seq = await allocateBotEventSeq(deps.db, input.bot.id);
   const prompt = renderAdmittedEvent(seq, input.document, input.promptData);
   const promptBlob = { bytesBase64: Buffer.from(prompt, "utf8").toString("base64") };

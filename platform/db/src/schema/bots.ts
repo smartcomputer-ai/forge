@@ -58,6 +58,19 @@ export const bots = pgTable(
      */
     emit: boolean("emit").default(false).notNull(),
     enabled: boolean("enabled").default(true).notNull(),
+    /**
+     * Terminal: set once by `close`, never cleared. A closed bot keeps its
+     * record and history but has released every live resource (sessions,
+     * schedules) and refuses new events; `enabled` cannot be turned back
+     * on. Delete erases it.
+     */
+    closedAt: timestamp("closed_at", { withTimezone: true }),
+    /**
+     * The sessions the controller closed on the way out, recorded by the
+     * controller itself (the authority on generations) so delete can erase
+     * them after the workflow is gone.
+     */
+    closedSessions: jsonb("closed_sessions").$type<string[]>(),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
@@ -88,7 +101,14 @@ export type BotPollTriggerSpec = {
         auth?: { grantId: string; header?: string; scheme?: string; audience?: string };
         body?: string;
       }
-    | { kind: "exec"; environmentId: string; argv: string[]; cwd?: string | null; timeoutMs?: number | null };
+    | {
+        kind: "exec";
+        /** Null runs in the bot's own environment (the profile's `existing` one, resolved at fire time). */
+        environmentId?: string | null;
+        argv: string[];
+        cwd?: string | null;
+        timeoutMs?: number | null;
+      };
   intervalMs: number;
   items?: string | null;
   cursor: { kind: "idSet"; id: string } | { kind: "watermark"; field: string };

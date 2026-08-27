@@ -115,7 +115,9 @@ guardrails apply (grant-gated trigger_put, 60s minimum interval, breaker,
 10-failure auto-disable, budgets, visible cursor, `self_configured`
 activity trail). Best with a stable `existing`-environment profile —
 per-session provisioned environments close with their session and would
-strand the trigger. What remains of this workstream is only: an approval
+strand the trigger. Since [P140](p140-bot-environments-and-bot-lifecycle.md)
+an exec trigger may omit `environmentId` and runs in that profile's
+`existing` environment. What remains of this workstream is only: an approval
 gate if operator policy ever wants one, and resident daemons (below).
 Original sketch:
 

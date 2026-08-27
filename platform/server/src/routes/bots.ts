@@ -1,6 +1,7 @@
 import { Hono, type Context } from "hono";
-import { and, count, desc, eq, getTableColumns, inArray, lt, or } from "drizzle-orm";
+import { and, count, desc, eq, getTableColumns, inArray, isNull, lt, or } from "drizzle-orm";
 import { z } from "zod";
+import { LightspeedRpcError } from "@lightspeed/agent-client";
 import { schema } from "@lightspeed/platform-db";
 import {
   BOT_SESSION_ROTATE_SIGNAL,
@@ -94,6 +95,8 @@ const historyCursorSchema = z.object({
 });
 const DEFAULT_HISTORY_LIMIT = 50;
 const MAX_HISTORY_LIMIT = 100;
+/** How long a close waits for the controller's teardown before answering `completed: false`. */
+const BOT_CLOSE_WAIT_MS = 30_000;
 const BOT_LIST_COLLATOR = new Intl.Collator("en", { sensitivity: "base", numeric: true });
 
 type BotContext = Context<{ Variables: ApiVariables }>;
@@ -262,11 +265,135 @@ export function botRoutes(ctx: AppContext) {
     return c.json({ bot: botView(found.bot) });
   });
 
+  /**
+   * Terminal close. The row is marked first so every later step is
+   * retry-safe and admission refuses from here on; then triggers are
+   * disabled (`bot_closed`, schedules paused), and the controller is told to
+   * tear down — archive what is pending, force-close its sessions, record
+   * the closed sessions — and complete. The route waits a bounded time for
+   * that completion; `completed: false` means the teardown is still running
+   * (or the controller is unreachable) and a repeated close re-signals it.
+   * The bot's environment is untouched: it is a universe resource.
+   */
+  byUniverse.post("/:id/bots/:botId/close", async (c) => {
+    const found = await botForUniverse(c, true);
+    if (!found) return c.json({ error: "not found" }, 404);
+    const result = await closeBot(found.bot, found.access.universe.lightspeedUniverseId);
+    return c.json({ bot: botView(result.bot), completed: result.completed });
+  });
+
+  /**
+   * Erase. An open bot is closed first (and its teardown awaited); then the
+   * sessions the controller recorded are deleted from the core, every
+   * schedule is dropped, and the row goes (triggers, events, and pairings
+   * cascade), which frees the name. Environments are universe resources and
+   * stay.
+   */
+  byUniverse.delete("/:id/bots/:botId", async (c) => {
+    const found = await botForUniverse(c, true);
+    if (!found) return c.json({ error: "not found" }, 404);
+    const universeId = found.access.universe.lightspeedUniverseId;
+    const closed = await closeBot(found.bot, universeId);
+    if (!closed.completed) {
+      return c.json(
+        { error: "the bot's controller has not finished closing; retry the delete shortly" },
+        409,
+      );
+    }
+    const engine = engineClientFor(ctx, found.access.universe);
+    let sessionsDeleted = 0;
+    for (const sessionId of closed.bot.closedSessions ?? []) {
+      try {
+        await engine.call("session/delete", { sessionId });
+        sessionsDeleted += 1;
+      } catch (error) {
+        // Never created (a rotation that was never ensured) or already gone.
+        if (error instanceof LightspeedRpcError && error.kind === "not_found") continue;
+        return c.json(
+          { error: `failed to delete session ${sessionId}`, failure: errorMessage(error) },
+          502,
+        );
+      }
+    }
+    const temporal = await getTemporal();
+    const triggers = await ctx.db
+      .select()
+      .from(botTriggers)
+      .where(eq(botTriggers.botId, found.bot.id));
+    for (const trigger of triggers) {
+      try {
+        await deleteTrigger(triggerConfigDeps(found.access.universe, temporal), {
+          bot: closed.bot,
+          universeId,
+          existing: trigger,
+        });
+      } catch (error) {
+        return c.json(
+          { error: `failed to delete trigger ${trigger.name}`, failure: errorMessage(error) },
+          502,
+        );
+      }
+    }
+    await ctx.db.delete(bots).where(eq(bots.id, found.bot.id));
+    return c.json({ deleted: true, sessionsDeleted });
+  });
+
+  async function closeBot(
+    bot: BotRow,
+    universeId: string,
+  ): Promise<{ bot: BotRow; completed: boolean }> {
+    let current = bot;
+    if (current.closedAt === null) {
+      const [marked] = await ctx.db
+        .update(bots)
+        .set({ closedAt: new Date(), enabled: false })
+        .where(and(eq(bots.id, bot.id), isNull(bots.closedAt)))
+        .returning();
+      if (marked) current = marked;
+      else {
+        const [reread] = await ctx.db.select().from(bots).where(eq(bots.id, bot.id)).limit(1);
+        if (reread) current = reread;
+      }
+    }
+    await ctx.db
+      .update(botTriggers)
+      .set({ enabled: false, disabledReason: "bot_closed", disabledAt: new Date() })
+      .where(and(eq(botTriggers.botId, current.id), eq(botTriggers.enabled, true)));
+    await reconcileSchedules(current, universeId);
+    // The config carries `closed`; signal-with-start makes this restart-safe:
+    // a controller that already completed runs the teardown again and exits.
+    await signalBotConfig(botStart(current, universeId));
+    const temporal = await getTemporal();
+    const handle = temporal.workflow.getHandle(botWorkflowId(universeId, current.name));
+    const completed = await Promise.race([
+      handle.result().then(
+        () => true,
+        () => false,
+      ),
+      new Promise<boolean>((resolve) => {
+        setTimeout(() => resolve(false), BOT_CLOSE_WAIT_MS).unref();
+      }),
+    ]);
+    const [reread] = await ctx.db.select().from(bots).where(eq(bots.id, current.id)).limit(1);
+    return { bot: reread ?? current, completed };
+  }
+
   byUniverse.patch("/:id/bots/:botId", async (c) => {
     const found = await botForUniverse(c, true);
     if (!found) return c.json({ error: "not found" }, 404);
     const body = await parseBody(c, botUpdateSchema);
     if (!body.ok) return body.response;
+    if (found.bot.closedAt !== null) {
+      // A closed bot is history: labels may change, nothing that would bring
+      // it back or reconfigure a controller that no longer runs.
+      const labelsOnly = Object.keys(body.data).every(
+        (key) => key === "displayName" || key === "description",
+      );
+      if (!labelsOnly) return c.json({ error: "bot is closed" }, 409);
+      const [bot] = await ctx.db.update(bots).set(body.data).where(eq(bots.id, found.bot.id)).returning();
+      if (!bot) return c.json({ error: "not found" }, 404);
+      return c.json({ bot: botView(bot) });
+    }
     if (body.data.profileId !== undefined) {
       await engineClientFor(ctx, found.access.universe).call("profiles/read", {
         profileId: body.data.profileId,
@@ -452,6 +579,7 @@ export function botRoutes(ctx: AppContext) {
   byUniverse.post("/:id/bots/:botId/events", async (c) => {
     const found = await botForUniverse(c, true);
     if (!found) return c.json({ error: "not found" }, 404);
+    if (found.bot.closedAt !== null) return c.json({ error: "bot is closed" }, 410);
     if (!found.bot.enabled) return c.json({ error: "bot is disabled" }, 409);
     const body = await parseBody(c, eventCreateSchema);
     if (!body.ok) return body.response;

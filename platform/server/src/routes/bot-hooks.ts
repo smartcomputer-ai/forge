@@ -83,6 +83,10 @@ export function botHookRoutes(ctx: AppContext) {
       if (verified.reason === "unknown endpoint") return c.json({ error: "not found" }, 404);
       return c.json({ error: "verification failed", failure: verified.reason }, 401);
     }
+    // A closed bot is gone for good: tell the sender to stop, not to retry.
+    if (row.bot.closedAt !== null) {
+      return c.json({ error: "bot is closed" }, 410);
+    }
     if (!row.bot.enabled || !row.trigger.enabled) {
       return c.json({ error: "trigger is disabled" }, 409);
     }

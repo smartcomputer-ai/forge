@@ -1,6 +1,20 @@
 # Lightspeed Roadmap
 
 ## Work
+- [x] [P140](p140-bot-environments-and-bot-lifecycle.md) — bot environments
+  and bot lifecycle (implemented 2026-08-27, v2; live dogfood of
+  close/delete still open): a bot's
+  environment is the profile's `existing` environment — idle policy and
+  wake already apply to it (P126), so nothing is added to the core's
+  environment model (per-session `provision` stays for sandbox-per-event
+  bots); one core hardening ("use cancels a pending power-down" in the
+  resolver); an idle-policy editor on the Environments page, bot page
+  environment card, exec pollers defaulting to the bot's environment; bots
+  get `close` (terminal:
+  archives pending events, force-closes sessions, drops schedules, keeps
+  history) and `delete` (closes first, erases, frees the name). A first
+  version with `provision { scope: controller }` and generations was
+  implemented and reverted the same day.
 - [x] [P139](p139-channels-as-bot-triggers.md) — Channels as bot triggers
   (implemented 2026-08-26): a chat connection is a `chat` trigger on a bot,
   `channel_bindings` is deleted, every message is an admitted event

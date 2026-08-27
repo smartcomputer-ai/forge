@@ -681,14 +681,19 @@ export function parseTriggerPutArgs(args: Record<string, unknown>): {
             }),
       };
     } else {
-      if (environmentId === null || argv === null || argv.length === 0) {
+      if (argv === null || argv.length === 0) {
         throw new BotConfigError(
-          "a poll source needs url (http) or environmentId plus argv (exec)",
+          "a poll source needs url (http) or argv (exec; environmentId defaults to the bot's own environment)",
           400,
         );
       }
       const cwd = nullableString(args.cwd);
-      source = { kind: "exec", environmentId, argv, ...(cwd === null ? {} : { cwd }) };
+      source = {
+        kind: "exec",
+        ...(environmentId === null ? {} : { environmentId }),
+        argv,
+        ...(cwd === null ? {} : { cwd }),
+      };
     }
     const spec = {
       source,
