@@ -1467,6 +1467,124 @@ describe.runIf(runIntegration)("bot controller workflow", () => {
     }
   }, 60_000);
 
+  it("closes: archives pending events, force-closes sessions, records them, and completes", async () => {
+    const closingBotName = "closing";
+    const ensured: string[] = [];
+    const closedSessions: Array<{ sessionId: string; force?: boolean }> = [];
+    const outcomes: unknown[] = [];
+    const recorded: string[][] = [];
+    const workflowWorker = await Worker.create({
+      connection: env.nativeConnection,
+      namespace: env.namespace ?? "default",
+      taskQueue: BOTS_WORKFLOW_TASK_QUEUE,
+      workflowsPath: fileURLToPath(new URL("./workflows.ts", import.meta.url)),
+    });
+    const activityWorker = await Worker.create({
+      connection: env.nativeConnection,
+      namespace: env.namespace ?? "default",
+      taskQueue: BOTS_ACTIVITY_TASK_QUEUE,
+      activities: {
+        ...defaultUsageActivities,
+        ensureBotSession: async ({ sessionId }: { sessionId: string }) => {
+          ensured.push(sessionId);
+          return { profileRevision: 1 };
+        },
+        closeBotSession: async (input: { sessionId: string; force?: boolean }) => {
+          closedSessions.push({ sessionId: input.sessionId, ...(input.force === undefined ? {} : { force: input.force }) });
+          return { closed: true };
+        },
+        recordBotClosed: async ({ sessions }: { sessions: string[] }) => {
+          recorded.push(sessions);
+          return { sessions };
+        },
+        recordEventOutcomes: async (input: unknown) => {
+          outcomes.push(input);
+          return { updated: 1 };
+        },
+      },
+    });
+    const workflowRun = workflowWorker.run();
+    const activityRun = activityWorker.run();
+
+    try {
+      // Disabled, so the event stays pending: close must archive it.
+      const start: BotStartV1 = {
+        version: 1,
+        universeId,
+        botId,
+        botName: closingBotName,
+        displayName: null,
+        profileId: "triage-bot",
+        brief: null,
+        runsPerDay: null,
+        enabled: false,
+      };
+      const event: BotEvent = {
+        version: 1,
+        id: "delivery-close-1",
+        ref: eventRef,
+        seq: 3,
+        promptRef: `sha256:${"e".repeat(64)}`,
+      };
+      const workflowId = botWorkflowId(universeId, closingBotName);
+      const handle = await env.client.workflow.signalWithStart(BOT_CONTROLLER_WORKFLOW, {
+        workflowId,
+        taskQueue: BOTS_WORKFLOW_TASK_QUEUE,
+        args: [start],
+        signal: BOT_EVENT_SIGNAL,
+        signalArgs: [event],
+      });
+      const base = botSessionId(closingBotName);
+      await eventually(
+        () => handle.query<BotSnapshot>(BOT_STATE_QUERY),
+        (state) => state.sessionReady && state.pendingEventCount === 1,
+      );
+
+      await handle.signal(BOT_CONFIG_SIGNAL, { ...start, closed: true });
+      // The controller completes instead of continuing as new.
+      await handle.result();
+      expect((await handle.describe()).status.name).toBe("COMPLETED");
+
+      expect(outcomes).toEqual([
+        expect.objectContaining({
+          botId,
+          eventIds: [event.id],
+          outcome: "archived",
+          detail: "bot_closed",
+        }),
+      ]);
+      expect(closedSessions).toEqual([{ sessionId: base, force: true }]);
+      expect(recorded).toEqual([[base]]);
+      expect(ensured).toEqual([base]);
+
+      const history = await handle.fetchHistory();
+      await Worker.runReplayHistory(
+        { workflowsPath: fileURLToPath(new URL("./workflows.ts", import.meta.url)) },
+        history,
+        workflowId,
+      );
+
+      // A retried close (signal-with-start on the completed workflow) starts
+      // a fresh run that tears down again — idempotently — and completes
+      // without ever creating a session.
+      const again = await env.client.workflow.signalWithStart(BOT_CONTROLLER_WORKFLOW, {
+        workflowId,
+        taskQueue: BOTS_WORKFLOW_TASK_QUEUE,
+        args: [{ ...start, closed: true }],
+        signal: BOT_CONFIG_SIGNAL,
+        signalArgs: [{ ...start, closed: true }],
+      });
+      await again.result();
+      expect(ensured).toEqual([base]);
+      expect(recorded).toEqual([[base], [base]]);
+      expect(closedSessions).toHaveLength(2);
+    } finally {
+      workflowWorker.shutdown();
+      activityWorker.shutdown();
+      await Promise.all([workflowRun, activityRun]);
+    }
+  }, 60_000);
+
   it("reconciles schedules and fires them through the admission activity", async () => {
     const admissions: unknown[] = [];
     const polls: unknown[] = [];

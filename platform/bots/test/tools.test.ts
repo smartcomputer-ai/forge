@@ -322,6 +322,22 @@ describe("poll trigger mapping and validation", () => {
     expect(() =>
       parseTriggerPutArgs({ name: "x", kind: "poll", environmentId: "environment_1", intervalMs: 60_000, cursorId: "id" }),
     ).toThrow(/needs url/);
+    // No environmentId: the poll runs in the bot's own environment (the
+    // profile's existing one), resolved when the trigger fires.
+    const scoped = parseTriggerPutArgs({
+      name: "own-box",
+      kind: "poll",
+      argv: ["./check.sh"],
+      intervalMs: 60_000,
+      cursorId: "id",
+    });
+    expect(triggerCreateInput.parse(scoped.create)).toMatchObject({
+      kind: "poll",
+      spec: { source: { kind: "exec", argv: ["./check.sh"] } },
+    });
+    expect(
+      (triggerCreateInput.parse(scoped.create).spec as { source: Record<string, unknown> }).source,
+    ).not.toHaveProperty("environmentId", expect.any(String));
   });
 
   it("requires exactly one dedupe discipline and a sane interval", () => {

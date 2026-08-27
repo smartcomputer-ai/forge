@@ -72,6 +72,13 @@ export interface BotStartV1 {
   /** Capability grant: declare `bot_emit` (events to itself or to another bot's inbox). */
   emit?: boolean;
   enabled: boolean;
+  /**
+   * Terminal teardown: the controller archives what is pending, closes every
+   * session (force), records the closed sessions on the row, and completes
+   * instead of continuing as new. Idempotent — a fresh run started with
+   * `closed` tears down again.
+   */
+  closed?: boolean;
 }
 
 /** Operator request to close one managed session and advance its generation. */
@@ -494,7 +501,7 @@ export const BOT_TOOL_DESCRIPTIONS = {
   status:
     "Inspect this bot's state: enabled flag, run budget, sessions, coalescing buffers, active and recent deliveries.",
   triggerPut:
-    "Create or update one of this bot's triggers by name. kind=schedule needs cron (5-field) or at (one-shot ISO instant) plus summary; kind=webhook returns an ingest URL to give to the sender; kind=poll checks a source every intervalMs and delivers only new items (cursorId for id-based dedupe, or watermarkField for ordered feeds). The poll source is url (HTTP JSON) or environmentId+argv (run a command in that environment; its stdout must be JSON). kind=bot is this bot's inbox for events other bots address to it (at most one; from lists the bot ids allowed, omit for any). kind=chat connects a messaging account (channelAccount from bot_trigger_list or the operator, e.g. telegram:mybot): every message becomes an event in a session per conversation with message_send/edit/react tools; the returned pairingCode must be sent in the chat once to pair it. Filters and route keys are CEL over event, data, headers.",
+    "Create or update one of this bot's triggers by name. kind=schedule needs cron (5-field) or at (one-shot ISO instant) plus summary; kind=webhook returns an ingest URL to give to the sender; kind=poll checks a source every intervalMs and delivers only new items (cursorId for id-based dedupe, or watermarkField for ordered feeds). The poll source is url (HTTP JSON) or argv (run a command in environmentId, or in this bot's own environment when omitted; its stdout must be JSON). kind=bot is this bot's inbox for events other bots address to it (at most one; from lists the bot ids allowed, omit for any). kind=chat connects a messaging account (channelAccount from bot_trigger_list or the operator, e.g. telegram:mybot): every message becomes an event in a session per conversation with message_send/edit/react tools; the returned pairingCode must be sent in the chat once to pair it. Filters and route keys are CEL over event, data, headers.",
   triggerDelete: "Delete one of this bot's triggers by name.",
   triggerList: "List this bot's configured triggers with their specs, filters, routing, and ingest URLs.",
   filterTest:
@@ -615,12 +622,12 @@ export const BOT_TOOL_SCHEMAS = {
       },
       environmentId: {
         type: ["string", "null"],
-        description: "Poll kind, exec source: environment the command runs in (woken on use); requires argv",
+        description: "Poll kind, exec source: environment the command runs in (woken on use); omit to run in this bot's own environment",
       },
       argv: {
         type: ["array", "null"],
         items: { type: "string" },
-        description: "Poll kind, exec source: command argv; stdout must be JSON (the item list, or use items)",
+        description: "Poll kind, exec source: command argv run in environmentId or, when omitted, this bot's own environment; stdout must be JSON (the item list, or use items)",
       },
       cwd: { type: ["string", "null"], description: "Poll kind, exec source: working directory" },
       intervalMs: {

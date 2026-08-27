@@ -428,9 +428,30 @@ Release construction, snapshots, and tagged publication are documented in
   environment's staged `idlePolicy` (pause → suspend → stop → close, skipping
   stages the provider lacks). A powered-down provisioned environment wakes on
   use: the resolver sets desired `running` and reports `NotReady`, reusing the
-  P125 `await_environment_ready` path. Do not add per-call `lastUsedAt`
-  writes, provider-side policy, or feature-specific pause/resume verbs. See
-  `docs/roadmap/p126-environment-power-and-idle-policy.md`.
+  P125 `await_environment_ready` path. The power decision never consults
+  sessions — the daemon's idle report is the only activity signal, so N
+  sessions (of any bot or client) sharing an environment need no
+  coordination — and use cancels a pending power-down (a `ready`
+  environment whose `desiredPower` is lower is written back to `running`
+  at resolution). Do not add per-call `lastUsedAt` writes, provider-side
+  policy, a session→environment index, or feature-specific pause/resume
+  verbs. See `docs/roadmap/p126-environment-power-and-idle-policy.md`.
+- A bot's environment is the profile's `existing` environment (P140): a
+  universe resource nothing bot-related creates, closes, or deletes; its
+  idle policy lives on the environment and is edited there. Per-session
+  `provision` remains the sandbox-per-event choice. Do not add bot- or
+  controller-scoped provisioning, generations, shared scopes, or leases —
+  a first version of P140 tried and was reverted.
+- Bots have three lifecycle states (P140): `disabled` is the reversible
+  pause (sessions and chat context stay, the environment sleeps by idle
+  policy); `close` is terminal — the server writes `closedAt` first, disables
+  every trigger (`bot_closed`), and the controller archives what is pending,
+  force-closes every session, records `closedSessions`, and completes
+  instead of continuing as new; `delete` closes first, `session/delete`s
+  the recorded sessions, and removes the row so the name is free. Admission
+  refuses on the row (`closedAt`) — waking is a signal-with-start, so
+  nothing else stops a late event from resurrecting a closed controller.
+  Do not add a reopen, a drain period, or a second lifecycle authority.
 - Preserve Rust 2024 and the existing crate-local `thiserror` error style.
 - Use `tokio` current-thread tests where async tests are needed.
 

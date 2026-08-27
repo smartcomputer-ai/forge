@@ -1,6 +1,17 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, type Bot, type ProfileSummary } from "@/api";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -28,13 +39,47 @@ export function BotSettingsDialog({
   bot,
   open,
   onOpenChange,
+  onDeleted,
 }: {
   universeId: string;
   bot: Bot;
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  /** Called after a successful delete, once the record is gone. */
+  onDeleted?: () => void;
 }) {
   const queryClient = useQueryClient();
+  const closed = bot.closedAt !== null;
+  const refreshBot = async (updated: Bot | null) => {
+    if (updated) queryClient.setQueryData(["bot", universeId, bot.botId], { bot: updated });
+    await queryClient.invalidateQueries({ queryKey: ["bots", bot.universeId] });
+    await queryClient.invalidateQueries({ queryKey: ["bot-state", universeId, bot.botId] });
+  };
+  const close = useMutation({
+    mutationFn: () =>
+      api<{ bot: Bot; completed: boolean }>(
+        "POST",
+        `/api/v1/universes/${universeId}/bots/${bot.botId}/close`,
+      ),
+    onSuccess: async ({ bot: updated }) => {
+      await refreshBot(updated);
+      setError(null);
+      onOpenChange(false);
+    },
+    onError: (err) => setError(err.message),
+  });
+  const remove = useMutation({
+    mutationFn: () =>
+      api<{ deleted: boolean }>("DELETE", `/api/v1/universes/${universeId}/bots/${bot.botId}`),
+    onSuccess: async () => {
+      queryClient.removeQueries({ queryKey: ["bot", universeId, bot.botId] });
+      await queryClient.invalidateQueries({ queryKey: ["bots", bot.universeId] });
+      setError(null);
+      onOpenChange(false);
+      onDeleted?.();
+    },
+    onError: (err) => setError(err.message),
+  });
   const profiles = useQuery({
     queryKey: ["profiles", universeId],
     queryFn: () => api<ProfileSummary[]>("GET", `/api/v1/universes/${universeId}/profiles`),
@@ -225,14 +270,81 @@ export function BotSettingsDialog({
             </Label>
             <Switch id="bot-settings-self-emit" checked={emit} onCheckedChange={setEmit} />
           </div>
-          <div className="flex items-center justify-between rounded-md border p-3">
-            <Label htmlFor="bot-settings-enabled" className="text-sm">
-              Enabled
-              <span className="block text-xs font-normal text-muted-foreground">
-                Disabling pauses all schedules and stops event delivery.
-              </span>
-            </Label>
-            <Switch id="bot-settings-enabled" checked={enabled} onCheckedChange={setEnabled} />
+          {!closed && (
+            <div className="flex items-center justify-between rounded-md border p-3">
+              <Label htmlFor="bot-settings-enabled" className="text-sm">
+                Enabled
+                <span className="block text-xs font-normal text-muted-foreground">
+                  Disabling pauses all schedules and stops event delivery; sessions and their
+                  context stay, and the bot can be enabled again.
+                </span>
+              </Label>
+              <Switch id="bot-settings-enabled" checked={enabled} onCheckedChange={setEnabled} />
+            </div>
+          )}
+          <div className="grid gap-3 rounded-md border border-destructive/40 p-3">
+            <p className="text-sm font-medium">Lifecycle</p>
+            {closed ? (
+              <p className="text-xs text-muted-foreground">
+                Closed {new Date(bot.closedAt ?? "").toLocaleString()}. Sessions and schedules were
+                released and events are refused; the record and its history stay until the bot is
+                deleted.
+              </p>
+            ) : (
+              <div className="flex items-start justify-between gap-3">
+                <p className="text-xs text-muted-foreground">
+                  Closing is final: in-flight runs are cancelled, every session is closed,
+                  schedules are dropped, and new events are refused. The record, its event history,
+                  the bot id, and its environment stay.
+                </p>
+                <AlertDialog>
+                  <AlertDialogTrigger render={<Button variant="outline" size="sm" disabled={close.isPending} />}>
+                    {close.isPending ? "Closing…" : "Close bot"}
+                  </AlertDialogTrigger>
+                  <AlertDialogContent>
+                    <AlertDialogHeader>
+                      <AlertDialogTitle>Close {bot.displayName ?? bot.botId}?</AlertDialogTitle>
+                      <AlertDialogDescription>
+                        This cannot be undone. Pending events are archived, active runs are
+                        cancelled, all sessions are closed, and webhooks and other bots are
+                        refused from now on. The environment is left alone. To pause instead,
+                        turn the bot off.
+                      </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                      <AlertDialogCancel>Keep running</AlertDialogCancel>
+                      <AlertDialogAction onClick={() => close.mutate()}>Close bot</AlertDialogAction>
+                    </AlertDialogFooter>
+                  </AlertDialogContent>
+                </AlertDialog>
+              </div>
+            )}
+            <div className="flex items-start justify-between gap-3">
+              <p className="text-xs text-muted-foreground">
+                Deleting erases the bot, its triggers, its event history, and its sessions, and
+                frees the id{closed ? "." : " — it closes the bot first."} Environments are never
+                deleted with a bot.
+              </p>
+              <AlertDialog>
+                <AlertDialogTrigger render={<Button variant="destructive" size="sm" disabled={remove.isPending} />}>
+                  {remove.isPending ? "Deleting…" : "Delete bot"}
+                </AlertDialogTrigger>
+                <AlertDialogContent>
+                  <AlertDialogHeader>
+                    <AlertDialogTitle>Delete {bot.displayName ?? bot.botId}?</AlertDialogTitle>
+                    <AlertDialogDescription>
+                      {closed
+                        ? "The record, its event history, and its sessions are erased; the id becomes available again."
+                        : "The bot is closed first (runs cancelled, sessions closed, events refused), then the record, its event history, and its sessions are erased and the id becomes available again."}
+                    </AlertDialogDescription>
+                  </AlertDialogHeader>
+                  <AlertDialogFooter>
+                    <AlertDialogCancel>Keep</AlertDialogCancel>
+                    <AlertDialogAction onClick={() => remove.mutate()}>Delete bot</AlertDialogAction>
+                  </AlertDialogFooter>
+                </AlertDialogContent>
+              </AlertDialog>
+            </div>
           </div>
         </div>
         <div className="grid gap-2 border-t p-4">
@@ -241,7 +353,7 @@ export function BotSettingsDialog({
             <Button variant="outline" onClick={() => onOpenChange(false)}>
               Cancel
             </Button>
-            <Button onClick={() => save.mutate()} disabled={save.isPending || !profileId}>
+            <Button onClick={() => save.mutate()} disabled={save.isPending || !profileId || closed}>
               {save.isPending ? "Saving…" : "Save"}
             </Button>
           </DialogFooter>

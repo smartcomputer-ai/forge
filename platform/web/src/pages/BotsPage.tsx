@@ -110,7 +110,11 @@ function BotsPane({
                     <Badge variant="secondary" className="max-w-28 truncate" title={`Profile: ${bot.profileId}`}>
                       {bot.profileId}
                     </Badge>
-                    {!bot.enabled && <span className="shrink-0 text-xs text-destructive">Disabled</span>}
+                    {bot.closedAt ? (
+                      <span className="shrink-0 text-xs text-muted-foreground">Closed</span>
+                    ) : (
+                      !bot.enabled && <span className="shrink-0 text-xs text-destructive">Disabled</span>
+                    )}
                   </span>
                   <span className="mt-0.5 flex min-w-0 gap-2 text-xs text-muted-foreground">
                     <span className="min-w-0 flex-1 truncate" title={preview}>{preview}</span>

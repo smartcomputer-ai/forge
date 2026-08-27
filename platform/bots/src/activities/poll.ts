@@ -68,10 +68,37 @@ interface PollSpecRow {
         auth?: { grantId: string; header?: string; scheme?: string; audience?: string };
         body?: string;
       }
-    | { kind: "exec"; environmentId: string; argv: string[]; cwd?: string | null; timeoutMs?: number | null };
+    | {
+        kind: "exec";
+        /** Null: the bot's own environment (the profile's `existing` one), resolved at fire time. */
+        environmentId?: string | null;
+        argv: string[];
+        cwd?: string | null;
+        timeoutMs?: number | null;
+      };
   intervalMs: number;
   items: string | null;
   cursor: { kind: "idSet"; id: string } | { kind: "watermark"; field: string };
+}
+
+/**
+ * The environment an exec poll without an explicit `environmentId` runs in:
+ * the `existing` environment of the bot's profile. A profile with another
+ * intent (none, per-session provision, inherit) cannot run such a poll —
+ * that is a configuration error, not a transient failure.
+ */
+export async function resolveBotProfileEnvironment(
+  client: Pick<LightspeedClient, "call">,
+  profileId: string,
+): Promise<string> {
+  const profile = (await client.call("profiles/read", { profileId })).result.profile;
+  const environment = profile.environment;
+  if (environment?.type !== "existing") {
+    throw new Error(
+      `the poll names no environment and profile ${profileId} does not activate an existing one: set environmentId on the trigger, or point the profile at an existing environment`,
+    );
+  }
+  return environment.environmentId;
 }
 
 type PollHttpSource = Extract<PollSpecRow["source"], { kind: "http" }>;
@@ -172,12 +199,15 @@ export function createBotPollActivities(config: BotPollActivitiesConfig): BotPol
     triggerId: string,
     scheduledAt: string,
     source: Extract<PollSpecRow["source"], { kind: "exec" }>,
+    profileId: string,
   ): Promise<unknown> {
     const client = clientFor(universeId);
+    const environmentId =
+      source.environmentId ?? (await resolveBotProfileEnvironment(client, profileId));
     const budgetMs = source.timeoutMs ?? EXEC_DEFAULT_TIMEOUT_MS;
     const requestId = `poll-${digestHex(`${triggerId}:${scheduledAt}`).slice(0, 24)}`;
     const created = await client.call("environments/jobs/create", {
-      environmentId: source.environmentId,
+      environmentId,
       requestId,
       jobs: [
         {
@@ -190,7 +220,7 @@ export function createBotPollActivities(config: BotPollActivitiesConfig): BotPol
     });
     const started = created.result.jobs?.[0];
     if (!started) throw new Error("environment job start returned no job");
-    const handle = { environmentId: source.environmentId, jobId: started.jobId };
+    const handle = { environmentId, jobId: started.jobId };
     const deadline = Date.now() + budgetMs + 30_000;
     let afterSeq: number | undefined;
     let stdout = "";
@@ -286,6 +316,7 @@ export function createBotPollActivities(config: BotPollActivitiesConfig): BotPol
                 row.trigger.id,
                 input.scheduledAt,
                 spec.source,
+                row.bot.profileId,
               );
       } catch (error) {
         // A sleeping environment is not a failure: the resolver has begun

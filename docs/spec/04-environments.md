@@ -60,6 +60,16 @@ before the environment is ready do not fail: the worker reports the call as
 not executed, the session workflow waits in a heartbeated
 `await_environment_ready` activity, and re-dispatches the call.
 
+Long-lived clients — a bot's main, routed, rotated, and chat sessions, or
+several bots — share an environment by naming the same `existing` id in
+their profiles. Nothing coordinates them: idleness is the daemon's fact, so
+the reaper powers the environment down when none of its users touch it and
+any user's next call wakes it; and use cancels a pending power-down — a
+`ready` environment whose desired power was lowered by the reaper is written
+back to `running` when a call resolves it, before the reconciler can freeze
+it under that call. Such an environment is closed only by an operator or by
+its own idle policy, never by a session or a bot.
+
 ## Power states and idle policy
 
 A provisioned environment carries a Lightspeed-owned power intent,

@@ -10,7 +10,7 @@ import {
   Settings2,
   Webhook,
 } from "lucide-react";
-import { Link, NavLink } from "react-router-dom";
+import { Link, NavLink, useNavigate } from "react-router-dom";
 import {
   api,
   botLabel,
@@ -37,9 +37,10 @@ import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { BotEnvironmentCard } from "./environment-card";
 import { BotSettingsDialog } from "./settings-dialog";
 import { SendEventDialog } from "./send-event-dialog";
-import { BotStatusBadge, KeyValue } from "./status";
+import { BotStatusBadge, DetailSection, KeyValue } from "./status";
 import { TriggersSection, type BotEnvStatus } from "./triggers";
 
 type BotView = "overview" | "events";
@@ -64,6 +65,7 @@ export function BotDetail({
   const [eventOpen, setEventOpen] = useState(false);
   const [view, setView] = useState<BotView>("overview");
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
   const eventPages = useInfiniteQuery({
     queryKey: ["bot-events", bot.universeId, bot.botId],
     queryFn: ({ pageParam }) =>
@@ -149,7 +151,13 @@ export function BotDetail({
       </div>
       {manage && (
         <>
-          <BotSettingsDialog universeId={bot.universeId} bot={bot} open={settingsOpen} onOpenChange={setSettingsOpen} />
+          <BotSettingsDialog
+            universeId={bot.universeId}
+            bot={bot}
+            open={settingsOpen}
+            onOpenChange={setSettingsOpen}
+            onDeleted={() => navigate(`/u/${slug}/bots`)}
+          />
           <SendEventDialog universeId={bot.universeId} botId={bot.botId} open={eventOpen} onOpenChange={setEventOpen} />
         </>
       )}
@@ -203,10 +211,18 @@ function BotOverview({
           <KeyValue label="Profile" value={bot.profileId} />
           <KeyValue label="Budget" value={budgetLabel(bot.runsPerDay, state)} />
           <KeyValue label="Processed" value={String(state?.eventsProcessed ?? 0)} />
-          {!bot.enabled && (
+          {bot.closedAt ? (
             <p className="rounded-md bg-muted p-2 text-xs text-muted-foreground">
-              Disabled: schedules are paused and pending events wait.
+              Closed {new Date(bot.closedAt).toLocaleString()}: sessions and schedules were
+              released and events are refused. The record and its history stay until the bot is
+              deleted.
             </p>
+          ) : (
+            !bot.enabled && (
+              <p className="rounded-md bg-muted p-2 text-xs text-muted-foreground">
+                Disabled: schedules are paused and pending events wait.
+              </p>
+            )
           )}
           {stateError && (
             <p className="rounded-md bg-destructive/10 p-2 text-xs text-destructive">
@@ -224,13 +240,22 @@ function BotOverview({
           )}
           {env.kind === "provision" && (
             <p className="rounded-md bg-amber-500/10 p-2 text-xs text-amber-700 dark:text-amber-400">
-              Profile <code>{bot.profileId}</code> provisions a fresh environment per session.
-              Command (exec) pollers need a stable environment id — a per-session machine closes
-              with its session and would strand the trigger. Point the profile at an existing
-              environment to author pollers.
+              Profile <code>{bot.profileId}</code> provisions a fresh environment per session
+              (a sandbox per event). Command (exec) pollers need a stable environment — a
+              per-session machine closes with its session and would strand the trigger. Point
+              the profile at an existing environment to author pollers.
             </p>
           )}
         </DetailSection>
+
+        {env.kind === "existing" && (
+          <BotEnvironmentCard
+            slug={slug}
+            universeId={bot.universeId}
+            environmentId={env.environmentId}
+            manage={manage}
+          />
+        )}
 
         <DetailSection title="Inbox now" description="Events waiting, coalescing, or actively delivering.">
           {state ? (
@@ -461,28 +486,6 @@ function EventHistory({
       {!loading && !error && events.length === 0 && <p className="text-xs text-muted-foreground">No events received yet.</p>}
       {hasMore && <LoadMoreButton loading={loadingMore} onClick={onLoadMore} />}
     </DetailSection>
-  );
-}
-
-function DetailSection({
-  title,
-  description,
-  children,
-}: {
-  title: string;
-  description?: string;
-  children: ReactNode;
-}) {
-  return (
-    <section className="grid min-w-0 content-start gap-3">
-      <div className="flex min-w-0 items-start justify-between gap-3">
-        <div className="grid min-w-0 flex-1 gap-0.5">
-          <h2 className="text-sm font-semibold">{title}</h2>
-          {description && <p className="text-xs text-muted-foreground">{description}</p>}
-        </div>
-      </div>
-      {children}
-    </section>
   );
 }
 

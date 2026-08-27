@@ -126,7 +126,10 @@ export interface BotSnapshot {
     | "session_busy"
     | "delivering_event"
     | "budget_exhausted"
-    | "degraded";
+    | "degraded"
+    /** Terminal teardown in progress / finished (the workflow completes right after). */
+    | "closing"
+    | "closed";
   activeDeliveries: BotActiveDeliverySnapshot[];
   sessionReady: boolean;
   pendingEventCount: number;
@@ -213,7 +216,7 @@ export const botStateQuery = defineQuery<BotSnapshot>(BOT_STATE_QUERY);
 export async function botControllerWorkflowV1(
   initial: BotStartV1,
   carry?: BotCarryV1,
-): Promise<never> {
+): Promise<void> {
   validateConfig(initial);
   let config = carry?.config ?? initial;
   const baseSessionId = botSessionId(config.botName);
@@ -282,6 +285,13 @@ export async function botControllerWorkflowV1(
   let rotationRetryAtMs: number | null = null;
   let setupStatus: "initializing" | "degraded" | "ready" = "initializing";
   let configDirty = true;
+  // Terminal teardown (bot close): set once the closed config is seen; the
+  // workflow completes right after `teardown()` and never continues as new.
+  let closing = false;
+  let closedDone = false;
+  // Read through a function: `config` is replaced by the signal handler,
+  // which TypeScript's narrowing cannot see from the loop body.
+  const closeRequested = (): boolean => config.closed === true;
   // A display-name change is label-only; it renames sessions, never rotates them.
   let renameDirty = false;
   let lastError: string | null = null;
@@ -443,7 +453,7 @@ export async function botControllerWorkflowV1(
   }
 
   function dispatchable(): boolean {
-    if (!config.enabled || !sessionReady || configDirty) return false;
+    if (!config.enabled || closeRequested() || !sessionReady || configDirty) return false;
     if (pendingDeliveries.length === 0) return false;
     if (config.runsPerDay !== null && utcDay() === runDay && reservedRuns() >= config.runsPerDay) {
       return false;
@@ -526,14 +536,17 @@ export async function botControllerWorkflowV1(
     profileId: config.profileId,
     sessionId,
     sessions: [{ sessionId, label: "main", kind: "main" as const }, ...extraSessions],
-    controllerStatus:
-      setupStatus !== "ready"
-        ? setupStatus
-        : activeBySession.size > 0
-          ? "delivering_event"
-          : pendingDeliveries.length > 0 && budgetExhaustedView()
-            ? "budget_exhausted"
-            : "idle",
+    controllerStatus: closedDone
+      ? "closed"
+      : closing
+        ? "closing"
+        : setupStatus !== "ready"
+          ? setupStatus
+          : activeBySession.size > 0
+            ? "delivering_event"
+            : pendingDeliveries.length > 0 && budgetExhaustedView()
+              ? "budget_exhausted"
+              : "idle",
     activeDeliveries: [...activeBySession.values()].map((active) => ({
       id: active.delivery.id,
       eventCount: active.delivery.events.length,
@@ -984,10 +997,30 @@ export async function botControllerWorkflowV1(
           : { carriedToolIds: ensured.carriedToolIds }),
       });
       if (extraSessions.length > EXTRA_SESSION_CAP) {
+        // A session evicted from the tracked set would otherwise escape the
+        // retention sweep and any teardown: close it (non-force) as it
+        // leaves. A busy one stays tracked and is retried at the next sweep.
         const evicted = extraSessions.splice(0, extraSessions.length - EXTRA_SESSION_CAP);
         for (const session of evicted) {
+          let closed = false;
+          try {
+            closed = (
+              await activities.closeBotSession({
+                universeId: config.universeId,
+                sessionId: session.sessionId,
+              })
+            ).closed;
+          } catch (error) {
+            lastError = errorMessage(error);
+          }
+          if (!closed) {
+            extraSessions.unshift(session);
+            continue;
+          }
           ensuredExtra.delete(session.sessionId);
           sessionCursors.delete(session.sessionId);
+          const base = routedBase(session.sessionId);
+          sessionGenerations.set(base, (sessionGenerations.get(base) ?? 1) + 1);
         }
       }
       return sessionIdToEnsure;
@@ -1428,9 +1461,80 @@ export async function botControllerWorkflowV1(
     }
   }
 
+  /**
+   * Terminal teardown (bot close): archive everything not yet delivered,
+   * force-close every session this controller knows (main generations and
+   * routed sessions; descendants go first inside the activity), and record
+   * the closed sessions on the row so delete can erase them once this
+   * workflow is gone. The bot's environment is untouched: it is the
+   * profile's `existing` environment, a universe resource. Every step is
+   * an idempotent activity: a failed one is reported, not retried here — a
+   * fresh run started with `closed` repeats the whole procedure. Lanes still
+   * in flight lose their session underneath and settle on their own.
+   */
+  async function teardown(): Promise<void> {
+    closing = true;
+    const eventIds = [
+      ...new Set([
+        ...pendingDeliveries.flatMap((delivery) => delivery.events.map((event) => event.id)),
+        ...[...buffers.values()].flatMap((buffer) => buffer.events.map((event) => event.id)),
+        ...[...activeBySession.values()].flatMap((active) =>
+          active.delivery.events.map((event) => event.id),
+        ),
+      ]),
+    ];
+    if (eventIds.length > 0) {
+      try {
+        await activities.recordEventOutcomes({
+          botId: config.botId,
+          eventIds,
+          outcome: "archived",
+          detail: "bot_closed",
+          deliveryId: null,
+          runId: null,
+        });
+      } catch (error) {
+        lastError = errorMessage(error);
+      }
+    }
+    pendingDeliveries.length = 0;
+    buffers.clear();
+    const sessions = [
+      ...new Set([
+        ...Array.from({ length: mainGeneration }, (_, index) => mainSessionIdFor(index + 1)),
+        ...extraSessions.map((session) => session.sessionId),
+      ]),
+    ];
+    for (const target of sessions) {
+      try {
+        await activities.closeBotSession({
+          universeId: config.universeId,
+          sessionId: target,
+          force: true,
+        });
+      } catch (error) {
+        lastError = errorMessage(error);
+      }
+    }
+    try {
+      await activities.recordBotClosed({ botId: config.botId, sessions });
+    } catch (error) {
+      lastError = errorMessage(error);
+    }
+    closedDone = true;
+  }
+
+  if (closeRequested()) {
+    await teardown();
+    return;
+  }
   await reconcileSession();
 
   for (;;) {
+    if (closeRequested()) {
+      await teardown();
+      return;
+    }
     await processEmissions();
     await rotateRequestedSessions();
     flushRipeBuffers();
@@ -1483,6 +1587,7 @@ export async function botControllerWorkflowV1(
     const tick = laneTick;
     const observedEventTick = eventTick;
     const wake = () =>
+      closeRequested() ||
       emissionInbox.length > 0 ||
       (configDirty && !activeBySession.has(sessionId) && !sidecarBySession.has(sessionId)) ||
       laneTick !== tick ||

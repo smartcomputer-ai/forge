@@ -232,6 +232,12 @@
   - Tests: tool round trip via a fake session workflow (reply observed,
     redelivery ignored), rotation on mismatch, declaration shape, arg
     mapping, schedule spec validation; nine Temporal integration scenarios.
+- 2026-08-27: a bot's environment is the profile's `existing` environment,
+  shown on the bot page with its idle policy; exec pollers default to it;
+  bots gained a terminal `close` and a `delete` that closes first — see
+  [P140](p140-bot-environments-and-bot-lifecycle.md). The controller's
+  `EXTRA_SESSION_CAP` eviction now closes the evicted session instead of
+  forgetting it.
 - Next: the trigger long tail — poll primitive, agent-authored pollers,
   email, more presets, Channels bridge — extracted 2026-08-24 into its own
   doc, [P131](p131-bot-trigger-long-tail.md). Still open here: secret
