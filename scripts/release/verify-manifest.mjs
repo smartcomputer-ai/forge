@@ -42,7 +42,7 @@ const expectedImages = [
   "runtime",
   "configuratorMcp",
   "platform",
-  "channels",
+  "platformWorkers",
 ];
 if (JSON.stringify(Object.keys(value.images ?? {}).sort()) !== JSON.stringify(expectedImages.sort())) {
   fail("images must contain the complete P124 artifact set");
@@ -61,6 +61,21 @@ for (const [name, artifact] of Object.entries(value.binaries)) {
     fail(`published binary ${name} has no immutable OCI URL`);
   }
 }
+const expectedArtifacts = ["demo"];
+if (JSON.stringify(Object.keys(value.artifacts ?? {}).sort()) !== JSON.stringify(expectedArtifacts)) {
+  fail("artifacts must contain the demo static site");
+}
+for (const [name, artifact] of Object.entries(value.artifacts)) {
+  if (!/^[0-9a-f]{64}$/.test(artifact.sha256)) fail(`artifact ${name} has an invalid checksum`);
+  if (path.basename(artifact.file) !== artifact.file) fail(`artifact ${name} has an unsafe filename`);
+  const archive = `dist/archives/${artifact.file}`;
+  if (!fs.existsSync(archive)) fail(`artifact ${name} archive is missing`);
+  if (sha256(archive) !== artifact.sha256) fail(`artifact ${name} checksum mismatch`);
+  if (published && !/^oci:\/\/.*@sha256:[0-9a-f]{64}$/.test(artifact.url ?? "")) {
+    fail(`published artifact ${name} has no immutable OCI URL`);
+  }
+}
+if (value.artifacts.demo.basePath !== "/app/") fail("demo artifact must be served under /app/");
 if (value.typescriptClient.name !== "@lightspeed/agent-client") fail("unexpected client package");
 if (!/^[0-9a-f]{64}$/.test(value.typescriptClient.sha256)) fail("invalid client checksum");
 if (value.typescriptClient.version !== value.version) fail("client version mismatch");

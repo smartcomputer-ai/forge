@@ -149,18 +149,18 @@ jobs:
           tags: ghcr.io/${{ github.repository }}/platform:${{ steps.identity.outputs.staging_tag }}
           provenance: mode=max
           sbom: true
-      - name: Build and publish Channels image to staging
-        id: channels
+      - name: Build and publish Platform workers image to staging
+        id: platform_workers
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
         with:
           context: .
-          file: release/channels.Dockerfile
+          file: release/platform-workers.Dockerfile
           platforms: linux/amd64
           push: true
           build-args: |
             LIGHTSPEED_RELEASE_VERSION=${{ steps.identity.outputs.version }}
             LIGHTSPEED_GIT_SHA=${{ steps.identity.outputs.sha }}
-          tags: ghcr.io/${{ github.repository }}/channels:${{ steps.identity.outputs.staging_tag }}
+          tags: ghcr.io/${{ github.repository }}/platform-workers:${{ steps.identity.outputs.staging_tag }}
           provenance: mode=max
           sbom: true
       - name: Publish standalone archives to staging
@@ -175,8 +175,9 @@ jobs:
             [provider-incus]="$(find dist/archives -name '*-provider-incus-*' -print -quit)"
             [envd]="$(find dist/archives -name '*-envd-*' -print -quit)"
             [cli]="$(find dist/archives -name '*-cli-*' -print -quit)"
+            [demo]="$(find dist/archives -name '*-demo-*' -print -quit)"
           )
-          for name in server provider-incus envd cli; do
+          for name in server provider-incus envd cli demo; do
             test -n "${files[$name]}"
             ref="$GHCR_ROOT/${name}-bundle:$STAGING_TAG"
             oras push "$ref" "${files[$name]}:application/gzip"
@@ -192,12 +193,13 @@ jobs:
           LIGHTSPEED_RUNTIME_IMAGE: ghcr.io/${{ github.repository }}/runtime@${{ steps.runtime.outputs.digest }}
           LIGHTSPEED_CONFIGURATOR_MCP_IMAGE: ghcr.io/${{ github.repository }}/configurator-mcp@${{ steps.configurator.outputs.digest }}
           LIGHTSPEED_PLATFORM_IMAGE: ghcr.io/${{ github.repository }}/platform@${{ steps.platform.outputs.digest }}
-          LIGHTSPEED_CHANNELS_IMAGE: ghcr.io/${{ github.repository }}/channels@${{ steps.channels.outputs.digest }}
+          LIGHTSPEED_PLATFORM_WORKERS_IMAGE: ghcr.io/${{ github.repository }}/platform-workers@${{ steps.platform_workers.outputs.digest }}
           LIGHTSPEED_RELEASE_BUILD_IMAGE: ghcr.io/${{ github.repository }}/build-env@${{ steps.build_environment.outputs.digest }}
           LIGHTSPEED_BINARY_URL_SERVER: ${{ steps.archives.outputs.SERVER_URL }}
           LIGHTSPEED_BINARY_URL_PROVIDER_INCUS: ${{ steps.archives.outputs.PROVIDER_INCUS_URL }}
           LIGHTSPEED_BINARY_URL_ENVD: ${{ steps.archives.outputs.ENVD_URL }}
           LIGHTSPEED_BINARY_URL_CLI: ${{ steps.archives.outputs.CLI_URL }}
+          LIGHTSPEED_ARTIFACT_URL_DEMO: ${{ steps.archives.outputs.DEMO_URL }}
           STAGING_TAG: ${{ steps.identity.outputs.staging_tag }}
         run: |
           set -euo pipefail
@@ -219,7 +221,7 @@ jobs:
           RUNTIME_IMAGE: ghcr.io/${{ github.repository }}/runtime@${{ steps.runtime.outputs.digest }}
           CONFIGURATOR_IMAGE: ghcr.io/${{ github.repository }}/configurator-mcp@${{ steps.configurator.outputs.digest }}
           PLATFORM_IMAGE: ghcr.io/${{ github.repository }}/platform@${{ steps.platform.outputs.digest }}
-          LIGHTSPEED_CHANNELS_IMAGE: ghcr.io/${{ github.repository }}/channels@${{ steps.channels.outputs.digest }}
+          PLATFORM_WORKERS_IMAGE: ghcr.io/${{ github.repository }}/platform-workers@${{ steps.platform_workers.outputs.digest }}
           PLATFORM_DATABASE_URL: postgres://lightspeed:lightspeed@127.0.0.1:55432/lightspeed
           EXPECTED_SHA: ${{ steps.identity.outputs.sha }}
         run: |

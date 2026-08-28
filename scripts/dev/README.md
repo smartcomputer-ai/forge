@@ -55,12 +55,13 @@ npm run dev -- platform
 ```
 
 The supervisor keeps stateful dependencies in Docker and runs editable Rust
-and TypeScript processes on the host. It supports four profiles:
+and TypeScript processes on the host. It supports five profiles:
 
 ```bash
 ./dev.sh full       # default: complete product, without credentialed connectors
-./dev.sh platform   # Platform API/UI with the stub Lightspeed gateway
+./dev.sh platform   # Platform API/UI against the runtime at LIGHTSPEED_API_URL
 ./dev.sh runtime    # migrated Rust runtime only
+./dev.sh demo       # web UI only, over the in-browser demo backend (no Docker)
 ./dev.sh infra      # Postgres, pgAdmin, MinIO, and Temporal only
 ```
 
@@ -75,9 +76,9 @@ explicit universe. The focused `runtime` profile defaults to `single` for
 direct CLI development. An explicit `LIGHTSPEED_AUTH_MODE` overrides either
 profile default.
 
-The full profile also runs Configurator MCP plus the Channels workflow and
-activity workers. Connectors are opt-in and fail before startup when their
-required credentials are missing:
+The full profile also runs Configurator MCP plus the granular Channels and
+Bots workflow/activity roles from the Platform workers entrypoint. Connectors
+are opt-in and fail before startup when their required credentials are missing:
 
 ```bash
 LIGHTSPEED_CHANNELS_CONNECTORS=telegram ./dev.sh

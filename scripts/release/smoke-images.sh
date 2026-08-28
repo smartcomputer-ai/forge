@@ -4,12 +4,12 @@ cd "$(dirname "${BASH_SOURCE[0]}")/../.."
 
 platform_image="${PLATFORM_IMAGE:?PLATFORM_IMAGE is required}"
 configurator_image="${CONFIGURATOR_IMAGE:?CONFIGURATOR_IMAGE is required}"
-channels_image="${LIGHTSPEED_CHANNELS_IMAGE:?LIGHTSPEED_CHANNELS_IMAGE is required}"
+platform_workers_image="${PLATFORM_WORKERS_IMAGE:?PLATFORM_WORKERS_IMAGE is required}"
 expected_sha="${EXPECTED_SHA:?EXPECTED_SHA is required}"
 
 docker pull "$platform_image"
 docker pull "$configurator_image"
-docker pull "$channels_image"
+docker pull "$platform_workers_image"
 
 test "$(docker image inspect "$platform_image" \
   --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')" = "$expected_sha"
@@ -47,26 +47,33 @@ test "$(docker image inspect "$configurator_image" \
 docker run --rm --entrypoint node "$configurator_image" \
   --input-type=module -e 'await import("/app/dist/index.js")'
 
-test "$(docker image inspect "$channels_image" \
+test "$(docker image inspect "$platform_workers_image" \
   --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')" = "$expected_sha"
-test "$(docker image inspect "$channels_image" --format '{{json .Config.Cmd}}')" = '["all"]'
-docker run --rm --entrypoint node "$channels_image" -e \
+test "$(docker image inspect "$platform_workers_image" --format '{{json .Config.Cmd}}')" = '["all"]'
+docker run --rm --entrypoint node "$platform_workers_image" -e \
   'require("node:fs").accessSync("/app/node_modules/baileys/package.json")'
-docker run --rm --entrypoint node "$channels_image" --import tsx --input-type=module -e \
+docker run --rm --entrypoint node "$platform_workers_image" --import tsx --input-type=module -e \
   'await import("@lightspeed/bots/webhooks")'
-docker run --rm --entrypoint node "$channels_image" -e \
-  'require("node:fs").accessSync("/app/platform/bots/src/runtime/main.ts")'
+docker run --rm --entrypoint node "$platform_workers_image" -e \
+  'require("node:fs").accessSync("/app/platform/workers/src/main.ts")'
 
-for role in workflows activities telegram whatsapp all; do
-  expected="$role"
-  if [[ "$role" = all ]]; then
-    expected=workflows,activities,telegram
-  fi
+for spec in \
+  channels-workflows:channels-workflows \
+  channels-activities:channels-activities \
+  bots-workflows:bots-workflows \
+  bots-activities:bots-activities \
+  telegram:telegram \
+  whatsapp:whatsapp \
+  channels:channels-workflows,channels-activities \
+  bots:bots-workflows,bots-activities \
+  all:channels-workflows,channels-activities,bots-workflows,bots-activities; do
+  role="${spec%%:*}"
+  expected="${spec#*:}"
   docker run --rm --entrypoint node -e "TEST_ROLE=$role" -e "TEST_EXPECTED=$expected" \
-    "$channels_image" \
+    "$platform_workers_image" \
     --import tsx --input-type=module -e '
-      const { resolveChannelsRoles } = await import("./platform/channels/src/runtime/roles.ts");
-      const actual = resolveChannelsRoles(process.env.TEST_ROLE, undefined).join(",");
+      const { resolvePlatformWorkerRoles } = await import("./platform/workers/src/roles.ts");
+      const actual = resolvePlatformWorkerRoles(process.env.TEST_ROLE, undefined).join(",");
       if (actual !== process.env.TEST_EXPECTED) process.exit(1);
     '
 done

@@ -13,11 +13,16 @@ run Node commands from there.
 - `shared/` — Zod input schemas and deterministic helpers shared by the server,
   web UI, and CLI.
 - `db/` — Drizzle schemas, migrations, and the platform database adapter.
+- `bots/` — durable bot controllers, activities, triggers, and federation.
 - `channels/` — Temporal-managed Telegram and optional WhatsApp channel roles.
+- `workers/` — the shared Channels/Bots/connector runtime role dispatcher.
 - `configurator-mcp/` — generated Streamable HTTP MCP facade over the
   universe-scoped Lightspeed API.
-- `scripts/` — platform process orchestration, the stub gateway, and generated
-  profile configuration reference.
+- `scripts/` — product-identity check and the generated profile configuration
+  reference.
+- `web/src/demo/` — the in-browser demo backend: an in-memory stand-in for
+  the platform server and engine that the demo build loads instead of a
+  real API (see "Demo build" below).
 
 The generated public API client lives separately at `clients/typescript/`.
 Committed wire artifacts are owned by `crates/api/contract/`.
@@ -26,7 +31,8 @@ The repository-level Docker Compose development environment lives under
 
 The authoritative configuration reference is
 [`docs/variables.md`](../docs/variables.md), with separate sections for the
-Platform server, Channels, Configurator MCP, and development-only settings.
+Platform server, Platform workers, Configurator MCP, and development-only
+settings.
 
 ## Development
 
@@ -44,16 +50,37 @@ For the complete interactive Lightspeed development stack:
 ```
 
 That command uses the unified supervisor under `scripts/dev/` and starts the complete
-product. For the focused Platform loop with a stub gateway, use:
+product. For the focused Platform loop against an already running runtime at
+`LIGHTSPEED_API_URL`, use:
 
 ```bash
 ./dev.sh platform
 ```
 
-The focused profile starts shared infrastructure, the stub gateway, the
-Platform server on port 3000, and Vite on port 5173. Set
-`LIGHTSPEED_PLATFORM_DEV_REAL_GATEWAY=1` to use an external Lightspeed gateway
-at `LIGHTSPEED_API_URL` instead of the stub.
+The focused profile starts shared infrastructure, the Platform server on port
+3000, and Vite on port 5173.
+
+### Demo build
+
+The web UI has two build paths. `npm run build:web` produces the live SPA that
+the Platform server hosts under `/app`. `npm run build:demo` produces
+`platform/web/dist-demo/`: the same SPA with `web/src/demo/main.ts` as its
+entry, which installs an in-browser backend (a Hono router behind a `fetch`
+shim, seeded from `web/src/demo/fixtures/`) before loading the app. It needs no
+server, no sign-in, and no network — the visitor is a platform admin who owns a
+few pre-populated universes, each showing a different use-case — so it can be
+published as a static site (serve `dist-demo/` under `/app/` with an
+`index.html` fallback for client routes).
+
+```bash
+./dev.sh demo         # Vite dev server on http://localhost:5175/app/ (alias: npm run demo)
+npm run build:demo    # static site in platform/web/dist-demo/
+```
+
+The demo is also the frontend-only development loop: it is the only mock
+backend in the repository, so a new API route needs a stub under
+`web/src/demo/routes/` (an unstubbed route answers 404 with a `demo:` message
+so the gap is visible in the UI) and demo content belongs in a fixture module.
 
 Development defaults use `admin@lightspeed.dev` and
 `lightspeed-dev-password`. Override them with
@@ -88,7 +115,9 @@ LIGHTSPEED_PLATFORM_MIGRATION_TEST_URL=postgres://... npm run test:migrations
 npm run test:integration:channels
 ```
 
-Release construction stages one platform runtime and one Channels runtime.
-The Channels image includes every role and connector dependency and is started
-as `workflows`, `activities`, `telegram`, `whatsapp`, or `all`. The P123
-manifest records one digest for each image.
+Release construction stages one platform runtime and one Platform workers
+runtime. The Platform workers image includes Channels, Bots, and every
+connector dependency. It starts a granular role, the `channels` or `bots`
+composite, or `all`; connectors remain opt-in through
+`LIGHTSPEED_CHANNELS_CONNECTORS`. The release manifest records one digest for
+each image.

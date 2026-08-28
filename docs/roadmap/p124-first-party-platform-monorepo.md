@@ -23,15 +23,15 @@ Implemented repository slice 2026-08-15:
 - updated generators, CI, release staging, SBOM inputs, documentation, and
   development commands for the new paths;
 - extended the P123 manifest and release workflows with digest-pinned Rust
-  runtime, platform, Configurator MCP, and a configurable Channels image;
+  runtime, platform, Configurator MCP, and a configurable Platform workers image;
 - added platform empty-install/upgrade migration checks, a non-skipping
   Channels Temporal integration gate, runtime-image smoke tests, and a single
   successful-main-CI prerequisite for snapshot publication;
 - recorded the platform schema revision and supported migration baseline in
   the same release manifest as the artifact digests;
-- consolidated every Channels role and connector into one image selected by
-  its startup command, while giving Foundry no independent image or
-  publication entry;
+- consolidated Channels, Bots, and every connector role into one Platform
+  workers image selected by its startup command, while giving Foundry no
+  independent image or publication entry;
 - standardized imported deployment settings on `LIGHTSPEED_PLATFORM_*` and
   removed the pre-release legacy environment-variable aliases;
 - reset active Channels workflow IDs, task queues, search attributes, hash
@@ -283,9 +283,9 @@ deployment:
 
 The Baileys-backed WhatsApp connector remains an explicit, default-off role
 with its unofficial status and operational risk documented. It shares the
-Channels image to keep the release topology small; enabling it is still a
-deployment choice, and it can be removed later without changing the platform
-image.
+Platform workers image to keep the release topology small; enabling it is
+still a deployment choice, and it can be removed later without changing the
+platform server image.
 
 ## Coherent public release
 
@@ -298,8 +298,8 @@ release manifest identifies as applicable:
 - Configurator MCP image;
 - `@lightspeed/agent-client` package and contract revision;
 - platform server/web image; and
-- one Channels image startable as `workflows`, `activities`, `telegram`,
-  `whatsapp`, or `all`.
+- one Platform workers image startable with granular Channels/Bots roles,
+  `channels`, `bots`, `telegram`, `whatsapp`, or `all`.
 
 Foundry artifacts are deliberately absent from the required P124 release set.
 If Foundry is retained, a later roadmap item may add supported artifacts; if it
@@ -456,15 +456,16 @@ and operational procedures.
   prevent those concerns from entering the deterministic engine.
 - Public releases contain independently deployed artifacts. One manifest is
   preferable to coordinating product versions across repositories; using one
-  Channels image for several roles keeps that artifact set intentionally
+  Platform workers image for several roles keeps that artifact set intentionally
   small.
 - The greenfield identity reset intentionally invalidates imported development
   state. Avoiding permanent compatibility code is more valuable than preserving
   that pre-release state.
 - The optional WhatsApp connector carries additional policy and optics risk.
-  Keeping it default-off limits runtime exposure, while the shared Channels
-  image accepts a larger dependency and distribution surface in exchange for
-  simpler builds, promotion, rollback, and deployment configuration.
+  Keeping it default-off limits runtime exposure, while the shared Platform
+  workers image accepts a larger dependency and distribution surface in
+  exchange for simpler builds, promotion, rollback, and deployment
+  configuration.
 
 ## Non-goals
 

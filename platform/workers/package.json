@@ -1,0 +1,22 @@
+{
+  "name": "@lightspeed/platform-workers",
+  "private": true,
+  "type": "module",
+  "description": "Role dispatcher for Lightspeed Channels, Bots, and connector workers.",
+  "scripts": {
+    "dev": "tsx src/main.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@lightspeed/bots": "*",
+    "@lightspeed/channels": "*",
+    "tsx": "^4.20.0"
+  },
+  "devDependencies": {
+    "vitest": "^3.2.0"
+  },
+  "engines": {
+    "node": ">=24"
+  }
+}

@@ -195,18 +195,20 @@ The Platform administration CLI additionally accepts
 `~/.config/lightspeed-platform` and stores its URL and bearer token in
 `config.json`.
 
-## Channels
+## Platform workers
 
-The single Channels image starts one role (`workflows`, `activities`,
-`telegram`, or `whatsapp`) or the combined `all` role. Requirements below apply
-only to roles that use the setting.
+The Platform workers image contains Channels, Bots, and connector workers. It
+starts a granular role (`channels-workflows`, `channels-activities`,
+`bots-workflows`, `bots-activities`, `telegram`, or `whatsapp`), a subsystem
+role (`channels` or `bots`), or `all`. Requirements below apply only to roles
+that use the setting.
 
 ### Role and shared connectivity
 
 | Variable | Requirement/default | Purpose |
 | --- | --- | --- |
-| `LIGHTSPEED_CHANNELS_ROLE` | `all` | Image/process role. A positional command argument takes effect when this is unset. |
-| `LIGHTSPEED_CHANNELS_CONNECTORS` | `telegram` for the image's `all` role | Comma-separated connectors included by `all`: `telegram`, `whatsapp`, or both. The development supervisor treats connectors as opt-in and defaults to none. |
+| `LIGHTSPEED_PLATFORM_WORKERS_ROLE` | `all` | Image/process role. A positional command argument takes effect when this is unset. |
+| `LIGHTSPEED_CHANNELS_CONNECTORS` | Empty | Comma-separated connectors included by `all`: `telegram`, `whatsapp`, or both. Connectors are always opt-in. |
 | `TEMPORAL_ADDRESS` | `localhost:7233` | Temporal frontend address. |
 | `TEMPORAL_NAMESPACE` | `default` | Temporal namespace. |
 | `LIGHTSPEED_CHANNELS_WORKFLOW_TASK_QUEUE` | `lightspeed-channels-workflows-v1` | Workflow-worker task queue override. |
@@ -240,7 +242,7 @@ only to roles that use the setting.
 | `LIGHTSPEED_CHANNELS_TELEGRAM_HEALTH_PORT` | `8091` | Telegram-specific health port; takes precedence over the shared port. |
 | `LIGHTSPEED_CHANNELS_WHATSAPP_HEALTH_PORT` | `8092` | WhatsApp-specific health port; takes precedence over the shared port. |
 | `LIGHTSPEED_CHANNELS_METRICS_HOST` | `0.0.0.0` | Temporal Prometheus exporter host. |
-| `LIGHTSPEED_CHANNELS_METRICS_PORT` | Role-specific | Metrics port override. Defaults: workflows/all `9090`, Telegram `9091`, WhatsApp `9092`, activities `9093`. |
+| `LIGHTSPEED_CHANNELS_METRICS_PORT` | Role-specific | Metrics port override. Defaults: Channels workflows/composites `9090`, Telegram `9091`, WhatsApp `9092`, Channels activities `9093`. |
 
 ## Configurator MCP
 
@@ -261,10 +263,9 @@ upstream Lightspeed gateway.
 
 ## Bots
 
-The Bots workers (workflow and activity roles of `platform/bots`) share the
-Platform database and reach the core runtime through the public JSON-RPC
-endpoint. Release deployments run them as a separate process from the same
-image payload as Channels.
+The Bots workers share the Platform database and reach the core runtime through
+the public JSON-RPC endpoint. Select `bots` to run both roles in one process or
+`bots-workflows` and `bots-activities` for independently scaled deployments.
 
 | Variable | Requirement/default | Purpose |
 | --- | --- | --- |
@@ -285,8 +286,6 @@ Never reuse their credentials in a deployed environment.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `LIGHTSPEED_PLATFORM_DEV_REAL_GATEWAY` | `0` | In the focused `platform` profile, use `LIGHTSPEED_API_URL` instead of the stub gateway. |
-| `STUB_GATEWAY_PORT` | `19999` | Focused Platform stub-gateway port. |
 | `LIGHTSPEED_AUTH_MODE` | `trusted-header` for `full`; `single` otherwise | Runtime tenant resolution selected by the supervisor. Platform requires `trusted-header` for universe-scoped proxy calls. An explicit value overrides the profile default. |
 | `LIGHTSPEED_CHANNELS_CONNECTORS` | Empty | Connectors started by the `full` development profile. Values: `telegram`, `whatsapp`, or both. |
 | `PORT` | `3000` | Platform server port. |
@@ -390,9 +389,10 @@ them on services.
 | `LIGHTSPEED_BINARY_URL_PROVIDER_INCUS` | Published Incus-provider archive URL. |
 | `LIGHTSPEED_BINARY_URL_ENVD` | Published environment-daemon archive URL. |
 | `LIGHTSPEED_BINARY_URL_CLI` | Published CLI archive URL. |
+| `LIGHTSPEED_ARTIFACT_URL_DEMO` | Published static demo archive URL recorded in the manifest. |
 | `LIGHTSPEED_RUNTIME_IMAGE` | Digest-pinned runtime image recorded in the manifest. |
 | `LIGHTSPEED_PLATFORM_IMAGE` | Digest-pinned Platform image recorded in the manifest. |
-| `LIGHTSPEED_CHANNELS_IMAGE` | Digest-pinned Channels image recorded in the manifest. |
+| `LIGHTSPEED_PLATFORM_WORKERS_IMAGE` | Digest-pinned Platform workers image recorded in the manifest. |
 | `LIGHTSPEED_CONFIGURATOR_MCP_IMAGE` | Digest-pinned Configurator image recorded in the manifest. |
 
 `release/metadata.env` additionally owns these release-source values. They are

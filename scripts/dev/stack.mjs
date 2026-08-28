@@ -26,7 +26,7 @@ try {
 } catch (error) {
   if (error?.code !== "ENOENT") throw error;
 }
-const profiles = new Set(["full", "platform", "runtime", "infra"]);
+const profiles = new Set(["full", "platform", "runtime", "demo", "infra"]);
 const actions = new Set(["start", "stop", "down", "reset", "status"]);
 const cli = parseCli(process.argv.slice(2));
 const children = [];
@@ -59,7 +59,7 @@ if (plan.profile !== "infra") {
   process.once("SIGINT", () => shutdown(0));
   process.once("SIGTERM", () => shutdown(0));
 }
-runChecked("infra", path.join(infraDir, "up.sh"), [], baseEnv);
+if (plan.infra) runChecked("infra", path.join(infraDir, "up.sh"), [], baseEnv);
 if (plan.profile === "infra") {
   process.exit(0);
 }
@@ -162,10 +162,6 @@ function createPlan(profile, sourceEnv) {
   const platformDatabaseUrl =
     sourceEnv.LIGHTSPEED_PLATFORM_DATABASE_URL ??
     sourceEnv.LIGHTSPEED_TEST_POSTGRES_URL;
-  const externalPlatformGateway =
-    profile === "platform" &&
-    sourceEnv.LIGHTSPEED_PLATFORM_DEV_REAL_GATEWAY === "1";
-  const stubPort = positivePort(sourceEnv.STUB_GATEWAY_PORT, 19_999, "STUB_GATEWAY_PORT");
   const platformPort = positivePort(sourceEnv.PORT, 3_000, "PORT");
   const configuratorPort = positivePort(
     sourceEnv.LIGHTSPEED_CONFIGURATOR_MCP_BIND_PORT,
@@ -175,11 +171,9 @@ function createPlan(profile, sourceEnv) {
   const runtimePort = addressPort(sourceEnv.LIGHTSPEED_GATEWAY_BIND, 18_080);
   const temporalAddress =
     sourceEnv.TEMPORAL_ADDRESS ?? `127.0.0.1:${sourceEnv.TEMPORAL_PORT ?? "7233"}`;
-  const platformApiUrl = externalPlatformGateway
-    ? runtimeRpc
-    : profile === "platform"
-      ? `http://127.0.0.1:${stubPort}/rpc`
-      : runtimeRpc;
+  // The focused platform profile talks to whatever runtime LIGHTSPEED_API_URL
+  // names; the frontend-only loop is `npm run demo` (in-browser backend).
+  const platformApiUrl = runtimeRpc;
   const runtimeAuthMode =
     sourceEnv.LIGHTSPEED_AUTH_MODE ?? (profile === "full" ? "trusted-header" : "single");
   // Local environment daemon: a directly attached `lightspeed-envd` on the
@@ -287,16 +281,6 @@ function createPlan(profile, sourceEnv) {
       { name: "platform API", url: `http://127.0.0.1:${platformPort}/health` },
       { name: "platform web", url: "http://localhost:5173/app/" },
     );
-    if (profile === "platform" && !externalPlatformGateway) {
-      ports.push({ name: "stub gateway", port: stubPort });
-      processes.push({
-        name: "stub",
-        command: process.execPath,
-        args: [path.join(repoRoot, "platform", "scripts", "stub-gateway.mjs")],
-        cwd: repoRoot,
-        env,
-      });
-    }
     processes.push(
       {
         name: "platform",
@@ -313,6 +297,20 @@ function createPlan(profile, sourceEnv) {
         env,
       },
     );
+  }
+
+  // The demo is the web UI over its in-browser backend: no infrastructure,
+  // no runtime, no Platform server — just Vite in demo mode.
+  if (profile === "demo") {
+    ports.push({ name: "demo web", port: 5_175 });
+    readiness.push({ name: "demo web", url: "http://localhost:5175/app/" });
+    processes.push({
+      name: "demo",
+      command: vite,
+      args: ["--mode", "demo", "--host", "localhost"],
+      cwd: path.join(repoRoot, "platform", "web"),
+      env,
+    });
   }
 
   if (profile === "full") {
@@ -332,21 +330,11 @@ function createPlan(profile, sourceEnv) {
       env,
     });
     processes.push(
-      channelsProcess("channels-workflows", "workflows", 9_090, env, tsx),
-      channelsProcess("channels-activities", "activities", 9_093, env, tsx),
+      platformWorkerProcess("channels-workflows", "channels-workflows", 9_090, env, tsx),
+      platformWorkerProcess("channels-activities", "channels-activities", 9_093, env, tsx),
+      platformWorkerProcess("bots-workflows", "bots-workflows", undefined, env, tsx),
       {
-        name: "bots-workflows",
-        command: tsx,
-        args: ["platform/bots/src/runtime/main.ts", "workflows"],
-        cwd: repoRoot,
-        env,
-      },
-      {
-        name: "bots-activities",
-        command: tsx,
-        args: ["platform/bots/src/runtime/main.ts", "activities"],
-        cwd: repoRoot,
-        env,
+        ...platformWorkerProcess("bots-activities", "bots-activities", undefined, env, tsx),
         // Temporal may already have due schedule work when the stack starts.
         // Do not poll for it until the gateway needed by those activities is
         // accepting requests, or a normal cold start produces a noisy first
@@ -366,7 +354,9 @@ function createPlan(profile, sourceEnv) {
         name: `${connector} connector`,
         url: `http://127.0.0.1:${healthPort}/healthz`,
       });
-      processes.push(channelsProcess(`channels-${connector}`, connector, metricsPort, env, tsx));
+      processes.push(
+        platformWorkerProcess(`channels-${connector}`, connector, metricsPort, env, tsx),
+      );
     }
   }
 
@@ -379,17 +369,24 @@ function createPlan(profile, sourceEnv) {
     readiness,
     connectors: connectorNames,
     envd: envdEnabled ? { endpoint: envdEndpoint, workspace: envdWorkspace } : null,
-    tools: profile === "platform" || profile === "full" ? [tsx, vite] : [],
+    infra: profile !== "demo",
+    tools:
+      profile === "platform" || profile === "full" ? [tsx, vite] : profile === "demo" ? [vite] : [],
   };
 }
 
-function channelsProcess(name, role, metricsPort, env, tsx) {
+function platformWorkerProcess(name, role, metricsPort, env, tsx) {
   return {
     name,
     command: tsx,
-    args: ["platform/channels/src/runtime/main.ts", role],
+    args: ["platform/workers/src/main.ts", role],
     cwd: repoRoot,
-    env: { ...env, LIGHTSPEED_CHANNELS_METRICS_PORT: String(metricsPort) },
+    env: {
+      ...env,
+      ...(metricsPort === undefined
+        ? {}
+        : { LIGHTSPEED_CHANNELS_METRICS_PORT: String(metricsPort) }),
+    },
   };
 }
 
@@ -751,7 +748,7 @@ function tcpUp(port) {
 
 function printPlan(plan) {
   console.log(`profile: ${plan.profile}`);
-  console.log("infrastructure: postgres, pgadmin, minio, temporal");
+  console.log(`infrastructure: ${plan.infra ? "postgres, pgadmin, minio, temporal" : "none"}`);
   for (const preparation of plan.preparations) {
     console.log(
       `prepare: ${preparation.name} -> ${displayCommand(preparation.command, preparation.args)}`,
@@ -786,10 +783,17 @@ function printRunning(plan) {
       `  login         ${plan.env.LIGHTSPEED_PLATFORM_ADMIN_EMAIL} / ${plan.env.LIGHTSPEED_PLATFORM_ADMIN_PASSWORD}`,
     );
   }
+  if (plan.profile === "demo") {
+    console.log("  demo web      http://localhost:5175/app/  (in-browser backend, scripted data, no sign-in)");
+  }
   if (plan.connectors.length > 0) {
     console.log(`  connectors    ${plan.connectors.join(", ")}`);
   }
-  console.log("\nPress Ctrl-C to stop host processes; infrastructure remains available.\n");
+  console.log(
+    plan.infra
+      ? "\nPress Ctrl-C to stop host processes; infrastructure remains available.\n"
+      : "\nPress Ctrl-C to stop.\n",
+  );
 }
 
 function displayCommand(command, args) {
@@ -800,7 +804,7 @@ function displayCommand(command, args) {
 function printHelp() {
   console.log(`Usage:
   ./dev.sh                                 Bootstrap and start the full editable product
-  ./dev.sh [start] <profile>               Start full, platform, runtime, or infra
+  ./dev.sh [start] <profile>               Start full, platform, runtime, demo, or infra
   ./dev.sh [profile] --require-api-keys    Fail full/runtime startup without provider keys
                                            (default only warns; keys can be added per
                                            universe under Settings -> Integrations)
@@ -816,10 +820,12 @@ The npm run dev commands are aliases for the same launcher.
 
 Profiles:
   full      Infrastructure, Rust runtime, Configurator, Platform, web, and
-            Channels workflow/activity workers. LIGHTSPEED_CHANNELS_CONNECTORS optionally
+            Platform Channels/Bots workers. LIGHTSPEED_CHANNELS_CONNECTORS optionally
             adds telegram and/or whatsapp.
-  platform  Infrastructure, stub gateway, Platform API, and web UI. Set
-            LIGHTSPEED_PLATFORM_DEV_REAL_GATEWAY=1 to use an external runtime.
+  platform  Infrastructure, Platform API, and web UI against the runtime at
+            LIGHTSPEED_API_URL (start one with the runtime profile).
   runtime   Infrastructure and the migrated Rust runtime.
+  demo      Web UI only, on http://localhost:5175/app/, over the in-browser
+            demo backend (scripted data, no sign-in). No Docker, no runtime.
   infra     Postgres, pgAdmin, MinIO, and Temporal only.`);
 }
