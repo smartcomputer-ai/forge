@@ -19,7 +19,10 @@ demo_tgz="$(find dist/archives -maxdepth 1 -name '*-demo-*' -print -quit)"
 test -n "$demo_tgz"
 tar -tzf "$demo_tgz" ./index.html >/dev/null
 tar -tzf "$demo_tgz" ./favicon.svg >/dev/null
-tar -tzf "$demo_tgz" | grep -Eq '^\./assets/.+\.(css|js)$'
+demo_files="$(mktemp)"
+trap 'rm -f "$demo_files"' EXIT
+tar -tzf "$demo_tgz" > "$demo_files"
+grep -Eq '^\./assets/.+\.(css|js)$' "$demo_files"
 
 client_tgz="$(find dist/npm -maxdepth 1 -name '*.tgz' -print -quit)"
 for entry in package/package.json package/release.json package/dist/index.js \
@@ -40,7 +43,7 @@ tar -tzf dist/runtime/platform-workers.tar.gz ./platform/workers/src/main.ts >/d
 tar -tzf dist/runtime/platform-workers.tar.gz ./platform/channels/src/runtime/workflow-worker.ts >/dev/null
 tar -tzf dist/runtime/platform-workers.tar.gz ./platform/bots/src/runtime/workflow-worker.ts >/dev/null
 platform_worker_files="$(mktemp)"
-trap 'rm -f "$platform_worker_files"' EXIT
+trap 'rm -f "$demo_files" "$platform_worker_files"' EXIT
 tar -tzf dist/runtime/platform-workers.tar.gz > "$platform_worker_files"
 grep -Eq '^\./node_modules/baileys/' "$platform_worker_files"
 
