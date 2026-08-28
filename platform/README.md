@@ -13,7 +13,9 @@ run Node commands from there.
 - `shared/` — Zod input schemas and deterministic helpers shared by the server,
   web UI, and CLI.
 - `db/` — Drizzle schemas, migrations, and the platform database adapter.
+- `bots/` — durable bot controllers, activities, triggers, and federation.
 - `channels/` — Temporal-managed Telegram and optional WhatsApp channel roles.
+- `workers/` — the shared Channels/Bots/connector runtime role dispatcher.
 - `configurator-mcp/` — generated Streamable HTTP MCP facade over the
   universe-scoped Lightspeed API.
 - `scripts/` — product-identity check and the generated profile configuration
@@ -29,7 +31,8 @@ The repository-level Docker Compose development environment lives under
 
 The authoritative configuration reference is
 [`docs/variables.md`](../docs/variables.md), with separate sections for the
-Platform server, Channels, Configurator MCP, and development-only settings.
+Platform server, Platform workers, Configurator MCP, and development-only
+settings.
 
 ## Development
 
@@ -112,7 +115,9 @@ LIGHTSPEED_PLATFORM_MIGRATION_TEST_URL=postgres://... npm run test:migrations
 npm run test:integration:channels
 ```
 
-Release construction stages one platform runtime and one Channels runtime.
-The Channels image includes every role and connector dependency and is started
-as `workflows`, `activities`, `telegram`, `whatsapp`, or `all`. The P123
-manifest records one digest for each image.
+Release construction stages one platform runtime and one Platform workers
+runtime. The Platform workers image includes Channels, Bots, and every
+connector dependency. It starts a granular role, the `channels` or `bots`
+composite, or `all`; connectors remain opt-in through
+`LIGHTSPEED_CHANNELS_CONNECTORS`. The release manifest records one digest for
+each image.

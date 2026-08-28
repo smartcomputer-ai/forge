@@ -11,7 +11,8 @@
     "platform/db",
     "platform/server",
     "platform/shared",
-    "platform/web"
+    "platform/web",
+    "platform/workers"
   ],
   "scripts": {
     "build": "npm run build --workspace @lightspeed/agent-client && npm run build --workspace @lightspeed/configurator-mcp && npm run build --workspace @lightspeed/platform-web && npm run build:demo --workspace @lightspeed/platform-web",
@@ -28,7 +29,7 @@
     "test:integration:channels": "npm run test:integration --workspace @lightspeed/channels",
     "test:migrations": "npm run test:migrations --workspace @lightspeed/platform-db",
     "test:release-packaging": "npm --prefix clients/typescript ci --ignore-scripts && npm --prefix platform/configurator-mcp ci --ignore-scripts && scripts/release/stage-runtimes.sh",
-    "typecheck": "tsc --noEmit && npm run typecheck --workspace @lightspeed/bots && npm run typecheck --workspace @lightspeed/channels && npm run typecheck --workspace @lightspeed/platform-web && npm run typecheck --workspace @lightspeed/agent-client && npm run typecheck --workspace @lightspeed/configurator-mcp",
+    "typecheck": "tsc --noEmit && npm run typecheck --workspace @lightspeed/bots && npm run typecheck --workspace @lightspeed/channels && npm run typecheck --workspace @lightspeed/platform-workers && npm run typecheck --workspace @lightspeed/platform-web && npm run typecheck --workspace @lightspeed/agent-client && npm run typecheck --workspace @lightspeed/configurator-mcp",
     "build:demo": "npm run build:demo --workspace @lightspeed/platform-web",
     "demo": "npm run dev:demo --workspace @lightspeed/platform-web"
   },

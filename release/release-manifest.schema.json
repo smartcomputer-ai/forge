@@ -18,6 +18,7 @@
     "platformUpgradeFrom",
     "images",
     "binaries",
+    "artifacts",
     "typescriptClient"
   ],
   "properties": {
@@ -39,13 +40,13 @@
         "runtime",
         "configuratorMcp",
         "platform",
-        "channels"
+        "platformWorkers"
       ],
       "properties": {
         "runtime": { "$ref": "#/$defs/imageReference" },
         "configuratorMcp": { "$ref": "#/$defs/imageReference" },
         "platform": { "$ref": "#/$defs/imageReference" },
-        "channels": { "$ref": "#/$defs/imageReference" }
+        "platformWorkers": { "$ref": "#/$defs/imageReference" }
       }
     },
     "binaries": {
@@ -57,6 +58,14 @@
         "providerIncus": { "$ref": "#/$defs/binaryArtifact" },
         "envd": { "$ref": "#/$defs/binaryArtifact" },
         "cli": { "$ref": "#/$defs/binaryArtifact" }
+      }
+    },
+    "artifacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["demo"],
+      "properties": {
+        "demo": { "$ref": "#/$defs/staticArtifact" }
       }
     },
     "typescriptClient": {
@@ -83,6 +92,17 @@
         "file": { "type": "string", "minLength": 1 },
         "url": { "type": ["string", "null"] },
         "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+      }
+    },
+    "staticArtifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["file", "url", "sha256", "basePath"],
+      "properties": {
+        "file": { "type": "string", "minLength": 1 },
+        "url": { "type": ["string", "null"] },
+        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "basePath": { "const": "/app/" }
       }
     }
   }

@@ -16,7 +16,7 @@
     "./credentials": "./src/credentials.ts"
   },
   "scripts": {
-    "dev": "tsx src/runtime/main.ts",
+    "dev": "tsx ../workers/src/main.ts bots",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "test:integration": "BOTS_TEMPORAL_INTEGRATION=1 vitest run test/bots.integration.test.ts"

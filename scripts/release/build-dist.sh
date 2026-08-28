@@ -74,6 +74,10 @@ for spec in \
     -C "$dist_dir/bin" -czf "$dist_dir/archives/$archive" "$binary"
 done
 
+demo_archive="lightspeed-demo-${version}.tar.gz"
+tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner \
+  -C platform/web/dist-demo -czf "$dist_dir/archives/$demo_archive" .
+
 scripts/release/create-sbom.mjs "$version" "$git_sha"
 scripts/release/create-manifest.mjs "$version" "$git_sha"
 scripts/release/checksums.sh

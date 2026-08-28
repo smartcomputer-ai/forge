@@ -330,21 +330,11 @@ function createPlan(profile, sourceEnv) {
       env,
     });
     processes.push(
-      channelsProcess("channels-workflows", "workflows", 9_090, env, tsx),
-      channelsProcess("channels-activities", "activities", 9_093, env, tsx),
+      platformWorkerProcess("channels-workflows", "channels-workflows", 9_090, env, tsx),
+      platformWorkerProcess("channels-activities", "channels-activities", 9_093, env, tsx),
+      platformWorkerProcess("bots-workflows", "bots-workflows", undefined, env, tsx),
       {
-        name: "bots-workflows",
-        command: tsx,
-        args: ["platform/bots/src/runtime/main.ts", "workflows"],
-        cwd: repoRoot,
-        env,
-      },
-      {
-        name: "bots-activities",
-        command: tsx,
-        args: ["platform/bots/src/runtime/main.ts", "activities"],
-        cwd: repoRoot,
-        env,
+        ...platformWorkerProcess("bots-activities", "bots-activities", undefined, env, tsx),
         // Temporal may already have due schedule work when the stack starts.
         // Do not poll for it until the gateway needed by those activities is
         // accepting requests, or a normal cold start produces a noisy first
@@ -364,7 +354,9 @@ function createPlan(profile, sourceEnv) {
         name: `${connector} connector`,
         url: `http://127.0.0.1:${healthPort}/healthz`,
       });
-      processes.push(channelsProcess(`channels-${connector}`, connector, metricsPort, env, tsx));
+      processes.push(
+        platformWorkerProcess(`channels-${connector}`, connector, metricsPort, env, tsx),
+      );
     }
   }
 
@@ -383,13 +375,18 @@ function createPlan(profile, sourceEnv) {
   };
 }
 
-function channelsProcess(name, role, metricsPort, env, tsx) {
+function platformWorkerProcess(name, role, metricsPort, env, tsx) {
   return {
     name,
     command: tsx,
-    args: ["platform/channels/src/runtime/main.ts", role],
+    args: ["platform/workers/src/main.ts", role],
     cwd: repoRoot,
-    env: { ...env, LIGHTSPEED_CHANNELS_METRICS_PORT: String(metricsPort) },
+    env: {
+      ...env,
+      ...(metricsPort === undefined
+        ? {}
+        : { LIGHTSPEED_CHANNELS_METRICS_PORT: String(metricsPort) }),
+    },
   };
 }
 
@@ -823,7 +820,7 @@ The npm run dev commands are aliases for the same launcher.
 
 Profiles:
   full      Infrastructure, Rust runtime, Configurator, Platform, web, and
-            Channels workflow/activity workers. LIGHTSPEED_CHANNELS_CONNECTORS optionally
+            Platform Channels/Bots workers. LIGHTSPEED_CHANNELS_CONNECTORS optionally
             adds telegram and/or whatsapp.
   platform  Infrastructure, Platform API, and web UI against the runtime at
             LIGHTSPEED_API_URL (start one with the runtime profile).

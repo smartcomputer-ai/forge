@@ -21,7 +21,8 @@ Use these files as the index:
 - `clients/typescript/` — generated public TypeScript API client.
 - `platform/` — first-party TypeScript management server, web UI, operator CLI,
   shared inputs, database schema, Channels workers, Bots workers, and
-  Configurator MCP. `platform/web/src/demo/` is the in-browser demo backend
+  Configurator MCP. `platform/workers/` is their shared runtime role dispatcher,
+  and `platform/web/src/demo/` is the in-browser demo backend
   (the only mock of the platform API; see `platform/README.md`).
 - `crates/api/contract/` — committed generated API schema, method manifest,
   OpenRPC, and human reference.

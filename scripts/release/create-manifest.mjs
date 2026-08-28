@@ -30,6 +30,15 @@ const archive = (key, needle) => {
     sha256: sha256(path.join("dist/archives", file)),
   };
 };
+const artifact = (key, needle) => {
+  const file = fs.readdirSync("dist/archives").find((entry) => entry.includes(needle));
+  if (!file) throw new Error(`missing artifact matching ${needle}`);
+  return {
+    file,
+    url: process.env[`LIGHTSPEED_ARTIFACT_URL_${key}`] ?? null,
+    sha256: sha256(path.join("dist/archives", file)),
+  };
+};
 const clientFile = fs.readdirSync("dist/npm").find((entry) => entry.endsWith(".tgz"));
 if (!clientFile) throw new Error("missing TypeScript client tarball");
 const existingManifest = fs.existsSync("dist/release-manifest.json")
@@ -61,13 +70,19 @@ const manifest = {
     runtime: process.env.LIGHTSPEED_RUNTIME_IMAGE ?? null,
     configuratorMcp: process.env.LIGHTSPEED_CONFIGURATOR_MCP_IMAGE ?? null,
     platform: process.env.LIGHTSPEED_PLATFORM_IMAGE ?? null,
-    channels: process.env.LIGHTSPEED_CHANNELS_IMAGE ?? null,
+    platformWorkers: process.env.LIGHTSPEED_PLATFORM_WORKERS_IMAGE ?? null,
   },
   binaries: {
     server: archive("SERVER", "-server-"),
     providerIncus: archive("PROVIDER_INCUS", "-provider-incus-"),
     envd: archive("ENVD", "-envd-"),
     cli: archive("CLI", "-cli-"),
+  },
+  artifacts: {
+    demo: {
+      ...artifact("DEMO", "-demo-"),
+      basePath: "/app/",
+    },
   },
   typescriptClient: {
     name: "@lightspeed/agent-client",

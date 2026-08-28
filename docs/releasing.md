@@ -2,10 +2,10 @@
 
 Lightspeed owns and publishes a coherent release containing the hosted runtime,
 the Incus provider, envd, the CLI, Configurator MCP, the platform server/web
-image, one Channels image startable in each supported role, the generated
-TypeScript client, API contracts, checksums, an SPDX SBOM, and a release
-manifest. A consumer should pin one manifest rather than selecting components
-separately.
+image, one Platform workers image startable in each supported role, the generated
+TypeScript client, the static in-browser demo, API contracts, checksums, an
+SPDX SBOM, and a release manifest. A consumer should pin one manifest rather
+than selecting components separately.
 
 ## Database migrations
 
@@ -84,16 +84,18 @@ make release
 
 `make release-dist` compiles all Rust executables in one Cargo invocation,
 builds the generated client, Configurator, and web UI, and produces `dist/`.
-The same root lockfile deterministically stages platform and Channels runtime
+The demo build is packaged as a target-independent static archive whose files
+are served under `/app/` with an `index.html` fallback; it is not included in
+the Platform image.
+The same root lockfile deterministically stages platform and Platform workers runtime
 payloads. `make release-images` copies those prebuilt files into the `runtime`,
-Configurator, platform, and Channels images; it does not invoke Cargo or
-rebuild the web UI. The `channels` image includes all connector dependencies
-and selects `workflows`, `activities`, `telegram`, `whatsapp`, or `all` at
-startup; `all` is the default and starts Telegram unless
-`LIGHTSPEED_CHANNELS_CONNECTORS`
-selects another connector set. Image smoke tests compare the runtime's
+Configurator, platform, and Platform workers images; it does not invoke Cargo
+or rebuild the web UI. The `platform-workers` image includes Channels, Bots,
+and all connector dependencies. It selects a granular worker or connector,
+the `channels` or `bots` composite, or `all`; connectors join `all` only when
+named by `LIGHTSPEED_CHANNELS_CONNECTORS`. Image smoke tests compare the runtime's
 `lightspeed-server` executable byte-for-byte, start the platform image against
-PostgreSQL, check its health and SPA, and validate every Channels role.
+PostgreSQL, check its health and SPA, and validate every Platform workers role.
 
 The Rust container is named `runtime` because it is the hosted product core,
 not merely an HTTP server. Its executable and standalone archive remain named

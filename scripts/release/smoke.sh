@@ -10,8 +10,16 @@ for binary in dist/bin/lightspeed-server dist/bin/lightspeed-provider-incus \
 done
 
 for archive in dist/archives/*.tar.gz; do
-  [[ "$(tar -tzf "$archive" | wc -l)" -eq 1 ]]
+  if [[ "$archive" != *-demo-* ]]; then
+    [[ "$(tar -tzf "$archive" | wc -l)" -eq 1 ]]
+  fi
 done
+
+demo_tgz="$(find dist/archives -maxdepth 1 -name '*-demo-*' -print -quit)"
+test -n "$demo_tgz"
+tar -tzf "$demo_tgz" ./index.html >/dev/null
+tar -tzf "$demo_tgz" ./favicon.svg >/dev/null
+tar -tzf "$demo_tgz" | grep -Eq '^\./assets/.+\.(css|js)$'
 
 client_tgz="$(find dist/npm -maxdepth 1 -name '*.tgz' -print -quit)"
 for entry in package/package.json package/release.json package/dist/index.js \
@@ -21,19 +29,20 @@ done
 test -f dist/configurator-mcp/dist/bin.js
 test -f dist/configurator-mcp/node_modules/@lightspeed/agent-client/dist/index.js
 
-for runtime in platform channels; do
+for runtime in platform platform-workers; do
   test -f "dist/runtime/$runtime.tar.gz"
   tar -tzf "dist/runtime/$runtime.tar.gz" ./package.json >/dev/null
 done
 tar -tzf dist/runtime/platform.tar.gz ./platform/server/src/main.ts >/dev/null
 tar -tzf dist/runtime/platform.tar.gz ./platform/bots/src/webhooks.ts >/dev/null
 tar -tzf dist/runtime/platform.tar.gz ./platform/web/dist/index.html >/dev/null
-tar -tzf dist/runtime/channels.tar.gz ./platform/channels/src/runtime/main.ts >/dev/null
-tar -tzf dist/runtime/channels.tar.gz ./platform/bots/src/runtime/main.ts >/dev/null
-channels_files="$(mktemp)"
-trap 'rm -f "$channels_files"' EXIT
-tar -tzf dist/runtime/channels.tar.gz > "$channels_files"
-grep -Eq '^\./node_modules/baileys/' "$channels_files"
+tar -tzf dist/runtime/platform-workers.tar.gz ./platform/workers/src/main.ts >/dev/null
+tar -tzf dist/runtime/platform-workers.tar.gz ./platform/channels/src/runtime/workflow-worker.ts >/dev/null
+tar -tzf dist/runtime/platform-workers.tar.gz ./platform/bots/src/runtime/workflow-worker.ts >/dev/null
+platform_worker_files="$(mktemp)"
+trap 'rm -f "$platform_worker_files"' EXIT
+tar -tzf dist/runtime/platform-workers.tar.gz > "$platform_worker_files"
+grep -Eq '^\./node_modules/baileys/' "$platform_worker_files"
 
 (cd dist && sha256sum --check checksums.txt)
 scripts/release/verify-manifest.mjs

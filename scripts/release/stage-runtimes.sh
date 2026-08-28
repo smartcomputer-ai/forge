@@ -26,7 +26,8 @@ copy_workspace_manifests() {
     platform/db \
     platform/server \
     platform/shared \
-    platform/web; do
+    platform/web \
+    platform/workers; do
     mkdir -p "$root/$workspace"
     cp "$workspace/package.json" "$root/$workspace/"
   done
@@ -50,7 +51,7 @@ stage_runtime() {
   rm -f "$root/package-lock.json"
   if [[ "$name" = platform ]]; then
     rm -rf "$root/platform/channels" "$root/platform/cli" \
-      "$root/platform/configurator-mcp"
+      "$root/platform/configurator-mcp" "$root/platform/workers"
   else
     rm -rf "$root/platform/cli" "$root/platform/configurator-mcp" \
       "$root/platform/server" \
@@ -68,9 +69,10 @@ stage_runtime platform @lightspeed/platform-server \
   platform/db/migrations \
   platform/shared/src \
   platform/web/dist
-stage_runtime channels @lightspeed/channels \
+stage_runtime platform-workers @lightspeed/platform-workers \
   clients/typescript/dist \
   platform/bots/src \
   platform/channels/src \
   platform/db/src \
-  platform/db/migrations
+  platform/db/migrations \
+  platform/workers/src
