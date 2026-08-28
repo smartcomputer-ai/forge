@@ -21,7 +21,8 @@ Use these files as the index:
 - `clients/typescript/` — generated public TypeScript API client.
 - `platform/` — first-party TypeScript management server, web UI, operator CLI,
   shared inputs, database schema, Channels workers, Bots workers, and
-  Configurator MCP.
+  Configurator MCP. `platform/web/src/demo/` is the in-browser demo backend
+  (the only mock of the platform API; see `platform/README.md`).
 - `crates/api/contract/` — committed generated API schema, method manifest,
   OpenRPC, and human reference.
 - `dev.sh` and `scripts/dev/` — first-run bootstrap, unified profile-aware
@@ -140,6 +141,7 @@ processes remain opt-in through
 ./dev.sh
 ./dev.sh platform
 ./dev.sh runtime
+./dev.sh demo
 ./dev.sh infra
 ./dev.sh --plan full
 ./dev.sh status
@@ -147,6 +149,15 @@ processes remain opt-in through
 ./dev.sh down
 ./dev.sh reset
 ```
+
+The web UI has two build paths: `npm run build:web` (the live SPA the
+Platform server hosts) and `npm run build:demo` (`platform/web/dist-demo/`, the
+same SPA over the in-browser demo backend, publishable as a static site).
+`./dev.sh demo` (alias `npm run demo`) serves the demo build in development
+with no Docker or runtime; it replaces the former stub gateway as the
+frontend-only loop. A new platform API route needs a stub
+under `platform/web/src/demo/routes/`, and demo content lives in
+`platform/web/src/demo/fixtures/` (one module per showcased universe).
 
 `stop` terminates the tracked host supervisor but keeps infrastructure;
 `down` stops the host supervisor before tearing down Compose. Internal

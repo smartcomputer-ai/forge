@@ -285,8 +285,6 @@ Never reuse their credentials in a deployed environment.
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `LIGHTSPEED_PLATFORM_DEV_REAL_GATEWAY` | `0` | In the focused `platform` profile, use `LIGHTSPEED_API_URL` instead of the stub gateway. |
-| `STUB_GATEWAY_PORT` | `19999` | Focused Platform stub-gateway port. |
 | `LIGHTSPEED_AUTH_MODE` | `trusted-header` for `full`; `single` otherwise | Runtime tenant resolution selected by the supervisor. Platform requires `trusted-header` for universe-scoped proxy calls. An explicit value overrides the profile default. |
 | `LIGHTSPEED_CHANNELS_CONNECTORS` | Empty | Connectors started by the `full` development profile. Values: `telegram`, `whatsapp`, or both. |
 | `PORT` | `3000` | Platform server port. |

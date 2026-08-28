@@ -42,7 +42,7 @@ if (( ${#positionals[@]} > 0 )); then
         profile="${positionals[1]}"
       fi
       ;;
-    full|platform|runtime|infra)
+    full|platform|runtime|demo|infra)
       profile="${positionals[0]}"
       ;;
   esac
@@ -62,6 +62,11 @@ if [[ "${help_only}" != true && "${plan_only}" != true ]]; then
           ;;
         platform) need_node_dependencies=true ;;
         runtime) need_cargo=true ;;
+        demo)
+          # In-browser backend: nothing to run in Docker.
+          need_docker=false
+          need_node_dependencies=true
+          ;;
       esac
       ;;
     status|down) need_docker=true ;;
