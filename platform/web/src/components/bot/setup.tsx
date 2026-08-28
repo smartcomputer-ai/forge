@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowUpRight, ChevronRight } from "lucide-react";
+import { ArrowUpRight, ChevronRight, SlidersHorizontal } from "lucide-react";
 import { Link, useNavigate } from "react-router-dom";
 import {
   api,
@@ -51,9 +51,15 @@ import {
 import { cn } from "@/lib/utils";
 import { BotEnvironmentCard } from "./environment-card";
 import { BotAvatar } from "./face";
-import { briefSummary, capabilitySummary, environmentSummary, guardrailsSummary } from "./setup-summary";
+import { briefSummary, capabilitySummary, environmentSummary, guardrailsSummary, otherBotsSummary } from "./setup-summary";
 import { triggerSummary } from "./trigger-summary";
-import { BotMultiSelect, TriggersSection, inboxSelectionSpec, type BotEnvStatus } from "./triggers";
+import {
+  BotMultiSelect,
+  EditTriggerDialog,
+  TriggersSection,
+  inboxSelectionSpec,
+  type BotEnvStatus,
+} from "./triggers";
 
 /**
  * Everything about how a bot works, as a stack of sections that each read
@@ -95,13 +101,14 @@ export function BotSetup({
           ? { kind: "existing", environmentId: profile.data.environment.environmentId }
           : { kind: "provision" };
   const triggerList = triggers.data?.triggers ?? [];
+  const wakeups = triggerList.filter((trigger) => trigger.kind !== "bot");
   const triggersLine =
-    triggerList.length === 0
+    wakeups.length === 0
       ? "Nothing wakes it yet — you can always message it"
-      : `${triggerList.length} ${triggerList.length === 1 ? "trigger" : "triggers"} · ${triggerList
+      : `${wakeups.length} ${wakeups.length === 1 ? "trigger" : "triggers"} · ${wakeups
           .slice(0, 2)
           .map((trigger) => `${trigger.name}: ${triggerSummary(trigger)}`)
-          .join(" · ")}${triggerList.length > 2 ? " · …" : ""}`;
+          .join(" · ")}${wakeups.length > 2 ? " · …" : ""}`;
 
   return (
     <div className="min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto">
@@ -115,10 +122,18 @@ export function BotSetup({
           summary={triggersLine}
           defaultOpen
         >
-          <TriggersSection universeId={bot.universeId} botId={bot.botId} manage={manage} env={env} headless />
+          <TriggersSection
+            universeId={bot.universeId}
+            botId={bot.botId}
+            manage={manage}
+            env={env}
+            headless
+            hideKinds={["bot"]}
+          />
         </SetupSection>
+        <OtherBotsSection bot={bot} manage={manage} inbox={triggerList.find((trigger) => trigger.kind === "bot")} />
         <ProfileSections slug={slug} bot={bot} manage={manage} profile={profile.data} profileError={profile.error?.message} />
-        <GuardrailsSection bot={bot} state={state} manage={manage} triggers={triggerList} />
+        <GuardrailsSection bot={bot} state={state} manage={manage} />
         <DangerSection slug={slug} bot={bot} manage={manage} />
       </div>
     </div>
@@ -606,52 +621,22 @@ function ProfileSwitcher({
   );
 }
 
-type InboxMode = "off" | "any" | "selected";
-
-function GuardrailsSection({
-  bot,
-  state,
-  manage,
-  triggers: triggerList,
-}: {
-  bot: Bot;
-  state?: BotState;
-  manage: boolean;
-  triggers: BotTrigger[];
-}) {
+function GuardrailsSection({ bot, state, manage }: { bot: Bot; state?: BotState; manage: boolean }) {
   const queryClient = useQueryClient();
   const universeId = bot.universeId;
-  const bots = useQuery({
-    queryKey: ["bots", universeId],
-    queryFn: () => api<{ bots: BotListItem[] }>("GET", `/api/v1/universes/${universeId}/bots`),
-    enabled: manage,
-  });
-  const inbox = triggerList.find((trigger) => trigger.kind === "bot");
-  const inboxSpec = inbox?.spec as BotInboxSpec | undefined;
-  const baseInboxMode: InboxMode = !inbox ? "off" : inboxSpec?.from === undefined ? "any" : "selected";
-  const baseInboxIds = inboxSpec?.from ?? [];
 
   const [runsPerDay, setRunsPerDay] = useState(bot.runsPerDay?.toString() ?? "");
   const [breakerFires, setBreakerFires] = useState(bot.breaker?.fires.toString() ?? "");
   const [breakerWindow, setBreakerWindow] = useState(bot.breaker ? String(Math.round(bot.breaker.windowMs / 60_000)) : "");
   const [ttlDays, setTtlDays] = useState(bot.routedSessionTtlMs ? String(Math.round(bot.routedSessionTtlMs / 86_400_000)) : "");
   const [selfConfig, setSelfConfig] = useState(bot.selfConfig);
-  const [emit, setEmit] = useState(bot.emit);
-  const [inboxMode, setInboxMode] = useState<InboxMode>(baseInboxMode);
-  const [inboxIds, setInboxIds] = useState<string[]>(baseInboxIds);
   useEffect(() => {
     setRunsPerDay(bot.runsPerDay?.toString() ?? "");
     setBreakerFires(bot.breaker?.fires.toString() ?? "");
     setBreakerWindow(bot.breaker ? String(Math.round(bot.breaker.windowMs / 60_000)) : "");
     setTtlDays(bot.routedSessionTtlMs ? String(Math.round(bot.routedSessionTtlMs / 86_400_000)) : "");
     setSelfConfig(bot.selfConfig);
-    setEmit(bot.emit);
-  }, [bot.runsPerDay, bot.breaker, bot.routedSessionTtlMs, bot.selfConfig, bot.emit]);
-  useEffect(() => {
-    setInboxMode(baseInboxMode);
-    setInboxIds(baseInboxIds);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [inbox?.name, JSON.stringify(baseInboxIds), baseInboxMode]);
+  }, [bot.runsPerDay, bot.breaker, bot.routedSessionTtlMs, bot.selfConfig]);
 
   const fields = () => ({
     runsPerDay: runsPerDay.trim() ? Number(runsPerDay) : null,
@@ -660,7 +645,6 @@ function GuardrailsSection({
       : null,
     routedSessionTtlMs: ttlDays.trim() ? Math.round(Number(ttlDays) * 86_400_000) : null,
     selfConfig,
-    emit,
   });
   const botDirty =
     JSON.stringify(fields()) !==
@@ -669,40 +653,17 @@ function GuardrailsSection({
       breaker: bot.breaker,
       routedSessionTtlMs: bot.routedSessionTtlMs,
       selfConfig: bot.selfConfig,
-      emit: bot.emit,
     });
-  const inboxDirty =
-    inboxMode !== baseInboxMode ||
-    (inboxMode === "selected" && JSON.stringify([...inboxIds].sort()) !== JSON.stringify([...baseInboxIds].sort()));
-  const problem =
-    inboxMode === "selected" && inboxIds.length === 0
-      ? "Choose at least one bot, or allow any bot."
-      : ttlDays.trim() && !(Number(ttlDays) >= 1)
-        ? "Thread retention is at least one day."
-        : null;
+  const problem = ttlDays.trim() && !(Number(ttlDays) >= 1) ? "Thread retention is at least one day." : null;
 
   const save = useMutation({
-    mutationFn: async () => {
-      if (botDirty) {
-        await api<{ bot: Bot }>("PATCH", `/api/v1/universes/${universeId}/bots/${bot.botId}`, fields());
-      }
-      if (inboxDirty) {
-        const url = `/api/v1/universes/${universeId}/bots/${bot.botId}/triggers`;
-        if (inboxMode === "off") {
-          if (inbox) await api("DELETE", `${url}/${inbox.name}`);
-        } else {
-          const spec = inboxSelectionSpec(inboxMode === "any" ? "any" : "selected", inboxIds);
-          if (inbox) await api("PATCH", `${url}/${inbox.name}`, { spec });
-          else await api("POST", url, { name: "inbox", kind: "bot", spec });
-        }
-      }
-    },
-    onSuccess: async () => {
+    mutationFn: () =>
+      api<{ bot: Bot }>("PATCH", `/api/v1/universes/${universeId}/bots/${bot.botId}`, fields()),
+    onSuccess: async ({ bot: updated }) => {
+      queryClient.setQueryData(["bot", universeId, bot.botId], { bot: updated });
       await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ["bot", universeId, bot.botId] }),
         queryClient.invalidateQueries({ queryKey: ["bots", universeId] }),
         queryClient.invalidateQueries({ queryKey: ["bot-state", universeId, bot.botId] }),
-        queryClient.invalidateQueries({ queryKey: ["bot-triggers", universeId, bot.botId] }),
       ]);
     },
   });
@@ -715,7 +676,7 @@ function GuardrailsSection({
       id="guardrails"
       title="Guardrails"
       description="Limits and permissions."
-      summary={guardrailsSummary(bot, baseInboxMode === "off" ? "off" : baseInboxMode === "any" ? "any" : baseInboxIds)}
+      summary={guardrailsSummary(bot)}
     >
       <div className="grid gap-4 sm:grid-cols-2">
         <Field>
@@ -789,46 +750,178 @@ function GuardrailsSection({
           onCheckedChange={setSelfConfig}
           disabled={readOnly}
         />
-        <ToggleRow
-          id="bot-emit"
-          label="Can message other bots"
-          hint="Discovers bots that accept it and addresses them with bot_emit; may also post to itself. Rate-capped."
-          checked={emit}
-          onCheckedChange={setEmit}
-          disabled={readOnly}
-        />
-        <div className="grid gap-2 rounded-md border p-3">
-          <div className="flex items-center justify-between gap-3">
-            <Label htmlFor="bot-inbox-mode" className="text-sm">
-              Accepts messages from other bots
-              <span className="block text-xs font-normal text-muted-foreground">
-                Its inbox: which bots may address it. The inbox is a trigger; routing and batching are edited there.
-              </span>
-            </Label>
-            <Select value={inboxMode} onValueChange={(value) => value && setInboxMode(value as InboxMode)} disabled={readOnly}>
-              <SelectTrigger id="bot-inbox-mode" size="sm" className="w-40">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="off">Nobody</SelectItem>
-                <SelectItem value="any">Any bot here</SelectItem>
-                <SelectItem value="selected">Only these bots</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-          {inboxMode === "selected" && (
-            <BotMultiSelect currentBotId={bot.botId} bots={bots.data?.bots ?? []} value={inboxIds} onChange={setInboxIds} />
-          )}
-        </div>
       </div>
       {manage && (
         <SaveRow
-          dirty={botDirty || inboxDirty}
+          dirty={botDirty}
           pending={save.isPending}
           error={problem ?? save.error?.message}
           disabled={closed || problem !== null}
           onSave={() => save.mutate()}
           note="Grants change the bot's toolset; its sessions pick that up at their next idle moment."
+        />
+      )}
+    </SetupSection>
+  );
+}
+
+type InboxMode = "off" | "any" | "selected";
+
+/**
+ * Talking to other bots, both directions in one place: sending is a grant
+ * on this bot (`emit`); receiving is its inbox — a trigger under the hood,
+ * with the routing and batching of one, shown here in the person's words.
+ */
+function OtherBotsSection({ bot, manage, inbox }: { bot: Bot; manage: boolean; inbox: BotTrigger | undefined }) {
+  const queryClient = useQueryClient();
+  const universeId = bot.universeId;
+  const bots = useQuery({
+    queryKey: ["bots", universeId],
+    queryFn: () => api<{ bots: BotListItem[] }>("GET", `/api/v1/universes/${universeId}/bots`),
+  });
+  const inboxSpec = inbox?.spec as BotInboxSpec | undefined;
+  // A paused inbox reads as "Nobody" but keeps its sender list and routing,
+  // so switching receiving back on restores them.
+  const paused = inbox !== undefined && !inbox.enabled;
+  const baseMode: InboxMode = !inbox || paused ? "off" : inboxSpec?.from === undefined ? "any" : "selected";
+  const baseIds = inboxSpec?.from ?? [];
+  const [emit, setEmit] = useState(bot.emit);
+  const [mode, setMode] = useState<InboxMode>(baseMode);
+  const [ids, setIds] = useState<string[]>(baseIds);
+  const [editingInbox, setEditingInbox] = useState(false);
+  useEffect(() => setEmit(bot.emit), [bot.emit]);
+  useEffect(() => {
+    setMode(baseMode);
+    setIds(baseIds);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [inbox?.name, baseMode, JSON.stringify(baseIds)]);
+
+  const emitDirty = emit !== bot.emit;
+  const inboxDirty =
+    mode !== baseMode || (mode === "selected" && JSON.stringify([...ids].sort()) !== JSON.stringify([...baseIds].sort()));
+  const problem = mode === "selected" && ids.length === 0 ? "Choose at least one bot, or allow any bot." : null;
+  const save = useMutation({
+    mutationFn: async () => {
+      if (emitDirty) {
+        await api<{ bot: Bot }>("PATCH", `/api/v1/universes/${universeId}/bots/${bot.botId}`, { emit });
+      }
+      if (inboxDirty) {
+        const url = `/api/v1/universes/${universeId}/bots/${bot.botId}/triggers`;
+        if (mode === "off") {
+          // Pause, never delete: the sender list and routing survive.
+          if (inbox && inbox.enabled) await api("PATCH", `${url}/${inbox.name}`, { enabled: false });
+        } else {
+          const spec = inboxSelectionSpec(mode === "any" ? "any" : "selected", ids);
+          if (inbox) await api("PATCH", `${url}/${inbox.name}`, { spec, enabled: true });
+          else await api("POST", url, { name: "inbox", kind: "bot", spec });
+        }
+      }
+    },
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["bot", universeId, bot.botId] }),
+        queryClient.invalidateQueries({ queryKey: ["bots", universeId] }),
+        queryClient.invalidateQueries({ queryKey: ["bot-state", universeId, bot.botId] }),
+        queryClient.invalidateQueries({ queryKey: ["bot-triggers", universeId, bot.botId] }),
+      ]);
+    },
+  });
+  const closed = bot.closedAt !== null;
+  const readOnly = !manage || closed;
+  const others = (bots.data?.bots ?? []).filter((other) => other.botId !== bot.botId && !other.closedAt);
+
+  return (
+    <SetupSection
+      id="other-bots"
+      title="Other bots"
+      description="Bots in this universe can message each other; every message is an event, and each side decides for itself."
+      summary={otherBotsSummary(bot.emit, baseMode === "off" ? "off" : baseMode === "any" ? "any" : baseIds)}
+    >
+      <ToggleRow
+        id="bot-emit"
+        label="Can message other bots"
+        hint="Sees which bots accept it and addresses them by id; may also post to itself. Rate-capped, and a message travels at most a few hops. Turning this on also opens the inbox — sending without listening is the rare case."
+        checked={emit}
+        onCheckedChange={(checked) => {
+          setEmit(checked);
+          if (checked && mode === "off") setMode("any");
+        }}
+        disabled={readOnly}
+      />
+      <div className="grid gap-2 rounded-md border p-3">
+        <div className="flex items-center justify-between gap-3">
+          <Label htmlFor="bot-inbox-mode" className="text-sm">
+            Accepts messages from
+            <span className="block text-xs font-normal text-muted-foreground">
+              {others.length === 0
+                ? "There are no other bots in this universe yet."
+                : "Which bots may address this one. Messages from them arrive like any other event."}
+            </span>
+          </Label>
+          <Select value={mode} onValueChange={(value) => value && setMode(value as InboxMode)} disabled={readOnly}>
+            <SelectTrigger id="bot-inbox-mode" size="sm" className="w-40">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="off">Nobody</SelectItem>
+              <SelectItem value="any">Any bot here</SelectItem>
+              <SelectItem value="selected">Only these bots</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+        {mode === "selected" && (
+          <BotMultiSelect currentBotId={bot.botId} bots={bots.data?.bots ?? []} value={ids} onChange={setIds} />
+        )}
+        {mode !== "off" && manage && (
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={!inbox || inboxDirty}
+              onClick={() => setEditingInbox(true)}
+              title={!inbox || inboxDirty ? "Save first, then set routing and batching." : undefined}
+            >
+              <SlidersHorizontal data-icon="inline-start" /> Routing &amp; batching…
+            </Button>
+            <span className="text-xs text-muted-foreground">
+              {!inbox || inboxDirty
+                ? "Available after you save."
+                : inbox.route?.policy === "perKey"
+                  ? "One thread per key."
+                  : inbox.route?.policy === "perEvent"
+                    ? "One thread per message."
+                    : "Messages arrive in Main."}
+            </span>
+          </div>
+        )}
+        {mode === "off" && paused && (
+          <p className="text-xs text-muted-foreground">
+            Inbox paused{inbox?.disabledReason === "breaker" ? " by flood protection" : ""}; its sender list and
+            routing are kept.
+          </p>
+        )}
+      </div>
+      {manage && (
+        <SaveRow
+          dirty={emitDirty || inboxDirty}
+          pending={save.isPending}
+          error={problem ?? save.error?.message}
+          disabled={closed || problem !== null}
+          onSave={() => save.mutate()}
+          note="Sending is a tool grant, picked up at the bot's next idle moment; receiving applies to the next message."
+        />
+      )}
+      {manage && inbox && editingInbox && (
+        <EditTriggerDialog
+          universeId={universeId}
+          botId={bot.botId}
+          bots={bots.data?.bots ?? []}
+          trigger={inbox}
+          open
+          deliveryOnly
+          onOpenChange={(open) => {
+            if (!open) setEditingInbox(false);
+          }}
         />
       )}
     </SetupSection>

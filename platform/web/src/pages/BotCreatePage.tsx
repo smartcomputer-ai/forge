@@ -11,10 +11,11 @@ import {
 } from "@/api";
 import { BotAvatar, botColor } from "@/components/bot/face";
 import { botIdFrom } from "@/components/bot/identity";
-import { capabilitySummary } from "@/components/bot/setup-summary";
+import { capabilitySummary, otherBotsSummary } from "@/components/bot/setup-summary";
 import { BOT_TEMPLATES, type BotTemplate } from "@/components/bot/templates";
 import { describeCron } from "@/components/bot/trigger-summary";
 import {
+  BotMultiSelect,
   NAME_PATTERN,
   TriggerKindFields,
   TriggerKindIcon,
@@ -51,10 +52,12 @@ import { hasSessionFeature, setupResourceFeatureError } from "@/lib/sessions/res
 import { canManage, useActiveUniverse } from "@/lib/universes";
 import { cn } from "@/lib/utils";
 
-type Step = "job" | "wakeups" | "capabilities" | "guardrails";
+type Step = "job" | "wakeups" | "bots" | "capabilities" | "guardrails";
+/** The same sections as the bot's Setup tab, in the same order. */
 const STEPS: Array<{ id: Step; label: string }> = [
   { id: "job", label: "Job" },
-  { id: "wakeups", label: "Wake-ups" },
+  { id: "wakeups", label: "Triggers" },
+  { id: "bots", label: "Other bots" },
   { id: "capabilities", label: "Capabilities" },
   { id: "guardrails", label: "Guardrails" },
 ];
@@ -75,7 +78,7 @@ export function uniqueTriggerName(base: string, taken: string[]): string {
   return `${base}-${index}`;
 }
 
-/** Plain words for a wake-up still being drafted, from its form. */
+/** Plain words for a trigger still being drafted, from its form. */
 export function wakeupSummary(draft: WakeupDraft): string {
   switch (draft.kind) {
     case "schedule": {
@@ -107,7 +110,7 @@ export function wakeupSummary(draft: WakeupDraft): string {
   }
 }
 
-/** What a template comes with, in a few words: its wake-ups, then its capabilities. */
+/** What a template comes with, in a few words: its triggers, then its capabilities. */
 export function templateHighlights(template: BotTemplate): string[] {
   const wakeups = template.triggers.map((trigger) => {
     switch (trigger.kind) {
@@ -164,6 +167,28 @@ function Wizard({ universeId, slug }: { universeId: string; slug: string }) {
   const [runsPerDay, setRunsPerDay] = useState("50");
   const [selfConfig, setSelfConfig] = useState(true);
   const [emit, setEmit] = useState(false);
+  // The inbox is a trigger draft like any other, but it is driven from the
+  // "Other bots" block, not the trigger picker, so send and receive sit together.
+  const inboxDraft = wakeups.find((draft) => draft.kind === "bot");
+  const inboxMode: "off" | "any" | "selected" =
+    !inboxDraft ? "off" : inboxDraft.forms.inbox.fromMode === "any" ? "any" : "selected";
+  const inboxIds = inboxDraft?.forms.inbox.fromBotIds ?? [];
+  const setInbox = (mode: "off" | "any" | "selected", ids: string[] = inboxIds) => {
+    setWakeups((current) => {
+      const without = current.filter((draft) => draft.kind !== "bot");
+      if (mode === "off") return without;
+      const existing = current.find((draft) => draft.kind === "bot");
+      const forms = existing?.forms ?? defaultTriggerForms();
+      const draft: WakeupDraft = {
+        key: existing?.key ?? crypto.randomUUID(),
+        kind: "bot",
+        name: existing?.name ?? uniqueTriggerName("inbox", without.map((entry) => entry.name)),
+        forms: { ...forms, inbox: { ...forms.inbox, fromMode: mode === "any" ? "any" : "selected", fromBotIds: ids } },
+      };
+      return [...without, draft];
+    });
+  };
+  const visibleWakeups = wakeups.filter((draft) => draft.kind !== "bot");
 
   const profiles = useQuery({
     queryKey: ["profiles", universeId],
@@ -233,7 +258,7 @@ function Wizard({ universeId, slug }: { universeId: string; slug: string }) {
       !draft.name.trim() || !NAME_PATTERN.test(draft.name.trim())
         ? "Give it a name in lowercase letters, numbers, and dashes."
         : wakeups.filter((other) => other.name.trim() === draft.name.trim()).length > 1
-          ? "Two wake-ups share this name."
+          ? "Two triggers share this name."
           : triggerFormProblem(draft.kind, draft.forms, env),
   }));
   const setupProblem =
@@ -247,7 +272,7 @@ function Wizard({ universeId, slug }: { universeId: string; slug: string }) {
     ...(idInvalid ? ["The id uses lowercase letters, numbers, and dashes."] : []),
     ...(idTaken ? [`A bot named ${botId.trim()} already exists.`] : []),
     ...(profileTaken ? [`A profile named ${botId.trim()} already exists — pick another id, or use it as a shared profile.`] : []),
-    ...wakeupProblems.filter((entry) => entry.problem).map((entry) => `Wake-up: ${entry.problem}`),
+    ...wakeupProblems.filter((entry) => entry.problem).map((entry) => `Trigger: ${entry.problem}`),
     ...(setupProblem ? [setupProblem] : []),
     ...(runsPerDay.trim() && !(Number(runsPerDay) >= 1) ? ["The daily run limit is at least 1."] : []),
   ];
@@ -372,9 +397,14 @@ function Wizard({ universeId, slug }: { universeId: string; slug: string }) {
             </div>
           </div>
           <SummaryRow label="Job">{brief.trim() ? brief.trim().slice(0, 140) + (brief.trim().length > 140 ? "…" : "") : <em>not written yet</em>}</SummaryRow>
-          <SummaryRow label="Wakes up">
-            {wakeups.length === 0 ? <em>only when you message it</em> : wakeups.map((draft) => <span key={draft.key} className="block truncate">{wakeupSummary(draft)}</span>)}
+          <SummaryRow label="Triggers">
+            {visibleWakeups.length === 0 ? <em>only when you message it</em> : visibleWakeups.map((draft) => <span key={draft.key} className="block truncate">{wakeupSummary(draft)}</span>)}
           </SummaryRow>
+          {(emit || inboxMode !== "off") && (
+            <SummaryRow label="Other bots">
+              {otherBotsSummary(emit, inboxMode === "off" ? "off" : inboxMode === "any" ? "any" : inboxIds)}
+            </SummaryRow>
+          )}
           <SummaryRow label="Can use">
             {setupMode === "shared"
               ? sharedProfileId
@@ -396,7 +426,6 @@ function Wizard({ universeId, slug }: { universeId: string; slug: string }) {
           <SummaryRow label="Limits">
             {runsPerDay.trim() ? `${runsPerDay} runs a day` : "no daily limit"}
             {selfConfig ? " · can change its own triggers" : ""}
-            {emit ? " · can message bots" : ""}
           </SummaryRow>
           {problems.length > 0 && (
             <ul className="grid gap-1 border-t pt-3 text-amber-700 dark:text-amber-400">
@@ -496,14 +525,14 @@ function Wizard({ universeId, slug }: { universeId: string; slug: string }) {
             <header className="grid gap-1">
               <h1 className="text-xl font-semibold tracking-tight">When should {label} wake up?</h1>
               <p className="text-sm text-muted-foreground">
-                Pick any that apply. You can always message it from Chat, and add more wake-ups later
+                Pick any that apply. You can always message it from Chat, and add more triggers later
                 {selfConfig ? " — or ask it to add them itself" : ""}.
               </p>
             </header>
-            <TriggerKindPicker env={env} onPick={addWakeup} />
-            {wakeups.length > 0 && (
+            <TriggerKindPicker env={env} onPick={addWakeup} exclude={["bot"]} />
+            {visibleWakeups.length > 0 && (
               <div className="grid gap-2">
-                {wakeups.map((draft) => {
+                {visibleWakeups.map((draft) => {
                   const problem = wakeupProblems.find((entry) => entry.key === draft.key)?.problem ?? null;
                   const open = openWakeup === draft.key;
                   return (
@@ -527,7 +556,7 @@ function Wizard({ universeId, slug }: { universeId: string; slug: string }) {
                         <Button
                           variant="ghost"
                           size="icon-sm"
-                          aria-label="Remove wake-up"
+                          aria-label="Remove trigger"
                           onClick={() => setWakeups((current) => current.filter((entry) => entry.key !== draft.key))}
                         >
                           <Trash2 />
@@ -560,6 +589,65 @@ function Wizard({ universeId, slug }: { universeId: string; slug: string }) {
                 })}
               </div>
             )}
+          </section>
+        )}
+
+        {step === "bots" && (
+          <section className="grid gap-5">
+            <header className="grid gap-1">
+              <h1 className="text-xl font-semibold tracking-tight">Should {label} talk to other bots?</h1>
+              <p className="text-sm text-muted-foreground">
+                Bots in this universe can message each other; every message is an event, and each side decides for
+                itself. Skip this if {label} works alone.
+              </p>
+            </header>
+            <div className="grid gap-2">
+              <div className="flex items-center justify-between gap-3 rounded-md border p-3">
+                <Label htmlFor="new-bot-emit" className="text-sm">
+                  Can message other bots
+                  <span className="block text-xs font-normal text-muted-foreground">
+                    Sees which bots accept it and addresses them by id; rate-capped. Turning this on also opens the inbox —
+                    sending without listening is the rare case.
+                  </span>
+                </Label>
+                <Switch
+                  id="new-bot-emit"
+                  checked={emit}
+                  onCheckedChange={(checked) => {
+                    setEmit(checked);
+                    if (checked && inboxMode === "off") setInbox("any");
+                  }}
+                />
+              </div>
+              <div className="grid gap-2 rounded-md border p-3">
+                <div className="flex items-center justify-between gap-3">
+                  <Label htmlFor="new-bot-inbox" className="text-sm">
+                    Accepts messages from
+                    <span className="block text-xs font-normal text-muted-foreground">
+                      Which bots may address this one. Routing and batching can be tuned under Setup later.
+                    </span>
+                  </Label>
+                  <Select value={inboxMode} onValueChange={(value) => value && setInbox(value as "off" | "any" | "selected")}>
+                    <SelectTrigger id="new-bot-inbox" size="sm" className="w-40">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="off">Nobody</SelectItem>
+                      <SelectItem value="any">Any bot here</SelectItem>
+                      <SelectItem value="selected">Only these bots</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                {inboxMode === "selected" && (
+                  <BotMultiSelect
+                    currentBotId={botId.trim() || "new-bot"}
+                    bots={(bots.data?.bots ?? []).map((bot) => ({ ...bot, triggerCount: 0, pendingCount: 0, lastEvent: null }))}
+                    value={inboxIds}
+                    onChange={(ids) => setInbox("selected", ids)}
+                  />
+                )}
+              </div>
+            </div>
           </section>
         )}
 
@@ -670,15 +758,6 @@ function Wizard({ universeId, slug }: { universeId: string; slug: string }) {
                   </span>
                 </Label>
                 <Switch id="new-bot-self-config" checked={selfConfig} onCheckedChange={setSelfConfig} />
-              </div>
-              <div className="flex items-center justify-between gap-3 rounded-md border p-3">
-                <Label htmlFor="new-bot-emit" className="text-sm">
-                  Can message other bots
-                  <span className="block text-xs font-normal text-muted-foreground">
-                    Discovers bots that accept it and addresses them; rate-capped. Receiving is a wake-up ("Other bots").
-                  </span>
-                </Label>
-                <Switch id="new-bot-emit" checked={emit} onCheckedChange={setEmit} />
               </div>
             </div>
           </section>

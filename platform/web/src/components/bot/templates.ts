@@ -1,4 +1,4 @@
-/// Starting points for the creation wizard: a job description, the wake-ups
+/// Starting points for the creation wizard: a job description, the triggers
 /// that fit it, and the capabilities it needs. Templates only prefill the
 /// form — everything stays editable before Create, and after.
 export type TemplateTrigger =
@@ -27,7 +27,7 @@ export const BOT_TEMPLATES: BotTemplate[] = [
     id: "blank",
     name: "Blank",
     suggestedName: null,
-    description: "Start from nothing: you write the brief and pick the wake-ups.",
+    description: "Start from nothing: you write the brief and pick the triggers.",
     brief: "",
     features: {},
     triggers: [],

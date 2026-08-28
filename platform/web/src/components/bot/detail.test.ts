@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { BotLineage, BotState } from "@/api";
 import { conversationTabs } from "./detail";
-import { environmentSummary, guardrailsSummary } from "./setup-summary";
+import { environmentSummary, guardrailsSummary, otherBotsSummary } from "./setup-summary";
 
 function state(partial: Partial<BotState>): BotState {
   return {
@@ -87,14 +87,18 @@ describe("conversationTabs", () => {
 describe("setup summaries", () => {
   it("reads guardrails as one line", () => {
     expect(
-      guardrailsSummary(
-        { runsPerDay: 50, breaker: { fires: 20, windowMs: 600_000 }, routedSessionTtlMs: 7 * 86_400_000, selfConfig: true, emit: false },
-        ["release-shepherd"],
-      ),
-    ).toBe("50 runs a day · flood 20/10 min · threads close after 7d · can change own triggers · inbox: release-shepherd");
+      guardrailsSummary({
+        runsPerDay: 50,
+        breaker: { fires: 20, windowMs: 600_000 },
+        routedSessionTtlMs: 7 * 86_400_000,
+        selfConfig: true,
+      }),
+    ).toBe("50 runs a day · flood 20/10 min · threads close after 7d · can change own triggers");
     expect(
-      guardrailsSummary({ runsPerDay: null, breaker: null, routedSessionTtlMs: null, selfConfig: false, emit: true }, "off"),
-    ).toBe("no daily limit · threads kept · can message bots · no inbox");
+      guardrailsSummary({ runsPerDay: null, breaker: null, routedSessionTtlMs: null, selfConfig: false }),
+    ).toBe("no daily limit · threads kept");
+    expect(otherBotsSummary(true, ["release-shepherd"])).toBe("can send · receives from release-shepherd");
+    expect(otherBotsSummary(false, "off")).toBe("cannot send · receives from nobody");
   });
   it("names the environment", () => {
     expect(environmentSummary(undefined)).toBe("No environment");

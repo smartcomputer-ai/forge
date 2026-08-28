@@ -145,11 +145,18 @@ of chrome and went. Every section saves on its own.
 - **Environment** — None / An existing environment (picker, then today's
   environment card with power controls and idle policy) / A fresh one per
   session (binding). Exec pollers explain themselves against this choice.
+- **Other bots** — both directions of bot-to-bot messaging in one place,
+  because that is one topic to a person even though it is a grant plus a
+  trigger to the system: "Can message other bots" (`emit`) and "Accepts
+  messages from: nobody / any bot / only …" (the `bot`-kind inbox trigger,
+  created and edited through the trigger API; "Routing & batching…" opens
+  the ordinary trigger editor). The Triggers section hides the inbox and
+  its picker omits "Other bots" so the record has one surface. Two earlier
+  placements — inbox under Guardrails, and inbox only under Triggers with
+  `emit` under Guardrails — split the topic and were replaced.
 - **Guardrails** — Daily run limit, Flood protection (breaker), Thread
   retention (routed TTL), "Can change its own brief and triggers"
-  (`selfConfig`), "Can message other bots" (`emit`), "Accepts messages
-  from other bots: off / any bot / only …" (the inbox trigger, presented
-  as a setting; the UI creates and deletes the `bot`-kind trigger).
+  (`selfConfig`).
 - **Danger zone** — Close, Delete, with today's copy.
 
 ## 4. Creating a bot: the wizard
