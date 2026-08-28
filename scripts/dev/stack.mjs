@@ -303,7 +303,7 @@ function createPlan(profile, sourceEnv) {
   // no runtime, no Platform server — just Vite in demo mode.
   if (profile === "demo") {
     ports.push({ name: "demo web", port: 5_175 });
-    readiness.push({ name: "demo web", url: "http://localhost:5175/app/" });
+    readiness.push({ name: "demo web", url: "http://localhost:5175/demo/" });
     processes.push({
       name: "demo",
       command: vite,
@@ -784,7 +784,7 @@ function printRunning(plan) {
     );
   }
   if (plan.profile === "demo") {
-    console.log("  demo web      http://localhost:5175/app/  (in-browser backend, scripted data, no sign-in)");
+    console.log("  demo web      http://localhost:5175/demo/  (in-browser backend, scripted data, no sign-in)");
   }
   if (plan.connectors.length > 0) {
     console.log(`  connectors    ${plan.connectors.join(", ")}`);
@@ -825,7 +825,7 @@ Profiles:
   platform  Infrastructure, Platform API, and web UI against the runtime at
             LIGHTSPEED_API_URL (start one with the runtime profile).
   runtime   Infrastructure and the migrated Rust runtime.
-  demo      Web UI only, on http://localhost:5175/app/, over the in-browser
+  demo      Web UI only, on http://localhost:5175/demo/, over the in-browser
             demo backend (scripted data, no sign-in). No Docker, no runtime.
   infra     Postgres, pgAdmin, MinIO, and Temporal only.`);
 }

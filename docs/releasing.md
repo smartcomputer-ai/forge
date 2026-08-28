@@ -85,7 +85,7 @@ make release
 `make release-dist` compiles all Rust executables in one Cargo invocation,
 builds the generated client, Configurator, and web UI, and produces `dist/`.
 The demo build is packaged as a target-independent static archive whose files
-are served under `/app/` with an `index.html` fallback; it is not included in
+are served under `/demo/` with an `index.html` fallback; it is not included in
 the Platform image.
 The same root lockfile deterministically stages platform and Platform workers runtime
 payloads. `make release-images` copies those prebuilt files into the `runtime`,

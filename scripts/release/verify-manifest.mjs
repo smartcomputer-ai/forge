@@ -75,7 +75,7 @@ for (const [name, artifact] of Object.entries(value.artifacts)) {
     fail(`published artifact ${name} has no immutable OCI URL`);
   }
 }
-if (value.artifacts.demo.basePath !== "/app/") fail("demo artifact must be served under /app/");
+if (value.artifacts.demo.basePath !== "/demo/") fail("demo artifact must be served under /demo/");
 if (value.typescriptClient.name !== "@lightspeed/agent-client") fail("unexpected client package");
 if (!/^[0-9a-f]{64}$/.test(value.typescriptClient.sha256)) fail("invalid client checksum");
 if (value.typescriptClient.version !== value.version) fail("client version mismatch");
