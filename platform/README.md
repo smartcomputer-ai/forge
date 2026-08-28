@@ -69,11 +69,11 @@ entry, which installs an in-browser backend (a Hono router behind a `fetch`
 shim, seeded from `web/src/demo/fixtures/`) before loading the app. It needs no
 server, no sign-in, and no network — the visitor is a platform admin who owns a
 few pre-populated universes, each showing a different use-case — so it can be
-published as a static site (serve `dist-demo/` under `/app/` with an
+published as a static site (serve `dist-demo/` under `/demo/` with an
 `index.html` fallback for client routes).
 
 ```bash
-./dev.sh demo         # Vite dev server on http://localhost:5175/app/ (alias: npm run demo)
+./dev.sh demo         # Vite dev server on http://localhost:5175/demo/ (alias: npm run demo)
 npm run build:demo    # static site in platform/web/dist-demo/
 ```
 

@@ -81,7 +81,7 @@ const manifest = {
   artifacts: {
     demo: {
       ...artifact("DEMO", "-demo-"),
-      basePath: "/app/",
+      basePath: "/demo/",
     },
   },
   typescriptClient: {

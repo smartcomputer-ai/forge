@@ -114,7 +114,9 @@ export function UserMenu({ user, admin }: { user: SessionUser; admin: boolean })
             <DropdownMenuSeparator />
             <DropdownMenuItem
               onClick={() => {
-                void authClient.signOut().then(() => window.location.assign("/app/login"));
+                void authClient.signOut().then(() =>
+                  window.location.assign(`${import.meta.env.BASE_URL}login`),
+                );
               }}
             >
               <LogOut />

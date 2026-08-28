@@ -13,7 +13,7 @@ import { defineConfig, type Plugin } from "vite";
 export default defineConfig(({ mode }) => {
   const demo = mode === "demo";
   return {
-    base: "/app/",
+    base: demo ? "/demo/" : "/app/",
     plugins: [react(), tailwindcss(), ...(demo ? [demoEntry()] : [])],
     resolve: {
       alias: {

@@ -23,7 +23,7 @@ export function mountBanner(): void {
   reset.textContent = "Reset";
   reset.className = "font-semibold underline underline-offset-2 hover:opacity-80";
   reset.addEventListener("click", () => {
-    window.location.assign("/app/");
+    window.location.assign(import.meta.env.BASE_URL);
   });
   const dismiss = document.createElement("button");
   dismiss.type = "button";

@@ -27,7 +27,7 @@ export function LoginPage() {
       setBusy(false);
       return;
     }
-    window.location.assign("/app/");
+    window.location.assign(import.meta.env.BASE_URL);
   };
 
   return (

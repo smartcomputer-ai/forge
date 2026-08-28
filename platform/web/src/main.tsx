@@ -12,13 +12,14 @@ const queryClient = new QueryClient({
     queries: { retry: 1, refetchOnWindowFocus: false, staleTime: 30_000 },
   },
 });
+const appBasename = import.meta.env.BASE_URL.replace(/\/$/, "");
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
       <ThemeProvider>
         <TooltipProvider>
-          <BrowserRouter basename="/app">
+          <BrowserRouter basename={appBasename}>
             <App />
           </BrowserRouter>
         </TooltipProvider>
