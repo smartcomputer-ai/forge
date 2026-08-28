@@ -339,6 +339,7 @@ export function TriggersSection({
   env,
   id,
   headless = false,
+  hideKinds = [],
 }: {
   universeId: string;
   botId: string;
@@ -347,6 +348,8 @@ export function TriggersSection({
   id?: string;
   /** Rendered inside a section that already has a title; the add button moves under the list. */
   headless?: boolean;
+  /** Kinds another section presents in its own words (the inbox under "Other bots"). */
+  hideKinds?: TriggerKind[];
 }) {
   const queryClient = useQueryClient();
   const [addOpen, setAddOpen] = useState(false);
@@ -382,6 +385,7 @@ export function TriggersSection({
       return invalidate();
     },
   });
+  const visibleTriggers = (triggers.data?.triggers ?? []).filter((trigger) => !hideKinds.includes(trigger.kind));
   const sample = useMutation({
     mutationFn: sendSampleWebhook,
     onSuccess: () =>
@@ -406,7 +410,7 @@ export function TriggersSection({
           )}
         </div>
       )}
-      {triggers.data?.triggers.length === 0 && (
+      {visibleTriggers.length === 0 && (
         <p className="rounded-md border border-dashed p-3 text-xs text-muted-foreground">
           Nothing wakes this bot yet{manage ? " — add a schedule, a webhook, or a chat account. You can always message it from Chat." : "."}
         </p>
@@ -418,7 +422,7 @@ export function TriggersSection({
       {sample.isSuccess && (
         <p className="text-xs text-muted-foreground">Sample sent — it shows up under Activity in a moment.</p>
       )}
-      {triggers.data?.triggers.map((trigger) => {
+      {visibleTriggers.map((trigger) => {
         const exec = trigger.kind === "poll" && (trigger.spec as BotPollSpec).source.kind === "exec";
         const summary = triggerSummary(trigger);
         const delivery = deliverySentence(deliveryShapeOf(trigger), trigger.kind === "chat");
@@ -532,6 +536,7 @@ export function TriggersSection({
           env={env}
           open={addOpen}
           onOpenChange={setAddOpen}
+          excludeKinds={hideKinds}
         />
       )}
       {manage && editing && (
@@ -1986,10 +1991,12 @@ export function TriggerKindPicker({
   env,
   onPick,
   className,
+  exclude = [],
 }: {
   env: BotEnvStatus;
   onPick: (kind: TriggerKind, options?: { pollSource: "http" | "exec" }) => void;
   className?: string;
+  exclude?: TriggerKind[];
 }) {
   return (
     <div className={cn("grid content-start gap-3 sm:grid-cols-2", className)}>
@@ -2011,12 +2018,14 @@ export function TriggerKindPicker({
         description="Messages from people on Telegram or WhatsApp; each conversation becomes a thread."
         onClick={() => onPick("chat")}
       />
-      <TriggerKindChoice
-        icon={<Inbox className="size-5" />}
-        title="Other bots"
-        description="Let bots in this universe message this one (at most one inbox)."
-        onClick={() => onPick("bot")}
-      />
+      {!exclude.includes("bot") && (
+        <TriggerKindChoice
+          icon={<Inbox className="size-5" />}
+          title="Other bots"
+          description="Let bots in this universe message this one (at most one inbox)."
+          onClick={() => onPick("bot")}
+        />
+      )}
       <TriggerKindChoice
         icon={<RefreshCw className="size-5" />}
         title="Check a URL"
@@ -2050,6 +2059,7 @@ function AddTriggerDialog({
   env,
   open,
   onOpenChange,
+  excludeKinds = [],
 }: {
   universeId: string;
   botId: string;
@@ -2057,6 +2067,7 @@ function AddTriggerDialog({
   env: BotEnvStatus;
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  excludeKinds?: TriggerKind[];
 }) {
   const queryClient = useQueryClient();
   const [kind, setKind] = useState<TriggerKind | null>(null);
@@ -2143,7 +2154,7 @@ function AddTriggerDialog({
         {!kind ? (
           <>
             <div className="min-h-0 overflow-y-auto p-6">
-              <TriggerKindPicker env={env} onPick={pick} />
+              <TriggerKindPicker env={env} onPick={pick} exclude={excludeKinds} />
             </div>
             <DialogFooter className="border-t p-4">
               <Button type="button" variant="outline" onClick={() => changeOpen(false)}>
@@ -2234,13 +2245,14 @@ export function TriggerKindChoice({
   );
 }
 
-function EditTriggerDialog({
+export function EditTriggerDialog({
   universeId,
   botId,
   bots,
   trigger,
   open,
   onOpenChange,
+  deliveryOnly = false,
 }: {
   universeId: string;
   botId: string;
@@ -2248,6 +2260,8 @@ function EditTriggerDialog({
   trigger: BotTrigger;
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  /** Only routing, batching, busy handling, and retention: the rest of the trigger is edited elsewhere (the inbox's sender list). */
+  deliveryOnly?: boolean;
 }) {
   const queryClient = useQueryClient();
   const scheduleSpec = trigger.kind === "schedule" ? (trigger.spec as BotScheduleSpec) : null;
@@ -2307,9 +2321,11 @@ function EditTriggerDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="h-[min(92dvh,900px)] grid-rows-[auto_minmax(0,1fr)_auto] gap-0 p-0 sm:max-w-xl">
         <DialogHeader className="border-b p-6 pr-14">
-          <DialogTitle>Edit {trigger.name}</DialogTitle>
+          <DialogTitle>{deliveryOnly ? "Routing & batching" : `Edit ${trigger.name}`}</DialogTitle>
           <DialogDescription>
-            {trigger.kind === "schedule"
+            {deliveryOnly
+              ? "How messages from other bots reach this bot: which conversation, whether they batch, and what happens while it is busy."
+              : trigger.kind === "schedule"
               ? "Changes apply to the next fire."
               : trigger.kind === "poll"
                 ? "Source changes reset the cursor: the next check re-baselines against the source."
@@ -2329,7 +2345,13 @@ function EditTriggerDialog({
           className="contents"
         >
           <div className="grid min-h-0 content-start gap-4 overflow-y-auto p-6">
-            {trigger.kind === "schedule" ? (
+            {deliveryOnly ? (
+              <DeliveryFieldsBody
+                form={forms.inbox}
+                setForm={(next) => patch("inbox", next)}
+                chat={trigger.kind === "chat"}
+              />
+            ) : trigger.kind === "schedule" ? (
               <ScheduleFields
                 form={forms.schedule}
                 setForm={(next) => patch("schedule", next)}

@@ -46,17 +46,21 @@ export function briefSummary(brief: string | null): string {
 }
 
 export function guardrailsSummary(
-  bot: Pick<Bot, "runsPerDay" | "breaker" | "routedSessionTtlMs" | "selfConfig" | "emit">,
-  inbox: "off" | "any" | string[],
+  bot: Pick<Bot, "runsPerDay" | "breaker" | "routedSessionTtlMs" | "selfConfig">,
 ): string {
   return [
     bot.runsPerDay === null ? "no daily limit" : `${bot.runsPerDay} runs a day`,
     bot.breaker ? `flood ${bot.breaker.fires}/${Math.round(bot.breaker.windowMs / 60_000)} min` : null,
     bot.routedSessionTtlMs ? `threads close after ${Math.round(bot.routedSessionTtlMs / 86_400_000)}d` : "threads kept",
     bot.selfConfig ? "can change own triggers" : null,
-    bot.emit ? "can message bots" : null,
-    inbox === "off" ? "no inbox" : inbox === "any" ? "inbox: any bot" : `inbox: ${inbox.join(", ")}`,
   ]
     .filter((part): part is string => part !== null)
     .join(" · ");
+}
+
+/** Both directions of bot-to-bot messaging in one line. */
+export function otherBotsSummary(emit: boolean, inbox: "off" | "any" | string[]): string {
+  const receive =
+    inbox === "off" ? "receives from nobody" : inbox === "any" ? "receives from any bot" : `receives from ${inbox.join(", ")}`;
+  return `${emit ? "can send" : "cannot send"} · ${receive}`;
 }
