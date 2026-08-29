@@ -1,10 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48">
-  <!-- The Lightspeed bot face (BotFace in src/components/icons/bot.tsx),
-       scaled up to fill the tab icon. The fill follows the OS theme; the
-       eyes are holes, so the tab background shows through. -->
-  <style>
-    path { fill: #18181b; }
-    @media (prefers-color-scheme: dark) { path { fill: #fafafa; } }
-  </style>
-  <path transform="rotate(7 24 24)" fill-rule="evenodd" d="M3 24a21 21 0 1 0 42 0 21 21 0 1 0-42 0ZM15.3 16.4a2.9 2.9 0 0 1 5.8 0v6a2.9 2.9 0 0 1-5.8 0ZM26.9 16.4a2.9 2.9 0 0 1 5.8 0v6a2.9 2.9 0 0 1-5.8 0Z"/>
+<svg width="1055" height="1073" viewBox="0 0 1055 1073" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <path d="M1014 134.779C1014 134.779 790.5 134.779 629 134.779C467.5 134.779 405.49 217.604 405.49 304.302C405.49 391 434.799 496.825 590 496.825C745.201 496.825 679.863 496.825 757.182 496.825C834.5 496.825 1001.25 562.86 1001.25 752.93C1001.25 943 856.5 1016.49 749.186 1016.49C641.871 1016.49 54.25 1016.49 54.25 1016.49V36" stroke="white" stroke-width="36"/>
+  <path d="M1014 56.5C1014 56.5 756 56.5 583.783 56.5C411.566 56.5 324.068 181.955 324.068 321.977C324.068 462 431.5 576.455 583.783 576.455C736.066 576.455 646.144 576.455 723.072 576.455C800 576.455 922.25 617 922.25 736.023C922.25 855.045 862 936.5 723.072 936.5C584.144 936.5 133.25 936.5 133.25 936.5V36" stroke="white" stroke-width="36"/>
 </svg>
