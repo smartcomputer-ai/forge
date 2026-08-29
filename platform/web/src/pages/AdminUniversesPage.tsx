@@ -168,7 +168,7 @@ export function AdminUniversesPage() {
                     <Button
                       variant="ghost"
                       size="sm"
-                      onClick={() => navigate(universeHome(universe.slug, true))}
+                      onClick={() => navigate(universeHome(universe.slug))}
                     >
                       Open
                     </Button>

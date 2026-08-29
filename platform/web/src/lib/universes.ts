@@ -43,11 +43,9 @@ export function useActiveUniverse(): {
   };
 }
 
-/// Landing page inside a universe: the Sessions browser for people who
-/// can manage it, the bots list for members (sessions are owner/admin —
-/// transcripts can span the whole universe).
-export function universeHome(slug: string, manage: boolean): string {
-  return manage ? `/u/${slug}/sessions` : `/u/${slug}/bots`;
+/// Landing page inside a universe.
+export function universeHome(slug: string): string {
+  return `/u/${slug}/bots`;
 }
 
 export function rememberUniverse(slug: string) {

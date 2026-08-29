@@ -14,7 +14,8 @@ export function mountBanner(): void {
 
   const text = document.createElement("p");
   text.className = "mt-1";
-  text.textContent = "Runs in your browser on scripted data. Nothing is saved or sent anywhere.";
+  text.textContent =
+    "Runs completely in your browser on scripted data. No real LLM is used. Nothing is saved or sent anywhere.";
 
   const actions = document.createElement("div");
   actions.className = "mt-1.5 flex gap-3";

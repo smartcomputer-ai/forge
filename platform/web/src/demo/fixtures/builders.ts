@@ -12,6 +12,7 @@ import type {
   BotManagedSession,
   BotPollSpec,
   BotRecentEvent,
+  BotSessionLineage,
   BotState,
   BotTrigger,
   BotWebhookSpec,
@@ -24,6 +25,7 @@ import type {
   ModelProviderDiscovery,
   ProfileDocument,
   SecretProvider,
+  SessionOrigin,
   VfsDirEntry,
   VfsTreeEntry,
   WorkspaceTree,
@@ -160,6 +162,16 @@ export function writeFile(path: string, content: string, detail: string): DemoTo
   );
 }
 
+/// `vfs_write_file` into a writable workspace link.
+export function vfsWriteFile(path: string, content: string, detail: string): DemoToolCall {
+  return tool(
+    "vfs_write_file",
+    { path, content },
+    { group: "edit", verb: "Write", target: path, detail },
+    `wrote ${new TextEncoder().encode(content).length} bytes to ${path}`,
+  );
+}
+
 export function webFetch(url: string, detail: string, output: string, isError = false): DemoToolCall {
   return tool("web_fetch", { url }, { group: "explore", verb: "Fetch", target: url, detail }, output, isError);
 }
@@ -186,6 +198,29 @@ export function agentRun(profileId: string, task: string, output: string): DemoT
     { profileId, input: task },
     { group: "other", verb: "Delegate", target: profileId, detail: task },
     output,
+  );
+}
+
+/// `agent_spawn`: a sub-agent started for a promise the run joins later.
+export function agentSpawn(profileId: string, task: string, promiseId: string): DemoToolCall {
+  return tool(
+    "agent_spawn",
+    { profileId, input: task },
+    { group: "other", verb: "Spawn", target: profileId, detail: task },
+    JSON.stringify({ promise: promiseId, agent: profileId }),
+  );
+}
+
+/// `await`: parks the run on promises; the output is each child's result.
+export function awaitPromises(
+  promises: string[],
+  results: Array<{ agent: string; sessionId: string; output: string }>,
+): DemoToolCall {
+  return tool(
+    "await",
+    { promises, mode: "all" },
+    { group: "other", verb: "Await", target: promises.join(", ") },
+    JSON.stringify(Object.fromEntries(promises.map((id, i) => [id, { status: "completed", ...results[i] }])), null, 2),
   );
 }
 
@@ -217,12 +252,17 @@ export function briefPut(brief: string): DemoToolCall {
 }
 
 /// `message_send` in a chat conversation; `sent` is the bot's #N for the
-/// archived send.
-export function messageSend(conversation: { label: string }, text: string, replyTo: number, sent: number): DemoToolCall {
+/// archived send. A push (a brief, a reminder) replies to nothing.
+export function messageSend(
+  conversation: { label: string },
+  text: string,
+  replyTo: number | null,
+  sent: number,
+): DemoToolCall {
   return tool(
     "message_send",
-    { text, replyTo },
-    { group: "execute", verb: "Send", target: conversation.label, detail: `reply to #${replyTo}` },
+    { text, ...(replyTo === null ? {} : { replyTo }) },
+    { group: "execute", verb: "Send", target: conversation.label, detail: replyTo === null ? "push" : `reply to #${replyTo}` },
     JSON.stringify({ sent }),
   );
 }
@@ -481,6 +521,11 @@ export const EMIT_TOOL: ManagedWorkflowTool = {
   target: "bound",
   completion: "accepted",
 };
+/// Added when the bot may change its own triggers (`selfConfig`).
+export const SELF_CONFIG_TOOLS: ManagedWorkflowTool[] = [
+  { toolId: "bots.trigger.put", name: "bot_trigger_put", semanticType: "bots.trigger.put.v1", target: "bound", completion: "accepted" },
+  { toolId: "bots.trigger.delete", name: "bot_trigger_delete", semanticType: "bots.trigger.delete.v1", target: "bound", completion: "accepted" },
+];
 /// Carried by chat-trigger events into their conversation sessions.
 export const MESSAGE_TOOLS: ManagedWorkflowTool[] = [
   { toolId: "channels.message.send", name: "message_send", semanticType: "channels.message.send.v1", target: "bound", completion: "accepted" },
@@ -502,6 +547,7 @@ export interface BotInit {
   runsPerDay: number | null;
   breaker: Bot["breaker"];
   routedSessionTtlMs?: number | null;
+  selfConfig?: boolean;
   emit: boolean;
   createdAtMs: number;
   updatedAtMs: number;
@@ -518,7 +564,7 @@ export function bot(universe: UniverseState, init: BotInit): Bot {
     runsPerDay: init.runsPerDay,
     breaker: init.breaker,
     routedSessionTtlMs: init.routedSessionTtlMs ?? null,
-    selfConfig: false,
+    selfConfig: init.selfConfig ?? false,
     emit: init.emit,
     enabled: true,
     closedAt: null,
@@ -798,7 +844,7 @@ export function chatSent(
   conversation: Conversation,
   text: string,
   at: number,
-  replyTo: number,
+  replyTo: number | null,
 ): ScriptedEvent {
   const line = `sent: ${text}`;
   return log.add({
@@ -818,6 +864,96 @@ export function chatSent(
       replyTo,
     },
   });
+}
+
+export interface ReceiptInit {
+  /// The bot that handled our event.
+  from: string;
+  /// Our event's #N at that bot.
+  askedSeq: number;
+  status: BotEventOutcome;
+  /// The answering delivery's one-line summary.
+  summary: string;
+  at: number;
+  hops: number;
+  session: { sessionId: string; label: string };
+  outcome: BotEventOutcome;
+  detail: string;
+  resolvedAfterMs?: number;
+}
+
+/// The deterministic `bot.reply` receipt a receiver's controller sends when
+/// a delivery finishes: the outcome, never a model-authored message.
+export function receipt(log: EventLog, init: ReceiptInit): ScriptedEvent {
+  return log.add({
+    kind: "bot.reply",
+    source: `bot:${init.from}`,
+    at: init.at,
+    summary: `#${init.askedSeq} at ${init.from} finished ${init.status}: ${init.summary}`,
+    eventId: `reply:${init.from}:${hex(`${log.botId}:${init.from}:${init.askedSeq}`, 12)}`,
+    session: init.session,
+    sender: init.from,
+    hops: init.hops,
+    inReplyTo: { bot: init.from, seq: init.askedSeq },
+    outcome: init.outcome,
+    detail: init.detail,
+    resolvedAfterMs: init.resolvedAfterMs ?? 20_000,
+    data: { status: init.status },
+  });
+}
+
+export interface SubagentInit {
+  id: string;
+  displayName: string;
+  /// The pinned profile: its config, instructions, and revision.
+  profile: Pick<ProfileInit, "profileId" | "config" | "instructions" | "revision">;
+  parent: SessionRecord;
+  parentRunId: string;
+  root: string;
+  depth: number;
+  limits: SessionOrigin["limits"];
+  environmentId?: string;
+  createdAtMs: number;
+}
+
+/// A sub-agent session: `origin` records who delegated it, under which
+/// root, at what depth, from which pinned profile revision.
+export function subagentSession(store: DemoStore, universe: UniverseState, init: SubagentInit): SessionRecord {
+  const origin: SessionOrigin = {
+    kind: "subagent",
+    parentSessionId: init.parent.view.id,
+    parentRunId: init.parentRunId,
+    rootSessionId: init.root,
+    depth: init.depth,
+    invocationId: `inv-${hex(init.id, 10)}`,
+    agent: { profileId: init.profile.profileId, revision: init.profile.revision },
+    limits: init.limits,
+  };
+  return newSession(store, universe, {
+    id: init.id,
+    displayName: init.displayName,
+    config: structuredClone(init.profile.config),
+    instructions: init.profile.instructions,
+    origin,
+    activeEnvironmentId: init.environmentId ?? null,
+    createdAtMs: init.createdAtMs,
+  });
+}
+
+/// One descendant as the bot page's lineage lists it.
+export function lineageChild(
+  session: SessionRecord,
+  profileId: string,
+  depth: number,
+): BotSessionLineage["children"][number] {
+  return {
+    id: session.view.id,
+    displayName: session.view.displayName ?? null,
+    lifecycleStatus: session.view.status === "closed" ? "closed" : "open",
+    profileId,
+    depth,
+    updatedAtMs: session.view.updatedAtMs,
+  };
 }
 
 /// A session as the controller lists it; the label defaults to "Main" for
