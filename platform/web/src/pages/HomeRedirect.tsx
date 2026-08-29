@@ -4,7 +4,7 @@ import { Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { NewUniverseDialog } from "@/components/universe-switcher";
 import { CenteredNote } from "@/components/page";
-import { canManage, lastUniverse, memberships, universeHome, useUniverses } from "@/lib/universes";
+import { lastUniverse, memberships, universeHome, useUniverses } from "@/lib/universes";
 
 /// `/` → the last-visited universe when it still exists, else the first
 /// membership, else an empty state.
@@ -23,7 +23,7 @@ export function HomeRedirect({ admin }: { admin: boolean }) {
   const last = lastUniverse();
   const target = mine.find((u) => u.slug === last) ?? mine[0];
   if (target) {
-    return <Navigate to={universeHome(target.slug, canManage(target, admin))} replace />;
+    return <Navigate to={universeHome(target.slug)} replace />;
   }
 
   return (

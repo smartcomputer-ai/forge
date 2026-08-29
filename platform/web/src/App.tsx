@@ -23,12 +23,12 @@ import { SessionsPage } from "@/pages/SessionsPage";
 import { SetupsPage } from "@/pages/SetupsPage";
 import { WorkspacesPage } from "@/pages/WorkspacesPage";
 
-function UniverseIndexRedirect({ admin }: { admin: boolean }) {
+function UniverseIndexRedirect() {
   const { universe, slug } = useActiveUniverse();
   if (!universe) {
     return null;
   }
-  return <Navigate to={universeHome(slug ?? "", canManage(universe, admin))} replace />;
+  return <Navigate to={universeHome(slug ?? "")} replace />;
 }
 
 /// Bare /settings → General for people who can manage the universe, else
@@ -81,7 +81,7 @@ export function App() {
     <Routes>
       <Route element={<AppShell user={user} admin={admin} />}>
         <Route index element={<HomeRedirect admin={admin} />} />
-        <Route path="u/:slug" element={<UniverseIndexRedirect admin={admin} />} />
+        <Route path="u/:slug" element={<UniverseIndexRedirect />} />
         <Route path="u/:slug/sessions" element={<SessionsPage admin={admin} />} />
         <Route
           path="u/:slug/sessions/:sessionId"
