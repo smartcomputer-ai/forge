@@ -1,6 +1,7 @@
 /// Builds the demo world: one platform admin, a few other users, and one
 /// universe per use-case. Add a universe by adding a seed module here.
 import { DemoStore, type DemoUser } from "../store";
+import { seedPersonalAssistant } from "./personal-assistant";
 import { seedPlatform } from "./platform";
 import { seedSoftwareFactory } from "./software-factory";
 import { seedTechnicalSupport } from "./technical-support";
@@ -22,5 +23,6 @@ export function createDemoStore(): DemoStore {
   seedPlatform(store);
   seedSoftwareFactory(store);
   seedTechnicalSupport(store);
+  seedPersonalAssistant(store);
   return store;
 }
