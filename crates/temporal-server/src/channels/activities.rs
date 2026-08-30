@@ -12,9 +12,9 @@ use std::collections::{BTreeMap, HashSet};
 
 use api::{
     AgentApiError, AgentApiErrorKind, AgentApiService as _, BotEventDocument, BotEventMedia,
-    BotEventOutcome, BotTriggerKind, BotTriggerSpec, ChannelAccountId, ChannelProvider,
-    ChatPairing, ChatScope, ContextEntryKindView, ContextMessageRoleView, RunView,
-    SessionReadParams, ToolItemStatus, WorkflowEndpointInput,
+    BotEventOutcome, BotTriggerKind, BotTriggerSpec, ChannelAccountId, ChannelProvider, ChatScope,
+    ContextEntryKindView, ContextMessageRoleView, RunView, SessionReadParams, ToolItemStatus,
+    WorkflowEndpointInput,
 };
 use bots::{
     BotError, BotEventStore, BotRecord, BotRefusalCode, BotStore, BotTriggerRecord,
@@ -837,6 +837,7 @@ pub async fn assert_trigger_active(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use api::ChatPairing;
     use api::{
         BotDocument, BotId, BotTriggerDocument, BotTriggerId, ChannelMediaKind, ChatAccess,
         ChatActivation, ProfileId,
