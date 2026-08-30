@@ -227,7 +227,7 @@ pub enum MethodScope {
 }
 
 pub fn is_service_method(method: &str) -> bool {
-    method == METHOD_AUTH_GRANTS_LEASE
+    method == METHOD_AUTH_GRANTS_LEASE || method == METHOD_CHANNELS_INBOUND_ADMIT
 }
 
 impl MethodScope {
@@ -289,7 +289,7 @@ macro_rules! api_methods {
                 $(
                     MethodSpec {
                         method: $method_const,
-                        scope: if $method_const == METHOD_AUTH_GRANTS_LEASE {
+                        scope: if is_service_method($method_const) {
                             MethodScope::Service
                         } else {
                             MethodScope::Universe
@@ -468,6 +468,58 @@ api_methods! {
         ["List GitHub App installations", "Uses the registered GitHub App provider credential to query accessible installations and returns account/permission metadata without tokens."],
     METHOD_AUTH_GITHUB_INSTALLATIONS_GRANT => grant_github_installation(AuthGitHubInstallationGrantParams) -> AuthGitHubInstallationGrantResponse =>
         ["Grant access to a GitHub App installation", "Creates or refreshes a universe auth grant for one accessible installation. The installation token is brokered internally and never returned."],
+    METHOD_BOTS_CREATE => create_bot(BotCreateParams) -> BotCreateResponse =>
+        ["Create a bot", "Creates the bot record, optionally with its triggers, and starts its controller. Fails if the bot id exists; a trigger failure rolls the bot back."],
+    METHOD_BOTS_PUT => put_bot(BotPutParams) -> BotPutResponse =>
+        ["Create or replace a bot document", "Replaces the mutable configuration whole and signals the controller, which applies it at its next idle boundary. Pass expectedRevision when replacing; a closed bot accepts label-only edits."],
+    METHOD_BOTS_READ => read_bot(BotReadParams) -> BotReadResponse =>
+        ["Read a bot", "Returns the bot record, its current revision, and lifecycle columns."],
+    METHOD_BOTS_LIST => list_bots(BotListParams) -> BotListResponse =>
+        ["List bots", "Returns the roster: every bot with its trigger count, pending event count, and latest event."],
+    METHOD_BOTS_CLOSE => close_bot(BotCloseParams) -> BotCloseResponse =>
+        ["Close a bot", "Terminal and idempotent: disables every trigger, drops schedules, and tells the controller to archive pending events and force-close its sessions. Returns once signalled; follow bots/state/read for closing to closed."],
+    METHOD_BOTS_DELETE => delete_bot(BotDeleteParams) -> BotDeleteResponse =>
+        ["Delete a bot", "Closes the bot if needed, waits for its controller to complete, deletes the sessions it closed, and removes the record so the bot id is free again."],
+    METHOD_BOTS_STATE_READ => read_bot_state(BotStateReadParams) -> BotStateReadResponse =>
+        ["Read bot controller state", "Queries the controller workflow for its live snapshot (sessions, buffers, active and recent deliveries, budget) and lists sub-agent descendants. The controller is absent until the bot's first event."],
+    METHOD_BOTS_SESSIONS_ROTATE => rotate_bot_session(BotSessionRotateParams) -> BotSessionRotateResponse =>
+        ["Rotate a bot session", "Asks the controller to close one of the bot's sessions at its next idle boundary and continue on a fresh generation; queued deliveries follow."],
+    METHOD_BOTS_TRIGGERS_PUT => put_bot_trigger(BotTriggerPutParams) -> BotTriggerPutResponse =>
+        ["Create or replace a trigger", "Validates the trigger document (CEL parses, grants exist, one inbox per bot, chat routes per conversation), reconciles its Temporal Schedule, and stores it. A poll spec edit resets the cursor; a webhook keeps its URL token."],
+    METHOD_BOTS_TRIGGERS_READ => read_bot_trigger(BotTriggerReadParams) -> BotTriggerReadResponse =>
+        ["Read a trigger", "Returns one trigger with its incidents and cursor; the ingest path and pairing code are shown only to managing principals."],
+    METHOD_BOTS_TRIGGERS_LIST => list_bot_triggers(BotTriggerListParams) -> BotTriggerListResponse =>
+        ["List a bot's triggers", "Returns every trigger of the bot ordered by id, secrets redacted for non-managing principals."],
+    METHOD_BOTS_TRIGGERS_DELETE => delete_bot_trigger(BotTriggerDeleteParams) -> BotTriggerDeleteResponse =>
+        ["Delete a trigger", "Drops the trigger's Temporal Schedule and pairings, then the record; stored events keep their history."],
+    METHOD_BOTS_EVENTS_ADMIT => admit_bot_event(BotEventAdmitParams) -> BotEventAdmitResponse =>
+        ["Admit an event manually", "Stores an operator-authored event for the bot's main session and wakes the controller. eventId is the dedupe identity; a duplicate returns the stored row."],
+    METHOD_BOTS_EVENTS_REPLAY => replay_bot_event(BotEventReplayParams) -> BotEventReplayResponse =>
+        ["Replay a stored event", "Re-admits the stored envelope as a fresh event with the original routing; the replay never coalesces."],
+    METHOD_BOTS_EVENTS_LIST => list_bot_events(BotEventListParams) -> BotEventListResponse =>
+        ["List a bot's events", "Cursor-paginated event log, newest first, with outcomes; payload documents stay in the CAS."],
+    METHOD_BOTS_EVENTS_READ => read_bot_event(BotEventReadParams) -> BotEventReadResponse =>
+        ["Read an event by number", "Returns the event row and its full stored envelope document."],
+    METHOD_BOTS_FILTERS_TEST => test_bot_filter(BotFilterTestParams) -> BotFilterTestResponse =>
+        ["Test a CEL filter", "Evaluates a filter against one payload or a sample of recent stored events, reporting matches and evaluation errors without changing anything."],
+    METHOD_CHANNELS_ACCOUNTS_CREATE => create_channel_account(ChannelAccountCreateParams) -> ChannelAccountCreateResponse =>
+        ["Create a channel account", "Registers a provider account (Telegram, WhatsApp) for this universe. The credential is a retrievable grant reference; no token is accepted here."],
+    METHOD_CHANNELS_ACCOUNTS_PUT => put_channel_account(ChannelAccountPutParams) -> ChannelAccountPutResponse =>
+        ["Create or replace a channel account", "Replaces the account document whole; pass expectedRevision when replacing. The connector host picks the change up on its next discovery pass."],
+    METHOD_CHANNELS_ACCOUNTS_READ => read_channel_account(ChannelAccountReadParams) -> ChannelAccountReadResponse =>
+        ["Read a channel account", "Returns the account document and revision."],
+    METHOD_CHANNELS_ACCOUNTS_LIST => list_channel_accounts(ChannelAccountListParams) -> ChannelAccountListResponse =>
+        ["List channel accounts", "Lists this universe's provider accounts, optionally by provider."],
+    METHOD_CHANNELS_ACCOUNTS_DELETE => delete_channel_account(ChannelAccountDeleteParams) -> ChannelAccountDeleteResponse =>
+        ["Delete a channel account", "Removes the account and its pairings; chat triggers that reference it stop serving conversations."],
+    METHOD_CHANNELS_INBOUND_ADMIT => admit_channel_inbound(ChannelInboundAdmitParams) -> ChannelInboundAdmitResponse =>
+        ["Admit a provider message", "Service callers only. Resolves the chat trigger for the conversation, applies pairing, and signals the conversation workflow. Returns the decision so the connector can send pairing prompts itself; acknowledge the provider only after this returns."],
+    METHOD_CHANNELS_PAIRINGS_LIST => list_channel_pairings(ChannelPairingListParams) -> ChannelPairingListResponse =>
+        ["List chat pairings", "Lists conversations paired to chat triggers, optionally by account or bot."],
+    METHOD_CHANNELS_PAIRINGS_DELETE => delete_channel_pairing(ChannelPairingDeleteParams) -> ChannelPairingDeleteResponse =>
+        ["Unpair a conversation", "Removes one pairing; the conversation must present the pairing code again to reconnect."],
+    METHOD_CHANNELS_CONVERSATIONS_READ => read_channel_conversation(ChannelConversationReadParams) -> ChannelConversationReadResponse =>
+        ["Read a conversation snapshot", "Queries the conversation workflow's live state for one chat, for debugging; absent when no workflow exists yet."],
 }
 
 /// JSON-RPC notification methods the server can emit, with payloads described

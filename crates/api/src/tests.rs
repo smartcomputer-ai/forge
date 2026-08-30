@@ -2548,6 +2548,240 @@ impl AgentApiService for TestService {
             grant: test_auth_grant("authgrant_install".to_owned(), AuthGrantStatus::Active),
         }))
     }
+
+    async fn create_bot(
+        &self,
+        _params: BotCreateParams,
+    ) -> Result<AgentApiOutcome<BotCreateResponse>, AgentApiError> {
+        Err(AgentApiError::internal(
+            "create_bot is not part of the api test double",
+        ))
+    }
+
+    async fn put_bot(
+        &self,
+        _params: BotPutParams,
+    ) -> Result<AgentApiOutcome<BotPutResponse>, AgentApiError> {
+        Err(AgentApiError::internal(
+            "put_bot is not part of the api test double",
+        ))
+    }
+
+    async fn read_bot(
+        &self,
+        _params: BotReadParams,
+    ) -> Result<AgentApiOutcome<BotReadResponse>, AgentApiError> {
+        Err(AgentApiError::internal(
+            "read_bot is not part of the api test double",
+        ))
+    }
+
+    async fn list_bots(
+        &self,
+        _params: BotListParams,
+    ) -> Result<AgentApiOutcome<BotListResponse>, AgentApiError> {
+        Err(AgentApiError::internal(
+            "list_bots is not part of the api test double",
+        ))
+    }
+
+    async fn close_bot(
+        &self,
+        _params: BotCloseParams,
+    ) -> Result<AgentApiOutcome<BotCloseResponse>, AgentApiError> {
+        Err(AgentApiError::internal(
+            "close_bot is not part of the api test double",
+        ))
+    }
+
+    async fn delete_bot(
+        &self,
+        _params: BotDeleteParams,
+    ) -> Result<AgentApiOutcome<BotDeleteResponse>, AgentApiError> {
+        Err(AgentApiError::internal(
+            "delete_bot is not part of the api test double",
+        ))
+    }
+
+    async fn read_bot_state(
+        &self,
+        _params: BotStateReadParams,
+    ) -> Result<AgentApiOutcome<BotStateReadResponse>, AgentApiError> {
+        Err(AgentApiError::internal(
+            "read_bot_state is not part of the api test double",
+        ))
+    }
+
+    async fn rotate_bot_session(
+        &self,
+        _params: BotSessionRotateParams,
+    ) -> Result<AgentApiOutcome<BotSessionRotateResponse>, AgentApiError> {
+        Err(AgentApiError::internal(
+            "rotate_bot_session is not part of the api test double",
+        ))
+    }
+
+    async fn put_bot_trigger(
+        &self,
+        _params: BotTriggerPutParams,
+    ) -> Result<AgentApiOutcome<BotTriggerPutResponse>, AgentApiError> {
+        Err(AgentApiError::internal(
+            "put_bot_trigger is not part of the api test double",
+        ))
+    }
+
+    async fn read_bot_trigger(
+        &self,
+        _params: BotTriggerReadParams,
+    ) -> Result<AgentApiOutcome<BotTriggerReadResponse>, AgentApiError> {
+        Err(AgentApiError::internal(
+            "read_bot_trigger is not part of the api test double",
+        ))
+    }
+
+    async fn list_bot_triggers(
+        &self,
+        _params: BotTriggerListParams,
+    ) -> Result<AgentApiOutcome<BotTriggerListResponse>, AgentApiError> {
+        Err(AgentApiError::internal(
+            "list_bot_triggers is not part of the api test double",
+        ))
+    }
+
+    async fn delete_bot_trigger(
+        &self,
+        _params: BotTriggerDeleteParams,
+    ) -> Result<AgentApiOutcome<BotTriggerDeleteResponse>, AgentApiError> {
+        Err(AgentApiError::internal(
+            "delete_bot_trigger is not part of the api test double",
+        ))
+    }
+
+    async fn admit_bot_event(
+        &self,
+        _params: BotEventAdmitParams,
+    ) -> Result<AgentApiOutcome<BotEventAdmitResponse>, AgentApiError> {
+        Err(AgentApiError::internal(
+            "admit_bot_event is not part of the api test double",
+        ))
+    }
+
+    async fn replay_bot_event(
+        &self,
+        _params: BotEventReplayParams,
+    ) -> Result<AgentApiOutcome<BotEventReplayResponse>, AgentApiError> {
+        Err(AgentApiError::internal(
+            "replay_bot_event is not part of the api test double",
+        ))
+    }
+
+    async fn list_bot_events(
+        &self,
+        _params: BotEventListParams,
+    ) -> Result<AgentApiOutcome<BotEventListResponse>, AgentApiError> {
+        Err(AgentApiError::internal(
+            "list_bot_events is not part of the api test double",
+        ))
+    }
+
+    async fn read_bot_event(
+        &self,
+        _params: BotEventReadParams,
+    ) -> Result<AgentApiOutcome<BotEventReadResponse>, AgentApiError> {
+        Err(AgentApiError::internal(
+            "read_bot_event is not part of the api test double",
+        ))
+    }
+
+    async fn test_bot_filter(
+        &self,
+        _params: BotFilterTestParams,
+    ) -> Result<AgentApiOutcome<BotFilterTestResponse>, AgentApiError> {
+        Err(AgentApiError::internal(
+            "test_bot_filter is not part of the api test double",
+        ))
+    }
+
+    async fn create_channel_account(
+        &self,
+        _params: ChannelAccountCreateParams,
+    ) -> Result<AgentApiOutcome<ChannelAccountCreateResponse>, AgentApiError> {
+        Err(AgentApiError::internal(
+            "create_channel_account is not part of the api test double",
+        ))
+    }
+
+    async fn put_channel_account(
+        &self,
+        _params: ChannelAccountPutParams,
+    ) -> Result<AgentApiOutcome<ChannelAccountPutResponse>, AgentApiError> {
+        Err(AgentApiError::internal(
+            "put_channel_account is not part of the api test double",
+        ))
+    }
+
+    async fn read_channel_account(
+        &self,
+        _params: ChannelAccountReadParams,
+    ) -> Result<AgentApiOutcome<ChannelAccountReadResponse>, AgentApiError> {
+        Err(AgentApiError::internal(
+            "read_channel_account is not part of the api test double",
+        ))
+    }
+
+    async fn list_channel_accounts(
+        &self,
+        _params: ChannelAccountListParams,
+    ) -> Result<AgentApiOutcome<ChannelAccountListResponse>, AgentApiError> {
+        Err(AgentApiError::internal(
+            "list_channel_accounts is not part of the api test double",
+        ))
+    }
+
+    async fn delete_channel_account(
+        &self,
+        _params: ChannelAccountDeleteParams,
+    ) -> Result<AgentApiOutcome<ChannelAccountDeleteResponse>, AgentApiError> {
+        Err(AgentApiError::internal(
+            "delete_channel_account is not part of the api test double",
+        ))
+    }
+
+    async fn admit_channel_inbound(
+        &self,
+        _params: ChannelInboundAdmitParams,
+    ) -> Result<AgentApiOutcome<ChannelInboundAdmitResponse>, AgentApiError> {
+        Err(AgentApiError::internal(
+            "admit_channel_inbound is not part of the api test double",
+        ))
+    }
+
+    async fn list_channel_pairings(
+        &self,
+        _params: ChannelPairingListParams,
+    ) -> Result<AgentApiOutcome<ChannelPairingListResponse>, AgentApiError> {
+        Err(AgentApiError::internal(
+            "list_channel_pairings is not part of the api test double",
+        ))
+    }
+
+    async fn delete_channel_pairing(
+        &self,
+        _params: ChannelPairingDeleteParams,
+    ) -> Result<AgentApiOutcome<ChannelPairingDeleteResponse>, AgentApiError> {
+        Err(AgentApiError::internal(
+            "delete_channel_pairing is not part of the api test double",
+        ))
+    }
+
+    async fn read_channel_conversation(
+        &self,
+        _params: ChannelConversationReadParams,
+    ) -> Result<AgentApiOutcome<ChannelConversationReadResponse>, AgentApiError> {
+        Err(AgentApiError::internal(
+            "read_channel_conversation is not part of the api test double",
+        ))
+    }
 }
 
 fn test_auth_provider(provider_id: String) -> AuthProviderView {

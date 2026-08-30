@@ -59,47 +59,9 @@ export function seedPlatform(store: DemoStore): void {
     updatedAtMs: Date.parse("2026-08-10T09:00:00.000Z"),
   });
 
-  store.channelAccounts.set(TELEGRAM_ACCOUNT_ID, {
-    id: TELEGRAM_ACCOUNT_ID,
-    provider: "telegram",
-    accountId: "northwind_support_bot",
-    displayName: "Northwind Developer Support (Telegram)",
-    settings: {},
-    enabled: true,
-    createdAt: "2026-07-02T10:00:00.000Z",
-    updatedAt: "2026-08-15T10:00:00.000Z",
-  });
-  store.channelAccounts.set(WHATSAPP_ACCOUNT_ID, {
-    id: WHATSAPP_ACCOUNT_ID,
-    provider: "whatsapp",
-    accountId: "+4915112345678",
-    displayName: "Northwind Developer Support (WhatsApp)",
-    settings: { printQr: false },
-    enabled: true,
-    createdAt: "2026-07-20T10:00:00.000Z",
-    updatedAt: "2026-08-22T10:00:00.000Z",
-  });
-  store.channelAccounts.set(TELEGRAM_ADA_ACCOUNT_ID, {
-    id: TELEGRAM_ADA_ACCOUNT_ID,
-    provider: "telegram",
-    accountId: "ada_assistant_bot",
-    displayName: "Ada's assistant (Telegram)",
-    settings: {},
-    enabled: true,
-    createdAt: "2026-07-25T18:30:00.000Z",
-    updatedAt: "2026-08-20T07:00:00.000Z",
-  });
-  store.channelAccounts.set(WHATSAPP_ADA_ACCOUNT_ID, {
-    id: WHATSAPP_ADA_ACCOUNT_ID,
-    provider: "whatsapp",
-    accountId: "+4917612345678",
-    displayName: "Ada's assistant (WhatsApp)",
-    settings: { printQr: false },
-    enabled: true,
-    createdAt: "2026-08-02T09:15:00.000Z",
-    updatedAt: "2026-08-24T19:40:00.000Z",
-  });
-
+  // Channel accounts are universe resources (P142); each use-case fixture
+  // seeds its own under these shared ids. Connector health stays
+  // deployment-wide.
   const changedAtMs = Date.now() - 42 * 60_000;
   store.channelsStatus = {
     connectors: [

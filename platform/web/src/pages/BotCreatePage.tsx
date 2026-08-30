@@ -4,7 +4,8 @@ import { ArrowLeft, Check, ChevronDown, ChevronRight, Trash2 } from "lucide-reac
 import { NavLink, useNavigate } from "react-router-dom";
 import {
   api,
-  type Bot,
+  type BotCreateResponse,
+  type BotListResponse,
   type Environment,
   type ProfileEnvironment,
   type ProfileSummary,
@@ -196,7 +197,7 @@ function Wizard({ universeId, slug }: { universeId: string; slug: string }) {
   });
   const bots = useQuery({
     queryKey: ["bots", universeId],
-    queryFn: () => api<{ bots: Bot[] }>("GET", `/api/v1/universes/${universeId}/bots`),
+    queryFn: () => api<BotListResponse>("GET", `/api/v1/universes/${universeId}/bots`),
   });
   const options = useSessionConfigEditorOptions(universeId, step === "capabilities" || step === "wakeups");
   const environments = useQuery({
@@ -249,7 +250,7 @@ function Wizard({ universeId, slug }: { universeId: string; slug: string }) {
   };
 
   const idInvalid = botId.trim().length > 0 && !NAME_PATTERN.test(botId.trim());
-  const idTaken = bots.data?.bots.some((bot) => bot.botId === botId.trim()) ?? false;
+  const idTaken = (bots.data?.bots ?? []).some((bot) => bot.botId === botId.trim());
   const profileTaken =
     setupMode === "own" && (profiles.data?.some((profile) => profile.profileId === botId.trim()) ?? false);
   const wakeupProblems = wakeups.map((draft) => ({
@@ -292,15 +293,17 @@ function Wizard({ universeId, slug }: { universeId: string; slug: string }) {
         });
       }
       try {
-        const { bot } = await api<{ bot: Bot }>("POST", `/api/v1/universes/${universeId}/bots`, {
-          botId: id,
-          ...(displayName.trim() ? { displayName: displayName.trim() } : {}),
-          ...(description.trim() ? { description: description.trim() } : {}),
-          profileId,
-          ...(brief.trim() ? { brief: brief.trim() } : {}),
-          ...(runsPerDay.trim() ? { runsPerDay: Number(runsPerDay) } : {}),
-          selfConfig,
-          emit,
+        const { bot } = await api<BotCreateResponse>("POST", `/api/v1/universes/${universeId}/bots`, {
+          bot: {
+            botId: id,
+            ...(displayName.trim() ? { displayName: displayName.trim() } : {}),
+            ...(description.trim() ? { description: description.trim() } : {}),
+            profileId,
+            ...(brief.trim() ? { brief: brief.trim() } : {}),
+            ...(runsPerDay.trim() ? { runsPerDay: Number(runsPerDay) } : {}),
+            selfConfig,
+            emit,
+          },
           triggers: wakeups.map((draft) => triggerCreateBody(draft.kind, draft.name.trim(), draft.forms)),
         });
         return bot;
@@ -574,13 +577,14 @@ function Wizard({ universeId, slug }: { universeId: string; slug: string }) {
                             />
                           </Field>
                           <TriggerKindFields
+                            universeId={universeId}
                             kind={draft.kind}
                             forms={draft.forms}
                             patch={(key, value) =>
                               updateWakeup(draft.key, (current) => ({ ...current, forms: { ...current.forms, [key]: value } }))
                             }
                             botId={botId.trim() || "new-bot"}
-                            bots={(bots.data?.bots ?? []).map((bot) => ({ ...bot, triggerCount: 0, pendingCount: 0, lastEvent: null }))}
+                            bots={bots.data?.bots ?? []}
                           />
                         </div>
                       )}
@@ -641,7 +645,7 @@ function Wizard({ universeId, slug }: { universeId: string; slug: string }) {
                 {inboxMode === "selected" && (
                   <BotMultiSelect
                     currentBotId={botId.trim() || "new-bot"}
-                    bots={(bots.data?.bots ?? []).map((bot) => ({ ...bot, triggerCount: 0, pendingCount: 0, lastEvent: null }))}
+                    bots={bots.data?.bots ?? []}
                     value={inboxIds}
                     onChange={(ids) => setInbox("selected", ids)}
                   />

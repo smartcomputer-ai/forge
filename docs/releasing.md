@@ -2,7 +2,7 @@
 
 Lightspeed owns and publishes a coherent release containing the hosted runtime,
 the Incus provider, envd, the CLI, Configurator MCP, the platform server/web
-image, one Platform workers image startable in each supported role, the generated
+image, the connector-host image (published as `platform-workers`), the generated
 TypeScript client, the static in-browser demo, API contracts, checksums, an
 SPDX SBOM, and a release manifest. A consumer should pin one manifest rather
 than selecting components separately.
@@ -15,7 +15,7 @@ starting any gateway or worker process:
 ```bash
 lightspeed-server migrate
 lightspeed-server schema-version
-lightspeed-server both
+lightspeed-server
 ```
 
 The migrate command uses `LIGHTSPEED_POSTGRES_URL` (falling back to the test
@@ -60,19 +60,18 @@ gate with a non-production database whose user may create temporary databases:
 LIGHTSPEED_PLATFORM_MIGRATION_TEST_URL=postgres://... npm run test:migrations
 ```
 
-The platform ledger was rebased on 2026-08-26 to one entry per product
-area: `0000_platform_baseline` (auth, universes, setup installations),
-`0001_channels` (`channel_accounts`, `channel_identities`), and
-`0002_bots` (bots, triggers, events, and chat-trigger pairings). A chat
-connection is a `chat` trigger; the retired `channel_bindings` and
-`bot_activity` tables are not part of the baseline. Keep that shape: a new
-area gets its own migration, and its tables live in their own
-`platform/db/src/schema/<area>.ts`. A rebase invalidates the Drizzle ledger of
-every existing database: either reset the database (`./dev.sh reset` for development) or
-replace the rows in `drizzle.__drizzle_migrations` with one row per journal
-entry (any hash, `created_at` = the entry's `when`) so only later migrations
-apply. A journal with a single entry passes the gate on the empty-install
-check alone; the upgrade check resumes with the next migration.
+The platform ledger was rebased on 2026-08-30 to the single
+`0000_platform_baseline` entry (auth, universes, setup installations): bots,
+triggers, events, channel accounts, and pairings moved into the Rust core
+schema (P142), so the platform database holds people and the universe mapping
+and nothing else. Keep that shape: a new area gets its own migration, and its
+tables live in their own `platform/db/src/schema/<area>.ts`. A rebase
+invalidates the Drizzle ledger of every existing database: either reset the
+database (`./dev.sh reset` for development) or replace the rows in
+`drizzle.__drizzle_migrations` with one row per journal entry (any hash,
+`created_at` = the entry's `when`) so only later migrations apply. A journal
+with a single entry passes the gate on the empty-install check alone; the
+upgrade check resumes with the next migration.
 
 ## Local release build
 
@@ -87,15 +86,16 @@ builds the generated client, Configurator, and web UI, and produces `dist/`.
 The demo build is packaged as a target-independent static archive whose files
 are served under `/demo/` with an `index.html` fallback; it is not included in
 the Platform image.
-The same root lockfile deterministically stages platform and Platform workers runtime
-payloads. `make release-images` copies those prebuilt files into the `runtime`,
-Configurator, platform, and Platform workers images; it does not invoke Cargo
-or rebuild the web UI. The `platform-workers` image includes Channels, Bots,
-and all connector dependencies. It selects a granular worker or connector,
-the `channels` or `bots` composite, or `all`; connectors join `all` only when
-named by `LIGHTSPEED_CHANNELS_CONNECTORS`. Image smoke tests compare the runtime's
-`lightspeed-server` executable byte-for-byte, start the platform image against
-PostgreSQL, check its health and SPA, and validate every Platform workers role.
+The same root lockfile deterministically stages the platform and connector-host
+runtime payloads. `make release-images` copies those prebuilt files into the
+`runtime`, Configurator, platform, and `platform-workers` images; it does not
+invoke Cargo or rebuild the web UI. The `platform-workers` image is the
+connector host (`platform/connectors`) with every provider dependency; it
+keeps its name so image references and manifest keys stay stable while Bots
+and Channels core run inside the `runtime` image. Image smoke tests compare
+the runtime's `lightspeed-server` executable byte-for-byte, start the platform
+image against PostgreSQL, check its health and SPA, and load the connector
+host's configuration and task-queue derivation from the staged runtime.
 
 The Rust container is named `runtime` because it is the hosted product core,
 not merely an HTTP server. Its executable and standalone archive remain named

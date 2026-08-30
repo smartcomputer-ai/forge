@@ -1,4 +1,22 @@
 {
+  "channels": {
+    "connectorActivities": {
+      "deliverChannelMessage": "deliverChannelMessage",
+      "maintainChannelTyping": "maintainChannelTyping",
+      "prepareChannelMedia": "prepareChannelMedia"
+    },
+    "connectorTaskQueue": "lightspeed-connector-{provider}-{24 hex of sha256(domain, universeId, provider, accountId)}",
+    "deliveryReceiptSignal": "bot_delivery",
+    "domains": {
+      "connectorTaskQueue": "lightspeed.channels.delivery-queue.v1",
+      "conversation": "lightspeed.channels.conversation.v1",
+      "pairing": "lightspeed.channels.pairing.v1"
+    },
+    "hashFraming": "sha256 over the domain string, then each part in order; every piece is prefixed by its byte length as an unsigned 64-bit big-endian integer.",
+    "inboundSignal": "chat_inbound",
+    "stateQuery": "chat_state",
+    "workflowKind": "ChannelConversationWorkflow"
+  },
   "contractVersion": 2,
   "emissionIds": {
     "framing": "sha256 over the hash domain, then the kind, then each part in order; every piece is prefixed by its byte length as an unsigned 64-bit big-endian integer. Universe ids are hashed as hyphenated lowercase UUID strings; run ids as 8-byte big-endian unsigned integers.",
@@ -42,12 +60,29 @@
     "EmissionEnvelope",
     "WorkflowToolStartArgs",
     "WorkflowToolRecoveryResult",
-    "WorkflowToolRecipeV1"
+    "WorkflowToolRecipeV1",
+    "ConversationStart",
+    "ChannelDeliveryCommand",
+    "ChannelDeliveryResult",
+    "PrepareChannelMediaInput",
+    "PrepareChannelMediaResult"
   ],
   "signals": {
     "deliverEmission": "deliver_emission"
   },
   "vectors": {
+    "channels": {
+      "connectorTaskQueue": "lightspeed-connector-telegram-9b32a282ab8d90f892b5916c",
+      "conversationKey": "tg-main/12345/7",
+      "conversationWorkflowId": "6f3a1a52-58c1-4f0e-9c2d-1a2b3c4d5e6f/chat-telegram-4f32eceadb5d05f640c88ff4517eccbd4ab9c99c72c84db5",
+      "inputs": {
+        "accountId": "tg-main",
+        "chatId": "12345",
+        "provider": "telegram",
+        "threadId": "7",
+        "universeId": "6f3a1a52-58c1-4f0e-9c2d-1a2b3c4d5e6f"
+      }
+    },
     "emissionIds": {
       "invocationCancellation": "emission:sha256:6b88bd2ef714193fc9274b5f212cc415da4dd25733e1717fa89c7fdddc3eca4e",
       "runTerminal": "emission:sha256:a477a56dbeb4f3937959dc5ece1cf363c7030bec130415e4019b507e48098240",
@@ -143,17 +178,17 @@
       "jobGroupId": "job_1",
       "producerWorkflowId": "lightspeed.bots.v1/6f3a1a52-58c1-4f0e-9c2d-1a2b3c4d5e6f/triage",
       "promiseId": "promise_1",
-      "recipeJson": "{\"workflowType\":\"botControllerWorkflowV1\",\"taskQueue\":\"lightspeed-bots-workflows-v1\"}",
+      "recipeJson": "{\"workflowType\":\"BotControllerWorkflow\",\"taskQueue\":\"lightspeed-bots\"}",
       "runId": 7,
       "sessionId": "bot:v1:triage",
       "token": "terminal-token-1",
       "universeId": "6f3a1a52-58c1-4f0e-9c2d-1a2b3c4d5e6f"
     },
     "recipe": {
-      "taskQueue": "lightspeed-bots-workflows-v1",
-      "workflowType": "botControllerWorkflowV1"
+      "taskQueue": "lightspeed-bots",
+      "workflowType": "BotControllerWorkflow"
     },
-    "recipeFingerprint": "wtr:sha256:72cbf89c16b7eb218d174f90de14a978ff062fb608e14bc18007d587363951ec",
+    "recipeFingerprint": "wtr:sha256:7c3d35ba94ba53a7d51d12749aa2fb43e8026d6a3b69dfca7ef4b9422b846010",
     "recoveryResult": {
       "resolutions": {
         "reply": {
@@ -195,6 +230,9 @@
     }
   },
   "workflowIds": {
+    "botController": "{universeId}/bot-{botId}",
+    "botTriggerFire": "{universeId}/botfire-{botId}-{triggerId}",
+    "chatConversation": "{universeId}/chat-{provider}-{sha256 of the conversation, 48 hex}",
     "environmentJob": "{universeId}/envjob-{environmentId}-{jobGroupId}",
     "separator": "/",
     "session": "{universeId}/{sessionId}"

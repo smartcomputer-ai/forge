@@ -1,18 +1,18 @@
 use std::{env, net::SocketAddr, sync::Arc, time::Duration};
 
-use anyhow::Context;
 use clap::{Args, Parser, Subcommand};
 use temporal_server::{
     config::{
-        DeploymentStores, gateway_auth_mode_from_env, postgres_pool_from_env, task_queue_from_env,
+        DeploymentStores, TaskQueues, gateway_auth_mode_from_env, postgres_pool_from_env,
+        task_queues_from_env,
     },
     gateway::{
         DEFAULT_GATEWAY_BIND, DEFAULT_MAX_REQUEST_BODY_BYTES, DEFAULT_TEMPORAL_NAMESPACE,
-        DEFAULT_TEMPORAL_TARGET, GatewayServerConfig, GatewayState, gateway_router,
-        prewarm_single_universe, serve_gateway,
+        DEFAULT_TEMPORAL_TARGET, GatewayState, gateway_router, prewarm_single_universe,
     },
+    roles::{Role, RoleSet, TaskTypes},
     universe::UniverseRuntime,
-    worker::{self, WorkerActivities, WorkerServerConfig},
+    worker::{self, BotWorkerActivities, ChannelWorkerActivities, WorkerActivities},
 };
 use tracing_subscriber::{EnvFilter, fmt};
 
@@ -21,11 +21,16 @@ use tracing_subscriber::{EnvFilter, fmt};
     name = "lightspeed-server",
     version = release_info::LONG_VERSION,
     about = "Run the Lightspeed hosted runtime",
-    after_help = "When no command is supplied, server runs `both`."
+    after_help = "When no command is supplied, the server runs every role in this process: \
+gateway, sessions, bots, channels. Select a subset with --roles (or LIGHTSPEED_ROLES) and \
+split worker roles into workflow-only or activity-only pollers with --task-types."
 )]
 struct Cli {
     #[command(subcommand)]
     command: Option<Command>,
+
+    #[command(flatten)]
+    run: RunArgs,
 }
 
 #[derive(Debug, Subcommand)]
@@ -37,12 +42,6 @@ enum Command {
         about = "Print the current and required PostgreSQL schema revisions"
     )]
     SchemaVersion,
-    #[command(about = "Run only the HTTP/JSON-RPC gateway")]
-    Gateway(GatewayArgs),
-    #[command(about = "Run only the Temporal worker")]
-    Worker(WorkerArgs),
-    #[command(about = "Run the gateway and Temporal worker in one process")]
-    Both(BothArgs),
     #[command(subcommand, about = "Manage universes (tenants) of this deployment")]
     Universe(UniverseCommand),
     #[command(
@@ -88,27 +87,35 @@ enum ApiKeyCommand {
 }
 
 #[derive(Clone, Debug, Args)]
-struct TemporalArgs {
-    /// Temporal task queue shared by all universes of this deployment.
-    /// Defaults to lightspeed-agent. Deployments sharing a Temporal namespace
-    /// must set distinct queues.
+struct RunArgs {
+    /// Roles this process runs: a comma-separated subset of gateway,
+    /// sessions, bots, channels (default: all).
+    #[arg(long, env = "LIGHTSPEED_ROLES")]
+    roles: Option<String>,
+
+    /// Task types the worker roles poll: all, workflows, or activities.
+    #[arg(long, env = "LIGHTSPEED_WORKER_TASK_TYPES")]
+    task_types: Option<String>,
+
+    #[arg(long, env = "LIGHTSPEED_GATEWAY_BIND", default_value = DEFAULT_GATEWAY_BIND)]
+    bind: SocketAddr,
+
+    /// Sessions task queue. Deployments sharing a Temporal namespace must
+    /// set distinct queues.
     #[arg(long, env = "LIGHTSPEED_TASK_QUEUE")]
     task_queue: Option<String>,
+
+    #[arg(long, env = "LIGHTSPEED_TASK_QUEUE_BOTS")]
+    bots_task_queue: Option<String>,
+
+    #[arg(long, env = "LIGHTSPEED_TASK_QUEUE_CHANNELS")]
+    channels_task_queue: Option<String>,
 
     #[arg(long, env = "TEMPORAL_ADDRESS", default_value = DEFAULT_TEMPORAL_TARGET)]
     temporal_target: String,
 
     #[arg(long, env = "TEMPORAL_NAMESPACE", default_value = DEFAULT_TEMPORAL_NAMESPACE)]
     namespace: String,
-}
-
-#[derive(Clone, Debug, Args)]
-struct GatewayArgs {
-    #[arg(long, env = "LIGHTSPEED_GATEWAY_BIND", default_value = DEFAULT_GATEWAY_BIND)]
-    bind: SocketAddr,
-
-    #[command(flatten)]
-    temporal: TemporalArgs,
 
     #[arg(
         long,
@@ -117,81 +124,42 @@ struct GatewayArgs {
     )]
     max_request_body_bytes: usize,
 
-    /// Externally reachable base URL for the OAuth callback. Defaults to
-    /// http://{bind}.
+    /// Externally reachable base URL of the gateway (OAuth callbacks,
+    /// webhook ingest URLs). Defaults to http://{bind}.
     #[arg(long, env = "LIGHTSPEED_PUBLIC_BASE_URL")]
     public_base_url: Option<String>,
 }
 
-#[derive(Clone, Debug, Args)]
-struct WorkerArgs {
-    #[command(flatten)]
-    temporal: TemporalArgs,
-}
-
-#[derive(Clone, Debug, Args)]
-struct BothArgs {
-    #[arg(long, env = "LIGHTSPEED_GATEWAY_BIND", default_value = DEFAULT_GATEWAY_BIND)]
-    bind: SocketAddr,
-
-    #[command(flatten)]
-    temporal: TemporalArgs,
-
-    #[arg(
-        long,
-        env = "LIGHTSPEED_GATEWAY_MAX_REQUEST_BODY_BYTES",
-        default_value_t = DEFAULT_MAX_REQUEST_BODY_BYTES
-    )]
-    max_request_body_bytes: usize,
-
-    /// Externally reachable base URL for the OAuth callback. Defaults to
-    /// http://{bind}.
-    #[arg(long, env = "LIGHTSPEED_PUBLIC_BASE_URL")]
-    public_base_url: Option<String>,
-}
-
-impl TemporalArgs {
-    fn from_env() -> Self {
-        Self {
-            task_queue: env::var("LIGHTSPEED_TASK_QUEUE").ok(),
-            temporal_target: env::var("TEMPORAL_ADDRESS")
-                .unwrap_or_else(|_| DEFAULT_TEMPORAL_TARGET.to_owned()),
-            namespace: env::var("TEMPORAL_NAMESPACE")
-                .unwrap_or_else(|_| DEFAULT_TEMPORAL_NAMESPACE.to_owned()),
-        }
+impl RunArgs {
+    fn roles(&self) -> anyhow::Result<RoleSet> {
+        RoleSet::parse(self.roles.as_deref().unwrap_or("")).map_err(|error| anyhow::anyhow!(error))
     }
 
-    fn resolved_task_queue(&self) -> anyhow::Result<String> {
-        match self.task_queue.as_deref().filter(|value| !value.is_empty()) {
-            Some(task_queue) => Ok(task_queue.to_owned()),
-            None => task_queue_from_env(),
-        }
+    fn task_types(&self) -> anyhow::Result<TaskTypes> {
+        TaskTypes::parse(self.task_types.as_deref().unwrap_or(""))
+            .map_err(|error| anyhow::anyhow!(error))
     }
-}
 
-impl BothArgs {
-    fn from_env() -> anyhow::Result<Self> {
-        let bind = env::var("LIGHTSPEED_GATEWAY_BIND")
-            .unwrap_or_else(|_| DEFAULT_GATEWAY_BIND.to_owned())
-            .parse()
-            .with_context(|| "invalid LIGHTSPEED_GATEWAY_BIND")?;
-        let max_request_body_bytes = env::var("LIGHTSPEED_GATEWAY_MAX_REQUEST_BODY_BYTES")
-            .ok()
-            .map(|value| {
-                value
-                    .parse()
-                    .with_context(|| "invalid LIGHTSPEED_GATEWAY_MAX_REQUEST_BODY_BYTES")
-            })
-            .transpose()?
-            .unwrap_or(DEFAULT_MAX_REQUEST_BODY_BYTES);
-        Ok(Self {
-            bind,
-            temporal: TemporalArgs::from_env(),
-            max_request_body_bytes,
-            public_base_url: env::var("LIGHTSPEED_PUBLIC_BASE_URL")
-                .ok()
-                .filter(|value| !value.is_empty()),
-        })
+    fn task_queues(&self) -> anyhow::Result<TaskQueues> {
+        let mut queues = task_queues_from_env()?;
+        if let Some(queue) = self.task_queue.as_deref().filter(|value| !value.is_empty()) {
+            queues.sessions = queue.to_owned();
+        }
+        if let Some(queue) = self
+            .bots_task_queue
+            .as_deref()
+            .filter(|value| !value.is_empty())
+        {
+            queues.bots = queue.to_owned();
+        }
+        if let Some(queue) = self
+            .channels_task_queue
+            .as_deref()
+            .filter(|value| !value.is_empty())
+        {
+            queues.channels = queue.to_owned();
+        }
+        Ok(queues)
     }
 }
 
@@ -203,29 +171,9 @@ async fn main() -> anyhow::Result<()> {
     match cli.command {
         Some(Command::Migrate) => run_migrate().await,
         Some(Command::SchemaVersion) => run_schema_version().await,
-        Some(Command::Gateway(args)) => {
-            serve_gateway(GatewayServerConfig {
-                bind: args.bind,
-                task_queue: args.temporal.resolved_task_queue()?,
-                temporal_target: args.temporal.temporal_target,
-                namespace: args.temporal.namespace,
-                max_request_body_bytes: args.max_request_body_bytes,
-                public_base_url: args.public_base_url,
-            })
-            .await
-        }
-        Some(Command::Worker(args)) => {
-            worker::run_worker(WorkerServerConfig {
-                task_queue: args.temporal.resolved_task_queue()?,
-                temporal_target: args.temporal.temporal_target,
-                namespace: args.temporal.namespace,
-            })
-            .await
-        }
-        Some(Command::Both(args)) => run_both(args).await,
         Some(Command::Universe(command)) => run_universe_command(command).await,
         Some(Command::ApiKey(command)) => run_api_key_command(command).await,
-        None => run_both(BothArgs::from_env()?).await,
+        None => run_roles(cli.run).await,
     }
 }
 
@@ -367,17 +315,18 @@ fn parse_principal_arg(value: Option<&str>) -> anyhow::Result<auth::PrincipalRef
     })
 }
 
-async fn run_both(args: BothArgs) -> anyhow::Result<()> {
-    let task_queue = args.temporal.resolved_task_queue()?;
+/// Compose the selected roles in one process over one universe registry,
+/// one Temporal client, and one blob cache. Every worker role is its own
+/// Temporal worker on its own task queue; the gateway role adds the HTTP
+/// server and the deployment reconcilers.
+async fn run_roles(args: RunArgs) -> anyhow::Result<()> {
+    let roles = args.roles()?;
+    let task_types = args.task_types()?;
+    let task_queues = args.task_queues()?;
     let mode = gateway_auth_mode_from_env()?;
     let runtime = worker::core_runtime()?;
-    let client = temporal_server::gateway::connect_temporal(
-        &args.temporal.temporal_target,
-        &args.temporal.namespace,
-    )
-    .await?;
-    // `both` mode: the gateway and worker share one process, one universe
-    // registry, and therefore one blob cache.
+    let client =
+        temporal_server::gateway::connect_temporal(&args.temporal_target, &args.namespace).await?;
     let stores = DeploymentStores::from_env()
         .await?
         .with_blob_cache(temporal_server::config::blob_cache_from_env()?);
@@ -386,63 +335,149 @@ async fn run_both(args: BothArgs) -> anyhow::Result<()> {
         .public_base_url
         .clone()
         .unwrap_or_else(|| format!("http://{}", args.bind));
-    // Gateway and worker share one universe registry: sub-agent spawns and
-    // activity routing hit the same lazily-built per-universe state.
-    let universes = Arc::new(UniverseRuntime::new(
-        client.clone(),
-        task_queue.clone(),
-        Some(public_base_url.clone()),
-        stores,
-    )?);
+    let universes = Arc::new(
+        UniverseRuntime::new(
+            client.clone(),
+            task_queues.sessions.clone(),
+            Some(public_base_url.clone()),
+            stores,
+        )?
+        .with_task_queues(task_queues.clone()),
+    );
     prewarm_single_universe(&mode, &universes).await?;
-    let environment_reconciler = tokio::spawn(universes.clone().run_environment_reconciler());
-    let power_reaper = tokio::spawn(universes.clone().run_power_reaper());
-    let activities = WorkerActivities::with_runtime(universes.clone());
-    let mut temporal_worker =
-        worker::worker_with_activities(&runtime, client.clone(), task_queue.clone(), activities)?;
-    let shutdown_worker = temporal_worker.shutdown_handle();
-    let worker_future = temporal_worker.run();
-    tokio::pin!(worker_future);
-    let reaper_task =
-        tokio::spawn(worker::PromiseReaper::new(client.clone(), reaper_stores).run_forever());
 
     tracing::info!(
         target: "temporal_server",
-        temporal_target = %args.temporal.temporal_target,
-        namespace = %args.temporal.namespace,
-        task_queue = %task_queue,
-        "temporal worker polling"
+        roles = %roles,
+        task_types = %task_types,
+        temporal_target = %args.temporal_target,
+        namespace = %args.namespace,
+        sessions_queue = %task_queues.sessions,
+        bots_queue = %task_queues.bots,
+        channels_queue = %task_queues.channels,
+        "lightspeed-server starting"
     );
 
-    let gateway_state = Arc::new(GatewayState::multi(mode, universes, public_base_url));
-    let app = gateway_router(gateway_state, args.max_request_body_bytes);
-    let listener = tokio::net::TcpListener::bind(args.bind).await?;
-    tracing::info!(target: "temporal_server", bind = %args.bind, "gateway listening");
-    let gateway_future = async {
-        axum::serve(listener, app)
-            .with_graceful_shutdown(shutdown_signal())
-            .await
-    };
+    let mut background: Vec<tokio::task::JoinHandle<()>> = Vec::new();
+    let mut workers: Vec<(Role, temporalio_sdk::Worker)> = Vec::new();
+
+    if roles.has(Role::Gateway) {
+        background.push(tokio::spawn(universes.clone().run_environment_reconciler()));
+        background.push(tokio::spawn(universes.clone().run_power_reaper()));
+    }
+    if roles.has(Role::Sessions) {
+        let activities = WorkerActivities::with_runtime(universes.clone());
+        workers.push((
+            Role::Sessions,
+            worker::sessions_worker(
+                &runtime,
+                client.clone(),
+                task_queues.sessions.clone(),
+                activities,
+                task_types.worker_task_types(),
+            )?,
+        ));
+        background.push(tokio::spawn(
+            worker::PromiseReaper::new(client.clone(), reaper_stores).run_forever(),
+        ));
+    }
+    if roles.has(Role::Bots) {
+        let activities = BotWorkerActivities::with_runtime(universes.clone());
+        workers.push((
+            Role::Bots,
+            worker::bots_worker(
+                &runtime,
+                client.clone(),
+                task_queues.bots.clone(),
+                activities,
+                task_types.worker_task_types(),
+            )?,
+        ));
+        background.push(tokio::spawn(
+            universes.clone().run_bot_schedule_reconciler(),
+        ));
+    }
+    if roles.has(Role::Channels) {
+        let activities = ChannelWorkerActivities::with_runtime(universes.clone());
+        workers.push((
+            Role::Channels,
+            worker::channels_worker(
+                &runtime,
+                client.clone(),
+                task_queues.channels.clone(),
+                activities,
+                task_types.worker_task_types(),
+            )?,
+        ));
+    }
+
+    let mut shutdowns = Vec::new();
+    let mut worker_futures = Vec::new();
+    for (role, mut temporal_worker) in workers {
+        shutdowns.push(temporal_worker.shutdown_handle());
+        worker_futures.push(Box::pin(async move {
+            let result = temporal_worker.run().await;
+            (role, result)
+        }));
+    }
+
+    let gateway_future: std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>>>> =
+        if roles.has(Role::Gateway) {
+            let gateway_state = Arc::new(GatewayState::multi(mode, universes, public_base_url));
+            let app = gateway_router(gateway_state, args.max_request_body_bytes);
+            let listener = tokio::net::TcpListener::bind(args.bind).await?;
+            tracing::info!(target: "temporal_server", bind = %args.bind, "gateway listening");
+            Box::pin(async move {
+                axum::serve(listener, app)
+                    .with_graceful_shutdown(shutdown_signal())
+                    .await?;
+                Ok(())
+            })
+        } else {
+            Box::pin(async {
+                shutdown_signal().await;
+                Ok(())
+            })
+        };
     tokio::pin!(gateway_future);
 
+    let stop_background = |background: &Vec<tokio::task::JoinHandle<()>>| {
+        for task in background {
+            task.abort();
+        }
+    };
+
+    if worker_futures.is_empty() {
+        let result = gateway_future.await;
+        stop_background(&background);
+        return result;
+    }
+
+    let workers_future = futures::future::select_all(worker_futures);
+    tokio::pin!(workers_future);
     tokio::select! {
-        worker_result = worker_future.as_mut() => {
-            reaper_task.abort();
-            environment_reconciler.abort();
-            power_reaper.abort();
+        (worker_result, _index, remaining) = workers_future.as_mut() => {
+            stop_background(&background);
+            for shutdown in shutdowns {
+                shutdown();
+            }
+            let _ = tokio::time::timeout(Duration::from_secs(10), futures::future::join_all(remaining)).await;
             match worker_result {
-                Ok(()) => anyhow::bail!("Temporal worker stopped while gateway was still running"),
-                Err(error) => Err(error.context("Temporal worker failed")),
+                (role, Ok(())) => anyhow::bail!("{role} worker stopped while the process was still running"),
+                (role, Err(error)) => Err(error.context(format!("{role} worker failed"))),
             }
         }
         gateway_result = gateway_future.as_mut() => {
-            reaper_task.abort();
-            environment_reconciler.abort();
-            power_reaper.abort();
-            shutdown_worker();
-            tokio::time::timeout(Duration::from_secs(10), worker_future.as_mut())
-                .await
-                .map_err(|_| anyhow::anyhow!("Temporal worker did not shut down within 10 seconds"))??;
+            stop_background(&background);
+            for shutdown in shutdowns {
+                shutdown();
+            }
+            tokio::time::timeout(Duration::from_secs(10), async {
+                let (_first, _index, remaining) = workers_future.as_mut().await;
+                futures::future::join_all(remaining).await;
+            })
+            .await
+            .map_err(|_| anyhow::anyhow!("Temporal workers did not shut down within 10 seconds"))?;
             gateway_result?;
             Ok(())
         }

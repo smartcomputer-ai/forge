@@ -721,6 +721,246 @@ Creates or refreshes a universe auth grant for one accessible installation. The 
 - Params: `AuthGitHubInstallationGrantParams`
 - Result: `AgentApiOutcome<AuthGitHubInstallationGrantResponse>`
 
+### `bots/create`
+
+**Create a bot**
+
+Creates the bot record, optionally with its triggers, and starts its controller. Fails if the bot id exists; a trigger failure rolls the bot back.
+
+- Params: `BotCreateParams`
+- Result: `AgentApiOutcome<BotCreateResponse>`
+
+### `bots/put`
+
+**Create or replace a bot document**
+
+Replaces the mutable configuration whole and signals the controller, which applies it at its next idle boundary. Pass expectedRevision when replacing; a closed bot accepts label-only edits.
+
+- Params: `BotPutParams`
+- Result: `AgentApiOutcome<BotPutResponse>`
+
+### `bots/read`
+
+**Read a bot**
+
+Returns the bot record, its current revision, and lifecycle columns.
+
+- Params: `BotReadParams`
+- Result: `AgentApiOutcome<BotReadResponse>`
+
+### `bots/list`
+
+**List bots**
+
+Returns the roster: every bot with its trigger count, pending event count, and latest event.
+
+- Params: `BotListParams`
+- Result: `AgentApiOutcome<BotListResponse>`
+
+### `bots/close`
+
+**Close a bot**
+
+Terminal and idempotent: disables every trigger, drops schedules, and tells the controller to archive pending events and force-close its sessions. Returns once signalled; follow bots/state/read for closing to closed.
+
+- Params: `BotCloseParams`
+- Result: `AgentApiOutcome<BotCloseResponse>`
+
+### `bots/delete`
+
+**Delete a bot**
+
+Closes the bot if needed, waits for its controller to complete, deletes the sessions it closed, and removes the record so the bot id is free again.
+
+- Params: `BotDeleteParams`
+- Result: `AgentApiOutcome<BotDeleteResponse>`
+
+### `bots/state/read`
+
+**Read bot controller state**
+
+Queries the controller workflow for its live snapshot (sessions, buffers, active and recent deliveries, budget) and lists sub-agent descendants. The controller is absent until the bot's first event.
+
+- Params: `BotStateReadParams`
+- Result: `AgentApiOutcome<BotStateReadResponse>`
+
+### `bots/sessions/rotate`
+
+**Rotate a bot session**
+
+Asks the controller to close one of the bot's sessions at its next idle boundary and continue on a fresh generation; queued deliveries follow.
+
+- Params: `BotSessionRotateParams`
+- Result: `AgentApiOutcome<BotSessionRotateResponse>`
+
+### `bots/triggers/put`
+
+**Create or replace a trigger**
+
+Validates the trigger document (CEL parses, grants exist, one inbox per bot, chat routes per conversation), reconciles its Temporal Schedule, and stores it. A poll spec edit resets the cursor; a webhook keeps its URL token.
+
+- Params: `BotTriggerPutParams`
+- Result: `AgentApiOutcome<BotTriggerPutResponse>`
+
+### `bots/triggers/read`
+
+**Read a trigger**
+
+Returns one trigger with its incidents and cursor; the ingest path and pairing code are shown only to managing principals.
+
+- Params: `BotTriggerReadParams`
+- Result: `AgentApiOutcome<BotTriggerReadResponse>`
+
+### `bots/triggers/list`
+
+**List a bot's triggers**
+
+Returns every trigger of the bot ordered by id, secrets redacted for non-managing principals.
+
+- Params: `BotTriggerListParams`
+- Result: `AgentApiOutcome<BotTriggerListResponse>`
+
+### `bots/triggers/delete`
+
+**Delete a trigger**
+
+Drops the trigger's Temporal Schedule and pairings, then the record; stored events keep their history.
+
+- Params: `BotTriggerDeleteParams`
+- Result: `AgentApiOutcome<BotTriggerDeleteResponse>`
+
+### `bots/events/admit`
+
+**Admit an event manually**
+
+Stores an operator-authored event for the bot's main session and wakes the controller. eventId is the dedupe identity; a duplicate returns the stored row.
+
+- Params: `BotEventAdmitParams`
+- Result: `AgentApiOutcome<BotEventAdmitResponse>`
+
+### `bots/events/replay`
+
+**Replay a stored event**
+
+Re-admits the stored envelope as a fresh event with the original routing; the replay never coalesces.
+
+- Params: `BotEventReplayParams`
+- Result: `AgentApiOutcome<BotEventReplayResponse>`
+
+### `bots/events/list`
+
+**List a bot's events**
+
+Cursor-paginated event log, newest first, with outcomes; payload documents stay in the CAS.
+
+- Params: `BotEventListParams`
+- Result: `AgentApiOutcome<BotEventListResponse>`
+
+### `bots/events/read`
+
+**Read an event by number**
+
+Returns the event row and its full stored envelope document.
+
+- Params: `BotEventReadParams`
+- Result: `AgentApiOutcome<BotEventReadResponse>`
+
+### `bots/filters/test`
+
+**Test a CEL filter**
+
+Evaluates a filter against one payload or a sample of recent stored events, reporting matches and evaluation errors without changing anything.
+
+- Params: `BotFilterTestParams`
+- Result: `AgentApiOutcome<BotFilterTestResponse>`
+
+### `channels/accounts/create`
+
+**Create a channel account**
+
+Registers a provider account (Telegram, WhatsApp) for this universe. The credential is a retrievable grant reference; no token is accepted here.
+
+- Params: `ChannelAccountCreateParams`
+- Result: `AgentApiOutcome<ChannelAccountCreateResponse>`
+
+### `channels/accounts/put`
+
+**Create or replace a channel account**
+
+Replaces the account document whole; pass expectedRevision when replacing. The connector host picks the change up on its next discovery pass.
+
+- Params: `ChannelAccountPutParams`
+- Result: `AgentApiOutcome<ChannelAccountPutResponse>`
+
+### `channels/accounts/read`
+
+**Read a channel account**
+
+Returns the account document and revision.
+
+- Params: `ChannelAccountReadParams`
+- Result: `AgentApiOutcome<ChannelAccountReadResponse>`
+
+### `channels/accounts/list`
+
+**List channel accounts**
+
+Lists this universe's provider accounts, optionally by provider.
+
+- Params: `ChannelAccountListParams`
+- Result: `AgentApiOutcome<ChannelAccountListResponse>`
+
+### `channels/accounts/delete`
+
+**Delete a channel account**
+
+Removes the account and its pairings; chat triggers that reference it stop serving conversations.
+
+- Params: `ChannelAccountDeleteParams`
+- Result: `AgentApiOutcome<ChannelAccountDeleteResponse>`
+
+
+## Service methods
+
+### `channels/inbound/admit`
+
+**Admit a provider message**
+
+Service callers only. Resolves the chat trigger for the conversation, applies pairing, and signals the conversation workflow. Returns the decision so the connector can send pairing prompts itself; acknowledge the provider only after this returns.
+
+- Params: `ChannelInboundAdmitParams`
+- Result: `AgentApiOutcome<ChannelInboundAdmitResponse>`
+
+
+## Universe methods
+
+### `channels/pairings/list`
+
+**List chat pairings**
+
+Lists conversations paired to chat triggers, optionally by account or bot.
+
+- Params: `ChannelPairingListParams`
+- Result: `AgentApiOutcome<ChannelPairingListResponse>`
+
+### `channels/pairings/delete`
+
+**Unpair a conversation**
+
+Removes one pairing; the conversation must present the pairing code again to reconnect.
+
+- Params: `ChannelPairingDeleteParams`
+- Result: `AgentApiOutcome<ChannelPairingDeleteResponse>`
+
+### `channels/conversations/read`
+
+**Read a conversation snapshot**
+
+Queries the conversation workflow's live state for one chat, for debugging; absent when no workflow exists yet.
+
+- Params: `ChannelConversationReadParams`
+- Result: `AgentApiOutcome<ChannelConversationReadResponse>`
+
 
 ## Operator methods
 
@@ -849,4 +1089,13 @@ Creates a universe environment by transferring an existing provider target into 
 
 - Params: `OperatorEnvironmentAdoptParams`
 - Result: `AgentApiOutcome<OperatorEnvironmentAdoptResponse>`
+
+### `operator/channels/accounts/list`
+
+**List channel accounts across universes**
+
+The connector host's discovery call: every enabled provider account of the deployment with its universe id and credential grant reference. Re-poll to pick up accounts created or disabled since.
+
+- Params: `OperatorChannelAccountListParams`
+- Result: `AgentApiOutcome<OperatorChannelAccountListResponse>`
 

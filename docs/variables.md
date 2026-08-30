@@ -18,8 +18,8 @@ and then applies the defaults from `scripts/dev/env.sh`.
 | Namespace | Owner |
 | --- | --- |
 | `LIGHTSPEED_*` | Core runtime and shared client/deployment settings. Check the owning section because a few, such as `LIGHTSPEED_API_URL`, are client-side rather than server-side. |
-| `LIGHTSPEED_PLATFORM_*` | TypeScript Platform management plane and its shared Platform/Channels database. |
-| `LIGHTSPEED_CHANNELS_*` | Channels roles and connectors. |
+| `LIGHTSPEED_PLATFORM_*` | TypeScript Platform management plane and its database. |
+| `LIGHTSPEED_CONNECTOR_*` | The connector host (Telegram and WhatsApp bridges over the core API). |
 | `LIGHTSPEED_CONFIGURATOR_MCP_*` | Configurator MCP service. |
 | `LIGHTSPEED_ENVD_*` | Environment daemon. |
 | `OPENAI_*` / `ANTHROPIC_*` | Provider transport and live-test overrides. |
@@ -37,12 +37,16 @@ They do not configure the TypeScript Platform server.
 | --- | --- | --- |
 | `LIGHTSPEED_POSTGRES_URL` | **Required**; falls back to `LIGHTSPEED_TEST_POSTGRES_URL` | PostgreSQL connection URL used by the runtime, migration commands, and schema diagnostics. Production must use this name. |
 | `LIGHTSPEED_PG_UNIVERSE_ID` | **Required in `single` auth mode** | UUID of the sole universe in a single-tenant deployment. Not used to auto-create universes in multi-tenant modes. |
-| `LIGHTSPEED_TASK_QUEUE` | `lightspeed-agent` | Temporal task queue shared by the runtime gateway and worker. Deployments sharing a Temporal namespace should use distinct queues. |
-| `TEMPORAL_ADDRESS` | `localhost:7233` | Temporal frontend address. Shared with Platform workflow components. |
-| `TEMPORAL_NAMESPACE` | `default` | Temporal namespace. Shared with Platform workflow components. |
+| `LIGHTSPEED_ROLES` | `gateway,sessions,bots,channels` | Roles this process runs, a comma-separated subset of `gateway`, `sessions`, `bots`, `channels` (also `--roles`). Each worker role polls its own task queue with that subsystem's workflows, activities, and background loops. |
+| `LIGHTSPEED_WORKER_TASK_TYPES` | `all` | What the worker roles poll: `all`, `workflows`, or `activities` (also `--task-types`). |
+| `LIGHTSPEED_TASK_QUEUE` | `lightspeed-sessions` | Sessions task queue shared by the gateway and the `sessions` role. Deployments sharing a Temporal namespace must use distinct queues. |
+| `LIGHTSPEED_TASK_QUEUE_BOTS` | `lightspeed-bots` | Task queue of the `bots` role (bot controllers, trigger fires, bot activities). |
+| `LIGHTSPEED_TASK_QUEUE_CHANNELS` | `lightspeed-channels` | Task queue of the `channels` role (conversation workflows and core channel activities). Connector activities run on the per-account `lightspeed-connector-*` queues served by the connector host. |
+| `TEMPORAL_ADDRESS` | `localhost:7233` | Temporal frontend address. Shared with the connector host. |
+| `TEMPORAL_NAMESPACE` | `default` | Temporal namespace. Shared with the connector host. |
 | `LIGHTSPEED_GATEWAY_BIND` | `127.0.0.1:18080` | JSON-RPC and environment-gateway listener address. |
 | `LIGHTSPEED_GATEWAY_MAX_REQUEST_BODY_BYTES` | `67108864` | Maximum gateway request body size in bytes. |
-| `LIGHTSPEED_PUBLIC_BASE_URL` | `http://{LIGHTSPEED_GATEWAY_BIND}` | Externally reachable gateway base URL used for OAuth callbacks and as the combined-mode environment route base. Hosted deployments should set it explicitly. |
+| `LIGHTSPEED_PUBLIC_BASE_URL` | `http://{LIGHTSPEED_GATEWAY_BIND}` | Externally reachable gateway base URL used for OAuth callbacks, bot webhook ingest URLs (`/hooks/bots/…`), and as the environment route base when the process runs the `gateway` role. Hosted deployments should set it explicitly. |
 | `LIGHTSPEED_AUTH_MODE` | `single` | Tenant/auth resolution: `single`, `trusted-header`, or `api-key`. Configurator MCP must use the same mode. |
 | `LIGHTSPEED_SECRETS_MASTER_KEY` | Unset | Base64-encoded 32-byte AES key for encrypted grants and secrets. Required before encrypted secret material can be persisted or resolved. Keep stable across restarts. |
 | `LIGHTSPEED_BLOB_CACHE_BYTES` | `268435456` | Per-process CAS blob-cache budget. `0` disables the cache. |
@@ -109,13 +113,14 @@ remain in PostgreSQL-backed storage.
 
 ### Split environment routing
 
-Combined gateway/worker mode derives a local environment route automatically.
-Split deployments must provide both values to the worker.
+A process running the `gateway` role derives a local environment route
+automatically. Worker-only processes (no `gateway` role) must provide both
+values.
 
 | Variable | Requirement/default | Purpose |
 | --- | --- | --- |
-| `LIGHTSPEED_ENVIRONMENT_GATEWAY_URL` | **Required for a separate worker** | Stable gateway base URL used by workers for environment data routes. |
-| `LIGHTSPEED_ENVIRONMENT_GATEWAY_TOKEN` | **Required for a separate worker** | Shared deployment bearer token for worker-to-gateway routing. |
+| `LIGHTSPEED_ENVIRONMENT_GATEWAY_URL` | **Required for a worker-only process** | Stable gateway base URL used by workers for environment data routes. |
+| `LIGHTSPEED_ENVIRONMENT_GATEWAY_TOKEN` | **Required for a worker-only process** | Shared deployment bearer token for worker-to-gateway routing. |
 
 ## Rust CLI
 
@@ -176,7 +181,7 @@ the Rust runtime database and gateway authentication.
 
 | Variable | Requirement/default | Purpose |
 | --- | --- | --- |
-| `LIGHTSPEED_PLATFORM_DATABASE_URL` | **Required** | Platform/Channels PostgreSQL connection URL. |
+| `LIGHTSPEED_PLATFORM_DATABASE_URL` | **Required** | Platform PostgreSQL connection URL. |
 | `LIGHTSPEED_PLATFORM_AUTH_SECRET` | **Required** | Better Auth signing/encryption secret. Use a strong, stable deployment secret. |
 | `LIGHTSPEED_PLATFORM_BASE_URL` | `http://localhost:3000` | Public Platform origin used by authentication and trusted-origin checks. |
 | `LIGHTSPEED_PLATFORM_TRUSTED_ORIGINS` | Empty list | Comma-separated additional browser origins accepted by Better Auth. The development supervisor supplies both `http://127.0.0.1:5173` and `http://localhost:5173`. |
@@ -187,7 +192,7 @@ the Rust runtime database and gateway authentication.
 | `LIGHTSPEED_PLATFORM_GITHUB_CLIENT_SECRET` | Unset | GitHub login client secret. |
 | `LIGHTSPEED_API_URL` | Per-universe gateway URL, otherwise unset | Fallback Lightspeed JSON-RPC endpoint for universes without their own `gatewayUrl`. |
 | `LIGHTSPEED_PLATFORM_CONFIGURATOR_MCP_URL` | Unset | Public Configurator MCP endpoint installed by the Configurator setup. The setup is unavailable when omitted. |
-| `LIGHTSPEED_PLATFORM_CHANNELS_HEALTH_URLS` | Empty list | Comma-separated internal connector health base URLs aggregated for Platform administrators. |
+| `LIGHTSPEED_PLATFORM_CHANNELS_HEALTH_URLS` | Empty list | Comma-separated internal connector-host health base URLs (`/healthz` reports every served account) aggregated for Platform administrators. |
 | `LIGHTSPEED_PLATFORM_DEV_ENVD_ENDPOINT` | unset | Development only: `lightspeed-envd` endpoint offered as the default when registering an external environment. Set by `./dev.sh`; never in deployed configuration. |
 
 The Platform administration CLI additionally accepts
@@ -195,54 +200,39 @@ The Platform administration CLI additionally accepts
 `~/.config/lightspeed-platform` and stores its URL and bearer token in
 `config.json`.
 
-## Platform workers
+## Connector host
 
-The Platform workers image contains Channels, Bots, and connector workers. It
-starts a granular role (`channels-workflows`, `channels-activities`,
-`bots-workflows`, `bots-activities`, `telegram`, or `whatsapp`), a subsystem
-role (`channels` or `bots`), or `all`. Requirements below apply only to roles
-that use the setting.
-
-### Role and shared connectivity
+`platform/connectors` is the one Node worker left after Bots and Channels
+core moved into the Rust runtime: a single process that serves many channel
+accounts across many universes. It reads no database; its only dependencies
+are the core JSON-RPC endpoint and Temporal. Accounts are discovered through
+`operator/channels/accounts/list`, provider tokens are leased through
+`auth/grants/lease` (never configured in the environment), and every
+universe-scoped call carries `x-lightspeed-universe` plus
+`x-lightspeed-principal: service_account:lightspeed-connectors`, so the core
+must run in `trusted-header` (or `single`) auth mode.
 
 | Variable | Requirement/default | Purpose |
 | --- | --- | --- |
-| `LIGHTSPEED_PLATFORM_WORKERS_ROLE` | `all` | Image/process role. A positional command argument takes effect when this is unset. |
-| `LIGHTSPEED_CHANNELS_CONNECTORS` | Empty | Comma-separated connectors included by `all`: `telegram`, `whatsapp`, or both. Connectors are always opt-in. |
+| `LIGHTSPEED_API_URL` | **Required** | Core JSON-RPC endpoint. |
+| `LIGHTSPEED_CONNECTOR_PROVIDERS` | `telegram,whatsapp` | Comma-separated providers this host serves. |
+| `LIGHTSPEED_CONNECTOR_ACCOUNTS` | All discovered accounts | Comma-separated `<universeId>/<accountId>` entries narrowing the served accounts. |
+| `LIGHTSPEED_CONNECTOR_DISCOVERY_INTERVAL_MS` | `30000` | Positive interval between discovery passes; new accounts start, disabled or removed ones stop, and a changed revision or a failed runner restarts without a process restart. |
 | `TEMPORAL_ADDRESS` | `localhost:7233` | Temporal frontend address. |
-| `TEMPORAL_NAMESPACE` | `default` | Temporal namespace. |
-| `LIGHTSPEED_CHANNELS_WORKFLOW_TASK_QUEUE` | `lightspeed-channels-workflows-v1` | Workflow-worker task queue override. |
-| `LIGHTSPEED_CHANNELS_ACTIVITY_TASK_QUEUE` | `lightspeed-channels-activities-v1` | Shared Lightspeed/control-plane activity-worker task queue override. |
-| `LIGHTSPEED_ENDPOINT` | **Required by activity and connector roles** | Lightspeed JSON-RPC endpoint. |
-| `LIGHTSPEED_PLATFORM_DATABASE_URL` | **Required by activity and connector roles** | Shared Platform/Channels PostgreSQL connection URL. |
-| `LIGHTSPEED_CHANNELS_INGRESS_MAX_PER_MINUTE` | `120` | Positive per-sender ingress rate limit used by Telegram and WhatsApp. |
+| `TEMPORAL_NAMESPACE` | `default` | Temporal namespace. Each account gets one activity worker on its derived `lightspeed-connector-<provider>-<hash>` task queue. |
+| `LIGHTSPEED_CONNECTOR_INGRESS_MAX_PER_MINUTE` | `120` | Positive per-chat, per-sender ingress rate limit applied before `channels/inbound/admit`. |
+| `LIGHTSPEED_CONNECTOR_WHATSAPP_AUTH_DIR` | **Required when WhatsApp is served** | Root directory of the Baileys session state; each account uses `<dir>/<universeId>/<accountId>`. |
+| `LIGHTSPEED_CONNECTOR_WHATSAPP_MEDIA_LOCATOR_KEY` | **Required when WhatsApp is served** | Base64-encoded 32-byte key sealing WhatsApp media locators in inbound envelopes. Keep stable across restarts. |
+| `LIGHTSPEED_CONNECTOR_HEALTH_HOST` | `0.0.0.0` | Bind host of the host's `/healthz`, `/readyz`, and `/metrics` listener. |
+| `LIGHTSPEED_CONNECTOR_HEALTH_PORT` | `8090` | Port of that listener; `/readyz` is 200 only when discovery succeeded and every served account is ready. |
+| `LIGHTSPEED_CONNECTOR_METRICS_HOST` | `0.0.0.0` | Temporal Prometheus exporter host. |
+| `LIGHTSPEED_CONNECTOR_METRICS_PORT` | `9090` | Temporal Prometheus exporter port, shared by every per-account worker in the process. |
 
-### Telegram
-
-| Variable | Requirement/default | Purpose |
-| --- | --- | --- |
-| `LIGHTSPEED_CHANNELS_TELEGRAM_BOT_TOKEN` | **Required** | Telegram bot token. |
-| `LIGHTSPEED_CHANNELS_TELEGRAM_ACCOUNT_ID` | **Required** | Stable Platform channel-account identifier for this connector. |
-
-### WhatsApp
-
-| Variable | Requirement/default | Purpose |
-| --- | --- | --- |
-| `LIGHTSPEED_CHANNELS_WHATSAPP_ACCOUNT_ID` | **Required** | Stable Platform channel-account identifier. |
-| `LIGHTSPEED_CHANNELS_WHATSAPP_AUTH_DIR` | **Required** | Directory containing persistent Baileys authentication state. |
-| `LIGHTSPEED_CHANNELS_WHATSAPP_MEDIA_LOCATOR_KEY` | **Required** | Base64-encoded 32-byte key used to protect media locators. |
-| `LIGHTSPEED_CHANNELS_WHATSAPP_PRINT_QR` | `true` | Set to `false` to suppress terminal QR output. |
-
-### Health and metrics
-
-| Variable | Requirement/default | Purpose |
-| --- | --- | --- |
-| `LIGHTSPEED_CHANNELS_HEALTH_HOST` | `0.0.0.0` | Connector health-server bind host. |
-| `LIGHTSPEED_CHANNELS_HEALTH_PORT` | Connector-specific | Shared health-port override. |
-| `LIGHTSPEED_CHANNELS_TELEGRAM_HEALTH_PORT` | `8091` | Telegram-specific health port; takes precedence over the shared port. |
-| `LIGHTSPEED_CHANNELS_WHATSAPP_HEALTH_PORT` | `8092` | WhatsApp-specific health port; takes precedence over the shared port. |
-| `LIGHTSPEED_CHANNELS_METRICS_HOST` | `0.0.0.0` | Temporal Prometheus exporter host. |
-| `LIGHTSPEED_CHANNELS_METRICS_PORT` | Role-specific | Metrics port override. Defaults: Channels workflows/composites `9090`, Telegram `9091`, WhatsApp `9092`, Channels activities `9093`. |
+Telegram accounts need a retrievable auth grant (`credentialGrantId`) holding
+the bot token; WhatsApp accounts pair through the QR code printed on the host's
+terminal unless the account's `settings.printQr` is false. An `api-key` mode
+with one static account list and per-universe keys, for deployments without
+the Platform, is not implemented yet.
 
 ## Configurator MCP
 
@@ -261,22 +251,6 @@ upstream Lightspeed gateway.
 | `LIGHTSPEED_CONFIGURATOR_MCP_UPSTREAM_TIMEOUT_MS` | `60000` | Per-probe and per-tool upstream timeout. |
 | `LIGHTSPEED_CONFIGURATOR_MCP_SHUTDOWN_TIMEOUT_MS` | `10000` | Grace period before open HTTP connections are closed. |
 
-## Bots
-
-The Bots workers share the Platform database and reach the core runtime through
-the public JSON-RPC endpoint. Select `bots` to run both roles in one process or
-`bots-workflows` and `bots-activities` for independently scaled deployments.
-
-| Variable | Requirement/default | Purpose |
-| --- | --- | --- |
-| `TEMPORAL_ADDRESS` | `localhost:7233` | Temporal frontend address. |
-| `TEMPORAL_NAMESPACE` | `default` | Temporal namespace. |
-| `LIGHTSPEED_BOTS_WORKFLOW_TASK_QUEUE` | `lightspeed-bots-workflows-v1` | Bots workflow queue override. |
-| `LIGHTSPEED_BOTS_ACTIVITY_TASK_QUEUE` | `lightspeed-bots-activities-v1` | Bots activity queue override. |
-| `LIGHTSPEED_ENDPOINT` | **Required by the activity worker** | Lightspeed JSON-RPC endpoint. |
-| `LIGHTSPEED_PLATFORM_DATABASE_URL` | **Required by the activity worker** | Shared Platform database URL. |
-| `LIGHTSPEED_PLATFORM_BASE_URL` | Optional | Public platform origin; when set, bot tools return absolute webhook ingest URLs instead of paths. |
-
 ## Local development
 
 `./dev.sh` and the helpers under `scripts/dev/` provide development-only defaults.
@@ -287,12 +261,12 @@ Never reuse their credentials in a deployed environment.
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `LIGHTSPEED_AUTH_MODE` | `trusted-header` for `full`; `single` otherwise | Runtime tenant resolution selected by the supervisor. Platform requires `trusted-header` for universe-scoped proxy calls. An explicit value overrides the profile default. |
-| `LIGHTSPEED_CHANNELS_CONNECTORS` | Empty | Connectors started by the `full` development profile. Values: `telegram`, `whatsapp`, or both. |
+| `LIGHTSPEED_CHANNELS_CONNECTORS` | Empty | Providers the `full` development profile hands to one connector host process (`LIGHTSPEED_CONNECTOR_PROVIDERS`). Values: `telegram`, `whatsapp`, or both. WhatsApp additionally needs `LIGHTSPEED_CONNECTOR_WHATSAPP_MEDIA_LOCATOR_KEY`; the session directory defaults to `.lightspeed-dev/whatsapp-auth`. |
 | `PORT` | `3000` | Platform server port. |
 | `LIGHTSPEED_CONFIGURATOR_MCP_BIND_PORT` | `18081` | Configurator port used by the supervisor. |
 
-The supervisor also honors all runtime, Platform, Channels, and Configurator
-variables documented above.
+The supervisor also honors all runtime, Platform, connector host, and
+Configurator variables documented above.
 
 The `full` and `runtime` development profiles warn when neither
 `OPENAI_API_KEY` nor `ANTHROPIC_API_KEY` is set: they still start, and provider
@@ -311,7 +285,7 @@ Pass `./dev.sh --require-api-keys` to make a missing deployment key fatal
 | `POSTGRES_USER` | `lightspeed` | Local database user. |
 | `POSTGRES_PASSWORD` | `lightspeed` | Local database password. |
 | `POSTGRES_DB` | `lightspeed` | Rust runtime database name. |
-| `LIGHTSPEED_PLATFORM_POSTGRES_DB` | `lightspeed_platform` | Platform and Channels database name on the same local PostgreSQL server. |
+| `LIGHTSPEED_PLATFORM_POSTGRES_DB` | `lightspeed_platform` | Platform database name on the same local PostgreSQL server. |
 | `POSTGRES_PORT` | `15432` | Host PostgreSQL port. |
 | `PGADMIN_IMAGE` | `dpage/pgadmin4:8` | pgAdmin image. |
 | `PGADMIN_CONTAINER_NAME` | `lightspeed-pgadmin` | pgAdmin container name. |
@@ -347,9 +321,6 @@ fixtures. Ordinary unit tests do not require them.
 | --- | --- |
 | `LIGHTSPEED_TEST_POSTGRES_URL` | PostgreSQL URL for Rust live store/runtime tests and the development fallback. |
 | `LIGHTSPEED_PLATFORM_MIGRATION_TEST_URL` | Scratch PostgreSQL URL used by the Platform empty-install and upgrade migration test. |
-| `LIGHTSPEED_CHANNELS_TEMPORAL_INTEGRATION` | Set to `1` to enable the Channels Temporal integration suite. |
-| `LIGHTSPEED_CHANNELS_DELIVERY_TASK_QUEUE` | Required only by the Channels fake delivery worker used in integration tests. |
-| `BOTS_TEMPORAL_INTEGRATION` | Set to `1` to enable the Bots Temporal integration suite. |
 | `LIGHTSPEED_OPENAI_MODEL` | First-choice model override in hosted runtime live tests. |
 | `OPENAI_LIVE_MODEL` | Shared fallback model for OpenAI live suites. |
 | `OPENAI_RESPONSES_MODEL` | OpenAI Responses live-test model. |
@@ -392,7 +363,7 @@ them on services.
 | `LIGHTSPEED_ARTIFACT_URL_DEMO` | Published static demo archive URL recorded in the manifest. |
 | `LIGHTSPEED_RUNTIME_IMAGE` | Digest-pinned runtime image recorded in the manifest. |
 | `LIGHTSPEED_PLATFORM_IMAGE` | Digest-pinned Platform image recorded in the manifest. |
-| `LIGHTSPEED_PLATFORM_WORKERS_IMAGE` | Digest-pinned Platform workers image recorded in the manifest. |
+| `LIGHTSPEED_PLATFORM_WORKERS_IMAGE` | Digest-pinned connector-host image (still published as `platform-workers`) recorded in the manifest. |
 | `LIGHTSPEED_CONFIGURATOR_MCP_IMAGE` | Digest-pinned Configurator image recorded in the manifest. |
 
 `release/metadata.env` additionally owns these release-source values. They are

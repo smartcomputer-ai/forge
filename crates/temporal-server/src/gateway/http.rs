@@ -467,11 +467,95 @@ pub fn gateway_router(state: Arc<GatewayState>, max_request_body_bytes: usize) -
         .route("/auth/callback", get(oauth_callback))
         .route("/auth/client-metadata.json", get(cimd_document))
         .route(
+            "/hooks/bots/:universe/:bot/:trigger/:token",
+            post(bot_webhook_ingest),
+        )
+        .route(
             &format!("{ROUTE_PATH_PREFIX}/:universe/:environment/:incarnation"),
             get(environment_route_upgrade),
         )
         .layer(DefaultBodyLimit::max(max_request_body_bytes))
         .with_state(state)
+}
+
+/// Public webhook ingress for bot triggers. No RPC auth: the URL token is
+/// the baseline credential (checked in constant time), an HMAC scheme adds
+/// a signature over the raw body. Unknown and mismatched endpoints are all
+/// 404 so the path cannot be probed.
+async fn bot_webhook_ingest(
+    State(state): State<Arc<GatewayState>>,
+    Path((universe, bot, trigger, token)): Path<(String, String, String, String)>,
+    headers: HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    use crate::bots::hooks::WebhookIngestOutcome;
+
+    let Ok(universe_id) = Uuid::parse_str(&universe) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let api = match state.api_for_daemon(universe_id).await {
+        Ok(api) => api,
+        Err(_) => return StatusCode::NOT_FOUND.into_response(),
+    };
+    let raw_headers: std::collections::BTreeMap<String, String> = headers
+        .iter()
+        .filter_map(|(name, value)| {
+            value
+                .to_str()
+                .ok()
+                .map(|value| (name.as_str().to_owned(), value.to_owned()))
+        })
+        .collect();
+    let outcome = api
+        .ingest_bot_webhook(&bot, &trigger, &token, raw_headers, &body)
+        .await;
+    let (status, payload) = match outcome {
+        WebhookIngestOutcome::Admitted {
+            event_id,
+            duplicate,
+        } => (
+            StatusCode::ACCEPTED,
+            serde_json::json!({ "eventId": event_id, "duplicate": duplicate }),
+        ),
+        WebhookIngestOutcome::Filtered { error } => (
+            StatusCode::ACCEPTED,
+            serde_json::json!({ "filtered": true, "error": error }),
+        ),
+        WebhookIngestOutcome::UnknownEndpoint => return StatusCode::NOT_FOUND.into_response(),
+        WebhookIngestOutcome::Unauthorized { message } => (
+            StatusCode::UNAUTHORIZED,
+            serde_json::json!({ "error": message }),
+        ),
+        WebhookIngestOutcome::Gone => (
+            StatusCode::GONE,
+            serde_json::json!({ "error": "bot is closed" }),
+        ),
+        WebhookIngestOutcome::Disabled { message } => (
+            StatusCode::CONFLICT,
+            serde_json::json!({ "error": message }),
+        ),
+        WebhookIngestOutcome::Throttled { message } => (
+            StatusCode::TOO_MANY_REQUESTS,
+            serde_json::json!({ "error": message }),
+        ),
+        WebhookIngestOutcome::TooLarge => (
+            StatusCode::PAYLOAD_TOO_LARGE,
+            serde_json::json!({ "error": "webhook body exceeds the 1 MiB cap" }),
+        ),
+        WebhookIngestOutcome::SecretUnavailable { message } => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            serde_json::json!({ "error": message }),
+        ),
+        WebhookIngestOutcome::BadPayload { message } => (
+            StatusCode::BAD_REQUEST,
+            serde_json::json!({ "error": message }),
+        ),
+        WebhookIngestOutcome::Failed { message } => (
+            StatusCode::BAD_GATEWAY,
+            serde_json::json!({ "error": message }),
+        ),
+    };
+    (status, Json(payload)).into_response()
 }
 
 async fn environment_route_upgrade(

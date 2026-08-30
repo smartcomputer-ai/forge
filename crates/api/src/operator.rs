@@ -31,6 +31,7 @@ pub const METHOD_OPERATOR_PROVIDER_BINDINGS_PUT: &str =
 pub const METHOD_OPERATOR_PROVIDER_BINDINGS_DELETE: &str =
     "operator/environment-providers/bindings/delete";
 pub const METHOD_OPERATOR_ENVIRONMENTS_ADOPT: &str = "operator/environments/adopt";
+pub const METHOD_OPERATOR_CHANNELS_ACCOUNTS_LIST: &str = "operator/channels/accounts/list";
 
 pub fn is_operator_method(method: &str) -> bool {
     method.starts_with(OPERATOR_METHOD_PREFIX)
@@ -326,6 +327,33 @@ pub struct OperatorEnvironmentAdoptResponse {
     pub environment: EnvironmentView,
 }
 
+/// One channel account of any universe, for the connector host's discovery
+/// pass.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct OperatorChannelAccountView {
+    pub universe_id: String,
+    #[serde(flatten)]
+    pub account: ChannelAccountView,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct OperatorChannelAccountListParams {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<ChannelProvider>,
+    /// Include disabled accounts; by default only enabled ones are listed.
+    #[serde(default)]
+    pub include_disabled: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct OperatorChannelAccountListResponse {
+    #[serde(default)]
+    pub accounts: Vec<OperatorChannelAccountView>,
+}
+
 #[async_trait]
 pub trait OperatorApiService: Send + Sync {
     async fn create_universe(
@@ -425,6 +453,13 @@ pub trait OperatorApiService: Send + Sync {
             "managed environment adoption is unavailable",
         ))
     }
+
+    async fn list_deployment_channel_accounts(
+        &self,
+        _params: OperatorChannelAccountListParams,
+    ) -> Result<AgentApiOutcome<OperatorChannelAccountListResponse>, AgentApiError> {
+        Err(AgentApiError::internal("channel accounts are unavailable"))
+    }
 }
 
 macro_rules! operator_api_methods {
@@ -499,4 +534,6 @@ operator_api_methods! {
         ["Delete an environment provider binding", "Deletes a universe provider binding only after every referencing environment has reached Closed."],
     METHOD_OPERATOR_ENVIRONMENTS_ADOPT => adopt_environment(OperatorEnvironmentAdoptParams) -> OperatorEnvironmentAdoptResponse =>
         ["Adopt a provider environment", "Creates a universe environment by transferring an existing provider target into Lightspeed's managed lifecycle. The caller must explicitly accept ownership transfer."],
+    METHOD_OPERATOR_CHANNELS_ACCOUNTS_LIST => list_deployment_channel_accounts(OperatorChannelAccountListParams) -> OperatorChannelAccountListResponse =>
+        ["List channel accounts across universes", "The connector host's discovery call: every enabled provider account of the deployment with its universe id and credential grant reference. Re-poll to pick up accounts created or disabled since."],
 }

@@ -2,12 +2,6 @@
 /// stub routes read and mutate it, and nothing survives a reload.
 import type {
   BlobContent,
-  Bot,
-  BotEventEnvelope,
-  BotLineage,
-  BotState,
-  BotTrigger,
-  ChannelAccount,
   ChannelsStatus,
   EngineUniverse,
   Environment,
@@ -30,10 +24,17 @@ import type {
   WorkspaceTree,
 } from "@/api";
 import type {
+  BotControllerSnapshot,
+  BotEventView,
+  BotTriggerView,
+  BotView,
+  ChannelAccountView,
+  ChannelPairingView,
   ContextEntryView,
   OperatorEnvironmentProviderView,
   RunView,
   SessionEventView,
+  SessionSummaryView,
   ToolCallDisplayView,
 } from "@lightspeed/agent-client";
 
@@ -89,9 +90,9 @@ export interface SessionRecord {
   submissions: Map<string, RunView>;
   /// Runs queued behind the active one.
   queue: Array<{ runId: string; begin: () => void }>;
-  /// Steering text admitted while a run is in flight; consumed at the
-  /// run's next turn boundary.
-  steering: string[];
+  /// Steering admitted while a run is in flight; consumed at the run's
+  /// next turn boundary, where the entry carries its steering source.
+  steering: Array<{ text: string; steeringId: string }>;
   timers: Set<ReturnType<typeof setTimeout>>;
   /// Long-poll wakers, notified on every appended event.
   waiters: Set<() => void>;
@@ -106,12 +107,16 @@ export interface WorkspaceRecord {
 }
 
 export interface BotRecord {
-  bot: Bot;
-  triggers: Map<string, BotTrigger>;
+  /// Core wire shape; `eventSeq` is recomputed from `events` when served.
+  bot: BotView;
+  /// Keyed by `triggerId`.
+  triggers: Map<string, BotTriggerView>;
   /// Newest last; `seq` is the bot's #N.
-  events: BotEventEnvelope[];
-  state: BotState;
-  lineage: BotLineage;
+  events: BotEventView[];
+  /// The controller's live snapshot (core wire shape).
+  state: BotControllerSnapshot;
+  /// Sub-agent sessions delegated under the bot's sessions.
+  descendants: SessionSummaryView[];
 }
 
 export interface UniverseState {
@@ -132,6 +137,10 @@ export interface UniverseState {
   models: ModelListResponse;
   setups: UniverseSetup[];
   bots: Map<string, BotRecord>;
+  /// Universe channel accounts (core wire shape), keyed by `accountId`.
+  channelAccounts: Map<string, ChannelAccountView>;
+  /// Conversation → bot pairing rows (core wire shape).
+  channelPairings: ChannelPairingView[];
   /// Fallback responder for sessions without their own script.
   responder: DemoResponder;
 }
@@ -160,7 +169,6 @@ export class DemoStore {
   /// Engine universes no platform row links to (admin reconcile view).
   readonly orphanEngineUniverses: EngineUniverse[] = [];
   readonly environmentProviders = new Map<string, OperatorEnvironmentProviderView>();
-  readonly channelAccounts = new Map<string, ChannelAccount>();
   channelsStatus: ChannelsStatus = { connectors: [] };
   readonly blobs = new Map<string, BlobContent>();
   readonly defaultInstructionsRef: string;
@@ -237,6 +245,8 @@ export class DemoStore {
       models: { models: [], providers: [] },
       setups: [],
       bots: new Map(),
+      channelAccounts: new Map(),
+      channelPairings: [],
       responder: init.responder ?? fallbackResponder,
     };
     if (role) {

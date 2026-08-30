@@ -7,6 +7,8 @@ mod api_keys;
 mod auth;
 mod blob;
 mod blob_cache;
+mod bots;
+mod channels;
 mod environment;
 mod mcp;
 mod migrations;
@@ -36,6 +38,8 @@ pub const AUTH_SCHEMA_SQL: &str = include_str!("../migrations/004_auth.sql");
 pub const ENVIRONMENT_SCHEMA_SQL: &str = include_str!("../migrations/005_environments.sql");
 pub const PROFILE_SCHEMA_SQL: &str = include_str!("../migrations/006_agent_profiles.sql");
 pub const API_KEYS_SCHEMA_SQL: &str = include_str!("../migrations/007_api_keys.sql");
+pub const BOTS_SCHEMA_SQL: &str = include_str!("../migrations/008_bots.sql");
+pub const CHANNELS_SCHEMA_SQL: &str = include_str!("../migrations/009_channels.sql");
 
 pub const DEFAULT_INLINE_THRESHOLD_BYTES: usize = 64 * 1024;
 
@@ -335,6 +339,7 @@ impl PgStore {
 
 pub use api_keys::PgApiKeyStore;
 pub use blob_cache::BlobCache;
+pub use channels::list_channel_accounts_all;
 pub use migrations::{
     MIGRATIONS, REQUIRED_SCHEMA_REVISION, SchemaStatus, schema_status, verify_schema,
 };

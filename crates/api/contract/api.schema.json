@@ -406,6 +406,448 @@
       ],
       "type": "object"
     },
+    "AgentApiOutcomeOfBotCloseResponse": {
+      "properties": {
+        "notifications": {
+          "items": {
+            "$ref": "#/definitions/AgentNotification"
+          },
+          "type": "array"
+        },
+        "result": {
+          "$ref": "#/definitions/BotCloseResponse"
+        }
+      },
+      "required": [
+        "result"
+      ],
+      "type": "object"
+    },
+    "AgentApiOutcomeOfBotCreateResponse": {
+      "properties": {
+        "notifications": {
+          "items": {
+            "$ref": "#/definitions/AgentNotification"
+          },
+          "type": "array"
+        },
+        "result": {
+          "$ref": "#/definitions/BotCreateResponse"
+        }
+      },
+      "required": [
+        "result"
+      ],
+      "type": "object"
+    },
+    "AgentApiOutcomeOfBotDeleteResponse": {
+      "properties": {
+        "notifications": {
+          "items": {
+            "$ref": "#/definitions/AgentNotification"
+          },
+          "type": "array"
+        },
+        "result": {
+          "$ref": "#/definitions/BotDeleteResponse"
+        }
+      },
+      "required": [
+        "result"
+      ],
+      "type": "object"
+    },
+    "AgentApiOutcomeOfBotEventAdmitResponse": {
+      "properties": {
+        "notifications": {
+          "items": {
+            "$ref": "#/definitions/AgentNotification"
+          },
+          "type": "array"
+        },
+        "result": {
+          "$ref": "#/definitions/BotEventAdmitResponse"
+        }
+      },
+      "required": [
+        "result"
+      ],
+      "type": "object"
+    },
+    "AgentApiOutcomeOfBotEventListResponse": {
+      "properties": {
+        "notifications": {
+          "items": {
+            "$ref": "#/definitions/AgentNotification"
+          },
+          "type": "array"
+        },
+        "result": {
+          "$ref": "#/definitions/BotEventListResponse"
+        }
+      },
+      "required": [
+        "result"
+      ],
+      "type": "object"
+    },
+    "AgentApiOutcomeOfBotEventReadResponse": {
+      "properties": {
+        "notifications": {
+          "items": {
+            "$ref": "#/definitions/AgentNotification"
+          },
+          "type": "array"
+        },
+        "result": {
+          "$ref": "#/definitions/BotEventReadResponse"
+        }
+      },
+      "required": [
+        "result"
+      ],
+      "type": "object"
+    },
+    "AgentApiOutcomeOfBotEventReplayResponse": {
+      "properties": {
+        "notifications": {
+          "items": {
+            "$ref": "#/definitions/AgentNotification"
+          },
+          "type": "array"
+        },
+        "result": {
+          "$ref": "#/definitions/BotEventReplayResponse"
+        }
+      },
+      "required": [
+        "result"
+      ],
+      "type": "object"
+    },
+    "AgentApiOutcomeOfBotFilterTestResponse": {
+      "properties": {
+        "notifications": {
+          "items": {
+            "$ref": "#/definitions/AgentNotification"
+          },
+          "type": "array"
+        },
+        "result": {
+          "$ref": "#/definitions/BotFilterTestResponse"
+        }
+      },
+      "required": [
+        "result"
+      ],
+      "type": "object"
+    },
+    "AgentApiOutcomeOfBotListResponse": {
+      "properties": {
+        "notifications": {
+          "items": {
+            "$ref": "#/definitions/AgentNotification"
+          },
+          "type": "array"
+        },
+        "result": {
+          "$ref": "#/definitions/BotListResponse"
+        }
+      },
+      "required": [
+        "result"
+      ],
+      "type": "object"
+    },
+    "AgentApiOutcomeOfBotPutResponse": {
+      "properties": {
+        "notifications": {
+          "items": {
+            "$ref": "#/definitions/AgentNotification"
+          },
+          "type": "array"
+        },
+        "result": {
+          "$ref": "#/definitions/BotPutResponse"
+        }
+      },
+      "required": [
+        "result"
+      ],
+      "type": "object"
+    },
+    "AgentApiOutcomeOfBotReadResponse": {
+      "properties": {
+        "notifications": {
+          "items": {
+            "$ref": "#/definitions/AgentNotification"
+          },
+          "type": "array"
+        },
+        "result": {
+          "$ref": "#/definitions/BotReadResponse"
+        }
+      },
+      "required": [
+        "result"
+      ],
+      "type": "object"
+    },
+    "AgentApiOutcomeOfBotSessionRotateResponse": {
+      "properties": {
+        "notifications": {
+          "items": {
+            "$ref": "#/definitions/AgentNotification"
+          },
+          "type": "array"
+        },
+        "result": {
+          "$ref": "#/definitions/BotSessionRotateResponse"
+        }
+      },
+      "required": [
+        "result"
+      ],
+      "type": "object"
+    },
+    "AgentApiOutcomeOfBotStateReadResponse": {
+      "properties": {
+        "notifications": {
+          "items": {
+            "$ref": "#/definitions/AgentNotification"
+          },
+          "type": "array"
+        },
+        "result": {
+          "$ref": "#/definitions/BotStateReadResponse"
+        }
+      },
+      "required": [
+        "result"
+      ],
+      "type": "object"
+    },
+    "AgentApiOutcomeOfBotTriggerDeleteResponse": {
+      "properties": {
+        "notifications": {
+          "items": {
+            "$ref": "#/definitions/AgentNotification"
+          },
+          "type": "array"
+        },
+        "result": {
+          "$ref": "#/definitions/BotTriggerDeleteResponse"
+        }
+      },
+      "required": [
+        "result"
+      ],
+      "type": "object"
+    },
+    "AgentApiOutcomeOfBotTriggerListResponse": {
+      "properties": {
+        "notifications": {
+          "items": {
+            "$ref": "#/definitions/AgentNotification"
+          },
+          "type": "array"
+        },
+        "result": {
+          "$ref": "#/definitions/BotTriggerListResponse"
+        }
+      },
+      "required": [
+        "result"
+      ],
+      "type": "object"
+    },
+    "AgentApiOutcomeOfBotTriggerPutResponse": {
+      "properties": {
+        "notifications": {
+          "items": {
+            "$ref": "#/definitions/AgentNotification"
+          },
+          "type": "array"
+        },
+        "result": {
+          "$ref": "#/definitions/BotTriggerPutResponse"
+        }
+      },
+      "required": [
+        "result"
+      ],
+      "type": "object"
+    },
+    "AgentApiOutcomeOfBotTriggerReadResponse": {
+      "properties": {
+        "notifications": {
+          "items": {
+            "$ref": "#/definitions/AgentNotification"
+          },
+          "type": "array"
+        },
+        "result": {
+          "$ref": "#/definitions/BotTriggerReadResponse"
+        }
+      },
+      "required": [
+        "result"
+      ],
+      "type": "object"
+    },
+    "AgentApiOutcomeOfChannelAccountCreateResponse": {
+      "properties": {
+        "notifications": {
+          "items": {
+            "$ref": "#/definitions/AgentNotification"
+          },
+          "type": "array"
+        },
+        "result": {
+          "$ref": "#/definitions/ChannelAccountCreateResponse"
+        }
+      },
+      "required": [
+        "result"
+      ],
+      "type": "object"
+    },
+    "AgentApiOutcomeOfChannelAccountDeleteResponse": {
+      "properties": {
+        "notifications": {
+          "items": {
+            "$ref": "#/definitions/AgentNotification"
+          },
+          "type": "array"
+        },
+        "result": {
+          "$ref": "#/definitions/ChannelAccountDeleteResponse"
+        }
+      },
+      "required": [
+        "result"
+      ],
+      "type": "object"
+    },
+    "AgentApiOutcomeOfChannelAccountListResponse": {
+      "properties": {
+        "notifications": {
+          "items": {
+            "$ref": "#/definitions/AgentNotification"
+          },
+          "type": "array"
+        },
+        "result": {
+          "$ref": "#/definitions/ChannelAccountListResponse"
+        }
+      },
+      "required": [
+        "result"
+      ],
+      "type": "object"
+    },
+    "AgentApiOutcomeOfChannelAccountPutResponse": {
+      "properties": {
+        "notifications": {
+          "items": {
+            "$ref": "#/definitions/AgentNotification"
+          },
+          "type": "array"
+        },
+        "result": {
+          "$ref": "#/definitions/ChannelAccountPutResponse"
+        }
+      },
+      "required": [
+        "result"
+      ],
+      "type": "object"
+    },
+    "AgentApiOutcomeOfChannelAccountReadResponse": {
+      "properties": {
+        "notifications": {
+          "items": {
+            "$ref": "#/definitions/AgentNotification"
+          },
+          "type": "array"
+        },
+        "result": {
+          "$ref": "#/definitions/ChannelAccountReadResponse"
+        }
+      },
+      "required": [
+        "result"
+      ],
+      "type": "object"
+    },
+    "AgentApiOutcomeOfChannelConversationReadResponse": {
+      "properties": {
+        "notifications": {
+          "items": {
+            "$ref": "#/definitions/AgentNotification"
+          },
+          "type": "array"
+        },
+        "result": {
+          "$ref": "#/definitions/ChannelConversationReadResponse"
+        }
+      },
+      "required": [
+        "result"
+      ],
+      "type": "object"
+    },
+    "AgentApiOutcomeOfChannelInboundAdmitResponse": {
+      "properties": {
+        "notifications": {
+          "items": {
+            "$ref": "#/definitions/AgentNotification"
+          },
+          "type": "array"
+        },
+        "result": {
+          "$ref": "#/definitions/ChannelInboundAdmitResponse"
+        }
+      },
+      "required": [
+        "result"
+      ],
+      "type": "object"
+    },
+    "AgentApiOutcomeOfChannelPairingDeleteResponse": {
+      "properties": {
+        "notifications": {
+          "items": {
+            "$ref": "#/definitions/AgentNotification"
+          },
+          "type": "array"
+        },
+        "result": {
+          "$ref": "#/definitions/ChannelPairingDeleteResponse"
+        }
+      },
+      "required": [
+        "result"
+      ],
+      "type": "object"
+    },
+    "AgentApiOutcomeOfChannelPairingListResponse": {
+      "properties": {
+        "notifications": {
+          "items": {
+            "$ref": "#/definitions/AgentNotification"
+          },
+          "type": "array"
+        },
+        "result": {
+          "$ref": "#/definitions/ChannelPairingListResponse"
+        }
+      },
+      "required": [
+        "result"
+      ],
+      "type": "object"
+    },
     "AgentApiOutcomeOfContextAppendResponse": {
       "properties": {
         "notifications": {
@@ -926,6 +1368,23 @@
         },
         "result": {
           "$ref": "#/definitions/OperatorApiKeyRevokeResponse"
+        }
+      },
+      "required": [
+        "result"
+      ],
+      "type": "object"
+    },
+    "AgentApiOutcomeOfOperatorChannelAccountListResponse": {
+      "properties": {
+        "notifications": {
+          "items": {
+            "$ref": "#/definitions/AgentNotification"
+          },
+          "type": "array"
+        },
+        "result": {
+          "$ref": "#/definitions/OperatorChannelAccountListResponse"
         }
       },
       "required": [
@@ -3088,6 +3547,2309 @@
       ],
       "type": "object"
     },
+    "BotActiveDeliverySnapshot": {
+      "properties": {
+        "deliveryId": {
+          "type": "string"
+        },
+        "runId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "seqs": {
+          "items": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "type": "array"
+        },
+        "sessionId": {
+          "type": "string"
+        },
+        "startedAtMs": {
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "deliveryId",
+        "seqs",
+        "sessionId",
+        "startedAtMs"
+      ],
+      "type": "object"
+    },
+    "BotBreaker": {
+      "description": "Per-trigger flood breaker: a trigger that admits more than `fires`\nevents inside `window_ms` is disabled until a human re-enables it.",
+      "properties": {
+        "fires": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "windowMs": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "fires",
+        "windowMs"
+      ],
+      "type": "object"
+    },
+    "BotBufferSnapshot": {
+      "properties": {
+        "firstAtMs": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "flushAtMs": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "key": {
+          "type": "string"
+        },
+        "lastAtMs": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "seqs": {
+          "items": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "key",
+        "seqs",
+        "firstAtMs",
+        "lastAtMs",
+        "flushAtMs"
+      ],
+      "type": "object"
+    },
+    "BotCloseParams": {
+      "properties": {
+        "botId": {
+          "$ref": "#/definitions/BotId"
+        }
+      },
+      "required": [
+        "botId"
+      ],
+      "type": "object"
+    },
+    "BotCloseResponse": {
+      "properties": {
+        "bot": {
+          "$ref": "#/definitions/BotView"
+        }
+      },
+      "required": [
+        "bot"
+      ],
+      "type": "object"
+    },
+    "BotCoalescePolicy": {
+      "description": "Coalescing window: events sharing a route flush as one delivery.",
+      "properties": {
+        "debounceMs": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "maxCount": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "maxWaitMs": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "debounceMs",
+        "maxWaitMs",
+        "maxCount"
+      ],
+      "type": "object"
+    },
+    "BotControllerSnapshot": {
+      "description": "The controller's live snapshot (its `bot_state` query).",
+      "properties": {
+        "activeDeliveries": {
+          "default": [],
+          "items": {
+            "$ref": "#/definitions/BotActiveDeliverySnapshot"
+          },
+          "type": "array"
+        },
+        "appliedProfileRevision": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "buffers": {
+          "default": [],
+          "items": {
+            "$ref": "#/definitions/BotBufferSnapshot"
+          },
+          "type": "array"
+        },
+        "closed": {
+          "type": "boolean"
+        },
+        "controllerStatus": {
+          "$ref": "#/definitions/BotControllerStatus"
+        },
+        "descendantsToday": {
+          "default": 0,
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "duplicateEvents": {
+          "default": 0,
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "eventsProcessed": {
+          "default": 0,
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "lastError": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "mainSessionId": {
+          "type": "string"
+        },
+        "pendingDeliveries": {
+          "default": 0,
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "recentDeliveries": {
+          "default": [],
+          "items": {
+            "$ref": "#/definitions/BotRecentDeliverySnapshot"
+          },
+          "type": "array"
+        },
+        "runDay": {
+          "description": "UTC day (`YYYY-MM-DD`) the budget counters belong to.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "runsToday": {
+          "default": 0,
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "sessions": {
+          "default": [],
+          "items": {
+            "$ref": "#/definitions/BotSessionSnapshot"
+          },
+          "type": "array"
+        },
+        "setupStatus": {
+          "$ref": "#/definitions/BotSetupStatus"
+        }
+      },
+      "required": [
+        "controllerStatus",
+        "setupStatus",
+        "enabled",
+        "closed",
+        "mainSessionId"
+      ],
+      "type": "object"
+    },
+    "BotControllerStatus": {
+      "enum": [
+        "initializing",
+        "degraded",
+        "idle",
+        "delivering_event",
+        "budget_exhausted",
+        "closing",
+        "closed"
+      ],
+      "type": "string"
+    },
+    "BotCreateParams": {
+      "properties": {
+        "bot": {
+          "$ref": "#/definitions/BotInput"
+        },
+        "triggers": {
+          "description": "Triggers created with the bot in one go; a failure rolls the bot\nback.",
+          "items": {
+            "$ref": "#/definitions/BotTriggerInput"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "bot"
+      ],
+      "type": "object"
+    },
+    "BotCreateResponse": {
+      "properties": {
+        "bot": {
+          "$ref": "#/definitions/BotView"
+        },
+        "triggers": {
+          "default": [],
+          "items": {
+            "$ref": "#/definitions/BotTriggerView"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "bot"
+      ],
+      "type": "object"
+    },
+    "BotDeleteParams": {
+      "properties": {
+        "botId": {
+          "$ref": "#/definitions/BotId"
+        }
+      },
+      "required": [
+        "botId"
+      ],
+      "type": "object"
+    },
+    "BotDeleteResponse": {
+      "properties": {
+        "bot": {
+          "$ref": "#/definitions/BotView"
+        },
+        "deletedSessions": {
+          "default": [],
+          "description": "Sessions deleted along with the bot.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "bot"
+      ],
+      "type": "object"
+    },
+    "BotDeliverPolicy": {
+      "properties": {
+        "whenBusy": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/BotWhenBusy"
+            }
+          ],
+          "default": "queue"
+        }
+      },
+      "type": "object"
+    },
+    "BotEventAdmitParams": {
+      "properties": {
+        "botId": {
+          "$ref": "#/definitions/BotId"
+        },
+        "event": {
+          "$ref": "#/definitions/BotEventInput"
+        }
+      },
+      "required": [
+        "botId",
+        "event"
+      ],
+      "type": "object"
+    },
+    "BotEventAdmitResponse": {
+      "properties": {
+        "duplicate": {
+          "description": "The event id was already stored; the existing row is returned and\nthe controller is woken again.",
+          "type": "boolean"
+        },
+        "event": {
+          "$ref": "#/definitions/BotEventView"
+        }
+      },
+      "required": [
+        "event",
+        "duplicate"
+      ],
+      "type": "object"
+    },
+    "BotEventDocument": {
+      "description": "The envelope document stored in the CAS and shown to the session as\nuntrusted input.",
+      "properties": {
+        "correlationId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "data": true,
+        "headers": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "hops": {
+          "default": 0,
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "inReplyTo": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/BotEventReplyRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "kind": {
+          "type": "string"
+        },
+        "links": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "occurredAtMs": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "sender": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/BotEventSender"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "source": {
+          "type": "string"
+        },
+        "summary": {
+          "type": "string"
+        },
+        "version": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "version",
+        "kind",
+        "source",
+        "occurredAtMs",
+        "summary"
+      ],
+      "type": "object"
+    },
+    "BotEventInput": {
+      "description": "A manually admitted event: what an operator posts through\n`bots/events/admit`.",
+      "properties": {
+        "correlationId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "data": true,
+        "eventId": {
+          "description": "Dedupe identity; generated when absent.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "headers": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "kind": {
+          "type": "string"
+        },
+        "links": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "occurredAtMs": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "summary": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "summary"
+      ],
+      "type": "object"
+    },
+    "BotEventListParams": {
+      "properties": {
+        "botId": {
+          "$ref": "#/definitions/BotId"
+        },
+        "cursor": {
+          "description": "Opaque cursor from a previous page.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "limit": {
+          "description": "Page size; server-clamped.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "botId"
+      ],
+      "type": "object"
+    },
+    "BotEventListResponse": {
+      "properties": {
+        "events": {
+          "default": [],
+          "description": "Newest first.",
+          "items": {
+            "$ref": "#/definitions/BotEventView"
+          },
+          "type": "array"
+        },
+        "nextCursor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "BotEventMedia": {
+      "description": "A prepared attachment appended to the run input after the rendering;\nbytes live in the CAS.",
+      "properties": {
+        "blobRef": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/definitions/BotEventMediaKind"
+        },
+        "mime": {
+          "type": "string"
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "blobRef",
+        "kind",
+        "mime"
+      ],
+      "type": "object"
+    },
+    "BotEventMediaKind": {
+      "enum": [
+        "image",
+        "audio",
+        "document"
+      ],
+      "type": "string"
+    },
+    "BotEventOutcome": {
+      "description": "What came of an event: the model's decision (`handled`, `deferred`,\n`ignored`, `blocked`) or the system's when no decision was possible.\n`archived` rows were stored for the record and never delivered.",
+      "enum": [
+        "handled",
+        "deferred",
+        "ignored",
+        "blocked",
+        "unresolved",
+        "run_failed",
+        "steered",
+        "appended",
+        "archived"
+      ],
+      "type": "string"
+    },
+    "BotEventReadParams": {
+      "properties": {
+        "botId": {
+          "$ref": "#/definitions/BotId"
+        },
+        "seq": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "botId",
+        "seq"
+      ],
+      "type": "object"
+    },
+    "BotEventReadResponse": {
+      "properties": {
+        "document": {
+          "$ref": "#/definitions/BotEventDocument"
+        },
+        "event": {
+          "$ref": "#/definitions/BotEventView"
+        }
+      },
+      "required": [
+        "event",
+        "document"
+      ],
+      "type": "object"
+    },
+    "BotEventReplayParams": {
+      "properties": {
+        "botId": {
+          "$ref": "#/definitions/BotId"
+        },
+        "seq": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "botId",
+        "seq"
+      ],
+      "type": "object"
+    },
+    "BotEventReplayResponse": {
+      "properties": {
+        "event": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/BotEventView"
+            }
+          ],
+          "description": "The fresh replay event, routed like the original."
+        }
+      },
+      "required": [
+        "event"
+      ],
+      "type": "object"
+    },
+    "BotEventReplyRef": {
+      "description": "Public correlation of a receipt: the asked event's `#N` at the answering\nbot.",
+      "properties": {
+        "bot": {
+          "$ref": "#/definitions/BotId"
+        },
+        "seq": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "bot",
+        "seq"
+      ],
+      "type": "object"
+    },
+    "BotEventSender": {
+      "description": "Sender of a bot-originated event, as the receiver sees it.",
+      "properties": {
+        "bot": {
+          "$ref": "#/definitions/BotId"
+        }
+      },
+      "required": [
+        "bot"
+      ],
+      "type": "object"
+    },
+    "BotEventView": {
+      "description": "One row of the bot's event log. Grouped like the `bot_events` table:\nidentity, what arrived, the delivery plan, federation, and the\nwrite-once outcome. The receiver route is private and never shown.",
+      "properties": {
+        "documentRef": {
+          "description": "CAS ref of the full envelope document.",
+          "type": "string"
+        },
+        "eventId": {
+          "description": "Dedupe identity: provider delivery id where known, otherwise\nderived.",
+          "type": "string"
+        },
+        "hops": {
+          "default": 0,
+          "description": "Bot-to-bot hops from the world.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "inReplyTo": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/BotEventReplyRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "kind": {
+          "description": "Event kind as authored by the source (`github.push`,\n`schedule.fire`, `chat.message`, `bot.reply`).",
+          "type": "string"
+        },
+        "media": {
+          "items": {
+            "$ref": "#/definitions/BotEventMedia"
+          },
+          "type": "array"
+        },
+        "occurredAtMs": {
+          "description": "When the source says it happened.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "outcome": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/BotEventOutcome"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Absent while the delivery is pending."
+        },
+        "outcomeDetail": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "promptRef": {
+          "description": "CAS ref of the model-facing rendering; what the session saw.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "receivedAtMs": {
+          "description": "Admission time; the log is ordered by it.",
+          "format": "int64",
+          "type": "integer"
+        },
+        "resolvedAtMs": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "runId": {
+          "description": "Run that resolved the event, when one was started.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "senderBotId": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/BotId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Sending bot for bot-originated events (self or addressed)."
+        },
+        "seq": {
+          "description": "Per-bot sequence number: the only event handle shown to models and\nhumans.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "session": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/BotRoutedSessionView"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The routed session; absent means the bot's main session."
+        },
+        "summary": {
+          "type": "string"
+        },
+        "triggerId": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/BotTriggerId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Admitting trigger; absent for an operator admit."
+        }
+      },
+      "required": [
+        "seq",
+        "eventId",
+        "kind",
+        "summary",
+        "occurredAtMs",
+        "receivedAtMs",
+        "documentRef"
+      ],
+      "type": "object"
+    },
+    "BotFilterTestParams": {
+      "properties": {
+        "botId": {
+          "$ref": "#/definitions/BotId"
+        },
+        "filter": {
+          "description": "CEL over `{event, data, headers}`.",
+          "type": "string"
+        },
+        "limit": {
+          "description": "How many recent stored events to sample when no payload is given.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "payload": {
+          "description": "A document to test instead of stored events: `{kind?, data?,\nheaders?}`."
+        }
+      },
+      "required": [
+        "botId",
+        "filter"
+      ],
+      "type": "object"
+    },
+    "BotFilterTestResponse": {
+      "properties": {
+        "errors": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "matched": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "results": {
+          "default": [],
+          "items": {
+            "$ref": "#/definitions/BotFilterTestResult"
+          },
+          "type": "array"
+        },
+        "sampled": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "sampled",
+        "matched",
+        "errors"
+      ],
+      "type": "object"
+    },
+    "BotFilterTestResult": {
+      "properties": {
+        "error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "matched": {
+          "type": "boolean"
+        },
+        "seq": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "matched"
+      ],
+      "type": "object"
+    },
+    "BotId": {
+      "type": "string"
+    },
+    "BotInput": {
+      "description": "The mutable configuration of a bot, replaced whole with an expected\nrevision. The bot id, event counter, and lifecycle columns live on the\nrecord, not here.",
+      "properties": {
+        "botId": {
+          "$ref": "#/definitions/BotId"
+        },
+        "breaker": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/BotBreaker"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "brief": {
+          "description": "Standing instructions appended to the profile's instructions — the\nbot's job description.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "description": {
+          "description": "One line other bots read in the directory.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "displayName": {
+          "description": "Mutable label for humans; the bot id stays the identity.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "emit": {
+          "default": false,
+          "description": "Capability grant: `bot_emit` — events to itself or another bot's\ninbox. Emitting bots are rate-capped.",
+          "type": "boolean"
+        },
+        "enabled": {
+          "default": true,
+          "description": "Reversible pause: sessions and chat context stay, nothing is\ndelivered.",
+          "type": "boolean"
+        },
+        "profileId": {
+          "$ref": "#/definitions/ProfileId"
+        },
+        "routedSessionTtlMs": {
+          "description": "Close routed (`perKey` / `perEvent`) sessions idle longer than this;\nabsent keeps them open. A trigger's `sessionTtlMs` overrides it.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "runsPerDay": {
+          "description": "Budget: runs started per UTC day (sub-agent descendants count);\nabsent means unlimited.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "selfConfig": {
+          "default": false,
+          "description": "Capability grant: the mutating self-configuration tools\n(`bot_trigger_put`, `bot_trigger_delete`, `bot_brief_put`).",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "botId",
+        "profileId"
+      ],
+      "type": "object"
+    },
+    "BotListItem": {
+      "description": "Roster row: the bot plus what the console needs at a glance.",
+      "properties": {
+        "botId": {
+          "$ref": "#/definitions/BotId"
+        },
+        "breaker": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/BotBreaker"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "brief": {
+          "description": "Standing instructions appended to the profile's instructions — the\nbot's job description.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "closedAtMs": {
+          "description": "Terminal: set once by `bots/close`; a closed bot keeps its record\nand history but refuses events and cannot be re-enabled.",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "closedSessions": {
+          "description": "Sessions the controller force-closed on the way out; `bots/delete`\nerases them.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "createdAtMs": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "description": {
+          "description": "One line other bots read in the directory.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "displayName": {
+          "description": "Mutable label for humans; the bot id stays the identity.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "emit": {
+          "default": false,
+          "description": "Capability grant: `bot_emit` — events to itself or another bot's\ninbox. Emitting bots are rate-capped.",
+          "type": "boolean"
+        },
+        "enabled": {
+          "default": true,
+          "description": "Reversible pause: sessions and chat context stay, nothing is\ndelivered.",
+          "type": "boolean"
+        },
+        "eventSeq": {
+          "description": "Highest `#N` admitted so far.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "lastEvent": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/BotEventView"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "pendingCount": {
+          "description": "Events whose delivery has not finished.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "profileId": {
+          "$ref": "#/definitions/ProfileId"
+        },
+        "revision": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "routedSessionTtlMs": {
+          "description": "Close routed (`perKey` / `perEvent`) sessions idle longer than this;\nabsent keeps them open. A trigger's `sessionTtlMs` overrides it.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "runsPerDay": {
+          "description": "Budget: runs started per UTC day (sub-agent descendants count);\nabsent means unlimited.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "selfConfig": {
+          "default": false,
+          "description": "Capability grant: the mutating self-configuration tools\n(`bot_trigger_put`, `bot_trigger_delete`, `bot_brief_put`).",
+          "type": "boolean"
+        },
+        "triggerCount": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "updatedAtMs": {
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "botId",
+        "revision",
+        "profileId",
+        "eventSeq",
+        "createdAtMs",
+        "updatedAtMs",
+        "triggerCount",
+        "pendingCount"
+      ],
+      "type": "object"
+    },
+    "BotListParams": {
+      "type": "object"
+    },
+    "BotListResponse": {
+      "properties": {
+        "bots": {
+          "default": [],
+          "items": {
+            "$ref": "#/definitions/BotListItem"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "BotPutParams": {
+      "properties": {
+        "bot": {
+          "$ref": "#/definitions/BotInput"
+        },
+        "expectedRevision": {
+          "description": "Checked only when the bot already exists; absent replaces (or\ncreates) unconditionally.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "bot"
+      ],
+      "type": "object"
+    },
+    "BotPutResponse": {
+      "properties": {
+        "bot": {
+          "$ref": "#/definitions/BotView"
+        }
+      },
+      "required": [
+        "bot"
+      ],
+      "type": "object"
+    },
+    "BotReadParams": {
+      "properties": {
+        "botId": {
+          "$ref": "#/definitions/BotId"
+        }
+      },
+      "required": [
+        "botId"
+      ],
+      "type": "object"
+    },
+    "BotReadResponse": {
+      "properties": {
+        "bot": {
+          "$ref": "#/definitions/BotView"
+        }
+      },
+      "required": [
+        "bot"
+      ],
+      "type": "object"
+    },
+    "BotRecentDeliverySnapshot": {
+      "properties": {
+        "deliveryId": {
+          "type": "string"
+        },
+        "finishedAtMs": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "outcome": {
+          "$ref": "#/definitions/BotEventOutcome"
+        },
+        "runId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "seqs": {
+          "items": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "type": "array"
+        },
+        "sessionId": {
+          "type": "string"
+        },
+        "summary": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "usage": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/LlmUsageView"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "deliveryId",
+        "seqs",
+        "sessionId",
+        "outcome",
+        "finishedAtMs"
+      ],
+      "type": "object"
+    },
+    "BotRoutedSessionView": {
+      "description": "The routed session an event was admitted to.",
+      "properties": {
+        "label": {
+          "type": "string"
+        },
+        "sessionId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "sessionId",
+        "label"
+      ],
+      "type": "object"
+    },
+    "BotSessionKind": {
+      "enum": [
+        "main",
+        "perKey",
+        "perEvent"
+      ],
+      "type": "string"
+    },
+    "BotSessionRotateParams": {
+      "properties": {
+        "botId": {
+          "$ref": "#/definitions/BotId"
+        },
+        "sessionId": {
+          "description": "One of the bot's sessions (main or routed); the controller closes it\nat its next idle boundary and continues on a successor generation.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "botId",
+        "sessionId"
+      ],
+      "type": "object"
+    },
+    "BotSessionRotateResponse": {
+      "properties": {
+        "accepted": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "accepted"
+      ],
+      "type": "object"
+    },
+    "BotSessionSnapshot": {
+      "properties": {
+        "busy": {
+          "description": "A delivery lane or sidecar is running on it.",
+          "type": "boolean"
+        },
+        "generation": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "kind": {
+          "$ref": "#/definitions/BotSessionKind"
+        },
+        "label": {
+          "type": "string"
+        },
+        "lastActiveAtMs": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "sessionId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "sessionId",
+        "label",
+        "kind",
+        "generation",
+        "busy"
+      ],
+      "type": "object"
+    },
+    "BotSetupStatus": {
+      "enum": [
+        "initializing",
+        "degraded",
+        "ready"
+      ],
+      "type": "string"
+    },
+    "BotStateReadParams": {
+      "properties": {
+        "botId": {
+          "$ref": "#/definitions/BotId"
+        }
+      },
+      "required": [
+        "botId"
+      ],
+      "type": "object"
+    },
+    "BotStateReadResponse": {
+      "properties": {
+        "state": {
+          "$ref": "#/definitions/BotStateView"
+        }
+      },
+      "required": [
+        "state"
+      ],
+      "type": "object"
+    },
+    "BotStateView": {
+      "properties": {
+        "controller": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/BotControllerSnapshot"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Absent when the controller workflow is not running (a bot that never\nreceived an event, or a closed bot whose workflow completed)."
+        },
+        "descendants": {
+          "default": [],
+          "description": "Sub-agent sessions delegated under the bot's sessions.",
+          "items": {
+            "$ref": "#/definitions/SessionSummaryView"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "BotTriggerDeleteParams": {
+      "properties": {
+        "botId": {
+          "$ref": "#/definitions/BotId"
+        },
+        "triggerId": {
+          "$ref": "#/definitions/BotTriggerId"
+        }
+      },
+      "required": [
+        "botId",
+        "triggerId"
+      ],
+      "type": "object"
+    },
+    "BotTriggerDeleteResponse": {
+      "properties": {
+        "trigger": {
+          "$ref": "#/definitions/BotTriggerView"
+        }
+      },
+      "required": [
+        "trigger"
+      ],
+      "type": "object"
+    },
+    "BotTriggerDisabledReason": {
+      "oneOf": [
+        {
+          "const": "breaker",
+          "description": "The flood breaker tripped.",
+          "type": "string"
+        },
+        {
+          "const": "poll_failed",
+          "description": "Too many consecutive poll failures.",
+          "type": "string"
+        },
+        {
+          "const": "one_shot",
+          "description": "A one-shot schedule fired.",
+          "type": "string"
+        },
+        {
+          "const": "operator",
+          "description": "A human turned it off.",
+          "type": "string"
+        },
+        {
+          "const": "bot_closed",
+          "description": "The bot was closed.",
+          "type": "string"
+        }
+      ]
+    },
+    "BotTriggerId": {
+      "type": "string"
+    },
+    "BotTriggerInput": {
+      "description": "The whole configuration of one trigger, replaced with an expected\nrevision.",
+      "oneOf": [
+        {
+          "properties": {
+            "atMs": {
+              "description": "One-shot instant; the trigger disables itself after firing.",
+              "format": "int64",
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "cron": {
+              "description": "Classic 5-field cron or an `@macro`; exclusive with `atMs`.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "kind": {
+              "const": "schedule",
+              "type": "string"
+            },
+            "summary": {
+              "description": "What the fired event asks the session to do.",
+              "type": "string"
+            },
+            "timezone": {
+              "default": "UTC",
+              "description": "IANA timezone for cron evaluation; default `UTC`.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "summary"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "webhook",
+              "type": "string"
+            },
+            "preset": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/WebhookPreset"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "verification": {
+              "allOf": [
+                {
+                  "$ref": "#/definitions/WebhookVerification"
+                }
+              ],
+              "default": {
+                "scheme": "token"
+              }
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "cursor": {
+              "$ref": "#/definitions/PollCursorSpec"
+            },
+            "intervalMs": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "items": {
+              "description": "Dot path to the item array in the payload; absent = the payload\nis the item list (or one item).",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "kind": {
+              "const": "poll",
+              "type": "string"
+            },
+            "source": {
+              "$ref": "#/definitions/PollSource"
+            }
+          },
+          "required": [
+            "kind",
+            "source",
+            "intervalMs",
+            "cursor"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Inbox: which bots may address this one; absent = any bot in the\nuniverse.",
+          "properties": {
+            "from": {
+              "items": {
+                "$ref": "#/definitions/BotId"
+              },
+              "type": [
+                "array",
+                "null"
+              ]
+            },
+            "kind": {
+              "const": "bot",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "access": {
+              "allOf": [
+                {
+                  "$ref": "#/definitions/ChatAccess"
+                }
+              ],
+              "default": {
+                "turn": "anyone"
+              }
+            },
+            "accountId": {
+              "description": "The universe's channel account this connection serves.",
+              "type": "string"
+            },
+            "activation": {
+              "allOf": [
+                {
+                  "$ref": "#/definitions/ChatActivation"
+                }
+              ],
+              "default": {}
+            },
+            "kind": {
+              "const": "chat",
+              "type": "string"
+            },
+            "matchScope": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/ChatScope"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "pairing": {
+              "allOf": [
+                {
+                  "$ref": "#/definitions/ChatPairing"
+                }
+              ],
+              "default": "code"
+            },
+            "priority": {
+              "default": 100,
+              "description": "Lower wins among matching chat triggers on one account.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "kind",
+            "accountId"
+          ],
+          "type": "object"
+        }
+      ],
+      "properties": {
+        "coalesce": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/BotCoalescePolicy"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "deliver": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/BotDeliverPolicy"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "enabled": {
+          "default": true,
+          "type": "boolean"
+        },
+        "filter": {
+          "description": "CEL over `{event, data, headers}`; a non-matching event is refused\nand never stored. Fails closed.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "pairingCode": {
+          "description": "Chat triggers with `pairing: code`: set a specific pairing code\n(8–64 chars) instead of the server-minted one. Never returned to\nnon-managing principals.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "route": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/BotTriggerRoute"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "sessionTtlMs": {
+          "description": "Retention of the sessions this trigger routes to: absent inherits the\nbot's `routedSessionTtlMs`, `0` keeps them open indefinitely (the\nchat default).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "triggerId": {
+          "$ref": "#/definitions/BotTriggerId"
+        }
+      },
+      "required": [
+        "triggerId"
+      ],
+      "type": "object"
+    },
+    "BotTriggerListParams": {
+      "properties": {
+        "botId": {
+          "$ref": "#/definitions/BotId"
+        }
+      },
+      "required": [
+        "botId"
+      ],
+      "type": "object"
+    },
+    "BotTriggerListResponse": {
+      "properties": {
+        "triggers": {
+          "default": [],
+          "items": {
+            "$ref": "#/definitions/BotTriggerView"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "BotTriggerPutParams": {
+      "properties": {
+        "botId": {
+          "$ref": "#/definitions/BotId"
+        },
+        "expectedRevision": {
+          "description": "Checked only when the trigger already exists; absent replaces (or\ncreates) unconditionally.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "trigger": {
+          "$ref": "#/definitions/BotTriggerInput"
+        }
+      },
+      "required": [
+        "botId",
+        "trigger"
+      ],
+      "type": "object"
+    },
+    "BotTriggerPutResponse": {
+      "properties": {
+        "trigger": {
+          "$ref": "#/definitions/BotTriggerView"
+        }
+      },
+      "required": [
+        "trigger"
+      ],
+      "type": "object"
+    },
+    "BotTriggerReadParams": {
+      "properties": {
+        "botId": {
+          "$ref": "#/definitions/BotId"
+        },
+        "triggerId": {
+          "$ref": "#/definitions/BotTriggerId"
+        }
+      },
+      "required": [
+        "botId",
+        "triggerId"
+      ],
+      "type": "object"
+    },
+    "BotTriggerReadResponse": {
+      "properties": {
+        "trigger": {
+          "$ref": "#/definitions/BotTriggerView"
+        }
+      },
+      "required": [
+        "trigger"
+      ],
+      "type": "object"
+    },
+    "BotTriggerRoute": {
+      "description": "Which session a trigger's events are delivered to; absent means the\nbot's main session.",
+      "oneOf": [
+        {
+          "properties": {
+            "policy": {
+              "const": "bot",
+              "type": "string"
+            }
+          },
+          "required": [
+            "policy"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "One session per key: a CEL expression over `{event, data, headers}`\nyielding the key, or the preset's key when absent.",
+          "properties": {
+            "key": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "policy": {
+              "const": "perKey",
+              "type": "string"
+            }
+          },
+          "required": [
+            "policy"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "One fresh session per event.",
+          "properties": {
+            "policy": {
+              "const": "perEvent",
+              "type": "string"
+            }
+          },
+          "required": [
+            "policy"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "BotTriggerView": {
+      "description": "The whole configuration of one trigger, replaced with an expected\nrevision.",
+      "oneOf": [
+        {
+          "properties": {
+            "atMs": {
+              "description": "One-shot instant; the trigger disables itself after firing.",
+              "format": "int64",
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "cron": {
+              "description": "Classic 5-field cron or an `@macro`; exclusive with `atMs`.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "kind": {
+              "const": "schedule",
+              "type": "string"
+            },
+            "summary": {
+              "description": "What the fired event asks the session to do.",
+              "type": "string"
+            },
+            "timezone": {
+              "default": "UTC",
+              "description": "IANA timezone for cron evaluation; default `UTC`.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "summary"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "kind": {
+              "const": "webhook",
+              "type": "string"
+            },
+            "preset": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/WebhookPreset"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "verification": {
+              "allOf": [
+                {
+                  "$ref": "#/definitions/WebhookVerification"
+                }
+              ],
+              "default": {
+                "scheme": "token"
+              }
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "cursor": {
+              "$ref": "#/definitions/PollCursorSpec"
+            },
+            "intervalMs": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "items": {
+              "description": "Dot path to the item array in the payload; absent = the payload\nis the item list (or one item).",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "kind": {
+              "const": "poll",
+              "type": "string"
+            },
+            "source": {
+              "$ref": "#/definitions/PollSource"
+            }
+          },
+          "required": [
+            "kind",
+            "source",
+            "intervalMs",
+            "cursor"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Inbox: which bots may address this one; absent = any bot in the\nuniverse.",
+          "properties": {
+            "from": {
+              "items": {
+                "$ref": "#/definitions/BotId"
+              },
+              "type": [
+                "array",
+                "null"
+              ]
+            },
+            "kind": {
+              "const": "bot",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "access": {
+              "allOf": [
+                {
+                  "$ref": "#/definitions/ChatAccess"
+                }
+              ],
+              "default": {
+                "turn": "anyone"
+              }
+            },
+            "accountId": {
+              "description": "The universe's channel account this connection serves.",
+              "type": "string"
+            },
+            "activation": {
+              "allOf": [
+                {
+                  "$ref": "#/definitions/ChatActivation"
+                }
+              ],
+              "default": {}
+            },
+            "kind": {
+              "const": "chat",
+              "type": "string"
+            },
+            "matchScope": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/ChatScope"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "pairing": {
+              "allOf": [
+                {
+                  "$ref": "#/definitions/ChatPairing"
+                }
+              ],
+              "default": "code"
+            },
+            "priority": {
+              "default": 100,
+              "description": "Lower wins among matching chat triggers on one account.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "kind",
+            "accountId"
+          ],
+          "type": "object"
+        }
+      ],
+      "properties": {
+        "botId": {
+          "$ref": "#/definitions/BotId"
+        },
+        "coalesce": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/BotCoalescePolicy"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "createdAtMs": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "cursorState": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/PollCursorState"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Poll triggers: the advancing runtime cursor. Named apart from the\npoll spec's dedupe `cursor`, which the flattened document already\nserializes under that key."
+        },
+        "deliver": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/BotDeliverPolicy"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "disabledAtMs": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "disabledReason": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/BotTriggerDisabledReason"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "enabled": {
+          "default": true,
+          "type": "boolean"
+        },
+        "filter": {
+          "description": "CEL over `{event, data, headers}`; a non-matching event is refused\nand never stored. Fails closed.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "ingestPath": {
+          "description": "Webhook triggers: the ingest path including its URL token, for\nmanaging principals only.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "lastFilterError": {
+          "description": "Last runtime failure of the CEL filter (the event was refused);\ncleared by the next match.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "lastFilterErrorAtMs": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "pairingCode": {
+          "description": "Chat triggers with `pairing: code`: the code, for managing\nprincipals only.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "revision": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "route": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/BotTriggerRoute"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "sessionTtlMs": {
+          "description": "Retention of the sessions this trigger routes to: absent inherits the\nbot's `routedSessionTtlMs`, `0` keeps them open indefinitely (the\nchat default).",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "triggerId": {
+          "$ref": "#/definitions/BotTriggerId"
+        },
+        "updatedAtMs": {
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "botId",
+        "triggerId",
+        "revision",
+        "createdAtMs",
+        "updatedAtMs"
+      ],
+      "type": "object"
+    },
+    "BotView": {
+      "description": "The mutable configuration of a bot, replaced whole with an expected\nrevision. The bot id, event counter, and lifecycle columns live on the\nrecord, not here.",
+      "properties": {
+        "botId": {
+          "$ref": "#/definitions/BotId"
+        },
+        "breaker": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/BotBreaker"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "brief": {
+          "description": "Standing instructions appended to the profile's instructions — the\nbot's job description.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "closedAtMs": {
+          "description": "Terminal: set once by `bots/close`; a closed bot keeps its record\nand history but refuses events and cannot be re-enabled.",
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "closedSessions": {
+          "description": "Sessions the controller force-closed on the way out; `bots/delete`\nerases them.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "createdAtMs": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "description": {
+          "description": "One line other bots read in the directory.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "displayName": {
+          "description": "Mutable label for humans; the bot id stays the identity.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "emit": {
+          "default": false,
+          "description": "Capability grant: `bot_emit` — events to itself or another bot's\ninbox. Emitting bots are rate-capped.",
+          "type": "boolean"
+        },
+        "enabled": {
+          "default": true,
+          "description": "Reversible pause: sessions and chat context stay, nothing is\ndelivered.",
+          "type": "boolean"
+        },
+        "eventSeq": {
+          "description": "Highest `#N` admitted so far.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "profileId": {
+          "$ref": "#/definitions/ProfileId"
+        },
+        "revision": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "routedSessionTtlMs": {
+          "description": "Close routed (`perKey` / `perEvent`) sessions idle longer than this;\nabsent keeps them open. A trigger's `sessionTtlMs` overrides it.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "runsPerDay": {
+          "description": "Budget: runs started per UTC day (sub-agent descendants count);\nabsent means unlimited.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "selfConfig": {
+          "default": false,
+          "description": "Capability grant: the mutating self-configuration tools\n(`bot_trigger_put`, `bot_trigger_delete`, `bot_brief_put`).",
+          "type": "boolean"
+        },
+        "updatedAtMs": {
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "botId",
+        "revision",
+        "profileId",
+        "eventSeq",
+        "createdAtMs",
+        "updatedAtMs"
+      ],
+      "type": "object"
+    },
+    "BotWhenBusy": {
+      "oneOf": [
+        {
+          "const": "queue",
+          "description": "Wait for the session to become idle.",
+          "type": "string"
+        },
+        {
+          "const": "steer",
+          "description": "Fold the events into the running run as steering.",
+          "type": "string"
+        },
+        {
+          "const": "append",
+          "description": "Append the events as context without starting a run.",
+          "type": "string"
+        }
+      ]
+    },
     "BoundWorkflowToolDispatchInput": {
       "description": "How an invocation of a bound workflow tool reaches its receiver.",
       "oneOf": [
@@ -3099,6 +5861,755 @@
         {
           "const": "push",
           "description": "The runtime durably emits the invocation to the receiver workflow.",
+          "type": "string"
+        }
+      ]
+    },
+    "ChannelAccountCreateParams": {
+      "properties": {
+        "account": {
+          "$ref": "#/definitions/ChannelAccountInput"
+        }
+      },
+      "required": [
+        "account"
+      ],
+      "type": "object"
+    },
+    "ChannelAccountCreateResponse": {
+      "properties": {
+        "account": {
+          "$ref": "#/definitions/ChannelAccountView"
+        }
+      },
+      "required": [
+        "account"
+      ],
+      "type": "object"
+    },
+    "ChannelAccountDeleteParams": {
+      "properties": {
+        "accountId": {
+          "$ref": "#/definitions/ChannelAccountId"
+        }
+      },
+      "required": [
+        "accountId"
+      ],
+      "type": "object"
+    },
+    "ChannelAccountDeleteResponse": {
+      "properties": {
+        "account": {
+          "$ref": "#/definitions/ChannelAccountView"
+        }
+      },
+      "required": [
+        "account"
+      ],
+      "type": "object"
+    },
+    "ChannelAccountId": {
+      "type": "string"
+    },
+    "ChannelAccountInput": {
+      "description": "A provider account served by the connector host. Secret material stays\nin the referenced grant; this document is routing identity and\noperational configuration.",
+      "properties": {
+        "accountId": {
+          "$ref": "#/definitions/ChannelAccountId"
+        },
+        "credentialGrantId": {
+          "description": "Retrievable auth grant holding the provider token (a Telegram bot\ntoken); the connector host leases it. Absent for providers whose\ncredential is a session state directory (WhatsApp).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "displayName": {
+          "type": "string"
+        },
+        "enabled": {
+          "default": true,
+          "type": "boolean"
+        },
+        "provider": {
+          "$ref": "#/definitions/ChannelProvider"
+        },
+        "providerAccountId": {
+          "description": "Provider-native account identity: the Telegram bot username or\nnumeric id, the WhatsApp phone number. Unique per universe and\nprovider.",
+          "type": "string"
+        },
+        "settings": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/ChannelAccountSettings"
+            }
+          ],
+          "default": {}
+        }
+      },
+      "required": [
+        "accountId",
+        "provider",
+        "providerAccountId",
+        "displayName"
+      ],
+      "type": "object"
+    },
+    "ChannelAccountListParams": {
+      "properties": {
+        "provider": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ChannelProvider"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "ChannelAccountListResponse": {
+      "properties": {
+        "accounts": {
+          "default": [],
+          "items": {
+            "$ref": "#/definitions/ChannelAccountView"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "ChannelAccountPutParams": {
+      "properties": {
+        "account": {
+          "$ref": "#/definitions/ChannelAccountInput"
+        },
+        "expectedRevision": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "account"
+      ],
+      "type": "object"
+    },
+    "ChannelAccountPutResponse": {
+      "properties": {
+        "account": {
+          "$ref": "#/definitions/ChannelAccountView"
+        }
+      },
+      "required": [
+        "account"
+      ],
+      "type": "object"
+    },
+    "ChannelAccountReadParams": {
+      "properties": {
+        "accountId": {
+          "$ref": "#/definitions/ChannelAccountId"
+        }
+      },
+      "required": [
+        "accountId"
+      ],
+      "type": "object"
+    },
+    "ChannelAccountReadResponse": {
+      "properties": {
+        "account": {
+          "$ref": "#/definitions/ChannelAccountView"
+        }
+      },
+      "required": [
+        "account"
+      ],
+      "type": "object"
+    },
+    "ChannelAccountSettings": {
+      "additionalProperties": true,
+      "properties": {
+        "printQr": {
+          "description": "WhatsApp: print the pairing QR code on the connector's terminal.",
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "ChannelAccountView": {
+      "description": "A provider account served by the connector host. Secret material stays\nin the referenced grant; this document is routing identity and\noperational configuration.",
+      "properties": {
+        "accountId": {
+          "$ref": "#/definitions/ChannelAccountId"
+        },
+        "createdAtMs": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "credentialGrantId": {
+          "description": "Retrievable auth grant holding the provider token (a Telegram bot\ntoken); the connector host leases it. Absent for providers whose\ncredential is a session state directory (WhatsApp).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "displayName": {
+          "type": "string"
+        },
+        "enabled": {
+          "default": true,
+          "type": "boolean"
+        },
+        "provider": {
+          "$ref": "#/definitions/ChannelProvider"
+        },
+        "providerAccountId": {
+          "description": "Provider-native account identity: the Telegram bot username or\nnumeric id, the WhatsApp phone number. Unique per universe and\nprovider.",
+          "type": "string"
+        },
+        "revision": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "settings": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/ChannelAccountSettings"
+            }
+          ],
+          "default": {}
+        },
+        "updatedAtMs": {
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "accountId",
+        "revision",
+        "provider",
+        "providerAccountId",
+        "displayName",
+        "createdAtMs",
+        "updatedAtMs"
+      ],
+      "type": "object"
+    },
+    "ChannelConversationReadParams": {
+      "properties": {
+        "accountId": {
+          "$ref": "#/definitions/ChannelAccountId"
+        },
+        "chatId": {
+          "type": "string"
+        },
+        "threadId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "accountId",
+        "chatId"
+      ],
+      "type": "object"
+    },
+    "ChannelConversationReadResponse": {
+      "properties": {
+        "conversation": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ChannelConversationSnapshot"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Absent when no conversation workflow exists for the chat yet."
+        }
+      },
+      "type": "object"
+    },
+    "ChannelConversationSnapshot": {
+      "description": "The conversation workflow's live snapshot, for debugging.",
+      "properties": {
+        "activeDeliveries": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "botId": {
+          "type": "string"
+        },
+        "deliveredCount": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "deniedInboundCount": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "droppedInboundCount": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "duplicateInboundCount": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "emittedCount": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "failedDeliveryCount": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "inboundCount": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "label": {
+          "type": "string"
+        },
+        "protocolErrors": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "triggerId": {
+          "type": "string"
+        },
+        "typing": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "botId",
+        "triggerId",
+        "label",
+        "inboundCount",
+        "duplicateInboundCount",
+        "droppedInboundCount",
+        "deniedInboundCount",
+        "emittedCount",
+        "deliveredCount",
+        "failedDeliveryCount",
+        "activeDeliveries",
+        "typing"
+      ],
+      "type": "object"
+    },
+    "ChannelInbound": {
+      "description": "One normalized provider message, as the connector host hands it to the\ncore. Provider and account come from the admitting account.",
+      "properties": {
+        "chatId": {
+          "type": "string"
+        },
+        "isDirect": {
+          "type": "boolean"
+        },
+        "isReplyToBot": {
+          "type": "boolean"
+        },
+        "media": {
+          "items": {
+            "$ref": "#/definitions/ChannelInboundMedia"
+          },
+          "type": "array"
+        },
+        "mentionedBot": {
+          "type": "boolean"
+        },
+        "messageId": {
+          "type": "string"
+        },
+        "senderId": {
+          "description": "Provider handle of the sender (Telegram user id, WhatsApp JID).",
+          "type": "string"
+        },
+        "senderName": {
+          "type": "string"
+        },
+        "text": {
+          "type": "string"
+        },
+        "threadId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "timestampMs": {
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "messageId",
+        "chatId",
+        "senderId",
+        "senderName",
+        "timestampMs",
+        "text",
+        "isDirect",
+        "mentionedBot",
+        "isReplyToBot"
+      ],
+      "type": "object"
+    },
+    "ChannelInboundAdmitParams": {
+      "properties": {
+        "accountId": {
+          "$ref": "#/definitions/ChannelAccountId"
+        },
+        "inbound": {
+          "$ref": "#/definitions/ChannelInbound"
+        }
+      },
+      "required": [
+        "accountId",
+        "inbound"
+      ],
+      "type": "object"
+    },
+    "ChannelInboundAdmitResponse": {
+      "properties": {
+        "botId": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/BotId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The bot serving the conversation, when decided."
+        },
+        "decision": {
+          "$ref": "#/definitions/ChannelInboundDecision"
+        },
+        "triggerId": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/BotTriggerId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "decision"
+      ],
+      "type": "object"
+    },
+    "ChannelInboundDecision": {
+      "description": "What the connector should do after admission. Pairing replies are the\nconnector's to send, in the provider's own voice.",
+      "oneOf": [
+        {
+          "const": "bound",
+          "description": "The conversation is connected; the message went to its workflow.",
+          "type": "string"
+        },
+        {
+          "const": "paired",
+          "description": "This message was the pairing code; the conversation is now\nconnected and the message itself is consumed.",
+          "type": "string"
+        },
+        {
+          "const": "pairing_required",
+          "description": "A chat trigger would serve this conversation but it has not paired;\nthe message looked addressed to the bot, so prompt for the code.",
+          "type": "string"
+        },
+        {
+          "const": "pairing_pending",
+          "description": "Same as above, but the message was ambient traffic; stay silent.",
+          "type": "string"
+        },
+        {
+          "const": "unbound",
+          "description": "No enabled chat trigger serves this account and scope.",
+          "type": "string"
+        }
+      ]
+    },
+    "ChannelInboundMedia": {
+      "description": "A provider-owned attachment reference; never bytes. The connector\ndownloads it when the conversation workflow asks (`prepare_channel_media`).",
+      "properties": {
+        "byteSize": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "fileId": {
+          "description": "Provider file handle (a Telegram file id, a sealed WhatsApp locator).",
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/definitions/ChannelMediaKind"
+        },
+        "mime": {
+          "type": "string"
+        },
+        "name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "fileId",
+        "kind",
+        "mime"
+      ],
+      "type": "object"
+    },
+    "ChannelMediaKind": {
+      "enum": [
+        "image",
+        "audio",
+        "document"
+      ],
+      "type": "string"
+    },
+    "ChannelPairedVia": {
+      "description": "How a chat got its route: claimed by an open trigger's first contact,\nor paired by code.",
+      "enum": [
+        "open",
+        "code"
+      ],
+      "type": "string"
+    },
+    "ChannelPairingDeleteParams": {
+      "properties": {
+        "accountId": {
+          "$ref": "#/definitions/ChannelAccountId"
+        },
+        "chatId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "accountId",
+        "chatId"
+      ],
+      "type": "object"
+    },
+    "ChannelPairingDeleteResponse": {
+      "properties": {
+        "pairing": {
+          "$ref": "#/definitions/ChannelPairingView"
+        }
+      },
+      "required": [
+        "pairing"
+      ],
+      "type": "object"
+    },
+    "ChannelPairingListParams": {
+      "properties": {
+        "accountId": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ChannelAccountId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "botId": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/BotId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "ChannelPairingListResponse": {
+      "properties": {
+        "pairings": {
+          "default": [],
+          "items": {
+            "$ref": "#/definitions/ChannelPairingView"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "ChannelPairingView": {
+      "description": "A conversation's route: the chat is identified by `(accountId, chatId)`\nand owned by the paired trigger.",
+      "properties": {
+        "accountId": {
+          "$ref": "#/definitions/ChannelAccountId"
+        },
+        "botId": {
+          "$ref": "#/definitions/BotId"
+        },
+        "chatId": {
+          "type": "string"
+        },
+        "pairedAtMs": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "pairedVia": {
+          "$ref": "#/definitions/ChannelPairedVia"
+        },
+        "triggerId": {
+          "$ref": "#/definitions/BotTriggerId"
+        }
+      },
+      "required": [
+        "accountId",
+        "chatId",
+        "botId",
+        "triggerId",
+        "pairedVia",
+        "pairedAtMs"
+      ],
+      "type": "object"
+    },
+    "ChannelProvider": {
+      "type": "string"
+    },
+    "ChatAccess": {
+      "description": "Who may take a turn and who may issue control commands, by provider\nhandle (Telegram user id, WhatsApp JID). Handle allowlists on the\ntrigger replace any platform membership lookup.",
+      "properties": {
+        "allowed": {
+          "description": "Handles allowed to take a turn when `turn` is `listed`.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "controllers": {
+          "description": "Handles allowed to issue `/activation` and `/status`; empty denies\ncontrol commands to everyone.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "turn": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/ChatTurnAccess"
+            }
+          ],
+          "default": "anyone"
+        }
+      },
+      "type": "object"
+    },
+    "ChatActivation": {
+      "description": "When the bot acts in a conversation.",
+      "properties": {
+        "group": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ChatGroupActivation"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "mentionNames": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "triggerPrefixes": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "ChatGroupActivation": {
+      "oneOf": [
+        {
+          "const": "mention",
+          "description": "Act on mentions, replies to the bot, and trigger prefixes only.",
+          "type": "string"
+        },
+        {
+          "const": "always",
+          "description": "Act on every message.",
+          "type": "string"
+        }
+      ]
+    },
+    "ChatPairing": {
+      "description": "Whether a conversation must present a pairing code before it connects.",
+      "oneOf": [
+        {
+          "const": "code",
+          "description": "A conversation connects once someone sends the trigger's pairing\ncode (minted by the server, shown to managers).",
+          "type": "string"
+        },
+        {
+          "const": "open",
+          "description": "Every matching conversation connects implicitly.",
+          "type": "string"
+        }
+      ]
+    },
+    "ChatScope": {
+      "enum": [
+        "direct",
+        "group"
+      ],
+      "type": "string"
+    },
+    "ChatTurnAccess": {
+      "oneOf": [
+        {
+          "const": "anyone",
+          "description": "Anyone in the conversation may take a turn.",
+          "type": "string"
+        },
+        {
+          "const": "listed",
+          "description": "Only the listed provider handles may take a turn.",
           "type": "string"
         }
       ]
@@ -6654,6 +10165,102 @@
       ],
       "type": "object"
     },
+    "OperatorChannelAccountListParams": {
+      "properties": {
+        "includeDisabled": {
+          "default": false,
+          "description": "Include disabled accounts; by default only enabled ones are listed.",
+          "type": "boolean"
+        },
+        "provider": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ChannelProvider"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "type": "object"
+    },
+    "OperatorChannelAccountListResponse": {
+      "properties": {
+        "accounts": {
+          "default": [],
+          "items": {
+            "$ref": "#/definitions/OperatorChannelAccountView"
+          },
+          "type": "array"
+        }
+      },
+      "type": "object"
+    },
+    "OperatorChannelAccountView": {
+      "description": "One channel account of any universe, for the connector host's discovery\npass.",
+      "properties": {
+        "accountId": {
+          "$ref": "#/definitions/ChannelAccountId"
+        },
+        "createdAtMs": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "credentialGrantId": {
+          "description": "Retrievable auth grant holding the provider token (a Telegram bot\ntoken); the connector host leases it. Absent for providers whose\ncredential is a session state directory (WhatsApp).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "displayName": {
+          "type": "string"
+        },
+        "enabled": {
+          "default": true,
+          "type": "boolean"
+        },
+        "provider": {
+          "$ref": "#/definitions/ChannelProvider"
+        },
+        "providerAccountId": {
+          "description": "Provider-native account identity: the Telegram bot username or\nnumeric id, the WhatsApp phone number. Unique per universe and\nprovider.",
+          "type": "string"
+        },
+        "revision": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "settings": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/ChannelAccountSettings"
+            }
+          ],
+          "default": {}
+        },
+        "universeId": {
+          "type": "string"
+        },
+        "updatedAtMs": {
+          "format": "int64",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "universeId",
+        "accountId",
+        "revision",
+        "provider",
+        "providerAccountId",
+        "displayName",
+        "createdAtMs",
+        "updatedAtMs"
+      ],
+      "type": "object"
+    },
     "OperatorEnvironmentAdoptParams": {
       "properties": {
         "bindingId": {
@@ -7157,6 +10764,210 @@
         "blobBytes"
       ],
       "type": "object"
+    },
+    "PollCursorSpec": {
+      "description": "Dedupe discipline of a poll: an id set for unordered feeds, a watermark\nfor ordered ones.",
+      "oneOf": [
+        {
+          "description": "Dot path to each item's id.",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "idSet",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "id"
+          ],
+          "type": "object"
+        },
+        {
+          "description": "Dot path to each item's monotonically increasing field.",
+          "properties": {
+            "field": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "watermark",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "field"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "PollCursorState": {
+      "description": "Poll cursor state: Lightspeed-owned, operator-visible, reset by a spec\nedit. Absent until the baseline poll.",
+      "properties": {
+        "baselinedAtMs": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "consecutiveFailures": {
+          "default": 0,
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "ids": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "lastPolledAtMs": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "watermark": true
+      },
+      "type": "object"
+    },
+    "PollHttpAuth": {
+      "description": "Leased credential for an HTTP poll source; the value never appears in\nthe trigger document.",
+      "properties": {
+        "audience": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "grantId": {
+          "type": "string"
+        },
+        "header": {
+          "description": "Header carrying the credential; default `authorization`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "scheme": {
+          "description": "Scheme prefix; default `Bearer`, empty sends the token raw.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "grantId"
+      ],
+      "type": "object"
+    },
+    "PollHttpMethod": {
+      "enum": [
+        "GET",
+        "POST"
+      ],
+      "type": "string"
+    },
+    "PollSource": {
+      "description": "Where a poll trigger reads from.",
+      "oneOf": [
+        {
+          "properties": {
+            "auth": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/PollHttpAuth"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "body": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "headers": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "description": "Non-secret headers only; credentials come from `auth`.",
+              "type": "object"
+            },
+            "kind": {
+              "const": "http",
+              "type": "string"
+            },
+            "method": {
+              "allOf": [
+                {
+                  "$ref": "#/definitions/PollHttpMethod"
+                }
+              ],
+              "default": "GET"
+            },
+            "url": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "url"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "argv": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "cwd": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "environmentId": {
+              "description": "Universe environment the command runs in (woken on use); absent\nruns in the bot's own environment (the profile's `existing`\none), resolved at fire time.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "kind": {
+              "const": "exec",
+              "type": "string"
+            },
+            "timeoutMs": {
+              "description": "Job wall-clock budget; also bounds the fire activity's wait.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "kind",
+            "argv"
+          ],
+          "type": "object"
+        }
+      ]
     },
     "PrincipalKind": {
       "enum": [
@@ -11547,6 +15358,61 @@
         }
       },
       "type": "object"
+    },
+    "WebhookPreset": {
+      "enum": [
+        "github"
+      ],
+      "type": "string"
+    },
+    "WebhookVerification": {
+      "description": "How an inbound webhook proves it comes from the sender: possession of\nthe URL token, or additionally an HMAC-SHA256 over the raw body with a\nsecret leased from a retrievable grant.",
+      "oneOf": [
+        {
+          "properties": {
+            "scheme": {
+              "const": "token",
+              "type": "string"
+            }
+          },
+          "required": [
+            "scheme"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "audience": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "grantId": {
+              "type": "string"
+            },
+            "header": {
+              "type": "string"
+            },
+            "prefix": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "scheme": {
+              "const": "hmac-sha256",
+              "type": "string"
+            }
+          },
+          "required": [
+            "scheme",
+            "grantId",
+            "header"
+          ],
+          "type": "object"
+        }
+      ]
     },
     "WorkflowEndpointInput": {
       "additionalProperties": false,

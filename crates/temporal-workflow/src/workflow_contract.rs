@@ -42,11 +42,16 @@ pub const WORKFLOW_CONTRACT_VERSION: u32 = 2;
 pub const DELIVER_EMISSION_SIGNAL: &str = "deliver_emission";
 
 /// Root types of the schema bundle; everything else is reachable from them.
-pub const WORKFLOW_CONTRACT_ROOTS: [&str; 4] = [
+pub const WORKFLOW_CONTRACT_ROOTS: [&str; 9] = [
     "EmissionEnvelope",
     "WorkflowToolStartArgs",
     "WorkflowToolRecoveryResult",
     "WorkflowToolRecipeV1",
+    "ConversationStart",
+    "ChannelDeliveryCommand",
+    "ChannelDeliveryResult",
+    "PrepareChannelMediaInput",
+    "PrepareChannelMediaResult",
 ];
 
 pub struct ExportedWorkflowContract {
@@ -64,6 +69,12 @@ pub fn export() -> ExportedWorkflowContract {
     let _ = generator.subschema_for::<WorkflowToolStartArgs>();
     let _ = generator.subschema_for::<WorkflowToolRecoveryResult>();
     let _ = generator.subschema_for::<WorkflowToolRecipeV1>();
+    let _ = generator.subschema_for::<channels::inbound::ConversationStart>();
+    let _ = generator.subschema_for::<channels::delivery::ChannelDeliveryCommand>();
+    let _ = generator.subschema_for::<channels::delivery::ChannelDeliveryResult>();
+    let _ = generator.subschema_for::<channels::media::PrepareChannelMediaInput>();
+    let _ = generator.subschema_for::<channels::media::PrepareChannelMediaResult>();
+    let _ = generator.subschema_for::<channels::media::MaintainChannelTypingInput>();
     let definitions: BTreeMap<String, Value> =
         generator.take_definitions(true).into_iter().collect();
     for root in WORKFLOW_CONTRACT_ROOTS {
@@ -121,6 +132,27 @@ fn manifest() -> Value {
             "separator": "/",
             "session": "{universeId}/{sessionId}",
             "environmentJob": "{universeId}/envjob-{environmentId}-{jobGroupId}",
+            "botController": "{universeId}/bot-{botId}",
+            "botTriggerFire": "{universeId}/botfire-{botId}-{triggerId}",
+            "chatConversation": "{universeId}/chat-{provider}-{sha256 of the conversation, 48 hex}",
+        },
+        "channels": {
+            "inboundSignal": crate::channels::CHAT_INBOUND_SIGNAL,
+            "stateQuery": crate::channels::CHAT_STATE_QUERY,
+            "deliveryReceiptSignal": bots::BOT_DELIVERY_SIGNAL,
+            "workflowKind": crate::channels::CHANNEL_CONVERSATION_WORKFLOW_KIND,
+            "connectorActivities": {
+                "deliverChannelMessage": crate::channels::ACTIVITY_CONNECTOR_DELIVER_MESSAGE,
+                "prepareChannelMedia": crate::channels::ACTIVITY_CONNECTOR_PREPARE_MEDIA,
+                "maintainChannelTyping": crate::channels::ACTIVITY_CONNECTOR_MAINTAIN_TYPING,
+            },
+            "connectorTaskQueue": "lightspeed-connector-{provider}-{24 hex of sha256(domain, universeId, provider, accountId)}",
+            "hashFraming": "sha256 over the domain string, then each part in order; every piece is prefixed by its byte length as an unsigned 64-bit big-endian integer.",
+            "domains": {
+                "conversation": "lightspeed.channels.conversation.v1",
+                "pairing": "lightspeed.channels.pairing.v1",
+                "connectorTaskQueue": "lightspeed.channels.delivery-queue.v1",
+            },
         },
         "roots": WORKFLOW_CONTRACT_ROOTS,
         "vectors": vectors(),
@@ -139,8 +171,8 @@ fn vectors() -> Value {
     let (split_universe, split_session) =
         split_workflow_id(&session_workflow_id).expect("composed session workflow id splits");
     let recipe = WorkflowToolRecipeV1 {
-        workflow_type: "botControllerWorkflowV1".to_owned(),
-        task_queue: "lightspeed-bots-workflows-v1".to_owned(),
+        workflow_type: "BotControllerWorkflow".to_owned(),
+        task_queue: "lightspeed-bots".to_owned(),
     };
     let recipe_json = serde_json::to_string(&recipe).expect("recipe serializes");
     let invocation = WorkflowToolInvocation {
@@ -235,10 +267,36 @@ fn vectors() -> Value {
             "split": { "universeId": split_universe.to_string(), "sessionId": split_session.as_str() },
         },
         "recipeFingerprint": workflow_tool_recipe_fingerprint(recipe_json.as_bytes()),
+        "channels": channel_vectors(universe),
         "envelopes": envelopes.iter().map(|envelope| serde_json::to_value(envelope).expect("envelope serializes")).collect::<Vec<_>>(),
         "startArgs": serde_json::to_value(&start_args).expect("start args serialize"),
         "recoveryResult": serde_json::to_value(&recovery).expect("recovery result serializes"),
         "recipe": serde_json::to_value(&recipe).expect("recipe serializes"),
+    })
+}
+
+/// Known-answer vectors for the connector host: the task queue it serves,
+/// the conversation workflow id it never constructs but may log, and the
+/// pairing key of a chat.
+fn channel_vectors(universe: Uuid) -> Value {
+    use channels::{ConversationRef, connector_task_queue, conversation_workflow_id};
+    let account_id = api::ChannelAccountId::new("tg-main");
+    let conversation = ConversationRef {
+        account_id: account_id.clone(),
+        chat_id: "12345".to_owned(),
+        thread_id: Some("7".to_owned()),
+    };
+    json!({
+        "inputs": {
+            "universeId": universe.to_string(),
+            "provider": "telegram",
+            "accountId": account_id.as_str(),
+            "chatId": "12345",
+            "threadId": "7",
+        },
+        "connectorTaskQueue": connector_task_queue(universe, &api::ChannelProvider::new("telegram"), &account_id),
+        "conversationWorkflowId": conversation_workflow_id(universe, &api::ChannelProvider::new("telegram"), &conversation),
+        "conversationKey": conversation.key(),
     })
 }
 

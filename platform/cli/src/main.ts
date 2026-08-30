@@ -110,57 +110,102 @@ member
     ),
   );
 
+interface ChannelAccountDoc {
+  accountId: string;
+  provider: string;
+  providerAccountId: string;
+  displayName: string;
+  credentialGrantId?: string | null;
+  settings?: Record<string, unknown>;
+  enabled?: boolean;
+  revision: number;
+}
+
+async function setChannelAccountEnabled(
+  universe: string,
+  accountId: string,
+  enabled: boolean,
+): Promise<unknown> {
+  const { account } = (await api(
+    "GET",
+    `/api/v1/universes/${universe}/channel-accounts/${accountId}`,
+  )) as { account: ChannelAccountDoc };
+  return api("PUT", `/api/v1/universes/${universe}/channel-accounts/${accountId}`, {
+    account: {
+      accountId: account.accountId,
+      provider: account.provider,
+      providerAccountId: account.providerAccountId,
+      displayName: account.displayName,
+      credentialGrantId: account.credentialGrantId ?? null,
+      settings: account.settings ?? {},
+      enabled,
+    },
+    expectedRevision: account.revision,
+  });
+}
+
 const channelAccount = program
   .command("channel-account")
-  .description("manage Telegram and WhatsApp accounts");
+  .description("manage channel provider accounts (universe resources)");
 
 channelAccount
   .command("list")
+  .description("operator view: every account across universes")
   .action(async () => printJson(await api("GET", "/api/v1/channel-accounts")));
 
 channelAccount
   .command("add")
-  .requiredOption("--provider <provider>", "telegram | whatsapp")
-  .requiredOption("--account-id <id>", "stable connector account id")
+  .requiredOption("--universe <id>")
+  .requiredOption("--account-id <id>", "authored account id")
+  .requiredOption("--provider <provider>", "channel provider slug (telegram, whatsapp, ...)")
+  .requiredOption(
+    "--provider-account-id <id>",
+    "provider-native identity (bot username, phone number)",
+  )
   .requiredOption("--display-name <name>")
-  .option("--credential-ref <ref>", "opaque secret-store reference")
-  .option("--state-ref <ref>", "opaque provider-state reference")
+  .option("--credential-grant <grantId>", "retrievable auth grant holding the provider token")
   .action(
     async (opts: {
-      provider: string;
+      universe: string;
       accountId: string;
+      provider: string;
+      providerAccountId: string;
       displayName: string;
-      credentialRef?: string;
-      stateRef?: string;
+      credentialGrant?: string;
     }) =>
       printJson(
-        await api("POST", "/api/v1/channel-accounts", {
-          provider: opts.provider,
-          accountId: opts.accountId,
-          displayName: opts.displayName,
-          credentialRef: opts.credentialRef ?? null,
-          stateRef: opts.stateRef ?? null,
-          settings: {},
+        await api("POST", `/api/v1/universes/${opts.universe}/channel-accounts`, {
+          account: {
+            accountId: opts.accountId,
+            provider: opts.provider,
+            providerAccountId: opts.providerAccountId,
+            displayName: opts.displayName,
+            credentialGrantId: opts.credentialGrant ?? null,
+            settings: {},
+          },
         }),
       ),
   );
 
 channelAccount
   .command("enable <id>")
-  .action(async (id: string) =>
-    printJson(await api("PATCH", `/api/v1/channel-accounts/${id}`, { enabled: true })),
+  .requiredOption("--universe <universeId>")
+  .action(async (id: string, opts: { universe: string }) =>
+    printJson(await setChannelAccountEnabled(opts.universe, id, true)),
   );
 
 channelAccount
   .command("disable <id>")
-  .action(async (id: string) =>
-    printJson(await api("PATCH", `/api/v1/channel-accounts/${id}`, { enabled: false })),
+  .requiredOption("--universe <universeId>")
+  .action(async (id: string, opts: { universe: string }) =>
+    printJson(await setChannelAccountEnabled(opts.universe, id, false)),
   );
 
 channelAccount
   .command("rm <id>")
-  .action(async (id: string) =>
-    printJson(await api("DELETE", `/api/v1/channel-accounts/${id}`)),
+  .requiredOption("--universe <universeId>")
+  .action(async (id: string, opts: { universe: string }) =>
+    printJson(await api("DELETE", `/api/v1/universes/${opts.universe}/channel-accounts/${id}`)),
   );
 
 const userCmd = program.command("user").description("manage platform users (admin)");

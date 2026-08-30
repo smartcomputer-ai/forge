@@ -124,6 +124,38 @@ pub const METHOD_AUTH_PROVIDERS_DELETE: &str = "auth/providers/delete";
 pub const METHOD_AUTH_GITHUB_INSTALLATIONS_LIST: &str = "auth/github/installations/list";
 pub const METHOD_AUTH_GITHUB_INSTALLATIONS_GRANT: &str = "auth/github/installations/grant";
 
+// ── Universe: bots ──────────────────────────────────────────────────────────
+
+pub const METHOD_BOTS_CREATE: &str = "bots/create";
+pub const METHOD_BOTS_PUT: &str = "bots/put";
+pub const METHOD_BOTS_READ: &str = "bots/read";
+pub const METHOD_BOTS_LIST: &str = "bots/list";
+pub const METHOD_BOTS_CLOSE: &str = "bots/close";
+pub const METHOD_BOTS_DELETE: &str = "bots/delete";
+pub const METHOD_BOTS_STATE_READ: &str = "bots/state/read";
+pub const METHOD_BOTS_SESSIONS_ROTATE: &str = "bots/sessions/rotate";
+pub const METHOD_BOTS_TRIGGERS_PUT: &str = "bots/triggers/put";
+pub const METHOD_BOTS_TRIGGERS_READ: &str = "bots/triggers/read";
+pub const METHOD_BOTS_TRIGGERS_LIST: &str = "bots/triggers/list";
+pub const METHOD_BOTS_TRIGGERS_DELETE: &str = "bots/triggers/delete";
+pub const METHOD_BOTS_EVENTS_ADMIT: &str = "bots/events/admit";
+pub const METHOD_BOTS_EVENTS_REPLAY: &str = "bots/events/replay";
+pub const METHOD_BOTS_EVENTS_LIST: &str = "bots/events/list";
+pub const METHOD_BOTS_EVENTS_READ: &str = "bots/events/read";
+pub const METHOD_BOTS_FILTERS_TEST: &str = "bots/filters/test";
+
+// ── Universe: channels ──────────────────────────────────────────────────────
+
+pub const METHOD_CHANNELS_ACCOUNTS_CREATE: &str = "channels/accounts/create";
+pub const METHOD_CHANNELS_ACCOUNTS_PUT: &str = "channels/accounts/put";
+pub const METHOD_CHANNELS_ACCOUNTS_READ: &str = "channels/accounts/read";
+pub const METHOD_CHANNELS_ACCOUNTS_LIST: &str = "channels/accounts/list";
+pub const METHOD_CHANNELS_ACCOUNTS_DELETE: &str = "channels/accounts/delete";
+pub const METHOD_CHANNELS_INBOUND_ADMIT: &str = "channels/inbound/admit";
+pub const METHOD_CHANNELS_PAIRINGS_LIST: &str = "channels/pairings/list";
+pub const METHOD_CHANNELS_PAIRINGS_DELETE: &str = "channels/pairings/delete";
+pub const METHOD_CHANNELS_CONVERSATIONS_READ: &str = "channels/conversations/read";
+
 // ── Notifications ───────────────────────────────────────────────────────────
 
 pub const NOTIFY_SESSION_STARTED: &str = "session/started";

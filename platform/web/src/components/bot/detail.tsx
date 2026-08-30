@@ -13,7 +13,7 @@ import {
   SlidersHorizontal,
 } from "lucide-react";
 import { NavLink, useNavigate } from "react-router-dom";
-import { api, botLabel, type Bot, type BotLineage, type BotState } from "@/api";
+import { api, botLabel, type BotControllerSnapshot, type BotStateView, type BotView } from "@/api";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -38,11 +38,11 @@ import { cn } from "@/lib/utils";
 import { BotActivity } from "./activity";
 import { BotChat } from "./chat";
 import { BotAvatar } from "./face";
-import { idIsRedundant } from "./identity";
+import { botInputOf, idIsRedundant } from "./identity";
 import { BotSetup } from "./setup";
 import { StatusDot, botStatus, relativeTime } from "./status";
 
-export type BotView = "chat" | "activity" | "setup";
+export type BotTab = "chat" | "activity" | "setup";
 
 /** Threads shown as tabs before the rest fold into the +N menu. */
 const INLINE_THREADS = 3;
@@ -64,44 +64,47 @@ export interface ConversationTab {
  * a deep link never lands in the overflow.
  */
 export function conversationTabs(
-  state: BotState | undefined,
-  lineage: BotLineage | undefined,
+  state: BotStateView | undefined,
   selectedId: string | undefined,
 ): { inline: ConversationTab[]; overflow: ConversationTab[] } {
-  if (!state) return { inline: [], overflow: [] };
-  const active = new Set(state.activeDeliveries.map((delivery) => delivery.sessionId));
-  const labelOf = new Map(state.sessions.map((session) => [session.sessionId, session.kind === "main" ? "Main" : session.label]));
+  const controller = state?.controller;
+  if (!controller) return { inline: [], overflow: [] };
+  const active = new Set((controller.activeDeliveries ?? []).map((delivery) => delivery.sessionId));
+  const sessions = controller.sessions ?? [];
+  const labelOf = new Map(sessions.map((session) => [session.sessionId, session.kind === "main" ? "Main" : session.label]));
+  const ready = controller.setupStatus === "ready";
   const main: ConversationTab = {
-    id: state.sessionId,
+    id: controller.mainSessionId,
     label: "Main",
-    hint: state.sessionReady ? "the bot's desk" : state.controllerStatus === "degraded" ? "needs attention" : "starting…",
-    live: active.has(state.sessionId),
+    hint: ready ? "the bot's desk" : controller.setupStatus === "degraded" ? "needs attention" : "starting…",
+    live: active.has(controller.mainSessionId),
     closed: false,
     kind: "main",
   };
-  const threads: ConversationTab[] = state.sessions
+  const threads: ConversationTab[] = sessions
     .filter((session) => session.kind !== "main")
     .sort((left, right) => (right.lastActiveAtMs ?? 0) - (left.lastActiveAtMs ?? 0))
     .map((session) => ({
       id: session.sessionId,
       label: session.label,
-      hint: session.kind === "keyed" ? "thread" : "one-off",
-      live: active.has(session.sessionId),
+      hint: session.kind === "perKey" ? "thread" : "one-off",
+      live: active.has(session.sessionId) || session.busy,
       closed: false,
       kind: "thread",
-      ...(session.lastActiveAtMs === undefined ? {} : { lastActiveMs: session.lastActiveAtMs }),
+      ...(session.lastActiveAtMs == null ? {} : { lastActiveMs: session.lastActiveAtMs }),
     }));
-  const subagents: ConversationTab[] = Object.entries(lineage ?? {}).flatMap(([parentId, entry]) =>
-    entry.children.map((child) => ({
+  const subagents: ConversationTab[] = (state?.descendants ?? []).map((child) => {
+    const parentId = child.origin?.parentSessionId;
+    return {
       id: child.id,
       label: child.displayName ?? child.id.slice(0, 14),
-      hint: `sub-agent of ${labelOf.get(parentId) ?? parentId.slice(0, 12)}`,
+      hint: `sub-agent of ${parentId ? (labelOf.get(parentId) ?? parentId.slice(0, 12)) : "the bot"}`,
       live: child.lifecycleStatus !== "closed",
       closed: child.lifecycleStatus === "closed",
       kind: "subagent" as const,
       lastActiveMs: child.updatedAtMs,
-    })),
-  );
+    };
+  });
   const inline = [main, ...threads.slice(0, INLINE_THREADS)];
   const overflow = [...threads.slice(INLINE_THREADS), ...subagents];
   if (selectedId !== undefined && !inline.some((tab) => tab.id === selectedId)) {
@@ -118,44 +121,47 @@ export function conversationTabs(
  * elsewhere, and there is no third level.
  */
 export function BotDetail({
+  universeId,
   slug,
   bot,
   state,
-  lineage,
   stateError,
   manage,
   view,
   sessionId,
 }: {
+  universeId: string;
   slug: string;
-  bot: Bot;
-  state?: BotState;
-  lineage?: BotLineage;
+  bot: BotView;
+  state?: BotStateView;
   stateError?: string;
   manage: boolean;
-  view: BotView;
+  view: BotTab;
   sessionId: string | undefined;
 }) {
   const queryClient = useQueryClient();
   const base = `/u/${slug}/bots/${bot.botId}`;
-  const status = botStatus(bot, state, stateError);
-  const selected = view === "chat" ? (sessionId ?? state?.sessionId) : undefined;
-  const { inline, overflow } = conversationTabs(state, lineage, view === "chat" ? selected : undefined);
-  const sessionHref = (id: string) => (id === state?.sessionId ? base : `${base}/chat/${encodeURIComponent(id)}`);
+  const controller = state?.controller ?? undefined;
+  const status = botStatus(bot, controller, stateError);
+  const selected = view === "chat" ? (sessionId ?? controller?.mainSessionId) : undefined;
+  const { inline, overflow } = conversationTabs(state, view === "chat" ? selected : undefined);
+  const sessionHref = (id: string) => (id === controller?.mainSessionId ? base : `${base}/chat/${encodeURIComponent(id)}`);
+  const enabled = bot.enabled ?? true;
   const togglePause = useMutation({
     mutationFn: () =>
-      api<{ bot: Bot }>("PATCH", `/api/v1/universes/${bot.universeId}/bots/${bot.botId}`, {
-        enabled: !bot.enabled,
+      api<{ bot: BotView }>("PUT", `/api/v1/universes/${universeId}/bots/${bot.botId}`, {
+        bot: { ...botInputOf(bot), enabled: !enabled },
+        expectedRevision: bot.revision,
       }),
     onSuccess: async ({ bot: updated }) => {
-      queryClient.setQueryData(["bot", bot.universeId, bot.botId], { bot: updated });
+      queryClient.setQueryData(["bot", universeId, bot.botId], { bot: updated });
       await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ["bots", bot.universeId] }),
-        queryClient.invalidateQueries({ queryKey: ["bot-state", bot.universeId, bot.botId] }),
+        queryClient.invalidateQueries({ queryKey: ["bots", universeId] }),
+        queryClient.invalidateQueries({ queryKey: ["bot-state", universeId, bot.botId] }),
       ]);
     },
   });
-  const pending = state?.pendingEventCount ?? 0;
+  const pending = controller?.pendingDeliveries ?? 0;
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
@@ -173,28 +179,28 @@ export function BotDetail({
             "flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground",
             status.tone === "attention" && "text-destructive",
           )}
-          title={stateError ?? state?.lastError ?? undefined}
+          title={stateError ?? controller?.lastError ?? undefined}
         >
           <StatusDot tone={status.tone} />
           <span className="truncate">{status.label}</span>
         </span>
-        {manage && !bot.closedAt && (
+        {manage && bot.closedAtMs == null && (
           <div className="ml-auto flex items-center gap-1">
             <Button
               variant="outline"
               size="xs"
               disabled={togglePause.isPending}
               onClick={() => togglePause.mutate()}
-              title={bot.enabled ? "Pause: schedules stop and events wait; nothing is lost." : "Resume schedules and delivery."}
+              title={enabled ? "Pause: schedules stop and events wait; nothing is lost." : "Resume schedules and delivery."}
             >
               {togglePause.isPending ? (
                 <LoaderCircle data-icon="inline-start" className="animate-spin" />
-              ) : bot.enabled ? (
+              ) : enabled ? (
                 <Pause data-icon="inline-start" />
               ) : (
                 <Play data-icon="inline-start" />
               )}
-              {bot.enabled ? "Pause" : "Resume"}
+              {enabled ? "Pause" : "Resume"}
             </Button>
           </div>
         )}
@@ -203,7 +209,7 @@ export function BotDetail({
         <p className="border-b bg-destructive/10 px-4 py-1.5 text-xs text-destructive">{togglePause.error.message}</p>
       )}
       <nav className="flex h-10 shrink-0 items-stretch gap-0.5 overflow-x-auto border-b px-2" aria-label="Bot conversations and sections">
-        {state ? (
+        {controller ? (
           inline.map((tab) => {
             const active = view === "chat" && selected === tab.id;
             return (
@@ -227,14 +233,22 @@ export function BotDetail({
                   <span className={cn("truncate", tab.kind === "subagent" && "text-muted-foreground")}>
                     {tab.kind === "subagent" ? `↳ ${tab.label}` : tab.label}
                   </span>
-                  {tab.kind === "main" && !state.sessionReady && (
-                    <span className={cn("text-[11px]", state.controllerStatus === "degraded" ? "text-destructive" : "text-muted-foreground")}>
-                      {state.controllerStatus === "degraded" ? "needs attention" : "starting…"}
+                  {tab.kind === "main" && controller.setupStatus !== "ready" && (
+                    <span className={cn("text-[11px]", controller.setupStatus === "degraded" ? "text-destructive" : "text-muted-foreground")}>
+                      {controller.setupStatus === "degraded" ? "needs attention" : "starting…"}
                     </span>
                   )}
                 </NavLink>
                 {active && (
-                  <ConversationMenu slug={slug} bot={bot} state={state} sessionId={tab.id} tab={tab} manage={manage} />
+                  <ConversationMenu
+                    universeId={universeId}
+                    slug={slug}
+                    bot={bot}
+                    controller={controller}
+                    sessionId={tab.id}
+                    tab={tab}
+                    manage={manage}
+                  />
                 )}
               </span>
             );
@@ -259,11 +273,11 @@ export function BotDetail({
         </TabLink>
       </nav>
       {view === "chat" ? (
-        <BotChat slug={slug} bot={bot} state={state} stateError={stateError} sessionId={sessionId} />
+        <BotChat universeId={universeId} slug={slug} bot={bot} state={state} stateError={stateError} sessionId={sessionId} />
       ) : view === "activity" ? (
-        <BotActivity slug={slug} bot={bot} state={state} stateError={stateError} manage={manage} />
+        <BotActivity universeId={universeId} slug={slug} bot={bot} state={state} stateError={stateError} manage={manage} />
       ) : (
-        <BotSetup slug={slug} bot={bot} state={state} manage={manage} />
+        <BotSetup universeId={universeId} slug={slug} bot={bot} state={state} manage={manage} />
       )}
     </div>
   );
@@ -361,16 +375,18 @@ function OverflowItem({ tab, onSelect }: { tab: ConversationTab; onSelect: () =>
  * Sessions page keeps that escape hatch under its "Managed by" framing.
  */
 function ConversationMenu({
+  universeId,
   slug,
   bot,
-  state,
+  controller,
   sessionId,
   tab,
   manage,
 }: {
+  universeId: string;
   slug: string;
-  bot: Bot;
-  state: BotState;
+  bot: BotView;
+  controller: BotControllerSnapshot;
   sessionId: string;
   tab: ConversationTab | undefined;
   manage: boolean;
@@ -379,17 +395,16 @@ function ConversationMenu({
   const navigate = useNavigate();
   const [resetOpen, setResetOpen] = useState(false);
   const [copied, setCopied] = useState(false);
-  const managedHere = state.sessions.some((entry) => entry.sessionId === sessionId);
-  const rotating = state.rotatingSessionIds?.includes(sessionId) ?? false;
+  const managedHere = (controller.sessions ?? []).some((entry) => entry.sessionId === sessionId);
   const reset = useMutation({
     mutationFn: () =>
       api(
         "POST",
-        `/api/v1/universes/${bot.universeId}/bots/${bot.botId}/sessions/${encodeURIComponent(sessionId)}/rotate`,
+        `/api/v1/universes/${universeId}/bots/${bot.botId}/sessions/${encodeURIComponent(sessionId)}/rotate`,
       ),
     onSuccess: () => {
       setResetOpen(false);
-      return queryClient.invalidateQueries({ queryKey: ["bot-state", bot.universeId, bot.botId] });
+      return queryClient.invalidateQueries({ queryKey: ["bot-state", universeId, bot.botId] });
     },
   });
   const label = tab?.kind === "main" ? "Main" : (tab?.label ?? "this conversation");
@@ -406,7 +421,7 @@ function ConversationMenu({
             />
           }
         >
-          {rotating ? <LoaderCircle className="size-3.5 animate-spin" /> : <ChevronDown className="size-3.5" />}
+          {reset.isPending ? <LoaderCircle className="size-3.5 animate-spin" /> : <ChevronDown className="size-3.5" />}
         </DropdownMenuTrigger>
         <DropdownMenuContent align="start" className="min-w-56">
           {/* A label is a group label in base-ui: it must sit inside a group. */}
@@ -429,11 +444,11 @@ function ConversationMenu({
               <ArrowUpRight /> Open on the Sessions page
             </DropdownMenuItem>
           </DropdownMenuGroup>
-          {manage && managedHere && !bot.closedAt && (
+          {manage && managedHere && bot.closedAtMs == null && (
             <>
               <DropdownMenuSeparator />
               <DropdownMenuGroup>
-                <DropdownMenuItem disabled={rotating} onClick={() => setResetOpen(true)}>
+                <DropdownMenuItem disabled={reset.isPending} onClick={() => setResetOpen(true)}>
                   <RotateCcw /> Reset {label}…
                 </DropdownMenuItem>
               </DropdownMenuGroup>

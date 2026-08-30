@@ -1,8 +1,15 @@
 import { useQuery } from "@tanstack/react-query";
 import { Plus } from "lucide-react";
 import { NavLink, useNavigate, useParams } from "react-router-dom";
-import { api, botLabel, type Bot, type BotLineage, type BotListItem, type BotState } from "@/api";
-import { BotDetail, type BotView } from "@/components/bot/detail";
+import {
+  api,
+  botLabel,
+  type BotListItem,
+  type BotListResponse,
+  type BotStateReadResponse,
+  type BotView,
+} from "@/api";
+import { BotDetail, type BotTab } from "@/components/bot/detail";
 import { BotAvatar } from "@/components/bot/face";
 import { StatusDot, relativeTime, type BotTone } from "@/components/bot/status";
 import { BotFace } from "@/components/icons/bot";
@@ -14,7 +21,7 @@ import { cn } from "@/lib/utils";
 const ROSTER_REFRESH_MS = 5_000;
 
 /// Bots: a roster on the left, one bot's Chat / Activity / Setup on the right.
-export function BotsPage({ admin, view = "chat" }: { admin: boolean; view?: BotView }) {
+export function BotsPage({ admin, view = "chat" }: { admin: boolean; view?: BotTab }) {
   const { universe, slug, isLoading } = useActiveUniverse();
   const { botId, sessionId } = useParams<{ botId?: string; sessionId?: string }>();
 
@@ -68,8 +75,8 @@ export function BotsPage({ admin, view = "chat" }: { admin: boolean; view?: BotV
 /// One line of "what it is doing", from the event log alone: the newest
 /// event and whether anything is still unresolved.
 export function rosterLine(bot: BotListItem): { text: string; tone: BotTone } {
-  if (bot.closedAt) return { text: "Closed", tone: "closed" };
-  if (!bot.enabled) {
+  if (bot.closedAtMs != null) return { text: "Closed", tone: "closed" };
+  if (bot.enabled === false) {
     return {
       text: bot.pendingCount > 0 ? `Paused · ${bot.pendingCount} waiting` : "Paused",
       tone: "paused",
@@ -77,29 +84,29 @@ export function rosterLine(bot: BotListItem): { text: string; tone: BotTone } {
   }
   const last = bot.lastEvent;
   if (bot.pendingCount > 0) {
-    const on = last && last.outcome === null && last.seq !== null ? ` on #${last.seq}` : "";
+    const on = last && last.outcome == null ? ` on #${last.seq}` : "";
     return { text: `Working${on} · ${last?.kind ?? "event"}`, tone: "live" };
   }
   if (!last) return { text: "Waiting for its first event", tone: "idle" };
   const failed = last.outcome === "run_failed" || last.outcome === "blocked";
-  const seq = last.seq === null ? "" : `#${last.seq} `;
   const detail = last.outcomeDetail?.trim() || last.kind;
   return {
-    text: `${seq}${(last.outcome ?? "pending").replaceAll("_", " ")} · ${detail}`,
+    text: `#${last.seq} ${(last.outcome ?? "pending").replaceAll("_", " ")} · ${detail}`,
     tone: failed ? "attention" : "idle",
   };
 }
 
 function rosterGroups(bots: BotListItem[]) {
   const byActivity = (left: BotListItem, right: BotListItem) => {
-    const l = left.lastEvent ? new Date(left.lastEvent.receivedAt).getTime() : 0;
-    const r = right.lastEvent ? new Date(right.lastEvent.receivedAt).getTime() : 0;
+    const l = left.lastEvent?.receivedAtMs ?? 0;
+    const r = right.lastEvent?.receivedAtMs ?? 0;
     return r - l || botLabel(left).localeCompare(botLabel(right));
   };
+  const open = (bot: BotListItem) => bot.closedAtMs == null;
   return [
-    { title: "Active", bots: bots.filter((bot) => !bot.closedAt && bot.enabled).sort(byActivity) },
-    { title: "Paused", bots: bots.filter((bot) => !bot.closedAt && !bot.enabled).sort(byActivity) },
-    { title: "Closed", bots: bots.filter((bot) => bot.closedAt).sort(byActivity) },
+    { title: "Active", bots: bots.filter((bot) => open(bot) && bot.enabled !== false).sort(byActivity) },
+    { title: "Paused", bots: bots.filter((bot) => open(bot) && bot.enabled === false).sort(byActivity) },
+    { title: "Closed", bots: bots.filter((bot) => !open(bot)).sort(byActivity) },
   ].filter((group) => group.bots.length > 0);
 }
 
@@ -117,17 +124,18 @@ function BotsPane({
   const navigate = useNavigate();
   const bots = useQuery({
     queryKey: ["bots", universeId],
-    queryFn: () => api<{ bots: BotListItem[] }>("GET", `/api/v1/universes/${universeId}/bots`),
+    queryFn: () => api<BotListResponse>("GET", `/api/v1/universes/${universeId}/bots`),
     refetchInterval: ROSTER_REFRESH_MS,
     refetchIntervalInBackground: false,
   });
-  const groups = rosterGroups(bots.data?.bots ?? []);
+  const roster = bots.data?.bots ?? [];
+  const groups = rosterGroups(roster);
 
   return (
     <>
       <div className="flex h-12 shrink-0 items-center gap-2 border-b px-4">
         <h1 className="text-sm font-semibold">Bots</h1>
-        {bots.data && <span className="text-xs text-muted-foreground">{bots.data.bots.length}</span>}
+        {bots.data && <span className="text-xs text-muted-foreground">{roster.length}</span>}
         {manage && (
           <Button
             variant="ghost"
@@ -143,7 +151,7 @@ function BotsPane({
       <div className="min-h-0 flex-1 overflow-y-auto">
         {bots.isLoading && <p className="p-4 text-sm text-muted-foreground">Loading…</p>}
         {bots.error && <p className="p-4 text-sm text-destructive">{bots.error.message}</p>}
-        {bots.data?.bots.length === 0 && (
+        {bots.data && roster.length === 0 && (
           <div className="grid gap-3 p-4 text-sm text-muted-foreground">
             <p>No bots yet.</p>
             {manage && (
@@ -178,12 +186,12 @@ function BotsPane({
                         <span className="min-w-0 truncate font-medium">{botLabel(bot)}</span>
                       </span>
                       <span className="text-right text-[11px] text-muted-foreground">
-                        {bot.pendingCount > 0 && !bot.closedAt ? (
+                        {bot.pendingCount > 0 && bot.closedAtMs == null ? (
                           <span className="inline-block min-w-4 rounded-full bg-primary px-1.5 text-center font-semibold text-primary-foreground">
                             {bot.pendingCount}
                           </span>
                         ) : (
-                          bot.lastEvent && relativeTime(bot.lastEvent.receivedAt)
+                          bot.lastEvent && relativeTime(bot.lastEvent.receivedAtMs)
                         )}
                       </span>
                       <span
@@ -218,21 +226,17 @@ function BotWorkspace({
   universeId: string;
   slug: string;
   botId: string;
-  view: BotView;
+  view: BotTab;
   sessionId: string | undefined;
   manage: boolean;
 }) {
   const bot = useQuery({
     queryKey: ["bot", universeId, botId],
-    queryFn: () => api<{ bot: Bot }>("GET", `/api/v1/universes/${universeId}/bots/${botId}`),
+    queryFn: () => api<{ bot: BotView }>("GET", `/api/v1/universes/${universeId}/bots/${botId}`),
   });
   const state = useQuery({
     queryKey: ["bot-state", universeId, botId],
-    queryFn: () =>
-      api<{ state: BotState; lineage?: BotLineage }>(
-        "GET",
-        `/api/v1/universes/${universeId}/bots/${botId}/state`,
-      ),
+    queryFn: () => api<BotStateReadResponse>("GET", `/api/v1/universes/${universeId}/bots/${botId}/state`),
     refetchInterval: 3_000,
     retry: true,
   });
@@ -250,10 +254,10 @@ function BotWorkspace({
 
   return (
     <BotDetail
+      universeId={universeId}
       slug={slug}
       bot={bot.data.bot}
-      state={state.data?.state}
-      {...(state.data?.lineage ? { lineage: state.data.lineage } : {})}
+      {...(state.data?.state ? { state: state.data.state } : {})}
       {...(state.error ? { stateError: state.error.message } : {})}
       manage={manage}
       view={view}

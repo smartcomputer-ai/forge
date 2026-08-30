@@ -1,28 +1,35 @@
 import { describe, expect, it } from "vitest";
-import type { BotListItem } from "@/api";
+import type { BotEventView, BotListItem } from "@/api";
 import { rosterLine } from "./BotsPage";
 import { BOT_TEMPLATES } from "@/components/bot/templates";
 import { capabilitySummary } from "@/components/bot/setup-summary";
 import { botIdFrom, templateHighlights, uniqueTriggerName } from "./BotCreatePage";
 
+function event(partial: Partial<BotEventView>): BotEventView {
+  return {
+    seq: 1,
+    eventId: "evt-1",
+    documentRef: "blob:sha256:0",
+    kind: "x",
+    summary: "",
+    occurredAtMs: Date.parse("2026-08-27T09:00:00Z"),
+    receivedAtMs: Date.parse("2026-08-27T09:00:00Z"),
+    ...partial,
+  };
+}
+
 function bot(partial: Partial<BotListItem>): BotListItem {
   return {
     botId: "triage",
-    universeId: "u",
     displayName: "Triage",
-    description: null,
     profileId: "triage",
-    brief: null,
-    runsPerDay: null,
-    breaker: null,
-    routedSessionTtlMs: null,
+    revision: 1,
+    eventSeq: 0,
     selfConfig: true,
     emit: false,
     enabled: true,
-    closedAt: null,
-    closedSessions: null,
-    createdAt: "2026-08-27T00:00:00Z",
-    updatedAt: "2026-08-27T00:00:00Z",
+    createdAtMs: Date.parse("2026-08-27T00:00:00Z"),
+    updatedAtMs: Date.parse("2026-08-27T00:00:00Z"),
     triggerCount: 0,
     pendingCount: 0,
     lastEvent: null,
@@ -37,54 +44,42 @@ describe("rosterLine", () => {
       rosterLine(
         bot({
           pendingCount: 2,
-          lastEvent: {
-            seq: 48,
-            kind: "github.pull_request",
-            source: "webhook",
-            outcome: null,
-            outcomeDetail: null,
-            receivedAt: "2026-08-27T09:00:00Z",
-            resolvedAt: null,
-            session: null,
-          },
+          lastEvent: event({ seq: 48, kind: "github.pull_request", triggerId: "github-prs" }),
         }),
       ),
     ).toEqual({ text: "Working on #48 · github.pull_request", tone: "live" });
     expect(
       rosterLine(
         bot({
-          lastEvent: {
+          lastEvent: event({
             seq: 47,
-            kind: "schedule",
-            source: "schedule",
+            kind: "schedule.fire",
+            triggerId: "schedule",
             outcome: "handled",
             outcomeDetail: "Digest sent",
-            receivedAt: "2026-08-27T09:00:00Z",
-            resolvedAt: "2026-08-27T09:01:00Z",
-            session: null,
-          },
+            resolvedAtMs: Date.parse("2026-08-27T09:01:00Z"),
+          }),
         }),
       ),
     ).toEqual({ text: "#47 handled · Digest sent", tone: "idle" });
   });
   it("puts lifecycle before activity", () => {
     expect(rosterLine(bot({ enabled: false, pendingCount: 3 }))).toEqual({ text: "Paused · 3 waiting", tone: "paused" });
-    expect(rosterLine(bot({ closedAt: "2026-08-27T00:00:00Z", pendingCount: 3 }))).toEqual({ text: "Closed", tone: "closed" });
+    expect(rosterLine(bot({ closedAtMs: Date.parse("2026-08-27T00:00:00Z"), pendingCount: 3 }))).toEqual({
+      text: "Closed",
+      tone: "closed",
+    });
   });
   it("flags a failed last outcome", () => {
     expect(
       rosterLine(
         bot({
-          lastEvent: {
+          lastEvent: event({
             seq: 42,
-            kind: "x",
-            source: "y",
             outcome: "run_failed",
             outcomeDetail: "environment suspended",
-            receivedAt: "2026-08-27T09:00:00Z",
-            resolvedAt: "2026-08-27T09:01:00Z",
-            session: null,
-          },
+            resolvedAtMs: Date.parse("2026-08-27T09:01:00Z"),
+          }),
         }),
       ).tone,
     ).toBe("attention");

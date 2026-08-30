@@ -4,15 +4,21 @@ import { ArrowLeft, CalendarClock, Check, ChevronRight, Copy, Inbox, MessageCirc
 import {
   api,
   botLabel,
-  type BotChatSpec,
   type BotListItem,
-  type BotPollSpec,
-  type BotRoute,
-  type BotScheduleSpec,
-  type BotTrigger,
-  type BotInboxSpec,
-  type BotWebhookSpec,
-  type ChannelAccount,
+  type BotListResponse,
+  type BotTriggerDisabledReason,
+  type BotTriggerInput,
+  type BotTriggerRoute,
+  type BotTriggerView,
+  type ChannelAccountListResponse,
+  type ChannelAccountView,
+  type ChatAccess,
+  type ChatActivation,
+  type ChatPairing,
+  type ChatScope,
+  type PollCursorSpec,
+  type PollCursorState,
+  type WebhookVerification,
 } from "@/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -54,6 +60,12 @@ import { deliverySentence, deliveryShapeOf, triggerSummary } from "./trigger-sum
 
 export const NAME_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
 
+type ScheduleTrigger = BotTriggerView & { kind: "schedule" };
+type WebhookTrigger = BotTriggerView & { kind: "webhook" };
+type PollTrigger = BotTriggerView & { kind: "poll" };
+type InboxTrigger = BotTriggerView & { kind: "bot" };
+type ChatTrigger = BotTriggerView & { kind: "chat" };
+
 /// Temporal Schedules take classic 5-field crontab (minute hour day month
 /// weekday) or an @-macro. Catch Quartz-style pastes (seconds field, `?`)
 /// before they round-trip to a confusing server error.
@@ -68,7 +80,84 @@ export function cronProblem(value: string): string | null {
   return null;
 }
 
-export type TriggerKind = BotTrigger["kind"];
+export type TriggerKind = BotTriggerView["kind"];
+
+/// The universe's channel accounts, for the chat trigger picker and for
+/// naming accounts on saved triggers (the trigger carries only the id).
+export function useChannelAccounts(universeId: string, enabled = true) {
+  return useQuery({
+    queryKey: ["channel-accounts", universeId],
+    queryFn: () =>
+      api<ChannelAccountListResponse>("GET", `/api/v1/universes/${universeId}/channel-accounts`),
+    enabled,
+  });
+}
+
+/// A poll trigger's flattened document carries the dedupe spec under
+/// `cursor`; the advancing runtime state is the separate `cursorState`.
+function pollSpecCursor(trigger: PollTrigger): PollCursorSpec | null {
+  return trigger.cursor ?? null;
+}
+
+export function pollStateCursor(trigger: PollTrigger): PollCursorState | null {
+  return trigger.cursorState ?? null;
+}
+
+/// The core replaces trigger documents whole (PUT with an expected
+/// revision), so partial edits — a pause, a rotated pairing code — start
+/// from the stored view.
+export function triggerInputOf(trigger: BotTriggerView): BotTriggerInput {
+  const shared = {
+    triggerId: trigger.triggerId,
+    enabled: trigger.enabled ?? true,
+    filter: trigger.filter ?? null,
+    route: trigger.route ?? null,
+    coalesce: trigger.coalesce ?? null,
+    deliver: trigger.deliver ?? null,
+    sessionTtlMs: trigger.sessionTtlMs ?? null,
+  };
+  switch (trigger.kind) {
+    case "schedule":
+      return {
+        ...shared,
+        kind: "schedule",
+        summary: trigger.summary,
+        atMs: trigger.atMs ?? null,
+        cron: trigger.cron ?? null,
+        timezone: trigger.timezone ?? "UTC",
+      };
+    case "webhook":
+      return {
+        ...shared,
+        kind: "webhook",
+        preset: trigger.preset ?? null,
+        verification: trigger.verification ?? { scheme: "token" },
+      };
+    case "poll":
+      return {
+        ...shared,
+        kind: "poll",
+        source: trigger.source,
+        intervalMs: trigger.intervalMs,
+        items: trigger.items ?? null,
+        cursor: pollSpecCursor(trigger) ?? { kind: "idSet", id: "id" },
+      };
+    case "bot":
+      return { ...shared, kind: "bot", from: trigger.from ?? null };
+    case "chat":
+      return {
+        ...shared,
+        kind: "chat",
+        accountId: trigger.accountId,
+        matchScope: trigger.matchScope ?? null,
+        activation: trigger.activation ?? {},
+        access: trigger.access ?? {},
+        pairing: trigger.pairing ?? "code",
+        priority: trigger.priority ?? 100,
+        ...(trigger.pairingCode ? { pairingCode: trigger.pairingCode } : {}),
+      };
+  }
+}
 
 export interface ScheduleFormState {
   once: boolean;
@@ -108,9 +197,11 @@ export function scheduleFormProblem(form: ScheduleFormState): string | null {
   return null;
 }
 
-export function scheduleSpecPayload(form: ScheduleFormState): BotScheduleSpec {
+export function scheduleSpecPayload(
+  form: ScheduleFormState,
+): { summary: string; timezone: string; atMs?: number; cron?: string } {
   return form.once
-    ? { at: new Date(form.at).toISOString(), timezone: "UTC", summary: form.summary.trim() }
+    ? { atMs: new Date(form.at).getTime(), timezone: "UTC", summary: form.summary.trim() }
     : { cron: form.cron.trim(), timezone: form.timezone.trim() || "UTC", summary: form.summary.trim() };
 }
 
@@ -118,21 +209,21 @@ export function scheduleSpecPayload(form: ScheduleFormState): BotScheduleSpec {
 export function ScheduleFields({
   form,
   setForm,
-  lockedAt = null,
+  lockedAtMs = null,
   idPrefix = "trigger",
 }: {
   form: ScheduleFormState;
   setForm: (next: ScheduleFormState) => void;
   /** Editing a one-shot that already has its time: only the task is editable. */
-  lockedAt?: string | null;
+  lockedAtMs?: number | null;
   idPrefix?: string;
 }) {
-  const cronIssue = form.once || lockedAt ? null : cronProblem(form.cron);
+  const cronIssue = form.once || lockedAtMs != null ? null : cronProblem(form.cron);
   return (
     <>
-      {lockedAt ? (
+      {lockedAtMs != null ? (
         <p className="text-xs text-muted-foreground">
-          Fires once at {new Date(lockedAt).toLocaleString()}; only the task is editable.
+          Fires once at {new Date(lockedAtMs).toLocaleString()}; only the task is editable.
         </p>
       ) : (
         <Field>
@@ -148,7 +239,7 @@ export function ScheduleFields({
           </Select>
         </Field>
       )}
-      {!lockedAt && form.once && (
+      {lockedAtMs == null && form.once && (
         <Field>
           <FieldLabel htmlFor={`${idPrefix}-at`}>Fire at</FieldLabel>
           <Input
@@ -160,7 +251,7 @@ export function ScheduleFields({
           <FieldDescription>Local time; the trigger pauses itself after firing once.</FieldDescription>
         </Field>
       )}
-      {!lockedAt && !form.once && (
+      {lockedAtMs == null && !form.once && (
         <>
           <CronBuilder value={form.cron} onChange={(cron) => setForm({ ...form, cron })} />
           <div className="grid gap-3 sm:grid-cols-[1fr_10rem]">
@@ -255,9 +346,8 @@ const PLAIN_SAMPLE = {
   data: { message: "Hello from the bot page." },
 };
 
-export async function sendSampleWebhook(trigger: BotTrigger): Promise<void> {
-  const spec = trigger.spec as BotWebhookSpec;
-  const github = spec.preset === "github";
+export async function sendSampleWebhook(trigger: WebhookTrigger): Promise<void> {
+  const github = trigger.preset === "github";
   const response = await fetch(ingestUrl(trigger), {
     method: "POST",
     headers: {
@@ -269,24 +359,24 @@ export async function sendSampleWebhook(trigger: BotTrigger): Promise<void> {
   if (!response.ok) throw new Error(`The webhook answered ${response.status}.`);
 }
 
-function ingestUrl(trigger: BotTrigger): string {
+function ingestUrl(trigger: BotTriggerView): string {
   return `${window.location.origin}${trigger.ingestPath ?? ""}`;
 }
 
-function routeLabel(route: BotRoute | null): string {
-  if (route === null || route.policy === "bot") return "main session";
+function routeLabel(route: BotTriggerRoute | null | undefined): string {
+  if (route == null || route.policy === "bot") return "main session";
   if (route.policy === "perEvent") return "session per event";
   return route.key ? `session per key: ${route.key}` : "session per key";
 }
 
 /** Chat triggers never route to the main session: the default key is the conversation. */
-function chatRouteLabel(route: BotRoute | null): string {
+function chatRouteLabel(route: BotTriggerRoute | null | undefined): string {
   if (route?.policy === "perEvent") return "session per message";
   return route?.policy === "perKey" && route.key ? `session per key: ${route.key}` : "session per conversation";
 }
 
-function sessionTtlLabel(ttlMs: number | null): string {
-  if (ttlMs === null) return "inherits the bot's retention";
+function sessionTtlLabel(ttlMs: number | null | undefined): string {
+  if (ttlMs == null) return "inherits the bot's retention";
   if (ttlMs === 0) return "sessions kept forever";
   return `idle sessions close after ${Math.round(ttlMs / 3_600_000)}h`;
 }
@@ -311,7 +401,7 @@ export type BotEnvStatus =
   | { kind: "existing"; environmentId: string };
 
 /** A paused trigger says why: the breaker, a failed poll, a one-shot that fired, or an operator. */
-export function pausedLabel(reason: BotTrigger["disabledReason"]): string {
+export function pausedLabel(reason: BotTriggerDisabledReason | null | undefined): string {
   switch (reason) {
     case "breaker":
       return "paused by breaker";
@@ -328,7 +418,7 @@ export function pausedLabel(reason: BotTrigger["disabledReason"]): string {
   }
 }
 
-export function pausedVariant(reason: BotTrigger["disabledReason"]): "destructive" | "outline" {
+export function pausedVariant(reason: BotTriggerDisabledReason | null | undefined): "destructive" | "outline" {
   return reason === "breaker" || reason === "poll_failed" ? "destructive" : "outline";
 }
 
@@ -353,11 +443,12 @@ export function TriggersSection({
 }) {
   const queryClient = useQueryClient();
   const [addOpen, setAddOpen] = useState(false);
-  const [editing, setEditing] = useState<BotTrigger | null>(null);
+  const [editing, setEditing] = useState<BotTriggerView | null>(null);
   const [pendingDelete, setPendingDelete] = useState<string | null>(null);
   const triggers = useQuery({
     queryKey: ["bot-triggers", universeId, botId],
-    queryFn: () => api<{ triggers: BotTrigger[] }>("GET", `/api/v1/universes/${universeId}/bots/${botId}/triggers`),
+    queryFn: () =>
+      api<{ triggers?: BotTriggerView[] }>("GET", `/api/v1/universes/${universeId}/bots/${botId}/triggers`),
     // The bot may add or change triggers itself (self-configuration); keep
     // the cards current while the page is open.
     refetchInterval: 5_000,
@@ -365,21 +456,26 @@ export function TriggersSection({
   });
   const bots = useQuery({
     queryKey: ["bots", universeId],
-    queryFn: () => api<{ bots: BotListItem[] }>("GET", `/api/v1/universes/${universeId}/bots`),
+    queryFn: () => api<BotListResponse>("GET", `/api/v1/universes/${universeId}/bots`),
     enabled: manage,
   });
+  const accounts = useChannelAccounts(universeId);
+  const accountList = accounts.data?.accounts ?? [];
   const invalidate = () => Promise.all([
     queryClient.invalidateQueries({ queryKey: ["bot-triggers", universeId, botId] }),
     queryClient.invalidateQueries({ queryKey: ["bots"] }),
   ]);
   const toggle = useMutation({
-    mutationFn: (trigger: BotTrigger) =>
-      api("PATCH", `/api/v1/universes/${universeId}/bots/${botId}/triggers/${trigger.name}`, { enabled: !trigger.enabled }),
+    mutationFn: (trigger: BotTriggerView) =>
+      api("PUT", `/api/v1/universes/${universeId}/bots/${botId}/triggers/${trigger.triggerId}`, {
+        trigger: { ...triggerInputOf(trigger), enabled: !(trigger.enabled ?? true) },
+        expectedRevision: trigger.revision,
+      }),
     onSuccess: invalidate,
   });
   const remove = useMutation({
-    mutationFn: (triggerName: string) =>
-      api("DELETE", `/api/v1/universes/${universeId}/bots/${botId}/triggers/${triggerName}`),
+    mutationFn: (triggerId: string) =>
+      api("DELETE", `/api/v1/universes/${universeId}/bots/${botId}/triggers/${triggerId}`),
     onSuccess: () => {
       setPendingDelete(null);
       return invalidate();
@@ -423,22 +519,21 @@ export function TriggersSection({
         <p className="text-xs text-muted-foreground">Sample sent — it shows up under Activity in a moment.</p>
       )}
       {visibleTriggers.map((trigger) => {
-        const exec = trigger.kind === "poll" && (trigger.spec as BotPollSpec).source.kind === "exec";
-        const summary = triggerSummary(trigger);
+        const exec = trigger.kind === "poll" && trigger.source.kind === "exec";
+        const summary = triggerSummary(trigger, accountList);
         const delivery = deliverySentence(deliveryShapeOf(trigger), trigger.kind === "chat");
-        const sampleable =
-          trigger.kind === "webhook" && (trigger.spec as BotWebhookSpec).verification.scheme === "token";
+        const enabled = trigger.enabled ?? true;
         return (
-          <div key={trigger.name} className="min-w-0 max-w-full overflow-hidden rounded-md border p-3 text-xs">
+          <div key={trigger.triggerId} className="min-w-0 max-w-full overflow-hidden rounded-md border p-3 text-xs">
             <div className="flex min-w-0 items-start gap-2">
               <TriggerKindIcon kind={trigger.kind} exec={exec} className="mt-0.5" />
               <div className="min-w-0 flex-1">
                 <div className="flex min-w-0 flex-wrap items-center gap-2">
-                  <span className="truncate font-medium">{trigger.name}</span>
-                  {!trigger.enabled && (
+                  <span className="truncate font-medium">{trigger.triggerId}</span>
+                  {!enabled && (
                     <Badge
                       variant={pausedVariant(trigger.disabledReason)}
-                      title={trigger.disabledAt ? `since ${new Date(trigger.disabledAt).toLocaleString()}` : undefined}
+                      title={trigger.disabledAtMs != null ? `since ${new Date(trigger.disabledAtMs).toLocaleString()}` : undefined}
                     >
                       {pausedLabel(trigger.disabledReason)}
                     </Badge>
@@ -449,12 +544,12 @@ export function TriggersSection({
               </div>
               {manage && (
                 <span className="flex shrink-0 items-center">
-                  {sampleable && (
+                  {trigger.kind === "webhook" && (trigger.verification?.scheme ?? "token") === "token" && (
                     <Button
                       variant="ghost"
                       size="xs"
                       onClick={() => sample.mutate(trigger)}
-                      disabled={sample.isPending || !trigger.enabled}
+                      disabled={sample.isPending || !enabled}
                       title="Post a sample payload to this webhook"
                     >
                       <Send data-icon="inline-start" /> Send sample
@@ -473,15 +568,15 @@ export function TriggersSection({
                     size="icon-sm"
                     onClick={() => toggle.mutate(trigger)}
                     disabled={toggle.isPending}
-                    aria-label={trigger.enabled ? "Pause trigger" : "Resume trigger"}
+                    aria-label={enabled ? "Pause trigger" : "Resume trigger"}
                   >
-                    {trigger.enabled ? <Pause /> : <Play />}
+                    {enabled ? <Pause /> : <Play />}
                   </Button>
-                  {pendingDelete === trigger.name ? (
+                  {pendingDelete === trigger.triggerId ? (
                     <Button
                       variant="destructive"
                       size="xs"
-                      onClick={() => remove.mutate(trigger.name)}
+                      onClick={() => remove.mutate(trigger.triggerId)}
                       disabled={remove.isPending}
                     >
                       Delete?
@@ -490,7 +585,7 @@ export function TriggersSection({
                     <Button
                       variant="ghost"
                       size="icon-sm"
-                      onClick={() => setPendingDelete(trigger.name)}
+                      onClick={() => setPendingDelete(trigger.triggerId)}
                       aria-label="Delete trigger"
                     >
                       <Trash2 />
@@ -502,20 +597,20 @@ export function TriggersSection({
             {trigger.lastFilterError && (
               <p
                 className="mt-2 rounded-md bg-destructive/10 p-2 text-destructive wrap-anywhere"
-                title={trigger.lastFilterErrorAt ? `at ${new Date(trigger.lastFilterErrorAt).toLocaleString()}` : undefined}
+                title={trigger.lastFilterErrorAtMs != null ? `at ${new Date(trigger.lastFilterErrorAtMs).toLocaleString()}` : undefined}
               >
                 filter error: {trigger.lastFilterError}
               </p>
             )}
             <div className="mt-2 border-t pt-2">
               {trigger.kind === "schedule" ? (
-                <ScheduleRowDetail spec={trigger.spec as BotScheduleSpec} />
+                <ScheduleRowDetail trigger={trigger} />
               ) : trigger.kind === "poll" ? (
                 <PollRowDetail trigger={trigger} />
               ) : trigger.kind === "bot" ? (
                 <InboxRowDetail trigger={trigger} />
               ) : trigger.kind === "chat" ? (
-                <ChatRowDetail universeId={universeId} botId={botId} trigger={trigger} manage={manage} />
+                <ChatRowDetail universeId={universeId} botId={botId} trigger={trigger} manage={manage} accounts={accountList} />
               ) : (
                 <WebhookRowDetail trigger={trigger} manage={manage} />
               )}
@@ -555,28 +650,27 @@ export function TriggersSection({
   );
 }
 
-function ScheduleRowDetail({ spec }: { spec: BotScheduleSpec }) {
+function ScheduleRowDetail({ trigger }: { trigger: ScheduleTrigger }) {
   return (
     <>
       <p className="mt-1 text-muted-foreground wrap-anywhere">
-        {spec.at ? (
-          <>once at {new Date(spec.at).toLocaleString()}</>
+        {trigger.atMs != null ? (
+          <>once at {new Date(trigger.atMs).toLocaleString()}</>
         ) : (
           <>
-            <code>{spec.cron}</code> · {spec.timezone}
+            <code>{trigger.cron}</code> · {trigger.timezone ?? "UTC"}
           </>
         )}
       </p>
-      <p className="mt-1 line-clamp-2 text-muted-foreground wrap-anywhere">{spec.summary}</p>
+      <p className="mt-1 line-clamp-2 text-muted-foreground wrap-anywhere">{trigger.summary}</p>
     </>
   );
 }
 
-function InboxRowDetail({ trigger }: { trigger: BotTrigger }) {
-  const spec = trigger.spec as BotInboxSpec;
+function InboxRowDetail({ trigger }: { trigger: InboxTrigger }) {
   return (
     <p className="mt-1 text-muted-foreground">
-      Inbox: {spec.from && spec.from.length > 0 ? `accepts events from ${spec.from.join(", ")}` : "accepts events from any bot"} ·{" "}
+      Inbox: {trigger.from && trigger.from.length > 0 ? `accepts events from ${trigger.from.join(", ")}` : "accepts events from any bot"} ·{" "}
       {routeLabel(trigger.route)}
       {trigger.filter ? ` · filter: ${trigger.filter}` : ""}
     </p>
@@ -593,24 +687,23 @@ export function defaultInboxForm(): InboxFormState {
   return { ...defaultDeliveryForm, fromMode: "any", fromBotIds: [] };
 }
 
-function inboxFormFromTrigger(trigger: BotTrigger): InboxFormState {
-  const spec = trigger.spec as BotInboxSpec;
+function inboxFormFromTrigger(trigger: InboxTrigger): InboxFormState {
   return {
     ...deliveryFormFromTrigger(trigger),
-    fromMode: spec.from === undefined ? "any" : "selected",
-    fromBotIds: spec.from ?? [],
+    fromMode: trigger.from == null ? "any" : "selected",
+    fromBotIds: trigger.from ?? [],
   };
 }
 
 export function inboxSelectionSpec(
   mode: InboxFormState["fromMode"],
   botIds: string[],
-): BotInboxSpec {
-  return mode === "any" ? {} : { from: botIds };
+): { from: string[] | null } {
+  return mode === "any" ? { from: null } : { from: botIds };
 }
 
 export function inboxPayload(form: InboxFormState) {
-  return { spec: inboxSelectionSpec(form.fromMode, form.fromBotIds), ...deliveryPayload(form) };
+  return { ...inboxSelectionSpec(form.fromMode, form.fromBotIds), ...deliveryPayload(form) };
 }
 
 export function inboxFormProblem(form: InboxFormState): string | null {
@@ -744,30 +837,32 @@ export function InboxFields({
   );
 }
 
-function PollRowDetail({ trigger }: { trigger: BotTrigger }) {
-  const spec = trigger.spec as BotPollSpec;
+function PollRowDetail({ trigger }: { trigger: PollTrigger }) {
   const sourceLabel =
-    spec.source.kind === "http" ? spec.source.url : `exec: ${spec.source.argv.join(" ")}`;
+    trigger.source.kind === "http" ? trigger.source.url : `exec: ${trigger.source.argv.join(" ")}`;
+  const specCursor = pollSpecCursor(trigger);
+  const stateCursor = pollStateCursor(trigger);
   return (
     <>
       <p className="mt-1 text-muted-foreground wrap-anywhere">
         <code title={sourceLabel}>{sourceLabel}</code> · every{" "}
-        {Math.round(spec.intervalMs / 60_000)}m ·{" "}
-        {spec.cursor.kind === "idSet" ? `dedupe by ${spec.cursor.id}` : `watermark ${spec.cursor.field}`}{" "}
+        {Math.round(trigger.intervalMs / 60_000)}m
+        {specCursor &&
+          ` · ${specCursor.kind === "idSet" ? `dedupe by ${specCursor.id}` : `watermark ${specCursor.field}`}`}{" "}
         → {routeLabel(trigger.route)}
         {trigger.coalesce &&
           ` · batches ≤${trigger.coalesce.maxCount} over ${Math.round(trigger.coalesce.debounceMs / 1000)}s`}
         {trigger.deliver && trigger.deliver.whenBusy !== "queue" && ` · busy: ${trigger.deliver.whenBusy}`}
       </p>
       <p className="mt-1 text-muted-foreground">
-        {trigger.cursor == null
+        {stateCursor == null
           ? "Baselines on the first fire (existing items are not delivered)."
-          : trigger.cursor.consecutiveFailures > 0
-            ? `${trigger.cursor.consecutiveFailures} consecutive failure(s); last poll ${
-                trigger.cursor.lastPolledAt ? new Date(trigger.cursor.lastPolledAt).toLocaleString() : "—"
+          : (stateCursor.consecutiveFailures ?? 0) > 0
+            ? `${stateCursor.consecutiveFailures} consecutive failure(s); last poll ${
+                stateCursor.lastPolledAtMs != null ? new Date(stateCursor.lastPolledAtMs).toLocaleString() : "—"
               }`
             : `Last poll ${
-                trigger.cursor.lastPolledAt ? new Date(trigger.cursor.lastPolledAt).toLocaleString() : "—"
+                stateCursor.lastPolledAtMs != null ? new Date(stateCursor.lastPolledAtMs).toLocaleString() : "—"
               }`}
       </p>
       {trigger.filter && (
@@ -779,9 +874,9 @@ function PollRowDetail({ trigger }: { trigger: BotTrigger }) {
   );
 }
 
-function WebhookRowDetail({ trigger, manage }: { trigger: BotTrigger; manage: boolean }) {
-  const spec = trigger.spec as BotWebhookSpec;
+function WebhookRowDetail({ trigger, manage }: { trigger: WebhookTrigger; manage: boolean }) {
   const [copied, setCopied] = useState(false);
+  const verification = trigger.verification ?? { scheme: "token" as const };
   return (
     <>
       {manage && (
@@ -808,8 +903,8 @@ function WebhookRowDetail({ trigger, manage }: { trigger: BotTrigger; manage: bo
         </div>
       )}
       <p className="mt-1 text-muted-foreground wrap-anywhere">
-        {spec.preset === "github" ? "GitHub · " : ""}
-        {spec.verification.scheme === "token" ? "URL token only" : "HMAC-SHA256 signed"} →{" "}
+        {trigger.preset === "github" ? "GitHub · " : ""}
+        {verification.scheme === "token" ? "URL token only" : "HMAC-SHA256 signed"} →{" "}
         {routeLabel(trigger.route)}
         {trigger.coalesce &&
           ` · batches ≤${trigger.coalesce.maxCount} over ${Math.round(trigger.coalesce.debounceMs / 1000)}s`}
@@ -844,8 +939,12 @@ export interface ChatFormState extends DeliveryFormState {
   /** Comma- or newline-separated. */
   prefixesText: string;
   mentionNamesText: string;
-  accessTurn: "conversation" | "members";
-  accessControl: "none" | "members" | "admins" | "owners";
+  /** Who may take a turn: anyone in a paired conversation, or listed handles. */
+  accessTurn: "anyone" | "listed";
+  /** Comma- or newline-separated handles, when accessTurn is "listed". */
+  allowedText: string;
+  /** Handles allowed to issue control commands; blank denies everyone. */
+  controllersText: string;
   requirePairing: boolean;
   priority: string;
 }
@@ -855,25 +954,28 @@ function ChatRowDetail({
   botId,
   trigger,
   manage,
+  accounts,
 }: {
   universeId: string;
   botId: string;
-  trigger: BotTrigger;
+  trigger: ChatTrigger;
   manage: boolean;
+  accounts: ChannelAccountView[];
 }) {
-  const spec = trigger.spec as BotChatSpec;
   const queryClient = useQueryClient();
   const [copied, setCopied] = useState(false);
   const rotate = useMutation({
     mutationFn: () =>
-      api("PATCH", `/api/v1/universes/${universeId}/bots/${botId}/triggers/${trigger.name}`, {
-        spec: { ...spec, pairingCode: mintPairingCode() },
+      api("PUT", `/api/v1/universes/${universeId}/bots/${botId}/triggers/${trigger.triggerId}`, {
+        trigger: { ...triggerInputOf(trigger), pairing: "code", pairingCode: mintPairingCode() },
+        expectedRevision: trigger.revision,
       }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["bot-triggers", universeId, botId] }),
   });
-  const account = trigger.channelAccount;
+  const account = accounts.find((entry) => entry.accountId === trigger.accountId);
   const scope =
-    spec.matchScope === "direct" ? "direct chats" : spec.matchScope === "group" ? "groups" : "direct chats and groups";
+    trigger.matchScope === "direct" ? "direct chats" : trigger.matchScope === "group" ? "groups" : "direct chats and groups";
+  const paired = (trigger.pairing ?? "code") === "code";
   return (
     <>
       <p className="mt-1 text-muted-foreground wrap-anywhere">
@@ -885,28 +987,28 @@ function ChatRowDetail({
           <span className="text-destructive">account missing</span>
         )}{" "}
         · {scope}
-        {spec.matchScope !== "direct" &&
-          ` · groups: ${spec.activation?.group === "always" ? "every message" : "on mention"}`}
+        {trigger.matchScope !== "direct" &&
+          ` · groups: ${trigger.activation?.group === "always" ? "every message" : "on mention"}`}
         {" → "}
         {chatRouteLabel(trigger.route)} · {sessionTtlLabel(trigger.sessionTtlMs)}
         {trigger.coalesce &&
           ` · batches ≤${trigger.coalesce.maxCount} over ${trigger.coalesce.debounceMs / 1000}s`}
         {trigger.deliver && trigger.deliver.whenBusy !== "queue" && ` · busy: ${trigger.deliver.whenBusy}`}
       </p>
-      {spec.pairingCode === null ? (
+      {!paired ? (
         <p className="mt-1 text-muted-foreground">Open: any conversation on the account connects without pairing.</p>
-      ) : manage ? (
+      ) : manage && trigger.pairingCode ? (
         <div className="mt-1 flex min-w-0 max-w-full items-center gap-1 overflow-hidden">
           <span className="shrink-0 text-muted-foreground">Pairing code</span>
-          <code className="min-w-0 truncate font-medium" title={spec.pairingCode}>
-            {spec.pairingCode}
+          <code className="min-w-0 truncate font-medium" title={trigger.pairingCode}>
+            {trigger.pairingCode}
           </code>
           <Button
             variant="ghost"
             size="icon-xs"
             aria-label="Copy pairing code"
             onClick={() => {
-              void navigator.clipboard.writeText(spec.pairingCode ?? "").then(() => {
+              void navigator.clipboard.writeText(trigger.pairingCode ?? "").then(() => {
                 setCopied(true);
                 setTimeout(() => setCopied(false), 1_500);
               });
@@ -944,54 +1046,64 @@ function splitList(text: string): string[] {
   return [...new Set(text.split(/[,\n]/).map((entry) => entry.trim()).filter((entry) => entry.length > 0))];
 }
 
-function chatFormFromTrigger(trigger: BotTrigger): ChatFormState {
-  const spec = trigger.spec as BotChatSpec;
+function chatFormFromTrigger(trigger: ChatTrigger): ChatFormState {
   return {
     ...deliveryFormFromTrigger(trigger),
-    channelAccountId: spec.channelAccountId,
-    scope: spec.matchScope ?? "any",
-    groupActivation: spec.activation?.group ?? "mention",
-    prefixesText: (spec.activation?.triggerPrefixes ?? []).join(", "),
-    mentionNamesText: (spec.activation?.mentionNames ?? []).join(", "),
-    accessTurn: spec.access?.turn ?? "conversation",
-    accessControl: spec.access?.control ?? "admins",
-    requirePairing: spec.pairingCode !== null,
-    priority: String(spec.priority),
+    channelAccountId: trigger.accountId,
+    scope: trigger.matchScope ?? "any",
+    groupActivation: trigger.activation?.group ?? "mention",
+    prefixesText: (trigger.activation?.triggerPrefixes ?? []).join(", "),
+    mentionNamesText: (trigger.activation?.mentionNames ?? []).join(", "),
+    accessTurn: trigger.access?.turn ?? "anyone",
+    allowedText: (trigger.access?.allowed ?? []).join(", "),
+    controllersText: (trigger.access?.controllers ?? []).join(", "),
+    requirePairing: (trigger.pairing ?? "code") === "code",
+    priority: trigger.priority != null ? String(trigger.priority) : "",
   };
 }
 
 /**
- * The chat spec for create or update. `pairingCode` is omitted to keep an
- * existing code (or let the server mint one on create), null to open the
- * connection, and freshly minted when pairing is switched on for a trigger
- * that was open.
+ * The chat-kind fields for create or update. `pairingCode` is carried
+ * through only to keep an existing code; on create (or when pairing is
+ * switched on) it is omitted and the server mints one.
  */
 export function chatSpecPayload(
   form: Omit<ChatFormState, keyof DeliveryFormState>,
   existingCode: string | null | undefined,
-): Omit<BotChatSpec, "pairingCode" | "priority"> & { pairingCode?: string | null; priority?: number } {
+): {
+  accountId: string;
+  matchScope: ChatScope | null;
+  activation: ChatActivation;
+  access: ChatAccess;
+  pairing: ChatPairing;
+  pairingCode?: string;
+  priority?: number;
+} {
   const prefixes = splitList(form.prefixesText);
   const mentionNames = splitList(form.mentionNamesText);
+  const allowed = splitList(form.allowedText);
+  const controllers = splitList(form.controllersText);
   return {
-    channelAccountId: form.channelAccountId.trim(),
+    accountId: form.channelAccountId.trim(),
     matchScope: form.scope === "any" ? null : form.scope,
     activation: {
       group: form.groupActivation,
       ...(prefixes.length > 0 ? { triggerPrefixes: prefixes } : {}),
       ...(mentionNames.length > 0 ? { mentionNames } : {}),
     },
-    access: { turn: form.accessTurn, control: form.accessControl },
-    ...(form.requirePairing
-      ? existingCode === null
-        ? { pairingCode: mintPairingCode() }
-        : {}
-      : { pairingCode: null }),
+    access: {
+      turn: form.accessTurn,
+      ...(allowed.length > 0 ? { allowed } : {}),
+      ...(controllers.length > 0 ? { controllers } : {}),
+    },
+    pairing: form.requirePairing ? "code" : "open",
+    ...(form.requirePairing && existingCode ? { pairingCode: existingCode } : {}),
     ...(form.priority.trim() ? { priority: Math.round(Number(form.priority)) } : {}),
   };
 }
 
 export function chatPayload(form: ChatFormState, existingCode: string | null | undefined) {
-  return { spec: chatSpecPayload(form, existingCode), ...deliveryPayload(form) };
+  return { ...chatSpecPayload(form, existingCode), ...deliveryPayload(form) };
 }
 
 export function chatFormProblem(form: ChatFormState): string | null {
@@ -1001,6 +1113,9 @@ export function chatFormProblem(form: ChatFormState): string | null {
   }
   if (splitList(form.mentionNamesText).some((name) => name.length > 60)) {
     return "Mention names are at most 60 characters.";
+  }
+  if (form.accessTurn === "listed" && splitList(form.allowedText).length === 0) {
+    return "List who may take a turn, or allow anyone in the conversation.";
   }
   if (form.priority.trim()) {
     const priority = Number(form.priority);
@@ -1012,20 +1127,18 @@ export function chatFormProblem(form: ChatFormState): string | null {
 }
 
 export function ChatFields({
+  universeId,
   form,
   setForm,
 }: {
+  universeId: string;
   form: ChatFormState;
   setForm: (next: ChatFormState) => void;
 }) {
-  // Universe owners may list deployment accounts; the same picker Channels used.
-  const accounts = useQuery({
-    queryKey: ["channel-accounts"],
-    queryFn: () => api<ChannelAccount[]>("GET", "/api/v1/channel-accounts"),
-  });
-  const accountList = accounts.data ?? [];
+  const accounts = useChannelAccounts(universeId);
+  const accountList = accounts.data?.accounts ?? [];
   const accountLabel = (id: string) => {
-    const account = accountList.find((candidate) => candidate.id === id);
+    const account = accountList.find((candidate) => candidate.accountId === id);
     return account ? `${account.provider} · ${account.displayName}` : id;
   };
   return (
@@ -1043,9 +1156,9 @@ export function ChatFields({
           </SelectTrigger>
           <SelectContent>
             {accountList.map((account) => (
-              <SelectItem key={account.id} value={account.id} disabled={!account.enabled}>
+              <SelectItem key={account.accountId} value={account.accountId} disabled={account.enabled === false}>
                 {account.provider} · {account.displayName}
-                {!account.enabled && " (disabled)"}
+                {account.enabled === false && " (disabled)"}
               </SelectItem>
             ))}
           </SelectContent>
@@ -1054,8 +1167,8 @@ export function ChatFields({
           {accounts.error
             ? accounts.error.message
             : accounts.data && accountList.length === 0
-              ? "No provider accounts are registered; a deployment admin adds them under Admin › Channels."
-              : "A Telegram or WhatsApp account registered by a deployment admin."}
+              ? "No provider accounts are registered in this universe; an owner adds them under Settings."
+              : "A Telegram or WhatsApp account registered in this universe."}
         </FieldDescription>
       </Field>
       <div className="grid grid-cols-2 gap-3">
@@ -1131,31 +1244,34 @@ export function ChatFields({
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value="conversation">Anyone in a paired conversation</SelectItem>
-              <SelectItem value="members">Authorized members only</SelectItem>
+              <SelectItem value="anyone">Anyone in a paired conversation</SelectItem>
+              <SelectItem value="listed">Listed handles only</SelectItem>
             </SelectContent>
           </Select>
         </Field>
         <Field>
-          <FieldLabel>Control commands</FieldLabel>
-          <Select
-            value={form.accessControl}
-            onValueChange={(value) =>
-              value && setForm({ ...form, accessControl: value as ChatFormState["accessControl"] })
-            }
-          >
-            <SelectTrigger>
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="none">Nobody</SelectItem>
-              <SelectItem value="members">Members</SelectItem>
-              <SelectItem value="admins">Admins</SelectItem>
-              <SelectItem value="owners">Owners</SelectItem>
-            </SelectContent>
-          </Select>
+          <FieldLabel htmlFor="chat-controllers">Control commands</FieldLabel>
+          <Input
+            id="chat-controllers"
+            value={form.controllersText}
+            onChange={(event) => setForm({ ...form, controllersText: event.target.value })}
+            placeholder="@lukas"
+          />
+          <FieldDescription>Handles allowed to issue /activation and /status; blank denies everyone.</FieldDescription>
         </Field>
       </div>
+      {form.accessTurn === "listed" && (
+        <Field>
+          <FieldLabel htmlFor="chat-allowed">Allowed handles</FieldLabel>
+          <Input
+            id="chat-allowed"
+            value={form.allowedText}
+            onChange={(event) => setForm({ ...form, allowedText: event.target.value })}
+            placeholder="@lukas, @teammate"
+          />
+          <FieldDescription>Comma-separated; only these handles may take a turn.</FieldDescription>
+        </Field>
+      )}
       <div className="grid grid-cols-[1fr_8rem] gap-3">
         <Label className="gap-2 font-normal">
           <Checkbox
@@ -1240,13 +1356,14 @@ export const defaultChatForm: ChatFormState = {
   groupActivation: "mention",
   prefixesText: "",
   mentionNamesText: "",
-  accessTurn: "conversation",
-  accessControl: "admins",
+  accessTurn: "anyone",
+  allowedText: "",
+  controllersText: "",
   requirePairing: true,
   priority: "",
 };
 
-function deliveryFormFromTrigger(trigger: BotTrigger): DeliveryFormState {
+function deliveryFormFromTrigger(trigger: BotTriggerView): DeliveryFormState {
   return {
     routePolicy: trigger.route?.policy ?? "bot",
     routeKey: trigger.route?.policy === "perKey" ? (trigger.route.key ?? "") : "",
@@ -1255,7 +1372,7 @@ function deliveryFormFromTrigger(trigger: BotTrigger): DeliveryFormState {
     debounceSeconds: trigger.coalesce ? String(trigger.coalesce.debounceMs / 1000) : "",
     maxWaitSeconds: trigger.coalesce ? String(trigger.coalesce.maxWaitMs / 1000) : "",
     maxCount: trigger.coalesce ? String(trigger.coalesce.maxCount) : "",
-    ttlMode: trigger.sessionTtlMs === null ? "inherit" : trigger.sessionTtlMs === 0 ? "forever" : "hours",
+    ttlMode: trigger.sessionTtlMs == null ? "inherit" : trigger.sessionTtlMs === 0 ? "forever" : "hours",
     ttlHours: trigger.sessionTtlMs ? String(Math.round(trigger.sessionTtlMs / 3_600_000)) : "",
   };
 }
@@ -1283,22 +1400,23 @@ export const defaultPollForm: PollFormState = {
   dedupeField: "id",
 };
 
-function pollFormFromTrigger(trigger: BotTrigger): PollFormState {
-  const spec = trigger.spec as BotPollSpec;
+function pollFormFromTrigger(trigger: PollTrigger): PollFormState {
+  const source = trigger.source;
+  const specCursor = pollSpecCursor(trigger);
   return {
-    sourceKind: spec.source.kind,
-    url: spec.source.kind === "http" ? spec.source.url : "",
-    grantId: spec.source.kind === "http" ? (spec.source.auth?.grantId ?? "") : "",
-    authHeader: spec.source.kind === "http" ? (spec.source.auth?.header ?? "authorization") : "authorization",
-    authScheme: spec.source.kind === "http" ? (spec.source.auth?.scheme ?? "Bearer") : "Bearer",
-    authAudience: spec.source.kind === "http" ? (spec.source.auth?.audience ?? "") : "",
-    environmentId: spec.source.kind === "exec" ? (spec.source.environmentId ?? "") : "",
-    argvText: spec.source.kind === "exec" ? spec.source.argv.join("\n") : "",
-    cwd: spec.source.kind === "exec" ? (spec.source.cwd ?? "") : "",
-    intervalMinutes: String(Math.round(spec.intervalMs / 60_000)),
-    items: spec.items ?? "",
-    dedupe: spec.cursor.kind,
-    dedupeField: spec.cursor.kind === "idSet" ? spec.cursor.id : spec.cursor.field,
+    sourceKind: source.kind,
+    url: source.kind === "http" ? source.url : "",
+    grantId: source.kind === "http" ? (source.auth?.grantId ?? "") : "",
+    authHeader: source.kind === "http" ? (source.auth?.header ?? "authorization") : "authorization",
+    authScheme: source.kind === "http" ? (source.auth?.scheme ?? "Bearer") : "Bearer",
+    authAudience: source.kind === "http" ? (source.auth?.audience ?? "") : "",
+    environmentId: source.kind === "exec" ? (source.environmentId ?? "") : "",
+    argvText: source.kind === "exec" ? source.argv.join("\n") : "",
+    cwd: source.kind === "exec" ? (source.cwd ?? "") : "",
+    intervalMinutes: String(Math.round(trigger.intervalMs / 60_000)),
+    items: trigger.items ?? "",
+    dedupe: specCursor?.kind ?? "idSet",
+    dedupeField: specCursor === null ? "id" : specCursor.kind === "idSet" ? specCursor.id : specCursor.field,
     ...deliveryFormFromTrigger(trigger),
   };
 }
@@ -1335,39 +1453,37 @@ function pollArgv(form: PollFormState): string[] {
 
 export function pollPayload(form: PollFormState) {
   return {
-    spec: {
-      source:
-        form.sourceKind === "http"
-          ? {
-              kind: "http" as const,
-              url: form.url.trim(),
-              ...(form.grantId.trim()
-                ? {
-                    auth: {
-                      grantId: form.grantId.trim(),
-                      ...(form.authHeader.trim() && form.authHeader.trim() !== "authorization"
-                        ? { header: form.authHeader.trim() }
-                        : {}),
-                      ...(form.authScheme !== "Bearer" ? { scheme: form.authScheme } : {}),
-                      ...(form.authAudience.trim() ? { audience: form.authAudience.trim() } : {}),
-                    },
-                  }
-                : {}),
-            }
-          : {
-              kind: "exec" as const,
-              // Blank runs in the bot's own environment (the profile's existing one).
-              ...(form.environmentId.trim() ? { environmentId: form.environmentId.trim() } : {}),
-              argv: pollArgv(form),
-              ...(form.cwd.trim() ? { cwd: form.cwd.trim() } : {}),
-            },
-      intervalMs: Math.round(Number(form.intervalMinutes) * 60_000),
-      items: form.items.trim() || null,
-      cursor:
-        form.dedupe === "idSet"
-          ? { kind: "idSet" as const, id: form.dedupeField.trim() }
-          : { kind: "watermark" as const, field: form.dedupeField.trim() },
-    },
+    source:
+      form.sourceKind === "http"
+        ? {
+            kind: "http" as const,
+            url: form.url.trim(),
+            ...(form.grantId.trim()
+              ? {
+                  auth: {
+                    grantId: form.grantId.trim(),
+                    ...(form.authHeader.trim() && form.authHeader.trim() !== "authorization"
+                      ? { header: form.authHeader.trim() }
+                      : {}),
+                    ...(form.authScheme !== "Bearer" ? { scheme: form.authScheme } : {}),
+                    ...(form.authAudience.trim() ? { audience: form.authAudience.trim() } : {}),
+                  },
+                }
+              : {}),
+          }
+        : {
+            kind: "exec" as const,
+            // Blank runs in the bot's own environment (the profile's existing one).
+            ...(form.environmentId.trim() ? { environmentId: form.environmentId.trim() } : {}),
+            argv: pollArgv(form),
+            ...(form.cwd.trim() ? { cwd: form.cwd.trim() } : {}),
+          },
+    intervalMs: Math.round(Number(form.intervalMinutes) * 60_000),
+    items: form.items.trim() || null,
+    cursor:
+      form.dedupe === "idSet"
+        ? { kind: "idSet" as const, id: form.dedupeField.trim() }
+        : { kind: "watermark" as const, field: form.dedupeField.trim() },
     ...deliveryPayload(form),
   };
 }
@@ -1422,32 +1538,30 @@ export const defaultWebhookForm: WebhookFormState = {
   preset: false,
 };
 
-function webhookFormFromTrigger(trigger: BotTrigger): WebhookFormState {
-  const spec = trigger.spec as BotWebhookSpec;
+function webhookFormFromTrigger(trigger: WebhookTrigger): WebhookFormState {
+  const verification: WebhookVerification = trigger.verification ?? { scheme: "token" };
   return {
-    scheme: spec.verification.scheme,
-    grantId: spec.verification.scheme === "hmac-sha256" ? spec.verification.grantId : "",
-    header: spec.verification.scheme === "hmac-sha256" ? spec.verification.header : "",
-    prefix: spec.verification.scheme === "hmac-sha256" ? (spec.verification.prefix ?? "") : "",
-    preset: spec.preset === "github",
+    scheme: verification.scheme,
+    grantId: verification.scheme === "hmac-sha256" ? verification.grantId : "",
+    header: verification.scheme === "hmac-sha256" ? verification.header : "",
+    prefix: verification.scheme === "hmac-sha256" ? (verification.prefix ?? "") : "",
+    preset: trigger.preset === "github",
     ...deliveryFormFromTrigger(trigger),
   };
 }
 
 export function webhookPayload(form: WebhookFormState) {
   return {
-    spec: {
-      verification:
-        form.scheme === "token"
-          ? { scheme: "token" as const }
-          : {
-              scheme: "hmac-sha256" as const,
-              grantId: form.grantId.trim(),
-              header: form.header.trim() || "x-signature-256",
-              ...(form.prefix ? { prefix: form.prefix } : {}),
-            },
-      preset: form.preset ? ("github" as const) : null,
-    },
+    verification:
+      form.scheme === "token"
+        ? { scheme: "token" as const }
+        : {
+            scheme: "hmac-sha256" as const,
+            grantId: form.grantId.trim(),
+            header: form.header.trim() || "x-signature-256",
+            ...(form.prefix ? { prefix: form.prefix } : {}),
+          },
+    preset: form.preset ? ("github" as const) : null,
     ...deliveryPayload(form),
   };
 }
@@ -1670,7 +1784,7 @@ function DeliveryFieldsBody<T extends DeliveryFormState>({
           className="font-mono"
         />
         <FieldDescription>
-          CEL predicate; non-matching events are archived without waking the bot.
+          CEL predicate; non-matching events are refused without waking the bot.
         </FieldDescription>
       </Field>
       <div className="grid grid-cols-3 gap-3">
@@ -1940,30 +2054,32 @@ export function triggerFormProblem(kind: TriggerKind, forms: TriggerForms, env?:
   }
 }
 
-/** The create body for one trigger, the shape `POST …/triggers` and the bot create's `triggers` take. */
-export function triggerCreateBody(kind: TriggerKind, name: string, forms: TriggerForms): Record<string, unknown> {
+/** The full trigger document for a create: what `PUT …/triggers/{id}` (without an expected revision) and the bot create's `triggers` take. */
+export function triggerCreateBody(kind: TriggerKind, triggerId: string, forms: TriggerForms): BotTriggerInput {
   switch (kind) {
     case "schedule":
-      return { name, kind, spec: scheduleSpecPayload(forms.schedule) };
+      return { triggerId, kind, ...scheduleSpecPayload(forms.schedule) };
     case "webhook":
-      return { name, kind, ...webhookPayload(forms.webhook) };
+      return { triggerId, kind, ...webhookPayload(forms.webhook) };
     case "poll":
-      return { name, kind, ...pollPayload(forms.poll) };
+      return { triggerId, kind, ...pollPayload(forms.poll) };
     case "bot":
-      return { name, kind, ...inboxPayload(forms.inbox) };
+      return { triggerId, kind, ...inboxPayload(forms.inbox) };
     case "chat":
-      return { name, kind, ...chatPayload(forms.chat, undefined) };
+      return { triggerId, kind, ...chatPayload(forms.chat, undefined) };
   }
 }
 
 /** The per-kind essentials; the Advanced disclosure is inside each kind's fields. */
 export function TriggerKindFields({
+  universeId,
   kind,
   forms,
   patch,
   botId,
   bots,
 }: {
+  universeId: string;
   kind: TriggerKind;
   forms: TriggerForms;
   patch: <K extends keyof TriggerForms>(key: K, next: TriggerForms[K]) => void;
@@ -1980,7 +2096,7 @@ export function TriggerKindFields({
         <InboxFields currentBotId={botId} bots={bots} form={forms.inbox} setForm={(next) => patch("inbox", next)} />
       );
     case "chat":
-      return <ChatFields form={forms.chat} setForm={(next) => patch("chat", next)} />;
+      return <ChatFields universeId={universeId} form={forms.chat} setForm={(next) => patch("chat", next)} />;
     case "webhook":
       return <WebhookFields form={forms.webhook} setForm={(next) => patch("webhook", next)} />;
   }
@@ -2102,7 +2218,12 @@ function AddTriggerDialog({
   const create = useMutation({
     mutationFn: () => {
       if (!kind) throw new Error("Choose a trigger type.");
-      return api("POST", `/api/v1/universes/${universeId}/bots/${botId}/triggers`, triggerCreateBody(kind, name.trim(), forms));
+      const triggerId = name.trim();
+      return api(
+        "PUT",
+        `/api/v1/universes/${universeId}/bots/${botId}/triggers/${encodeURIComponent(triggerId)}`,
+        { trigger: triggerCreateBody(kind, triggerId, forms) },
+      );
     },
     onSuccess: async () => {
       await Promise.all([
@@ -2190,7 +2311,7 @@ function AddTriggerDialog({
                   <FieldDescription>How the bot and the API refer to this trigger.</FieldDescription>
                 )}
               </Field>
-              <TriggerKindFields kind={kind} forms={forms} patch={patch} botId={botId} bots={bots} />
+              <TriggerKindFields universeId={universeId} kind={kind} forms={forms} patch={patch} botId={botId} bots={bots} />
             </div>
             <div className="grid gap-2 border-t p-4">
               {formIssue && <p className="text-xs text-destructive">{formIssue}</p>}
@@ -2257,25 +2378,25 @@ export function EditTriggerDialog({
   universeId: string;
   botId: string;
   bots: BotListItem[];
-  trigger: BotTrigger;
+  trigger: BotTriggerView;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   /** Only routing, batching, busy handling, and retention: the rest of the trigger is edited elsewhere (the inbox's sender list). */
   deliveryOnly?: boolean;
 }) {
   const queryClient = useQueryClient();
-  const scheduleSpec = trigger.kind === "schedule" ? (trigger.spec as BotScheduleSpec) : null;
-  const oneShotAt = scheduleSpec?.at ?? null;
+  const oneShotAtMs = trigger.kind === "schedule" ? (trigger.atMs ?? null) : null;
   const [forms, setForms] = useState<TriggerForms>(() => ({
-    schedule: scheduleSpec
-      ? {
-          once: Boolean(scheduleSpec.at),
-          at: scheduleSpec.at ?? "",
-          cron: scheduleSpec.cron ?? "",
-          timezone: scheduleSpec.timezone,
-          summary: scheduleSpec.summary,
-        }
-      : defaultScheduleForm,
+    schedule:
+      trigger.kind === "schedule"
+        ? {
+            once: trigger.atMs != null,
+            at: "",
+            cron: trigger.cron ?? "",
+            timezone: trigger.timezone ?? "UTC",
+            summary: trigger.summary,
+          }
+        : defaultScheduleForm,
     webhook: trigger.kind === "webhook" ? webhookFormFromTrigger(trigger) : defaultWebhookForm,
     poll: trigger.kind === "poll" ? pollFormFromTrigger(trigger) : defaultPollForm,
     inbox: trigger.kind === "bot" ? inboxFormFromTrigger(trigger) : defaultInboxForm(),
@@ -2284,31 +2405,48 @@ export function EditTriggerDialog({
   const [error, setError] = useState<string | null>(null);
   const patch = <K extends keyof TriggerForms>(key: K, next: TriggerForms[K]) =>
     setForms((current) => ({ ...current, [key]: next }));
-  const formIssue =
-    trigger.kind === "schedule" && oneShotAt
+  const formIssue = deliveryOnly
+    ? deliveryFormProblem(forms.inbox)
+    : trigger.kind === "schedule" && oneShotAtMs != null
       ? forms.schedule.summary.trim()
         ? null
         : "Say what the bot should do when this fires."
       : triggerFormProblem(trigger.kind, forms);
   const save = useMutation({
-    mutationFn: () =>
-      api(
-        "PATCH",
-        `/api/v1/universes/${universeId}/bots/${botId}/triggers/${trigger.name}`,
-        trigger.kind === "schedule"
-          ? {
-              spec: oneShotAt
-                ? { at: oneShotAt, timezone: "UTC", summary: forms.schedule.summary.trim() }
-                : scheduleSpecPayload({ ...forms.schedule, once: false }),
-            }
-          : trigger.kind === "poll"
-            ? pollPayload(forms.poll)
-            : trigger.kind === "bot"
-              ? inboxPayload(forms.inbox)
-              : trigger.kind === "chat"
-                ? chatPayload(forms.chat, (trigger.spec as BotChatSpec).pairingCode)
-                : webhookPayload(forms.webhook),
-      ),
+    mutationFn: () => {
+      const base = triggerInputOf(trigger);
+      let body: BotTriggerInput;
+      if (deliveryOnly) {
+        body = { ...base, ...deliveryPayload(forms.inbox) };
+      } else if (trigger.kind === "schedule") {
+        body = {
+          ...base,
+          kind: "schedule",
+          ...(oneShotAtMs != null
+            ? { atMs: oneShotAtMs, cron: null, timezone: "UTC", summary: forms.schedule.summary.trim() }
+            : { atMs: null, ...scheduleSpecPayload({ ...forms.schedule, once: false }) }),
+        };
+      } else if (trigger.kind === "poll") {
+        body = { ...base, kind: "poll", ...pollPayload(forms.poll) };
+      } else if (trigger.kind === "bot") {
+        body = { ...base, kind: "bot", ...inboxPayload(forms.inbox) };
+      } else if (trigger.kind === "chat") {
+        // Drop the stored code so switching pairing off does not carry it,
+        // and keep it (through the payload) when pairing stays on.
+        const { pairingCode: _existing, ...withoutCode } = base;
+        body = {
+          ...withoutCode,
+          kind: "chat",
+          ...chatPayload(forms.chat, trigger.pairingCode),
+        } as BotTriggerInput;
+      } else {
+        body = { ...base, kind: "webhook", ...webhookPayload(forms.webhook) };
+      }
+      return api("PUT", `/api/v1/universes/${universeId}/bots/${botId}/triggers/${trigger.triggerId}`, {
+        trigger: body,
+        expectedRevision: trigger.revision,
+      });
+    },
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ["bot-triggers", universeId, botId] });
       setError(null);
@@ -2321,7 +2459,7 @@ export function EditTriggerDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="h-[min(92dvh,900px)] grid-rows-[auto_minmax(0,1fr)_auto] gap-0 p-0 sm:max-w-xl">
         <DialogHeader className="border-b p-6 pr-14">
-          <DialogTitle>{deliveryOnly ? "Routing & batching" : `Edit ${trigger.name}`}</DialogTitle>
+          <DialogTitle>{deliveryOnly ? "Routing & batching" : `Edit ${trigger.triggerId}`}</DialogTitle>
           <DialogDescription>
             {deliveryOnly
               ? "How messages from other bots reach this bot: which conversation, whether they batch, and what happens while it is busy."
@@ -2355,11 +2493,11 @@ export function EditTriggerDialog({
               <ScheduleFields
                 form={forms.schedule}
                 setForm={(next) => patch("schedule", next)}
-                lockedAt={oneShotAt}
+                lockedAtMs={oneShotAtMs}
                 idPrefix="edit-trigger"
               />
             ) : (
-              <TriggerKindFields kind={trigger.kind} forms={forms} patch={patch} botId={botId} bots={bots} />
+              <TriggerKindFields universeId={universeId} kind={trigger.kind} forms={forms} patch={patch} botId={botId} bots={bots} />
             )}
           </div>
           <div className="grid gap-2 border-t p-4">

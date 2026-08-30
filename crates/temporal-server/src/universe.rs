@@ -33,7 +33,7 @@ use thiserror::Error;
 use uuid::Uuid;
 
 use crate::{
-    config::DeploymentStores,
+    config::{DeploymentStores, TaskQueues},
     environment_gateway::EnvironmentGatewayClientConfig,
     gateway::GatewayAgentApi,
     subagents::AgentApiSubagentRuntime,
@@ -144,9 +144,13 @@ struct UniverseEntry {
 /// minutes to hours, so a coarse cadence keeps the data-plane load negligible.
 pub const POWER_REAPER_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
 
+/// How often bot trigger Schedules are re-converged in the background.
+pub const BOT_SCHEDULE_RECONCILE_INTERVAL: std::time::Duration =
+    std::time::Duration::from_secs(10 * 60);
+
 pub struct UniverseRuntime {
     client: Client,
-    task_queue: String,
+    task_queues: TaskQueues,
     public_base_url: Option<String>,
     stores: DeploymentStores,
     clients: DeploymentClients,
@@ -165,7 +169,7 @@ impl UniverseRuntime {
             EnvironmentGatewayClientConfig::from_env(public_base_url.as_deref())?;
         Ok(Self {
             client,
-            task_queue,
+            task_queues: TaskQueues::derived_from(task_queue),
             public_base_url,
             stores,
             clients: DeploymentClients::from_env()?,
@@ -174,8 +178,20 @@ impl UniverseRuntime {
         })
     }
 
+    /// Use explicit per-role task queues instead of the ones derived from
+    /// the sessions queue.
+    pub fn with_task_queues(mut self, task_queues: TaskQueues) -> Self {
+        self.task_queues = task_queues;
+        self
+    }
+
+    /// The sessions task queue.
     pub fn task_queue(&self) -> &str {
-        &self.task_queue
+        &self.task_queues.sessions
+    }
+
+    pub fn task_queues(&self) -> &TaskQueues {
+        &self.task_queues
     }
 
     pub fn stores(&self) -> &DeploymentStores {
@@ -298,6 +314,39 @@ impl UniverseRuntime {
         }
     }
 
+    /// Converge every bot trigger Schedule of every universe at boot and
+    /// on a slow sweep afterwards. Trigger writes reconcile synchronously;
+    /// this pass repairs what a crash between the row and the Schedule left
+    /// behind.
+    pub async fn run_bot_schedule_reconciler(self: Arc<Self>) {
+        let mut interval = tokio::time::interval(BOT_SCHEDULE_RECONCILE_INTERVAL);
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let mut failures = crate::gateway::ReconcileFailureLog::default();
+        loop {
+            interval.tick().await;
+            let universes = match store_pg::list_universes(self.stores.pool()).await {
+                Ok(universes) => universes,
+                Err(error) => {
+                    tracing::warn!(target: "temporal_server", %error, "bot schedule reconciler scan failed");
+                    continue;
+                }
+            };
+            for (universe_id, _slug) in universes {
+                let state = match self.state_for(universe_id, false).await {
+                    Ok(state) => state,
+                    Err(error) => {
+                        tracing::warn!(target: "temporal_server", %universe_id, %error, "bot schedule reconciler could not resolve universe");
+                        continue;
+                    }
+                };
+                match state.api.reconcile_bot_schedules_once().await {
+                    Ok(_) => failures.succeeded(universe_id),
+                    Err(error) => failures.failed(universe_id, &error),
+                }
+            }
+        }
+    }
+
     async fn build_state(&self, universe_id: Uuid) -> Result<UniverseState, UniverseError> {
         let store = self.stores.store_for(universe_id);
         store
@@ -305,7 +354,9 @@ impl UniverseRuntime {
             .await
             .map_err(|error| UniverseError::Runtime(error.into()))?;
         let mut api = GatewayAgentApi::builder(self.client.clone(), store.clone())
-            .with_task_queue(self.task_queue.clone())
+            .with_task_queue(self.task_queues.sessions.clone())
+            .with_bot_task_queue(self.task_queues.bots.clone())
+            .with_channel_task_queue(self.task_queues.channels.clone())
             .with_oauth_token_client(self.clients.oauth_token.clone())
             .with_oauth_metadata_client(self.clients.oauth_metadata.clone())
             .with_github_api_client(self.clients.github.clone())

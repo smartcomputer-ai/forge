@@ -39,6 +39,8 @@ const universeReads = [
   "api-keys",
   "members",
   "bots",
+  "channel-accounts",
+  "channel-pairings",
   "integrations/github",
   "integrations/subscriptions",
 ];
@@ -113,16 +115,34 @@ describe("demo router", () => {
     const runId = (accepted.json as { run: { id: string; status: string } }).run.id;
     let after = 0;
     let completed = false;
+    let acceptedSubmission: string | null | undefined;
+    let userEntrySource: unknown = null;
     for (let i = 0; i < 20 && !completed; i++) {
       const page = (
         await call("GET", `/api/v1/universes/${universe!.id}/sessions/${sessionId}/events?after=${after}&limit=100&waitMs=3000`)
       ).json as SessionEventsPage;
       for (const event of page.events ?? []) {
         after = event.cursor.seq;
+        if (event.kind.type === "runAccepted" && event.kind.runId === runId) {
+          acceptedSubmission = event.kind.submissionId;
+        }
+        if (event.kind.type === "contextEntriesApplied") {
+          for (const entry of event.kind.entries) {
+            if (entry.kind.type === "message" && entry.kind.role === "user") {
+              userEntrySource = entry.source ?? null;
+            }
+          }
+        }
         if (event.kind.type === "runCompleted" && event.kind.runId === runId) completed = true;
       }
     }
     expect(completed).toBe(true);
+    // The page reconciles its optimistic bubble through these two joins:
+    // `runAccepted.submissionId` maps the send to its run, and the user
+    // entry's `source.runId` confirms the echo. Losing either shows a
+    // double bubble in the demo.
+    expect(acceptedSubmission).toBe("sub-1");
+    expect(userEntrySource).toMatchObject({ type: "runInput", runId });
     const view = (await call("GET", `/api/v1/universes/${universe!.id}/sessions/${sessionId}`)).json as {
       status: string;
       runs: Array<{ id: string; status: string }>;
@@ -136,21 +156,19 @@ describe("demo router", () => {
     const [universe] = (await call("GET", "/api/v1/universes")).json as Universe[];
     const [bot] = ((await call("GET", `/api/v1/universes/${universe!.id}/bots`)).json as { bots: BotListItem[] }).bots;
     const before = (await call("GET", `/api/v1/universes/${universe!.id}/bots/${bot!.botId}/events`)).json as {
-      events: Array<{ seq: number | null }>;
+      events: Array<{ seq: number }>;
     };
     const admitted = await call("POST", `/api/v1/universes/${universe!.id}/bots/${bot!.botId}/events`, {
-      kind: "smoke.test",
-      source: "vitest",
-      summary: "smoke test event",
-      payload: { hello: "world" },
+      event: { kind: "smoke.test", summary: "smoke test event", data: { hello: "world" } },
     });
-    expect([200, 201, 202]).toContain(admitted.status);
+    expect(admitted.status).toBe(202);
+    expect((admitted.json as { duplicate: boolean }).duplicate).toBe(false);
     await new Promise((resolve) => setTimeout(resolve, 6_000));
     const after = (await call("GET", `/api/v1/universes/${universe!.id}/bots/${bot!.botId}/events`)).json as {
-      events: Array<{ seq: number | null; outcome: string | null }>;
+      events: Array<{ seq: number; outcome: string | null }>;
     };
     expect(after.events.length).toBe(before.events.length + 1);
-    const newest = after.events.reduce((a, b) => ((a.seq ?? 0) > (b.seq ?? 0) ? a : b));
+    const newest = after.events.reduce((a, b) => (a.seq > b.seq ? a : b));
     expect(newest.outcome).not.toBeNull();
   }, 20_000);
 

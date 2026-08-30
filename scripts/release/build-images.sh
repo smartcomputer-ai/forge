@@ -38,27 +38,17 @@ for image in runtime platform platform-workers; do
   test "$(docker image inspect "${tag}-${image}" \
     --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}')" = "$git_sha"
 done
-test "$(docker image inspect "${tag}-platform-workers" --format '{{json .Config.Cmd}}')" = '["all"]'
 docker run --rm --entrypoint node "${tag}-platform-workers" -e \
-  'require("node:fs").accessSync("/app/node_modules/baileys/package.json")'
-for spec in \
-  channels-workflows:channels-workflows \
-  channels-activities:channels-activities \
-  bots-workflows:bots-workflows \
-  bots-activities:bots-activities \
-  telegram:telegram \
-  whatsapp:whatsapp \
-  channels:channels-workflows,channels-activities \
-  bots:bots-workflows,bots-activities \
-  all:channels-workflows,channels-activities,bots-workflows,bots-activities; do
-  role="${spec%%:*}"
-  expected="${spec#*:}"
-  docker run --rm --entrypoint node -e "TEST_ROLE=$role" -e "TEST_EXPECTED=$expected" \
-    "${tag}-platform-workers" \
-    --import tsx --input-type=module -e '
-      const { resolvePlatformWorkerRoles } = await import("./platform/workers/src/roles.ts");
-      const actual = resolvePlatformWorkerRoles(process.env.TEST_ROLE, undefined).join(",");
-      if (actual !== process.env.TEST_EXPECTED) process.exit(1);
-    '
-done
+  'for (const file of ["/app/node_modules/baileys/package.json", "/app/platform/connectors/src/host/main.ts"]) require("node:fs").accessSync(file)'
+# The connector host parses its configuration and derives account task queues
+# from the generated client; both must load from the staged runtime.
+docker run --rm --entrypoint node "${tag}-platform-workers" \
+  --import tsx --input-type=module -e '
+    const { parseHostConfig } = await import("./platform/connectors/src/host/config.ts");
+    const { connectorTaskQueue, WORKFLOW_CONTRACT_VECTORS } = await import("@lightspeed/agent-client/workflow");
+    const config = parseHostConfig({ LIGHTSPEED_API_URL: "http://runtime:18080/rpc", LIGHTSPEED_CONNECTOR_PROVIDERS: "telegram" });
+    if (config.providers.join(",") !== "telegram") process.exit(1);
+    const vector = WORKFLOW_CONTRACT_VECTORS.channels;
+    if (connectorTaskQueue(vector.inputs.universeId, vector.inputs.provider, vector.inputs.accountId) !== vector.connectorTaskQueue) process.exit(1);
+  '
 node -e 'JSON.parse(require("node:fs").readFileSync("dist/release-manifest.json", "utf8"))'

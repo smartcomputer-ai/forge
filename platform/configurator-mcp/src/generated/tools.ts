@@ -8580,5 +8580,2526 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
         }
       }
     }
+  },
+  {
+    "name": "lightspeed_bots_create",
+    "method": "bots/create",
+    "summary": "Create a bot",
+    "description": "Creates the bot record, optionally with its triggers, and starts its controller. Fails if the bot id exists; a trigger failure rolls the bot back.",
+    "paramsType": "BotCreateParams",
+    "resultType": "AgentApiOutcome<BotCreateResponse>",
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "bot": {
+          "$ref": "#/definitions/BotInput"
+        },
+        "triggers": {
+          "description": "Triggers created with the bot in one go; a failure rolls the bot\nback.",
+          "items": {
+            "$ref": "#/definitions/BotTriggerInput"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "bot"
+      ],
+      "type": "object",
+      "definitions": {
+        "BotBreaker": {
+          "description": "Per-trigger flood breaker: a trigger that admits more than `fires`\nevents inside `window_ms` is disabled until a human re-enables it.",
+          "properties": {
+            "fires": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "windowMs": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "fires",
+            "windowMs"
+          ],
+          "type": "object"
+        },
+        "BotCoalescePolicy": {
+          "description": "Coalescing window: events sharing a route flush as one delivery.",
+          "properties": {
+            "debounceMs": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "maxCount": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "maxWaitMs": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "debounceMs",
+            "maxWaitMs",
+            "maxCount"
+          ],
+          "type": "object"
+        },
+        "BotDeliverPolicy": {
+          "properties": {
+            "whenBusy": {
+              "allOf": [
+                {
+                  "$ref": "#/definitions/BotWhenBusy"
+                }
+              ],
+              "default": "queue"
+            }
+          },
+          "type": "object"
+        },
+        "BotId": {
+          "type": "string"
+        },
+        "BotInput": {
+          "description": "The mutable configuration of a bot, replaced whole with an expected\nrevision. The bot id, event counter, and lifecycle columns live on the\nrecord, not here.",
+          "properties": {
+            "botId": {
+              "$ref": "#/definitions/BotId"
+            },
+            "breaker": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/BotBreaker"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "brief": {
+              "description": "Standing instructions appended to the profile's instructions — the\nbot's job description.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "description": {
+              "description": "One line other bots read in the directory.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "displayName": {
+              "description": "Mutable label for humans; the bot id stays the identity.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "emit": {
+              "default": false,
+              "description": "Capability grant: `bot_emit` — events to itself or another bot's\ninbox. Emitting bots are rate-capped.",
+              "type": "boolean"
+            },
+            "enabled": {
+              "default": true,
+              "description": "Reversible pause: sessions and chat context stay, nothing is\ndelivered.",
+              "type": "boolean"
+            },
+            "profileId": {
+              "$ref": "#/definitions/ProfileId"
+            },
+            "routedSessionTtlMs": {
+              "description": "Close routed (`perKey` / `perEvent`) sessions idle longer than this;\nabsent keeps them open. A trigger's `sessionTtlMs` overrides it.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "runsPerDay": {
+              "description": "Budget: runs started per UTC day (sub-agent descendants count);\nabsent means unlimited.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "selfConfig": {
+              "default": false,
+              "description": "Capability grant: the mutating self-configuration tools\n(`bot_trigger_put`, `bot_trigger_delete`, `bot_brief_put`).",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "botId",
+            "profileId"
+          ],
+          "type": "object"
+        },
+        "BotTriggerId": {
+          "type": "string"
+        },
+        "BotTriggerInput": {
+          "description": "The whole configuration of one trigger, replaced with an expected\nrevision.",
+          "oneOf": [
+            {
+              "properties": {
+                "atMs": {
+                  "description": "One-shot instant; the trigger disables itself after firing.",
+                  "format": "int64",
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "cron": {
+                  "description": "Classic 5-field cron or an `@macro`; exclusive with `atMs`.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "kind": {
+                  "const": "schedule",
+                  "type": "string"
+                },
+                "summary": {
+                  "description": "What the fired event asks the session to do.",
+                  "type": "string"
+                },
+                "timezone": {
+                  "default": "UTC",
+                  "description": "IANA timezone for cron evaluation; default `UTC`.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "summary"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "kind": {
+                  "const": "webhook",
+                  "type": "string"
+                },
+                "preset": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/definitions/WebhookPreset"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "verification": {
+                  "allOf": [
+                    {
+                      "$ref": "#/definitions/WebhookVerification"
+                    }
+                  ],
+                  "default": {
+                    "scheme": "token"
+                  }
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "cursor": {
+                  "$ref": "#/definitions/PollCursorSpec"
+                },
+                "intervalMs": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "items": {
+                  "description": "Dot path to the item array in the payload; absent = the payload\nis the item list (or one item).",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "kind": {
+                  "const": "poll",
+                  "type": "string"
+                },
+                "source": {
+                  "$ref": "#/definitions/PollSource"
+                }
+              },
+              "required": [
+                "kind",
+                "source",
+                "intervalMs",
+                "cursor"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Inbox: which bots may address this one; absent = any bot in the\nuniverse.",
+              "properties": {
+                "from": {
+                  "items": {
+                    "$ref": "#/definitions/BotId"
+                  },
+                  "type": [
+                    "array",
+                    "null"
+                  ]
+                },
+                "kind": {
+                  "const": "bot",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "access": {
+                  "allOf": [
+                    {
+                      "$ref": "#/definitions/ChatAccess"
+                    }
+                  ],
+                  "default": {
+                    "turn": "anyone"
+                  }
+                },
+                "accountId": {
+                  "description": "The universe's channel account this connection serves.",
+                  "type": "string"
+                },
+                "activation": {
+                  "allOf": [
+                    {
+                      "$ref": "#/definitions/ChatActivation"
+                    }
+                  ],
+                  "default": {}
+                },
+                "kind": {
+                  "const": "chat",
+                  "type": "string"
+                },
+                "matchScope": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/definitions/ChatScope"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "pairing": {
+                  "allOf": [
+                    {
+                      "$ref": "#/definitions/ChatPairing"
+                    }
+                  ],
+                  "default": "code"
+                },
+                "priority": {
+                  "default": 100,
+                  "description": "Lower wins among matching chat triggers on one account.",
+                  "format": "uint32",
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "kind",
+                "accountId"
+              ],
+              "type": "object"
+            }
+          ],
+          "properties": {
+            "coalesce": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/BotCoalescePolicy"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "deliver": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/BotDeliverPolicy"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "enabled": {
+              "default": true,
+              "type": "boolean"
+            },
+            "filter": {
+              "description": "CEL over `{event, data, headers}`; a non-matching event is refused\nand never stored. Fails closed.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "pairingCode": {
+              "description": "Chat triggers with `pairing: code`: set a specific pairing code\n(8–64 chars) instead of the server-minted one. Never returned to\nnon-managing principals.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "route": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/BotTriggerRoute"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "sessionTtlMs": {
+              "description": "Retention of the sessions this trigger routes to: absent inherits the\nbot's `routedSessionTtlMs`, `0` keeps them open indefinitely (the\nchat default).",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "triggerId": {
+              "$ref": "#/definitions/BotTriggerId"
+            }
+          },
+          "required": [
+            "triggerId"
+          ],
+          "type": "object"
+        },
+        "BotTriggerRoute": {
+          "description": "Which session a trigger's events are delivered to; absent means the\nbot's main session.",
+          "oneOf": [
+            {
+              "properties": {
+                "policy": {
+                  "const": "bot",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "policy"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "One session per key: a CEL expression over `{event, data, headers}`\nyielding the key, or the preset's key when absent.",
+              "properties": {
+                "key": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "policy": {
+                  "const": "perKey",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "policy"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "One fresh session per event.",
+              "properties": {
+                "policy": {
+                  "const": "perEvent",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "policy"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "BotWhenBusy": {
+          "oneOf": [
+            {
+              "const": "queue",
+              "description": "Wait for the session to become idle.",
+              "type": "string"
+            },
+            {
+              "const": "steer",
+              "description": "Fold the events into the running run as steering.",
+              "type": "string"
+            },
+            {
+              "const": "append",
+              "description": "Append the events as context without starting a run.",
+              "type": "string"
+            }
+          ]
+        },
+        "ChatAccess": {
+          "description": "Who may take a turn and who may issue control commands, by provider\nhandle (Telegram user id, WhatsApp JID). Handle allowlists on the\ntrigger replace any platform membership lookup.",
+          "properties": {
+            "allowed": {
+              "description": "Handles allowed to take a turn when `turn` is `listed`.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "controllers": {
+              "description": "Handles allowed to issue `/activation` and `/status`; empty denies\ncontrol commands to everyone.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "turn": {
+              "allOf": [
+                {
+                  "$ref": "#/definitions/ChatTurnAccess"
+                }
+              ],
+              "default": "anyone"
+            }
+          },
+          "type": "object"
+        },
+        "ChatActivation": {
+          "description": "When the bot acts in a conversation.",
+          "properties": {
+            "group": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/ChatGroupActivation"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "mentionNames": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "triggerPrefixes": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "type": "object"
+        },
+        "ChatGroupActivation": {
+          "oneOf": [
+            {
+              "const": "mention",
+              "description": "Act on mentions, replies to the bot, and trigger prefixes only.",
+              "type": "string"
+            },
+            {
+              "const": "always",
+              "description": "Act on every message.",
+              "type": "string"
+            }
+          ]
+        },
+        "ChatPairing": {
+          "description": "Whether a conversation must present a pairing code before it connects.",
+          "oneOf": [
+            {
+              "const": "code",
+              "description": "A conversation connects once someone sends the trigger's pairing\ncode (minted by the server, shown to managers).",
+              "type": "string"
+            },
+            {
+              "const": "open",
+              "description": "Every matching conversation connects implicitly.",
+              "type": "string"
+            }
+          ]
+        },
+        "ChatScope": {
+          "enum": [
+            "direct",
+            "group"
+          ],
+          "type": "string"
+        },
+        "ChatTurnAccess": {
+          "oneOf": [
+            {
+              "const": "anyone",
+              "description": "Anyone in the conversation may take a turn.",
+              "type": "string"
+            },
+            {
+              "const": "listed",
+              "description": "Only the listed provider handles may take a turn.",
+              "type": "string"
+            }
+          ]
+        },
+        "PollCursorSpec": {
+          "description": "Dedupe discipline of a poll: an id set for unordered feeds, a watermark\nfor ordered ones.",
+          "oneOf": [
+            {
+              "description": "Dot path to each item's id.",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "kind": {
+                  "const": "idSet",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "id"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Dot path to each item's monotonically increasing field.",
+              "properties": {
+                "field": {
+                  "type": "string"
+                },
+                "kind": {
+                  "const": "watermark",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "field"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "PollHttpAuth": {
+          "description": "Leased credential for an HTTP poll source; the value never appears in\nthe trigger document.",
+          "properties": {
+            "audience": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "grantId": {
+              "type": "string"
+            },
+            "header": {
+              "description": "Header carrying the credential; default `authorization`.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "scheme": {
+              "description": "Scheme prefix; default `Bearer`, empty sends the token raw.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "grantId"
+          ],
+          "type": "object"
+        },
+        "PollHttpMethod": {
+          "enum": [
+            "GET",
+            "POST"
+          ],
+          "type": "string"
+        },
+        "PollSource": {
+          "description": "Where a poll trigger reads from.",
+          "oneOf": [
+            {
+              "properties": {
+                "auth": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/definitions/PollHttpAuth"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "body": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "headers": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "description": "Non-secret headers only; credentials come from `auth`.",
+                  "type": "object"
+                },
+                "kind": {
+                  "const": "http",
+                  "type": "string"
+                },
+                "method": {
+                  "allOf": [
+                    {
+                      "$ref": "#/definitions/PollHttpMethod"
+                    }
+                  ],
+                  "default": "GET"
+                },
+                "url": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "url"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "argv": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "cwd": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "environmentId": {
+                  "description": "Universe environment the command runs in (woken on use); absent\nruns in the bot's own environment (the profile's `existing`\none), resolved at fire time.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "kind": {
+                  "const": "exec",
+                  "type": "string"
+                },
+                "timeoutMs": {
+                  "description": "Job wall-clock budget; also bounds the fire activity's wait.",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "kind",
+                "argv"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "ProfileId": {
+          "type": "string"
+        },
+        "WebhookPreset": {
+          "enum": [
+            "github"
+          ],
+          "type": "string"
+        },
+        "WebhookVerification": {
+          "description": "How an inbound webhook proves it comes from the sender: possession of\nthe URL token, or additionally an HMAC-SHA256 over the raw body with a\nsecret leased from a retrievable grant.",
+          "oneOf": [
+            {
+              "properties": {
+                "scheme": {
+                  "const": "token",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "scheme"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "audience": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "grantId": {
+                  "type": "string"
+                },
+                "header": {
+                  "type": "string"
+                },
+                "prefix": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "scheme": {
+                  "const": "hmac-sha256",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "scheme",
+                "grantId",
+                "header"
+              ],
+              "type": "object"
+            }
+          ]
+        }
+      }
+    }
+  },
+  {
+    "name": "lightspeed_bots_put",
+    "method": "bots/put",
+    "summary": "Create or replace a bot document",
+    "description": "Replaces the mutable configuration whole and signals the controller, which applies it at its next idle boundary. Pass expectedRevision when replacing; a closed bot accepts label-only edits.",
+    "paramsType": "BotPutParams",
+    "resultType": "AgentApiOutcome<BotPutResponse>",
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "bot": {
+          "$ref": "#/definitions/BotInput"
+        },
+        "expectedRevision": {
+          "description": "Checked only when the bot already exists; absent replaces (or\ncreates) unconditionally.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "bot"
+      ],
+      "type": "object",
+      "definitions": {
+        "BotBreaker": {
+          "description": "Per-trigger flood breaker: a trigger that admits more than `fires`\nevents inside `window_ms` is disabled until a human re-enables it.",
+          "properties": {
+            "fires": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "windowMs": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "fires",
+            "windowMs"
+          ],
+          "type": "object"
+        },
+        "BotId": {
+          "type": "string"
+        },
+        "BotInput": {
+          "description": "The mutable configuration of a bot, replaced whole with an expected\nrevision. The bot id, event counter, and lifecycle columns live on the\nrecord, not here.",
+          "properties": {
+            "botId": {
+              "$ref": "#/definitions/BotId"
+            },
+            "breaker": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/BotBreaker"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "brief": {
+              "description": "Standing instructions appended to the profile's instructions — the\nbot's job description.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "description": {
+              "description": "One line other bots read in the directory.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "displayName": {
+              "description": "Mutable label for humans; the bot id stays the identity.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "emit": {
+              "default": false,
+              "description": "Capability grant: `bot_emit` — events to itself or another bot's\ninbox. Emitting bots are rate-capped.",
+              "type": "boolean"
+            },
+            "enabled": {
+              "default": true,
+              "description": "Reversible pause: sessions and chat context stay, nothing is\ndelivered.",
+              "type": "boolean"
+            },
+            "profileId": {
+              "$ref": "#/definitions/ProfileId"
+            },
+            "routedSessionTtlMs": {
+              "description": "Close routed (`perKey` / `perEvent`) sessions idle longer than this;\nabsent keeps them open. A trigger's `sessionTtlMs` overrides it.",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "runsPerDay": {
+              "description": "Budget: runs started per UTC day (sub-agent descendants count);\nabsent means unlimited.",
+              "format": "uint32",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "selfConfig": {
+              "default": false,
+              "description": "Capability grant: the mutating self-configuration tools\n(`bot_trigger_put`, `bot_trigger_delete`, `bot_brief_put`).",
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "botId",
+            "profileId"
+          ],
+          "type": "object"
+        },
+        "ProfileId": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  {
+    "name": "lightspeed_bots_read",
+    "method": "bots/read",
+    "summary": "Read a bot",
+    "description": "Returns the bot record, its current revision, and lifecycle columns.",
+    "paramsType": "BotReadParams",
+    "resultType": "AgentApiOutcome<BotReadResponse>",
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "botId": {
+          "$ref": "#/definitions/BotId"
+        }
+      },
+      "required": [
+        "botId"
+      ],
+      "type": "object",
+      "definitions": {
+        "BotId": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  {
+    "name": "lightspeed_bots_list",
+    "method": "bots/list",
+    "summary": "List bots",
+    "description": "Returns the roster: every bot with its trigger count, pending event count, and latest event.",
+    "paramsType": "BotListParams",
+    "resultType": "AgentApiOutcome<BotListResponse>",
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "type": "object"
+    }
+  },
+  {
+    "name": "lightspeed_bots_close",
+    "method": "bots/close",
+    "summary": "Close a bot",
+    "description": "Terminal and idempotent: disables every trigger, drops schedules, and tells the controller to archive pending events and force-close its sessions. Returns once signalled; follow bots/state/read for closing to closed.",
+    "paramsType": "BotCloseParams",
+    "resultType": "AgentApiOutcome<BotCloseResponse>",
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "botId": {
+          "$ref": "#/definitions/BotId"
+        }
+      },
+      "required": [
+        "botId"
+      ],
+      "type": "object",
+      "definitions": {
+        "BotId": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  {
+    "name": "lightspeed_bots_delete",
+    "method": "bots/delete",
+    "summary": "Delete a bot",
+    "description": "Closes the bot if needed, waits for its controller to complete, deletes the sessions it closed, and removes the record so the bot id is free again.",
+    "paramsType": "BotDeleteParams",
+    "resultType": "AgentApiOutcome<BotDeleteResponse>",
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "botId": {
+          "$ref": "#/definitions/BotId"
+        }
+      },
+      "required": [
+        "botId"
+      ],
+      "type": "object",
+      "definitions": {
+        "BotId": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  {
+    "name": "lightspeed_bots_state_read",
+    "method": "bots/state/read",
+    "summary": "Read bot controller state",
+    "description": "Queries the controller workflow for its live snapshot (sessions, buffers, active and recent deliveries, budget) and lists sub-agent descendants. The controller is absent until the bot's first event.",
+    "paramsType": "BotStateReadParams",
+    "resultType": "AgentApiOutcome<BotStateReadResponse>",
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "botId": {
+          "$ref": "#/definitions/BotId"
+        }
+      },
+      "required": [
+        "botId"
+      ],
+      "type": "object",
+      "definitions": {
+        "BotId": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  {
+    "name": "lightspeed_bots_sessions_rotate",
+    "method": "bots/sessions/rotate",
+    "summary": "Rotate a bot session",
+    "description": "Asks the controller to close one of the bot's sessions at its next idle boundary and continue on a fresh generation; queued deliveries follow.",
+    "paramsType": "BotSessionRotateParams",
+    "resultType": "AgentApiOutcome<BotSessionRotateResponse>",
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "botId": {
+          "$ref": "#/definitions/BotId"
+        },
+        "sessionId": {
+          "description": "One of the bot's sessions (main or routed); the controller closes it\nat its next idle boundary and continues on a successor generation.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "botId",
+        "sessionId"
+      ],
+      "type": "object",
+      "definitions": {
+        "BotId": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  {
+    "name": "lightspeed_bots_triggers_put",
+    "method": "bots/triggers/put",
+    "summary": "Create or replace a trigger",
+    "description": "Validates the trigger document (CEL parses, grants exist, one inbox per bot, chat routes per conversation), reconciles its Temporal Schedule, and stores it. A poll spec edit resets the cursor; a webhook keeps its URL token.",
+    "paramsType": "BotTriggerPutParams",
+    "resultType": "AgentApiOutcome<BotTriggerPutResponse>",
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "botId": {
+          "$ref": "#/definitions/BotId"
+        },
+        "expectedRevision": {
+          "description": "Checked only when the trigger already exists; absent replaces (or\ncreates) unconditionally.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "trigger": {
+          "$ref": "#/definitions/BotTriggerInput"
+        }
+      },
+      "required": [
+        "botId",
+        "trigger"
+      ],
+      "type": "object",
+      "definitions": {
+        "BotCoalescePolicy": {
+          "description": "Coalescing window: events sharing a route flush as one delivery.",
+          "properties": {
+            "debounceMs": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "maxCount": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
+            },
+            "maxWaitMs": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "debounceMs",
+            "maxWaitMs",
+            "maxCount"
+          ],
+          "type": "object"
+        },
+        "BotDeliverPolicy": {
+          "properties": {
+            "whenBusy": {
+              "allOf": [
+                {
+                  "$ref": "#/definitions/BotWhenBusy"
+                }
+              ],
+              "default": "queue"
+            }
+          },
+          "type": "object"
+        },
+        "BotId": {
+          "type": "string"
+        },
+        "BotTriggerId": {
+          "type": "string"
+        },
+        "BotTriggerInput": {
+          "description": "The whole configuration of one trigger, replaced with an expected\nrevision.",
+          "oneOf": [
+            {
+              "properties": {
+                "atMs": {
+                  "description": "One-shot instant; the trigger disables itself after firing.",
+                  "format": "int64",
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
+                "cron": {
+                  "description": "Classic 5-field cron or an `@macro`; exclusive with `atMs`.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "kind": {
+                  "const": "schedule",
+                  "type": "string"
+                },
+                "summary": {
+                  "description": "What the fired event asks the session to do.",
+                  "type": "string"
+                },
+                "timezone": {
+                  "default": "UTC",
+                  "description": "IANA timezone for cron evaluation; default `UTC`.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "summary"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "kind": {
+                  "const": "webhook",
+                  "type": "string"
+                },
+                "preset": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/definitions/WebhookPreset"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "verification": {
+                  "allOf": [
+                    {
+                      "$ref": "#/definitions/WebhookVerification"
+                    }
+                  ],
+                  "default": {
+                    "scheme": "token"
+                  }
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "cursor": {
+                  "$ref": "#/definitions/PollCursorSpec"
+                },
+                "intervalMs": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "items": {
+                  "description": "Dot path to the item array in the payload; absent = the payload\nis the item list (or one item).",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "kind": {
+                  "const": "poll",
+                  "type": "string"
+                },
+                "source": {
+                  "$ref": "#/definitions/PollSource"
+                }
+              },
+              "required": [
+                "kind",
+                "source",
+                "intervalMs",
+                "cursor"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Inbox: which bots may address this one; absent = any bot in the\nuniverse.",
+              "properties": {
+                "from": {
+                  "items": {
+                    "$ref": "#/definitions/BotId"
+                  },
+                  "type": [
+                    "array",
+                    "null"
+                  ]
+                },
+                "kind": {
+                  "const": "bot",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "access": {
+                  "allOf": [
+                    {
+                      "$ref": "#/definitions/ChatAccess"
+                    }
+                  ],
+                  "default": {
+                    "turn": "anyone"
+                  }
+                },
+                "accountId": {
+                  "description": "The universe's channel account this connection serves.",
+                  "type": "string"
+                },
+                "activation": {
+                  "allOf": [
+                    {
+                      "$ref": "#/definitions/ChatActivation"
+                    }
+                  ],
+                  "default": {}
+                },
+                "kind": {
+                  "const": "chat",
+                  "type": "string"
+                },
+                "matchScope": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/definitions/ChatScope"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "pairing": {
+                  "allOf": [
+                    {
+                      "$ref": "#/definitions/ChatPairing"
+                    }
+                  ],
+                  "default": "code"
+                },
+                "priority": {
+                  "default": 100,
+                  "description": "Lower wins among matching chat triggers on one account.",
+                  "format": "uint32",
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "kind",
+                "accountId"
+              ],
+              "type": "object"
+            }
+          ],
+          "properties": {
+            "coalesce": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/BotCoalescePolicy"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "deliver": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/BotDeliverPolicy"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "enabled": {
+              "default": true,
+              "type": "boolean"
+            },
+            "filter": {
+              "description": "CEL over `{event, data, headers}`; a non-matching event is refused\nand never stored. Fails closed.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "pairingCode": {
+              "description": "Chat triggers with `pairing: code`: set a specific pairing code\n(8–64 chars) instead of the server-minted one. Never returned to\nnon-managing principals.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "route": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/BotTriggerRoute"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "sessionTtlMs": {
+              "description": "Retention of the sessions this trigger routes to: absent inherits the\nbot's `routedSessionTtlMs`, `0` keeps them open indefinitely (the\nchat default).",
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "triggerId": {
+              "$ref": "#/definitions/BotTriggerId"
+            }
+          },
+          "required": [
+            "triggerId"
+          ],
+          "type": "object"
+        },
+        "BotTriggerRoute": {
+          "description": "Which session a trigger's events are delivered to; absent means the\nbot's main session.",
+          "oneOf": [
+            {
+              "properties": {
+                "policy": {
+                  "const": "bot",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "policy"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "One session per key: a CEL expression over `{event, data, headers}`\nyielding the key, or the preset's key when absent.",
+              "properties": {
+                "key": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "policy": {
+                  "const": "perKey",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "policy"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "One fresh session per event.",
+              "properties": {
+                "policy": {
+                  "const": "perEvent",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "policy"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "BotWhenBusy": {
+          "oneOf": [
+            {
+              "const": "queue",
+              "description": "Wait for the session to become idle.",
+              "type": "string"
+            },
+            {
+              "const": "steer",
+              "description": "Fold the events into the running run as steering.",
+              "type": "string"
+            },
+            {
+              "const": "append",
+              "description": "Append the events as context without starting a run.",
+              "type": "string"
+            }
+          ]
+        },
+        "ChatAccess": {
+          "description": "Who may take a turn and who may issue control commands, by provider\nhandle (Telegram user id, WhatsApp JID). Handle allowlists on the\ntrigger replace any platform membership lookup.",
+          "properties": {
+            "allowed": {
+              "description": "Handles allowed to take a turn when `turn` is `listed`.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "controllers": {
+              "description": "Handles allowed to issue `/activation` and `/status`; empty denies\ncontrol commands to everyone.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "turn": {
+              "allOf": [
+                {
+                  "$ref": "#/definitions/ChatTurnAccess"
+                }
+              ],
+              "default": "anyone"
+            }
+          },
+          "type": "object"
+        },
+        "ChatActivation": {
+          "description": "When the bot acts in a conversation.",
+          "properties": {
+            "group": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/ChatGroupActivation"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "mentionNames": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "triggerPrefixes": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "type": "object"
+        },
+        "ChatGroupActivation": {
+          "oneOf": [
+            {
+              "const": "mention",
+              "description": "Act on mentions, replies to the bot, and trigger prefixes only.",
+              "type": "string"
+            },
+            {
+              "const": "always",
+              "description": "Act on every message.",
+              "type": "string"
+            }
+          ]
+        },
+        "ChatPairing": {
+          "description": "Whether a conversation must present a pairing code before it connects.",
+          "oneOf": [
+            {
+              "const": "code",
+              "description": "A conversation connects once someone sends the trigger's pairing\ncode (minted by the server, shown to managers).",
+              "type": "string"
+            },
+            {
+              "const": "open",
+              "description": "Every matching conversation connects implicitly.",
+              "type": "string"
+            }
+          ]
+        },
+        "ChatScope": {
+          "enum": [
+            "direct",
+            "group"
+          ],
+          "type": "string"
+        },
+        "ChatTurnAccess": {
+          "oneOf": [
+            {
+              "const": "anyone",
+              "description": "Anyone in the conversation may take a turn.",
+              "type": "string"
+            },
+            {
+              "const": "listed",
+              "description": "Only the listed provider handles may take a turn.",
+              "type": "string"
+            }
+          ]
+        },
+        "PollCursorSpec": {
+          "description": "Dedupe discipline of a poll: an id set for unordered feeds, a watermark\nfor ordered ones.",
+          "oneOf": [
+            {
+              "description": "Dot path to each item's id.",
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "kind": {
+                  "const": "idSet",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "id"
+              ],
+              "type": "object"
+            },
+            {
+              "description": "Dot path to each item's monotonically increasing field.",
+              "properties": {
+                "field": {
+                  "type": "string"
+                },
+                "kind": {
+                  "const": "watermark",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "field"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "PollHttpAuth": {
+          "description": "Leased credential for an HTTP poll source; the value never appears in\nthe trigger document.",
+          "properties": {
+            "audience": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "grantId": {
+              "type": "string"
+            },
+            "header": {
+              "description": "Header carrying the credential; default `authorization`.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "scheme": {
+              "description": "Scheme prefix; default `Bearer`, empty sends the token raw.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "grantId"
+          ],
+          "type": "object"
+        },
+        "PollHttpMethod": {
+          "enum": [
+            "GET",
+            "POST"
+          ],
+          "type": "string"
+        },
+        "PollSource": {
+          "description": "Where a poll trigger reads from.",
+          "oneOf": [
+            {
+              "properties": {
+                "auth": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/definitions/PollHttpAuth"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "body": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "headers": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "description": "Non-secret headers only; credentials come from `auth`.",
+                  "type": "object"
+                },
+                "kind": {
+                  "const": "http",
+                  "type": "string"
+                },
+                "method": {
+                  "allOf": [
+                    {
+                      "$ref": "#/definitions/PollHttpMethod"
+                    }
+                  ],
+                  "default": "GET"
+                },
+                "url": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "kind",
+                "url"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "argv": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "cwd": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "environmentId": {
+                  "description": "Universe environment the command runs in (woken on use); absent\nruns in the bot's own environment (the profile's `existing`\none), resolved at fire time.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "kind": {
+                  "const": "exec",
+                  "type": "string"
+                },
+                "timeoutMs": {
+                  "description": "Job wall-clock budget; also bounds the fire activity's wait.",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "kind",
+                "argv"
+              ],
+              "type": "object"
+            }
+          ]
+        },
+        "WebhookPreset": {
+          "enum": [
+            "github"
+          ],
+          "type": "string"
+        },
+        "WebhookVerification": {
+          "description": "How an inbound webhook proves it comes from the sender: possession of\nthe URL token, or additionally an HMAC-SHA256 over the raw body with a\nsecret leased from a retrievable grant.",
+          "oneOf": [
+            {
+              "properties": {
+                "scheme": {
+                  "const": "token",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "scheme"
+              ],
+              "type": "object"
+            },
+            {
+              "properties": {
+                "audience": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "grantId": {
+                  "type": "string"
+                },
+                "header": {
+                  "type": "string"
+                },
+                "prefix": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "scheme": {
+                  "const": "hmac-sha256",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "scheme",
+                "grantId",
+                "header"
+              ],
+              "type": "object"
+            }
+          ]
+        }
+      }
+    }
+  },
+  {
+    "name": "lightspeed_bots_triggers_read",
+    "method": "bots/triggers/read",
+    "summary": "Read a trigger",
+    "description": "Returns one trigger with its incidents and cursor; the ingest path and pairing code are shown only to managing principals.",
+    "paramsType": "BotTriggerReadParams",
+    "resultType": "AgentApiOutcome<BotTriggerReadResponse>",
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "botId": {
+          "$ref": "#/definitions/BotId"
+        },
+        "triggerId": {
+          "$ref": "#/definitions/BotTriggerId"
+        }
+      },
+      "required": [
+        "botId",
+        "triggerId"
+      ],
+      "type": "object",
+      "definitions": {
+        "BotId": {
+          "type": "string"
+        },
+        "BotTriggerId": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  {
+    "name": "lightspeed_bots_triggers_list",
+    "method": "bots/triggers/list",
+    "summary": "List a bot's triggers",
+    "description": "Returns every trigger of the bot ordered by id, secrets redacted for non-managing principals.",
+    "paramsType": "BotTriggerListParams",
+    "resultType": "AgentApiOutcome<BotTriggerListResponse>",
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "botId": {
+          "$ref": "#/definitions/BotId"
+        }
+      },
+      "required": [
+        "botId"
+      ],
+      "type": "object",
+      "definitions": {
+        "BotId": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  {
+    "name": "lightspeed_bots_triggers_delete",
+    "method": "bots/triggers/delete",
+    "summary": "Delete a trigger",
+    "description": "Drops the trigger's Temporal Schedule and pairings, then the record; stored events keep their history.",
+    "paramsType": "BotTriggerDeleteParams",
+    "resultType": "AgentApiOutcome<BotTriggerDeleteResponse>",
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "botId": {
+          "$ref": "#/definitions/BotId"
+        },
+        "triggerId": {
+          "$ref": "#/definitions/BotTriggerId"
+        }
+      },
+      "required": [
+        "botId",
+        "triggerId"
+      ],
+      "type": "object",
+      "definitions": {
+        "BotId": {
+          "type": "string"
+        },
+        "BotTriggerId": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  {
+    "name": "lightspeed_bots_events_admit",
+    "method": "bots/events/admit",
+    "summary": "Admit an event manually",
+    "description": "Stores an operator-authored event for the bot's main session and wakes the controller. eventId is the dedupe identity; a duplicate returns the stored row.",
+    "paramsType": "BotEventAdmitParams",
+    "resultType": "AgentApiOutcome<BotEventAdmitResponse>",
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "botId": {
+          "$ref": "#/definitions/BotId"
+        },
+        "event": {
+          "$ref": "#/definitions/BotEventInput"
+        }
+      },
+      "required": [
+        "botId",
+        "event"
+      ],
+      "type": "object",
+      "definitions": {
+        "BotEventInput": {
+          "description": "A manually admitted event: what an operator posts through\n`bots/events/admit`.",
+          "properties": {
+            "correlationId": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "data": {},
+            "eventId": {
+              "description": "Dedupe identity; generated when absent.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "headers": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "type": "object"
+            },
+            "kind": {
+              "type": "string"
+            },
+            "links": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "occurredAtMs": {
+              "format": "int64",
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "summary": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "summary"
+          ],
+          "type": "object"
+        },
+        "BotId": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  {
+    "name": "lightspeed_bots_events_replay",
+    "method": "bots/events/replay",
+    "summary": "Replay a stored event",
+    "description": "Re-admits the stored envelope as a fresh event with the original routing; the replay never coalesces.",
+    "paramsType": "BotEventReplayParams",
+    "resultType": "AgentApiOutcome<BotEventReplayResponse>",
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "botId": {
+          "$ref": "#/definitions/BotId"
+        },
+        "seq": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "botId",
+        "seq"
+      ],
+      "type": "object",
+      "definitions": {
+        "BotId": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  {
+    "name": "lightspeed_bots_events_list",
+    "method": "bots/events/list",
+    "summary": "List a bot's events",
+    "description": "Cursor-paginated event log, newest first, with outcomes; payload documents stay in the CAS.",
+    "paramsType": "BotEventListParams",
+    "resultType": "AgentApiOutcome<BotEventListResponse>",
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "botId": {
+          "$ref": "#/definitions/BotId"
+        },
+        "cursor": {
+          "description": "Opaque cursor from a previous page.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "limit": {
+          "description": "Page size; server-clamped.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "botId"
+      ],
+      "type": "object",
+      "definitions": {
+        "BotId": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  {
+    "name": "lightspeed_bots_events_read",
+    "method": "bots/events/read",
+    "summary": "Read an event by number",
+    "description": "Returns the event row and its full stored envelope document.",
+    "paramsType": "BotEventReadParams",
+    "resultType": "AgentApiOutcome<BotEventReadResponse>",
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "botId": {
+          "$ref": "#/definitions/BotId"
+        },
+        "seq": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "botId",
+        "seq"
+      ],
+      "type": "object",
+      "definitions": {
+        "BotId": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  {
+    "name": "lightspeed_bots_filters_test",
+    "method": "bots/filters/test",
+    "summary": "Test a CEL filter",
+    "description": "Evaluates a filter against one payload or a sample of recent stored events, reporting matches and evaluation errors without changing anything.",
+    "paramsType": "BotFilterTestParams",
+    "resultType": "AgentApiOutcome<BotFilterTestResponse>",
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "botId": {
+          "$ref": "#/definitions/BotId"
+        },
+        "filter": {
+          "description": "CEL over `{event, data, headers}`.",
+          "type": "string"
+        },
+        "limit": {
+          "description": "How many recent stored events to sample when no payload is given.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "payload": {
+          "description": "A document to test instead of stored events: `{kind?, data?,\nheaders?}`."
+        }
+      },
+      "required": [
+        "botId",
+        "filter"
+      ],
+      "type": "object",
+      "definitions": {
+        "BotId": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  {
+    "name": "lightspeed_channels_accounts_create",
+    "method": "channels/accounts/create",
+    "summary": "Create a channel account",
+    "description": "Registers a provider account (Telegram, WhatsApp) for this universe. The credential is a retrievable grant reference; no token is accepted here.",
+    "paramsType": "ChannelAccountCreateParams",
+    "resultType": "AgentApiOutcome<ChannelAccountCreateResponse>",
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "account": {
+          "$ref": "#/definitions/ChannelAccountInput"
+        }
+      },
+      "required": [
+        "account"
+      ],
+      "type": "object",
+      "definitions": {
+        "ChannelAccountId": {
+          "type": "string"
+        },
+        "ChannelAccountInput": {
+          "description": "A provider account served by the connector host. Secret material stays\nin the referenced grant; this document is routing identity and\noperational configuration.",
+          "properties": {
+            "accountId": {
+              "$ref": "#/definitions/ChannelAccountId"
+            },
+            "credentialGrantId": {
+              "description": "Retrievable auth grant holding the provider token (a Telegram bot\ntoken); the connector host leases it. Absent for providers whose\ncredential is a session state directory (WhatsApp).",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "displayName": {
+              "type": "string"
+            },
+            "enabled": {
+              "default": true,
+              "type": "boolean"
+            },
+            "provider": {
+              "$ref": "#/definitions/ChannelProvider"
+            },
+            "providerAccountId": {
+              "description": "Provider-native account identity: the Telegram bot username or\nnumeric id, the WhatsApp phone number. Unique per universe and\nprovider.",
+              "type": "string"
+            },
+            "settings": {
+              "allOf": [
+                {
+                  "$ref": "#/definitions/ChannelAccountSettings"
+                }
+              ],
+              "default": {}
+            }
+          },
+          "required": [
+            "accountId",
+            "provider",
+            "providerAccountId",
+            "displayName"
+          ],
+          "type": "object"
+        },
+        "ChannelAccountSettings": {
+          "additionalProperties": {},
+          "properties": {
+            "printQr": {
+              "description": "WhatsApp: print the pairing QR code on the connector's terminal.",
+              "type": [
+                "boolean",
+                "null"
+              ]
+            }
+          },
+          "type": "object"
+        },
+        "ChannelProvider": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  {
+    "name": "lightspeed_channels_accounts_put",
+    "method": "channels/accounts/put",
+    "summary": "Create or replace a channel account",
+    "description": "Replaces the account document whole; pass expectedRevision when replacing. The connector host picks the change up on its next discovery pass.",
+    "paramsType": "ChannelAccountPutParams",
+    "resultType": "AgentApiOutcome<ChannelAccountPutResponse>",
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "account": {
+          "$ref": "#/definitions/ChannelAccountInput"
+        },
+        "expectedRevision": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "account"
+      ],
+      "type": "object",
+      "definitions": {
+        "ChannelAccountId": {
+          "type": "string"
+        },
+        "ChannelAccountInput": {
+          "description": "A provider account served by the connector host. Secret material stays\nin the referenced grant; this document is routing identity and\noperational configuration.",
+          "properties": {
+            "accountId": {
+              "$ref": "#/definitions/ChannelAccountId"
+            },
+            "credentialGrantId": {
+              "description": "Retrievable auth grant holding the provider token (a Telegram bot\ntoken); the connector host leases it. Absent for providers whose\ncredential is a session state directory (WhatsApp).",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "displayName": {
+              "type": "string"
+            },
+            "enabled": {
+              "default": true,
+              "type": "boolean"
+            },
+            "provider": {
+              "$ref": "#/definitions/ChannelProvider"
+            },
+            "providerAccountId": {
+              "description": "Provider-native account identity: the Telegram bot username or\nnumeric id, the WhatsApp phone number. Unique per universe and\nprovider.",
+              "type": "string"
+            },
+            "settings": {
+              "allOf": [
+                {
+                  "$ref": "#/definitions/ChannelAccountSettings"
+                }
+              ],
+              "default": {}
+            }
+          },
+          "required": [
+            "accountId",
+            "provider",
+            "providerAccountId",
+            "displayName"
+          ],
+          "type": "object"
+        },
+        "ChannelAccountSettings": {
+          "additionalProperties": {},
+          "properties": {
+            "printQr": {
+              "description": "WhatsApp: print the pairing QR code on the connector's terminal.",
+              "type": [
+                "boolean",
+                "null"
+              ]
+            }
+          },
+          "type": "object"
+        },
+        "ChannelProvider": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  {
+    "name": "lightspeed_channels_accounts_read",
+    "method": "channels/accounts/read",
+    "summary": "Read a channel account",
+    "description": "Returns the account document and revision.",
+    "paramsType": "ChannelAccountReadParams",
+    "resultType": "AgentApiOutcome<ChannelAccountReadResponse>",
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "accountId": {
+          "$ref": "#/definitions/ChannelAccountId"
+        }
+      },
+      "required": [
+        "accountId"
+      ],
+      "type": "object",
+      "definitions": {
+        "ChannelAccountId": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  {
+    "name": "lightspeed_channels_accounts_list",
+    "method": "channels/accounts/list",
+    "summary": "List channel accounts",
+    "description": "Lists this universe's provider accounts, optionally by provider.",
+    "paramsType": "ChannelAccountListParams",
+    "resultType": "AgentApiOutcome<ChannelAccountListResponse>",
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "provider": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ChannelProvider"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "type": "object",
+      "definitions": {
+        "ChannelProvider": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  {
+    "name": "lightspeed_channels_accounts_delete",
+    "method": "channels/accounts/delete",
+    "summary": "Delete a channel account",
+    "description": "Removes the account and its pairings; chat triggers that reference it stop serving conversations.",
+    "paramsType": "ChannelAccountDeleteParams",
+    "resultType": "AgentApiOutcome<ChannelAccountDeleteResponse>",
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "accountId": {
+          "$ref": "#/definitions/ChannelAccountId"
+        }
+      },
+      "required": [
+        "accountId"
+      ],
+      "type": "object",
+      "definitions": {
+        "ChannelAccountId": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  {
+    "name": "lightspeed_channels_pairings_list",
+    "method": "channels/pairings/list",
+    "summary": "List chat pairings",
+    "description": "Lists conversations paired to chat triggers, optionally by account or bot.",
+    "paramsType": "ChannelPairingListParams",
+    "resultType": "AgentApiOutcome<ChannelPairingListResponse>",
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "accountId": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ChannelAccountId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "botId": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/BotId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "type": "object",
+      "definitions": {
+        "BotId": {
+          "type": "string"
+        },
+        "ChannelAccountId": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  {
+    "name": "lightspeed_channels_pairings_delete",
+    "method": "channels/pairings/delete",
+    "summary": "Unpair a conversation",
+    "description": "Removes one pairing; the conversation must present the pairing code again to reconnect.",
+    "paramsType": "ChannelPairingDeleteParams",
+    "resultType": "AgentApiOutcome<ChannelPairingDeleteResponse>",
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "accountId": {
+          "$ref": "#/definitions/ChannelAccountId"
+        },
+        "chatId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "accountId",
+        "chatId"
+      ],
+      "type": "object",
+      "definitions": {
+        "ChannelAccountId": {
+          "type": "string"
+        }
+      }
+    }
+  },
+  {
+    "name": "lightspeed_channels_conversations_read",
+    "method": "channels/conversations/read",
+    "summary": "Read a conversation snapshot",
+    "description": "Queries the conversation workflow's live state for one chat, for debugging; absent when no workflow exists yet.",
+    "paramsType": "ChannelConversationReadParams",
+    "resultType": "AgentApiOutcome<ChannelConversationReadResponse>",
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "accountId": {
+          "$ref": "#/definitions/ChannelAccountId"
+        },
+        "chatId": {
+          "type": "string"
+        },
+        "threadId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "accountId",
+        "chatId"
+      ],
+      "type": "object",
+      "definitions": {
+        "ChannelAccountId": {
+          "type": "string"
+        }
+      }
+    }
   }
 ];

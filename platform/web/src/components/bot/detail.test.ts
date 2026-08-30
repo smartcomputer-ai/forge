@@ -1,66 +1,79 @@
 import { describe, expect, it } from "vitest";
-import type { BotLineage, BotState } from "@/api";
+import type { BotControllerSnapshot, BotSessionSnapshot, BotStateView, SessionSummaryView } from "@/api";
 import { conversationTabs } from "./detail";
 import { environmentSummary, guardrailsSummary, otherBotsSummary } from "./setup-summary";
 
-function state(partial: Partial<BotState>): BotState {
+function controller(partial: Partial<BotControllerSnapshot>): BotControllerSnapshot {
   return {
-    botName: "triage",
-    displayName: "Triage",
-    profileId: "triage",
-    sessionId: "bot:v1:triage",
-    sessions: [{ sessionId: "bot:v1:triage", label: "main", kind: "main" }],
+    mainSessionId: "bot:v1:triage",
     controllerStatus: "idle",
+    setupStatus: "ready",
+    enabled: true,
+    closed: false,
+    sessions: [{ sessionId: "bot:v1:triage", label: "main", kind: "main", busy: false, generation: 1 }],
     activeDeliveries: [],
-    sessionReady: true,
-    pendingEventCount: 0,
-    pendingDeliveryCount: 0,
-    buffers: [],
-    recentEvents: [],
-    eventsProcessed: 0,
-    duplicateEventCount: 0,
-    duplicateEmissionCount: 0,
-    appliedProfileRevision: 1,
-    runsPerDay: null,
-    runsToday: 0,
-    descendantsToday: 0,
-    lastError: null,
     ...partial,
   };
 }
 
-const thread = (id: string, label: string, lastActiveAtMs: number) => ({
+function state(partial: Partial<BotControllerSnapshot>, descendants?: SessionSummaryView[]): BotStateView {
+  return { controller: controller(partial), ...(descendants ? { descendants } : {}) };
+}
+
+const thread = (id: string, label: string, lastActiveAtMs: number): BotSessionSnapshot => ({
   sessionId: id,
   label,
-  kind: "keyed" as const,
+  kind: "perKey",
+  busy: false,
+  generation: 1,
   lastActiveAtMs,
+});
+
+const subagent = (
+  id: string,
+  displayName: string,
+  parentSessionId: string,
+  updatedAtMs: number,
+): SessionSummaryView => ({
+  id,
+  displayName,
+  lifecycleStatus: "open",
+  managed: true,
+  createdAtMs: 0,
+  updatedAtMs,
+  origin: {
+    kind: "subagent",
+    parentSessionId,
+    parentRunId: "run-1",
+    rootSessionId: "bot:v1:triage",
+    depth: 1,
+    invocationId: "inv-1",
+    agent: { profileId: "reviewer", revision: 1 },
+    limits: { maxDepth: 1, maxDescendants: 4, maxConcurrent: 1, deadlineMs: 60_000 },
+  },
 });
 
 describe("conversationTabs", () => {
   it("is just Main for a bot with one session", () => {
-    const tabs = conversationTabs(state({}), undefined, undefined);
+    const tabs = conversationTabs(state({}), undefined);
     expect(tabs.inline.map((tab) => tab.label)).toEqual(["Main"]);
     expect(tabs.overflow).toEqual([]);
   });
   it("keeps the most recent threads inline and folds the rest, sub-agents included", () => {
-    const current = state({
-      sessions: [
-        { sessionId: "bot:v1:triage", label: "main", kind: "main" },
-        thread("t-old", "PR-1", 1),
-        thread("t-3", "PR-3", 3),
-        thread("t-2", "PR-2", 2),
-        thread("t-4", "PR-4", 4),
-      ],
-      activeDeliveries: [{ id: "d", eventCount: 1, sessionId: "t-4", runId: null }],
-    });
-    const lineage: BotLineage = {
-      "t-4": {
-        open: 1,
-        total: 1,
-        children: [{ id: "sub-1", displayName: "reviewer", lifecycleStatus: "open", profileId: "reviewer", depth: 1, updatedAtMs: 5 }],
+    const current = state(
+      {
+        sessions: [
+          { sessionId: "bot:v1:triage", label: "main", kind: "main", busy: false, generation: 1 },
+          thread("t-old", "PR-1", 1),
+          thread("t-3", "PR-3", 3),
+          thread("t-2", "PR-2", 2),
+          thread("t-4", "PR-4", 4),
+        ],
+        activeDeliveries: [{ deliveryId: "d", seqs: [7], sessionId: "t-4", startedAtMs: 0 }],
       },
-    };
-    const tabs = conversationTabs(current, lineage, undefined);
+      [subagent("sub-1", "reviewer", "t-4", 5)],
+    );
+    const tabs = conversationTabs(current, undefined);
     expect(tabs.inline.map((tab) => tab.label)).toEqual(["Main", "PR-4", "PR-3", "PR-2"]);
     expect(tabs.inline[1]?.live).toBe(true);
     expect(tabs.overflow.map((tab) => tab.label)).toEqual(["PR-1", "reviewer"]);
@@ -69,17 +82,17 @@ describe("conversationTabs", () => {
   it("always shows the selected conversation inline", () => {
     const current = state({
       sessions: [
-        { sessionId: "bot:v1:triage", label: "main", kind: "main" },
+        { sessionId: "bot:v1:triage", label: "main", kind: "main", busy: false, generation: 1 },
         thread("t-1", "PR-1", 1),
         thread("t-2", "PR-2", 2),
         thread("t-3", "PR-3", 3),
         thread("t-4", "PR-4", 4),
       ],
     });
-    const tabs = conversationTabs(current, undefined, "t-1");
+    const tabs = conversationTabs(current, "t-1");
     expect(tabs.inline.map((tab) => tab.id)).toContain("t-1");
     expect(tabs.overflow.map((tab) => tab.id)).not.toContain("t-1");
-    const unknown = conversationTabs(current, undefined, "closed-subagent-session-id");
+    const unknown = conversationTabs(current, "closed-subagent-session-id");
     expect(unknown.inline.at(-1)?.id).toBe("closed-subagent-session-id");
   });
 });

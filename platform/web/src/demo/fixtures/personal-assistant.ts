@@ -6,7 +6,8 @@
 /// writes, delegates research to a second bot that runs sub-agents, and
 /// takes the Monday numbers from a metrics bot — the personal-agent pattern
 /// built from bots, triggers, workspaces, skills, and one Mac mini at home.
-import type { BotLineage, Environment, ProfileEnvironment, SecretGrant, UniverseSetup } from "@/api";
+import type { Environment, ProfileEnvironment, SecretGrant, UniverseSetup } from "@/api";
+import type { SessionSummaryView } from "@lightspeed/agent-client";
 import { appendExchange, appendScriptedRun, closeSession, newSession } from "../engine";
 import type { DemoResponder, DemoStore, DemoToolCall, DemoTurn, SessionRecord, UniverseState } from "../store";
 import {
@@ -32,6 +33,8 @@ import {
   botEmit,
   botSession,
   botState,
+  channelAccount,
+  channelPairing,
   chatMessage,
   chatSent,
   chatTrigger,
@@ -1302,13 +1305,13 @@ function seedAssistant(store: DemoStore, universe: UniverseState): void {
     [
       "telegram",
       chatTrigger(
-        store,
+        BOT.assistant,
         "telegram",
         {
-          channelAccountId: TELEGRAM_ADA_ACCOUNT_ID,
+          accountId: TELEGRAM_ADA_ACCOUNT_ID,
           matchScope: "direct",
           activation: null,
-          access: { turn: "conversation", control: "owners" },
+          access: { turn: "anyone" },
           pairingCode: "ADA-7Q2K",
           priority: 10,
         },
@@ -1318,13 +1321,13 @@ function seedAssistant(store: DemoStore, universe: UniverseState): void {
     [
       "whatsapp",
       chatTrigger(
-        store,
+        BOT.assistant,
         "whatsapp",
         {
-          channelAccountId: WHATSAPP_ADA_ACCOUNT_ID,
+          accountId: WHATSAPP_ADA_ACCOUNT_ID,
           matchScope: "direct",
           activation: null,
-          access: { turn: "conversation", control: "owners" },
+          access: { turn: "anyone" },
           pairingCode: "ADA-WA-3M8P",
           priority: 20,
         },
@@ -1334,17 +1337,19 @@ function seedAssistant(store: DemoStore, universe: UniverseState): void {
     [
       "heartbeat",
       scheduleTrigger(
+        BOT.assistant,
         "heartbeat",
         { cron: "*/30 8-21 * * 1-5", summary: HEARTBEAT_SUMMARY },
         { ...toAda, createdAtMs: ago(40 * DAY_MS), updatedAtMs: ago(15 * DAY_MS) },
       ),
     ],
-    ["morning-brief", scheduleTrigger("morning-brief", { cron: "0 7 * * 1-5", summary: MORNING_SUMMARY }, { ...toAda, createdAtMs: ago(41 * DAY_MS), updatedAtMs: ago(15 * DAY_MS) })],
-    ["evening-wrap", scheduleTrigger("evening-wrap", { cron: "30 17 * * 1-5", summary: EVENING_SUMMARY }, { ...toAda, createdAtMs: ago(41 * DAY_MS), updatedAtMs: ago(15 * DAY_MS) })],
-    ["friday-review", scheduleTrigger("friday-review", { cron: "0 16 * * 5", summary: FRIDAY_SUMMARY }, { ...toAda, createdAtMs: ago(34 * DAY_MS), updatedAtMs: ago(6 * DAY_MS) })],
+    ["morning-brief", scheduleTrigger(BOT.assistant, "morning-brief", { cron: "0 7 * * 1-5", summary: MORNING_SUMMARY }, { ...toAda, createdAtMs: ago(41 * DAY_MS), updatedAtMs: ago(15 * DAY_MS) })],
+    ["evening-wrap", scheduleTrigger(BOT.assistant, "evening-wrap", { cron: "30 17 * * 1-5", summary: EVENING_SUMMARY }, { ...toAda, createdAtMs: ago(41 * DAY_MS), updatedAtMs: ago(15 * DAY_MS) })],
+    ["friday-review", scheduleTrigger(BOT.assistant, "friday-review", { cron: "0 16 * * 5", summary: FRIDAY_SUMMARY }, { ...toAda, createdAtMs: ago(34 * DAY_MS), updatedAtMs: ago(6 * DAY_MS) })],
     [
       "inbox-poll",
       pollTrigger(
+        BOT.assistant,
         "inbox-poll",
         {
           source: {
@@ -1361,11 +1366,11 @@ function seedAssistant(store: DemoStore, universe: UniverseState): void {
         {
           ...toAda,
           filter: 'data.labels.contains("IMPORTANT") && !data.fromSelf',
-          cursor: {
+          cursorState: {
             ids: [ELENA_MAIL_ID, "19b4b2d8e0a71c33", "19b3f0c2a9d84e11", "19b39a4e6c08d2b5"],
             consecutiveFailures: 0,
-            baselinedAt: agoIso(40 * DAY_MS),
-            lastPolledAt: agoIso(3 * MINUTE_MS),
+            baselinedAtMs: ago(40 * DAY_MS),
+            lastPolledAtMs: ago(3 * MINUTE_MS),
           },
           createdAtMs: ago(40 * DAY_MS),
           updatedAtMs: ago(15 * DAY_MS),
@@ -1375,6 +1380,7 @@ function seedAssistant(store: DemoStore, universe: UniverseState): void {
     [
       "calendar-poll",
       pollTrigger(
+        BOT.assistant,
         "calendar-poll",
         {
           source: {
@@ -1391,18 +1397,18 @@ function seedAssistant(store: DemoStore, universe: UniverseState): void {
         {
           ...toAda,
           filter: "data.startsInMinutes <= 40 && !data.prepped",
-          cursor: {
+          cursorState: {
             ids: ["evt_northlight_sync", "evt_acme_renewal", "evt_1on1_priya"],
             consecutiveFailures: 0,
-            baselinedAt: agoIso(40 * DAY_MS),
-            lastPolledAt: agoIso(7 * MINUTE_MS),
+            baselinedAtMs: ago(40 * DAY_MS),
+            lastPolledAtMs: ago(7 * MINUTE_MS),
           },
           createdAtMs: ago(40 * DAY_MS),
           updatedAtMs: ago(15 * DAY_MS),
         },
       ),
     ],
-    ["inbox", inboxTrigger([BOT.research, BOT.metrics], { ...toAda, createdAtMs: ago(30 * DAY_MS), updatedAtMs: ago(27 * DAY_MS) })],
+    ["inbox", inboxTrigger(BOT.assistant, [BOT.research, BOT.metrics], { ...toAda, createdAtMs: ago(30 * DAY_MS), updatedAtMs: ago(27 * DAY_MS) })],
   ]);
 
   // The numbered log, oldest first: last Monday's numbers, a billing alert,
@@ -1847,7 +1853,7 @@ function seedAssistant(store: DemoStore, universe: UniverseState): void {
     appliedProfileRevision: ASSISTANT_PROFILE.revision,
     runsToday: 14,
   });
-  universe.bots.set(BOT.assistant, { bot: record, triggers, events: log.events, state, lineage: {} });
+  universe.bots.set(BOT.assistant, { bot: record, triggers, events: log.events, state, descendants: [] });
 }
 
 // ---------------------------------------------------------------------------
@@ -1899,7 +1905,7 @@ function seedResearch(store: DemoStore, universe: UniverseState): void {
     updatedAtMs: ago(9 * DAY_MS),
   });
   const triggers = new Map([
-    ["inbox", inboxTrigger([BOT.assistant], { route: { policy: "perEvent" }, deliver: { whenBusy: "queue" }, createdAtMs: ago(30 * DAY_MS), updatedAtMs: ago(9 * DAY_MS) })],
+    ["inbox", inboxTrigger(BOT.research, [BOT.assistant], { route: { policy: "perEvent" }, deliver: { whenBusy: "queue" }, createdAtMs: ago(30 * DAY_MS), updatedAtMs: ago(9 * DAY_MS) })],
   ]);
 
   const log = eventLog(store, BOT.research);
@@ -2059,9 +2065,10 @@ function seedResearch(store: DemoStore, universe: UniverseState): void {
   }).id;
   closeAt(nudge, t(11, 3));
 
-  const lineage: BotLineage = {
-    [SESSION.researchPricing]: { open: 0, total: 2, children: [lineageChild(beacon, PROFILE.researcher, 1), lineageChild(orbit, PROFILE.researcher, 1)] },
-  };
+  const descendants: SessionSummaryView[] = [
+    lineageChild(beacon, PROFILE.researcher, 1),
+    lineageChild(orbit, PROFILE.researcher, 1),
+  ];
   const state = botState({
     bot: record,
     sessions: [botSession(mainSession, "main"), botSession(pricing, "event", pricingRef.label), botSession(nudge, "event", nudgeRef.label)],
@@ -2071,7 +2078,7 @@ function seedResearch(store: DemoStore, universe: UniverseState): void {
     runsToday: 2,
     descendantsToday: 2,
   });
-  universe.bots.set(BOT.research, { bot: record, triggers, events: log.events, state, lineage });
+  universe.bots.set(BOT.research, { bot: record, triggers, events: log.events, state, descendants });
 }
 
 // ---------------------------------------------------------------------------
@@ -2097,6 +2104,7 @@ function seedMetrics(store: DemoStore, universe: UniverseState): void {
     [
       "monday-metrics",
       scheduleTrigger(
+        BOT.metrics,
         "monday-metrics",
         { cron: "30 7 * * 1", summary: "Monday numbers: MRR, net revenue churn, new and churned customers, Q4 pipeline coverage, largest customer's share — from Stripe and HubSpot, last week beside. Emit metrics.weekly to the assistant." },
         { route: { policy: "bot" }, deliver: { whenBusy: "queue" }, createdAtMs: ago(27 * DAY_MS), updatedAtMs: ago(13 * DAY_MS) },
@@ -2105,6 +2113,7 @@ function seedMetrics(store: DemoStore, universe: UniverseState): void {
     [
       "stripe-webhook",
       webhookTrigger(
+        universe,
         BOT.metrics,
         "stripe-webhook",
         {
@@ -2241,7 +2250,7 @@ function seedMetrics(store: DemoStore, universe: UniverseState): void {
     appliedProfileRevision: METRICS_PROFILE.revision,
     runsToday: 0,
   });
-  universe.bots.set(BOT.metrics, { bot: record, triggers, events: log.events, state, lineage: {} });
+  universe.bots.set(BOT.metrics, { bot: record, triggers, events: log.events, state, descendants: [] });
 }
 
 // ---------------------------------------------------------------------------
@@ -2579,6 +2588,45 @@ const responder: DemoResponder = (input, context) => {
 // Seed
 // ---------------------------------------------------------------------------
 
+/// Ada's channel accounts and the pairing rows binding her two direct
+/// conversations to the assistant's chat triggers.
+function seedChannels(universe: UniverseState): void {
+  channelAccount(universe, {
+    accountId: TELEGRAM_ADA_ACCOUNT_ID,
+    provider: "telegram",
+    providerAccountId: "ada_assistant_bot",
+    displayName: "Ada's assistant (Telegram)",
+    credentialGrantId: "grant-telegram-bot-token",
+    createdAtMs: Date.parse("2026-07-25T18:30:00.000Z"),
+    updatedAtMs: Date.parse("2026-08-20T07:00:00.000Z"),
+  });
+  channelAccount(universe, {
+    accountId: WHATSAPP_ADA_ACCOUNT_ID,
+    provider: "whatsapp",
+    providerAccountId: "+4917612345678",
+    displayName: "Ada's assistant (WhatsApp)",
+    settings: { printQr: false },
+    createdAtMs: Date.parse("2026-08-02T09:15:00.000Z"),
+    updatedAtMs: Date.parse("2026-08-24T19:40:00.000Z"),
+  });
+  channelPairing(universe, {
+    accountId: TELEGRAM_ADA_ACCOUNT_ID,
+    botId: BOT.assistant,
+    triggerId: "telegram",
+    chatId: TELEGRAM.chatId,
+    pairedVia: "code",
+    pairedAtMs: ago(33 * DAY_MS),
+  });
+  channelPairing(universe, {
+    accountId: WHATSAPP_ADA_ACCOUNT_ID,
+    botId: BOT.assistant,
+    triggerId: "whatsapp",
+    chatId: WHATSAPP.chatId,
+    pairedVia: "code",
+    pairedAtMs: ago(25 * DAY_MS),
+  });
+}
+
 export function seedPersonalAssistant(store: DemoStore): void {
   const universe = store.addUniverse({
     id: PERSONAL_ASSISTANT_UNIVERSE_ID,
@@ -2594,6 +2642,7 @@ export function seedPersonalAssistant(store: DemoStore): void {
   seedWorkspaces(store, universe);
   seedEnvironments(universe);
   seedIntegrations(universe);
+  seedChannels(universe);
   seedAssistant(store, universe);
   seedResearch(store, universe);
   seedMetrics(store, universe);

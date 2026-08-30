@@ -8,6 +8,8 @@ members = [
     "crates/llm-clients",
     "crates/api",
     "crates/auth",
+    "crates/bots",
+    "crates/channels",
     "crates/environments",
     "crates/engine",
     "crates/mcp",

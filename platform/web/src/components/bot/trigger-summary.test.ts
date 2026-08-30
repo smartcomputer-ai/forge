@@ -1,24 +1,17 @@
 import { describe, expect, it } from "vitest";
-import type { BotTrigger } from "@/api";
+import type { BotTriggerView } from "@/api";
 import { deliverySentence, deliveryShapeOf, describeCron, triggerSummary } from "./trigger-summary";
 
-function trigger(partial: Partial<BotTrigger> & Pick<BotTrigger, "kind" | "spec">): BotTrigger {
-  return {
-    name: "t",
-    filter: null,
-    route: null,
-    coalesce: null,
-    deliver: null,
-    sessionTtlMs: null,
-    enabled: true,
-    disabledReason: null,
-    disabledAt: null,
-    lastFilterError: null,
-    lastFilterErrorAt: null,
-    createdAt: "2026-08-27T00:00:00Z",
-    updatedAt: "2026-08-27T00:00:00Z",
-    ...partial,
-  };
+const base = {
+  botId: "triage",
+  triggerId: "t",
+  revision: 1,
+  createdAtMs: 0,
+  updatedAtMs: 0,
+};
+
+function trigger(fields: Record<string, unknown>): BotTriggerView {
+  return { ...base, ...fields } as unknown as BotTriggerView;
 }
 
 describe("describeCron", () => {
@@ -36,25 +29,31 @@ describe("describeCron", () => {
 describe("triggerSummary", () => {
   it("names the source and how it is verified or scoped", () => {
     expect(
-      triggerSummary(
-        trigger({ kind: "webhook", spec: { token: "x", verification: { scheme: "token" }, preset: "github" } }),
-      ),
+      triggerSummary(trigger({ kind: "webhook", preset: "github", verification: { scheme: "token" } })),
     ).toBe("GitHub webhook · URL token");
     expect(
       triggerSummary(
         trigger({
           kind: "poll",
-          spec: {
-            source: { kind: "http", url: "https://api.example.com/items" },
-            intervalMs: 300_000,
-            items: null,
-            cursor: { kind: "idSet", id: "id" },
-          },
+          source: { kind: "http", url: "https://api.example.com/items" },
+          intervalMs: 300_000,
+          items: null,
+          cursor: { kind: "idSet", id: "id" },
         }),
       ),
     ).toBe("Checks api.example.com every 5 min");
-    expect(triggerSummary(trigger({ kind: "bot", spec: { from: ["release-shepherd"] } }))).toBe(
+    expect(triggerSummary(trigger({ kind: "bot", from: ["release-shepherd"] }))).toBe(
       "Messages from release-shepherd",
+    );
+  });
+  it("names the chat account from the universe's accounts", () => {
+    const chat = trigger({ kind: "chat", accountId: "acct-1", pairing: "code" });
+    expect(triggerSummary(chat)).toBe("a messaging account · all chats · pairing required");
+    expect(
+      triggerSummary(chat, [{ accountId: "acct-1", provider: "telegram", displayName: "Team bot" }]),
+    ).toBe("telegram · Team bot · all chats · pairing required");
+    expect(triggerSummary(trigger({ kind: "chat", accountId: "acct-1", pairing: "open" }))).toBe(
+      "a messaging account · all chats",
     );
   });
 });
@@ -64,7 +63,7 @@ describe("deliverySentence", () => {
     const shape = deliveryShapeOf(
       trigger({
         kind: "webhook",
-        spec: { token: "x", verification: { scheme: "token" } },
+        verification: { scheme: "token" },
         route: { policy: "perKey", key: "data.pull_request.number" },
         coalesce: { debounceMs: 30_000, maxWaitMs: 120_000, maxCount: 20 },
         deliver: { whenBusy: "queue" },

@@ -76,9 +76,11 @@ explicit universe. The focused `runtime` profile defaults to `single` for
 direct CLI development. An explicit `LIGHTSPEED_AUTH_MODE` overrides either
 profile default.
 
-The full profile also runs Configurator MCP plus the granular Channels and
-Bots workflow/activity roles from the Platform workers entrypoint. Connectors
-are opt-in and fail before startup when their required credentials are missing:
+The full profile also runs Configurator MCP; Bots and Channels core run inside
+the Rust runtime. The connector host is opt-in: naming providers starts one
+`connectors` process that discovers every enabled account of those providers
+through the core API and leases their tokens from it (WhatsApp additionally
+needs `LIGHTSPEED_CONNECTOR_WHATSAPP_MEDIA_LOCATOR_KEY` and pairs by QR code):
 
 ```bash
 LIGHTSPEED_CHANNELS_CONNECTORS=telegram ./dev.sh
@@ -155,7 +157,7 @@ export LIGHTSPEED_TEST_POSTGRES_URL=postgres://lightspeed:lightspeed@localhost:1
 export LIGHTSPEED_PG_UNIVERSE_ID=00000000-0000-0000-0000-000000000001
 export LIGHTSPEED_POSTGRES_URL=${LIGHTSPEED_TEST_POSTGRES_URL}
 export LIGHTSPEED_PLATFORM_DATABASE_URL=postgres://lightspeed:lightspeed@localhost:15432/lightspeed_platform
-export LIGHTSPEED_TASK_QUEUE=lightspeed-agent
+export LIGHTSPEED_TASK_QUEUE=lightspeed-sessions
 export LIGHTSPEED_API_URL=http://127.0.0.1:18080/rpc
 
 export LIGHTSPEED_OBJECT_STORE_BUCKET=lightspeed-dev
@@ -189,17 +191,19 @@ cargo run -p temporal-server -- migrate
 cargo run -p temporal-server
 ```
 
-With no subcommand, the `lightspeed-server` binary runs the JSON-RPC gateway and Temporal
-worker in one process. For split-role runs, use two shells:
+With no flags, the `lightspeed-server` binary runs every role — the JSON-RPC
+gateway plus the `sessions`, `bots`, and `channels` Temporal workers, each on
+its own task queue — in one process. For split-role runs, select roles per
+shell (`--task-types workflows|activities` splits a worker role further):
 
 ```bash
 source scripts/dev/env.sh
-cargo run -p temporal-server -- worker
+cargo run -p temporal-server -- --roles sessions,bots,channels
 ```
 
 ```bash
 source scripts/dev/env.sh
-cargo run -p temporal-server -- gateway
+cargo run -p temporal-server -- --roles gateway
 ```
 
 Then chat through the regular CLI over the gateway transport from another

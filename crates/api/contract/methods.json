@@ -1423,6 +1423,474 @@
       "summary": "Grant access to a GitHub App installation"
     },
     {
+      "description": "Creates the bot record, optionally with its triggers, and starts its controller. Fails if the bot id exists; a trigger failure rolls the bot back.",
+      "method": "bots/create",
+      "params": {
+        "schema": {
+          "$ref": "#/definitions/BotCreateParams"
+        },
+        "type": "BotCreateParams"
+      },
+      "result": {
+        "schema": {
+          "$ref": "#/definitions/AgentApiOutcomeOfBotCreateResponse"
+        },
+        "type": "AgentApiOutcome<BotCreateResponse>"
+      },
+      "scope": "universe",
+      "summary": "Create a bot"
+    },
+    {
+      "description": "Replaces the mutable configuration whole and signals the controller, which applies it at its next idle boundary. Pass expectedRevision when replacing; a closed bot accepts label-only edits.",
+      "method": "bots/put",
+      "params": {
+        "schema": {
+          "$ref": "#/definitions/BotPutParams"
+        },
+        "type": "BotPutParams"
+      },
+      "result": {
+        "schema": {
+          "$ref": "#/definitions/AgentApiOutcomeOfBotPutResponse"
+        },
+        "type": "AgentApiOutcome<BotPutResponse>"
+      },
+      "scope": "universe",
+      "summary": "Create or replace a bot document"
+    },
+    {
+      "description": "Returns the bot record, its current revision, and lifecycle columns.",
+      "method": "bots/read",
+      "params": {
+        "schema": {
+          "$ref": "#/definitions/BotReadParams"
+        },
+        "type": "BotReadParams"
+      },
+      "result": {
+        "schema": {
+          "$ref": "#/definitions/AgentApiOutcomeOfBotReadResponse"
+        },
+        "type": "AgentApiOutcome<BotReadResponse>"
+      },
+      "scope": "universe",
+      "summary": "Read a bot"
+    },
+    {
+      "description": "Returns the roster: every bot with its trigger count, pending event count, and latest event.",
+      "method": "bots/list",
+      "params": {
+        "schema": {
+          "$ref": "#/definitions/BotListParams"
+        },
+        "type": "BotListParams"
+      },
+      "result": {
+        "schema": {
+          "$ref": "#/definitions/AgentApiOutcomeOfBotListResponse"
+        },
+        "type": "AgentApiOutcome<BotListResponse>"
+      },
+      "scope": "universe",
+      "summary": "List bots"
+    },
+    {
+      "description": "Terminal and idempotent: disables every trigger, drops schedules, and tells the controller to archive pending events and force-close its sessions. Returns once signalled; follow bots/state/read for closing to closed.",
+      "method": "bots/close",
+      "params": {
+        "schema": {
+          "$ref": "#/definitions/BotCloseParams"
+        },
+        "type": "BotCloseParams"
+      },
+      "result": {
+        "schema": {
+          "$ref": "#/definitions/AgentApiOutcomeOfBotCloseResponse"
+        },
+        "type": "AgentApiOutcome<BotCloseResponse>"
+      },
+      "scope": "universe",
+      "summary": "Close a bot"
+    },
+    {
+      "description": "Closes the bot if needed, waits for its controller to complete, deletes the sessions it closed, and removes the record so the bot id is free again.",
+      "method": "bots/delete",
+      "params": {
+        "schema": {
+          "$ref": "#/definitions/BotDeleteParams"
+        },
+        "type": "BotDeleteParams"
+      },
+      "result": {
+        "schema": {
+          "$ref": "#/definitions/AgentApiOutcomeOfBotDeleteResponse"
+        },
+        "type": "AgentApiOutcome<BotDeleteResponse>"
+      },
+      "scope": "universe",
+      "summary": "Delete a bot"
+    },
+    {
+      "description": "Queries the controller workflow for its live snapshot (sessions, buffers, active and recent deliveries, budget) and lists sub-agent descendants. The controller is absent until the bot's first event.",
+      "method": "bots/state/read",
+      "params": {
+        "schema": {
+          "$ref": "#/definitions/BotStateReadParams"
+        },
+        "type": "BotStateReadParams"
+      },
+      "result": {
+        "schema": {
+          "$ref": "#/definitions/AgentApiOutcomeOfBotStateReadResponse"
+        },
+        "type": "AgentApiOutcome<BotStateReadResponse>"
+      },
+      "scope": "universe",
+      "summary": "Read bot controller state"
+    },
+    {
+      "description": "Asks the controller to close one of the bot's sessions at its next idle boundary and continue on a fresh generation; queued deliveries follow.",
+      "method": "bots/sessions/rotate",
+      "params": {
+        "schema": {
+          "$ref": "#/definitions/BotSessionRotateParams"
+        },
+        "type": "BotSessionRotateParams"
+      },
+      "result": {
+        "schema": {
+          "$ref": "#/definitions/AgentApiOutcomeOfBotSessionRotateResponse"
+        },
+        "type": "AgentApiOutcome<BotSessionRotateResponse>"
+      },
+      "scope": "universe",
+      "summary": "Rotate a bot session"
+    },
+    {
+      "description": "Validates the trigger document (CEL parses, grants exist, one inbox per bot, chat routes per conversation), reconciles its Temporal Schedule, and stores it. A poll spec edit resets the cursor; a webhook keeps its URL token.",
+      "method": "bots/triggers/put",
+      "params": {
+        "schema": {
+          "$ref": "#/definitions/BotTriggerPutParams"
+        },
+        "type": "BotTriggerPutParams"
+      },
+      "result": {
+        "schema": {
+          "$ref": "#/definitions/AgentApiOutcomeOfBotTriggerPutResponse"
+        },
+        "type": "AgentApiOutcome<BotTriggerPutResponse>"
+      },
+      "scope": "universe",
+      "summary": "Create or replace a trigger"
+    },
+    {
+      "description": "Returns one trigger with its incidents and cursor; the ingest path and pairing code are shown only to managing principals.",
+      "method": "bots/triggers/read",
+      "params": {
+        "schema": {
+          "$ref": "#/definitions/BotTriggerReadParams"
+        },
+        "type": "BotTriggerReadParams"
+      },
+      "result": {
+        "schema": {
+          "$ref": "#/definitions/AgentApiOutcomeOfBotTriggerReadResponse"
+        },
+        "type": "AgentApiOutcome<BotTriggerReadResponse>"
+      },
+      "scope": "universe",
+      "summary": "Read a trigger"
+    },
+    {
+      "description": "Returns every trigger of the bot ordered by id, secrets redacted for non-managing principals.",
+      "method": "bots/triggers/list",
+      "params": {
+        "schema": {
+          "$ref": "#/definitions/BotTriggerListParams"
+        },
+        "type": "BotTriggerListParams"
+      },
+      "result": {
+        "schema": {
+          "$ref": "#/definitions/AgentApiOutcomeOfBotTriggerListResponse"
+        },
+        "type": "AgentApiOutcome<BotTriggerListResponse>"
+      },
+      "scope": "universe",
+      "summary": "List a bot's triggers"
+    },
+    {
+      "description": "Drops the trigger's Temporal Schedule and pairings, then the record; stored events keep their history.",
+      "method": "bots/triggers/delete",
+      "params": {
+        "schema": {
+          "$ref": "#/definitions/BotTriggerDeleteParams"
+        },
+        "type": "BotTriggerDeleteParams"
+      },
+      "result": {
+        "schema": {
+          "$ref": "#/definitions/AgentApiOutcomeOfBotTriggerDeleteResponse"
+        },
+        "type": "AgentApiOutcome<BotTriggerDeleteResponse>"
+      },
+      "scope": "universe",
+      "summary": "Delete a trigger"
+    },
+    {
+      "description": "Stores an operator-authored event for the bot's main session and wakes the controller. eventId is the dedupe identity; a duplicate returns the stored row.",
+      "method": "bots/events/admit",
+      "params": {
+        "schema": {
+          "$ref": "#/definitions/BotEventAdmitParams"
+        },
+        "type": "BotEventAdmitParams"
+      },
+      "result": {
+        "schema": {
+          "$ref": "#/definitions/AgentApiOutcomeOfBotEventAdmitResponse"
+        },
+        "type": "AgentApiOutcome<BotEventAdmitResponse>"
+      },
+      "scope": "universe",
+      "summary": "Admit an event manually"
+    },
+    {
+      "description": "Re-admits the stored envelope as a fresh event with the original routing; the replay never coalesces.",
+      "method": "bots/events/replay",
+      "params": {
+        "schema": {
+          "$ref": "#/definitions/BotEventReplayParams"
+        },
+        "type": "BotEventReplayParams"
+      },
+      "result": {
+        "schema": {
+          "$ref": "#/definitions/AgentApiOutcomeOfBotEventReplayResponse"
+        },
+        "type": "AgentApiOutcome<BotEventReplayResponse>"
+      },
+      "scope": "universe",
+      "summary": "Replay a stored event"
+    },
+    {
+      "description": "Cursor-paginated event log, newest first, with outcomes; payload documents stay in the CAS.",
+      "method": "bots/events/list",
+      "params": {
+        "schema": {
+          "$ref": "#/definitions/BotEventListParams"
+        },
+        "type": "BotEventListParams"
+      },
+      "result": {
+        "schema": {
+          "$ref": "#/definitions/AgentApiOutcomeOfBotEventListResponse"
+        },
+        "type": "AgentApiOutcome<BotEventListResponse>"
+      },
+      "scope": "universe",
+      "summary": "List a bot's events"
+    },
+    {
+      "description": "Returns the event row and its full stored envelope document.",
+      "method": "bots/events/read",
+      "params": {
+        "schema": {
+          "$ref": "#/definitions/BotEventReadParams"
+        },
+        "type": "BotEventReadParams"
+      },
+      "result": {
+        "schema": {
+          "$ref": "#/definitions/AgentApiOutcomeOfBotEventReadResponse"
+        },
+        "type": "AgentApiOutcome<BotEventReadResponse>"
+      },
+      "scope": "universe",
+      "summary": "Read an event by number"
+    },
+    {
+      "description": "Evaluates a filter against one payload or a sample of recent stored events, reporting matches and evaluation errors without changing anything.",
+      "method": "bots/filters/test",
+      "params": {
+        "schema": {
+          "$ref": "#/definitions/BotFilterTestParams"
+        },
+        "type": "BotFilterTestParams"
+      },
+      "result": {
+        "schema": {
+          "$ref": "#/definitions/AgentApiOutcomeOfBotFilterTestResponse"
+        },
+        "type": "AgentApiOutcome<BotFilterTestResponse>"
+      },
+      "scope": "universe",
+      "summary": "Test a CEL filter"
+    },
+    {
+      "description": "Registers a provider account (Telegram, WhatsApp) for this universe. The credential is a retrievable grant reference; no token is accepted here.",
+      "method": "channels/accounts/create",
+      "params": {
+        "schema": {
+          "$ref": "#/definitions/ChannelAccountCreateParams"
+        },
+        "type": "ChannelAccountCreateParams"
+      },
+      "result": {
+        "schema": {
+          "$ref": "#/definitions/AgentApiOutcomeOfChannelAccountCreateResponse"
+        },
+        "type": "AgentApiOutcome<ChannelAccountCreateResponse>"
+      },
+      "scope": "universe",
+      "summary": "Create a channel account"
+    },
+    {
+      "description": "Replaces the account document whole; pass expectedRevision when replacing. The connector host picks the change up on its next discovery pass.",
+      "method": "channels/accounts/put",
+      "params": {
+        "schema": {
+          "$ref": "#/definitions/ChannelAccountPutParams"
+        },
+        "type": "ChannelAccountPutParams"
+      },
+      "result": {
+        "schema": {
+          "$ref": "#/definitions/AgentApiOutcomeOfChannelAccountPutResponse"
+        },
+        "type": "AgentApiOutcome<ChannelAccountPutResponse>"
+      },
+      "scope": "universe",
+      "summary": "Create or replace a channel account"
+    },
+    {
+      "description": "Returns the account document and revision.",
+      "method": "channels/accounts/read",
+      "params": {
+        "schema": {
+          "$ref": "#/definitions/ChannelAccountReadParams"
+        },
+        "type": "ChannelAccountReadParams"
+      },
+      "result": {
+        "schema": {
+          "$ref": "#/definitions/AgentApiOutcomeOfChannelAccountReadResponse"
+        },
+        "type": "AgentApiOutcome<ChannelAccountReadResponse>"
+      },
+      "scope": "universe",
+      "summary": "Read a channel account"
+    },
+    {
+      "description": "Lists this universe's provider accounts, optionally by provider.",
+      "method": "channels/accounts/list",
+      "params": {
+        "schema": {
+          "$ref": "#/definitions/ChannelAccountListParams"
+        },
+        "type": "ChannelAccountListParams"
+      },
+      "result": {
+        "schema": {
+          "$ref": "#/definitions/AgentApiOutcomeOfChannelAccountListResponse"
+        },
+        "type": "AgentApiOutcome<ChannelAccountListResponse>"
+      },
+      "scope": "universe",
+      "summary": "List channel accounts"
+    },
+    {
+      "description": "Removes the account and its pairings; chat triggers that reference it stop serving conversations.",
+      "method": "channels/accounts/delete",
+      "params": {
+        "schema": {
+          "$ref": "#/definitions/ChannelAccountDeleteParams"
+        },
+        "type": "ChannelAccountDeleteParams"
+      },
+      "result": {
+        "schema": {
+          "$ref": "#/definitions/AgentApiOutcomeOfChannelAccountDeleteResponse"
+        },
+        "type": "AgentApiOutcome<ChannelAccountDeleteResponse>"
+      },
+      "scope": "universe",
+      "summary": "Delete a channel account"
+    },
+    {
+      "description": "Service callers only. Resolves the chat trigger for the conversation, applies pairing, and signals the conversation workflow. Returns the decision so the connector can send pairing prompts itself; acknowledge the provider only after this returns.",
+      "method": "channels/inbound/admit",
+      "params": {
+        "schema": {
+          "$ref": "#/definitions/ChannelInboundAdmitParams"
+        },
+        "type": "ChannelInboundAdmitParams"
+      },
+      "result": {
+        "schema": {
+          "$ref": "#/definitions/AgentApiOutcomeOfChannelInboundAdmitResponse"
+        },
+        "type": "AgentApiOutcome<ChannelInboundAdmitResponse>"
+      },
+      "scope": "service",
+      "summary": "Admit a provider message"
+    },
+    {
+      "description": "Lists conversations paired to chat triggers, optionally by account or bot.",
+      "method": "channels/pairings/list",
+      "params": {
+        "schema": {
+          "$ref": "#/definitions/ChannelPairingListParams"
+        },
+        "type": "ChannelPairingListParams"
+      },
+      "result": {
+        "schema": {
+          "$ref": "#/definitions/AgentApiOutcomeOfChannelPairingListResponse"
+        },
+        "type": "AgentApiOutcome<ChannelPairingListResponse>"
+      },
+      "scope": "universe",
+      "summary": "List chat pairings"
+    },
+    {
+      "description": "Removes one pairing; the conversation must present the pairing code again to reconnect.",
+      "method": "channels/pairings/delete",
+      "params": {
+        "schema": {
+          "$ref": "#/definitions/ChannelPairingDeleteParams"
+        },
+        "type": "ChannelPairingDeleteParams"
+      },
+      "result": {
+        "schema": {
+          "$ref": "#/definitions/AgentApiOutcomeOfChannelPairingDeleteResponse"
+        },
+        "type": "AgentApiOutcome<ChannelPairingDeleteResponse>"
+      },
+      "scope": "universe",
+      "summary": "Unpair a conversation"
+    },
+    {
+      "description": "Queries the conversation workflow's live state for one chat, for debugging; absent when no workflow exists yet.",
+      "method": "channels/conversations/read",
+      "params": {
+        "schema": {
+          "$ref": "#/definitions/ChannelConversationReadParams"
+        },
+        "type": "ChannelConversationReadParams"
+      },
+      "result": {
+        "schema": {
+          "$ref": "#/definitions/AgentApiOutcomeOfChannelConversationReadResponse"
+        },
+        "type": "AgentApiOutcome<ChannelConversationReadResponse>"
+      },
+      "scope": "universe",
+      "summary": "Read a conversation snapshot"
+    },
+    {
       "description": "Creates the deployment tenant boundary for an explicit UUID. The operation is idempotent and reports whether a new universe was created.",
       "method": "operator/universes/create",
       "params": {
@@ -1673,6 +2141,24 @@
       },
       "scope": "operator",
       "summary": "Adopt a provider environment"
+    },
+    {
+      "description": "The connector host's discovery call: every enabled provider account of the deployment with its universe id and credential grant reference. Re-poll to pick up accounts created or disabled since.",
+      "method": "operator/channels/accounts/list",
+      "params": {
+        "schema": {
+          "$ref": "#/definitions/OperatorChannelAccountListParams"
+        },
+        "type": "OperatorChannelAccountListParams"
+      },
+      "result": {
+        "schema": {
+          "$ref": "#/definitions/AgentApiOutcomeOfOperatorChannelAccountListResponse"
+        },
+        "type": "AgentApiOutcome<OperatorChannelAccountListResponse>"
+      },
+      "scope": "operator",
+      "summary": "List channel accounts across universes"
     }
   ],
   "notificationSchema": {

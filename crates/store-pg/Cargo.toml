@@ -8,6 +8,8 @@ aes-gcm = "0.10"
 api = { path = "../api" }
 auth = { path = "../auth" }
 base64 = "0.22"
+bots = { path = "../bots" }
+channels = { path = "../channels" }
 engine = { path = "../engine" }
 moka = { version = "0.12", features = ["sync"] }
 environments = { path = "../environments" }

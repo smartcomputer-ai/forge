@@ -20,10 +20,11 @@ Use these files as the index:
 - `Cargo.toml` — workspace membership.
 - `clients/typescript/` — generated public TypeScript API client.
 - `platform/` — first-party TypeScript management server, web UI, operator CLI,
-  shared inputs, database schema, Channels workers, Bots workers, and
-  Configurator MCP. `platform/workers/` is their shared runtime role dispatcher,
-  and `platform/web/src/demo/` is the in-browser demo backend
-  (the only mock of the platform API; see `platform/README.md`).
+  shared inputs, database schema, the connector host (`platform/connectors/`:
+  the Telegram and WhatsApp bridges over the core API), and Configurator MCP.
+  `platform/web/src/demo/` is the in-browser demo backend (the only mock of
+  the platform API; see `platform/README.md`). Bots and Channels core live in
+  the Rust runtime (P142).
 - `crates/api/contract/` — committed generated API schema, method manifest,
   OpenRPC, and human reference.
 - `dev.sh` and `scripts/dev/` — first-run bootstrap, unified profile-aware
@@ -39,6 +40,8 @@ cargo test
 cargo test -p engine
 cargo test -p api
 cargo test -p api-projection
+cargo test -p bots
+cargo test -p channels
 cargo test -p temporal-workflow
 cargo test -p temporal-server
 cargo test -p test-support
@@ -56,8 +59,7 @@ cargo test -p llm-clients test_name
 cargo test -p llm-clients -- --nocapture
 npm install
 npm run check
-npm run test:integration:channels
-npm run test:integration:bots
+npm run test --workspace @lightspeed/connectors
 LIGHTSPEED_PLATFORM_MIGRATION_TEST_URL=postgres://... npm run test:migrations
 ```
 
@@ -85,6 +87,8 @@ tests use the local stack configuration:
 source scripts/dev/env.sh
 cargo test -p temporal-server --test temporal_live -- --ignored --test-threads=1
 cargo test -p temporal-server --test environment_provider_live -- --ignored --test-threads=1
+cargo test -p temporal-server --test bots_live -- --ignored --test-threads=1
+cargo test -p temporal-server --test channels_live -- --ignored --test-threads=1
 cargo test -p temporal-server --test preprocess_live -- --ignored --test-threads=1
 cargo test -p temporal-server --test environment_provider_live temporal_live_environment_daemon_jobs_round_trip -- --ignored --test-threads=1 --nocapture
 ```
@@ -134,9 +138,9 @@ cargo run -p cli -- chat --api-url http://127.0.0.1:18080/rpc --session session_
 ```
 
 Unified development profiles run through the root `dev.sh` launcher. `full`
-is the default; `npm run dev` delegates to the same launcher, and connector
-processes remain opt-in through
-`LIGHTSPEED_CHANNELS_CONNECTORS`:
+is the default; `npm run dev` delegates to the same launcher, and the
+connector host (one process for every discovered Telegram/WhatsApp account)
+remains opt-in through `LIGHTSPEED_CHANNELS_CONNECTORS`:
 
 ```bash
 ./dev.sh
@@ -211,6 +215,15 @@ Release construction, snapshots, and tagged publication are documented in
 - `crates/profiles/` — agent profile registry validation helpers,
   errors, and the substrate-neutral `ProfileStore` trait over `api` profile
   DTOs.
+- `crates/bots/` — bots domain crate (P142): bot, trigger, and event records
+  with their store traits, validation, CEL filters and routing, webhook
+  verification and presets, event rendering, poll cursors, the `bot_*` tool
+  declarations, model-facing views, and every bot identity derivation. No
+  I/O.
+- `crates/channels/` — channels domain crate (P142): provider accounts and
+  pairings, the normalized inbound envelope, activation/access/control
+  policy, delivery commands and chunked plans, media validation,
+  conversation state, and the `message_*` tool declarations. No I/O.
 - `crates/auth/` — generic auth grant/secret/provider records,
   OAuth client and authorization-flow records, PKCE helpers, the MCP OAuth
   and GitHub App drivers, store traits, typed broker errors, the runtime
@@ -229,6 +242,25 @@ Release construction, snapshots, and tagged publication are documented in
 - `crates/cli/` — command-line chat client for the API gateway.
 
 ## Architecture Rules
+
+- Bots and Channels core are core (P142). Records, admission, the
+  controller, the conversation workflow, tool execution, Temporal
+  Schedules, and every table live in `bots`, `channels`, `temporal-workflow`,
+  `temporal-server`, and `store-pg`; the API is `bots/*` and `channels/*`
+  on the one gateway plus the public `POST /hooks/bots/{universe}/{bot}/{trigger}/{token}`
+  route. Connectors are TypeScript bridges that speak `channels/inbound/admit`
+  inbound and serve three activities on their per-account task queue
+  outbound; they read no database and hold no bot or trigger knowledge.
+- One binary, roles per subsystem: `lightspeed-server --roles gateway,sessions,bots,channels`
+  (all by default), each worker role its own task queue
+  (`LIGHTSPEED_TASK_QUEUE`, `LIGHTSPEED_TASK_QUEUE_BOTS`, `LIGHTSPEED_TASK_QUEUE_CHANNELS`)
+  with its workflows and activities end to end, and `--task-types workflows|activities`
+  as the further split. Cross-subsystem traffic is signals and queue-carrying
+  workflow starts, never an activity on another role's queue. Do not add
+  bot- or channel-specific binaries or a second gateway.
+- Session ids starting with `bot-`, `botfire-`, `botsched-`, `chat-`, or
+  `envjob-` are reserved for system workflow ids and rejected by
+  `session/start`.
 
 - Keep `engine` deterministic. It should not execute provider calls, shell
   commands, filesystem operations, network I/O, or workflow activities.
@@ -305,7 +337,7 @@ Release construction, snapshots, and tagged publication are documented in
   returns `{ to, seq }` or a typed refusal; the sender rate cap and
   `MAX_BOT_HOPS` bound every exchange. Every event path — webhook, poll,
   schedule, self and addressed emits, receipts — goes through
-  `platform/bots/src/admission.ts` (`storeBotEvent` / `admitTriggerEvent`).
+  `crates/temporal-server/src/bots/admission.rs` (`store_bot_event` / `admit_trigger_event`).
   Replies are deterministic receipts (`bot.reply`) sent by the receiver's
   controller when the delivery finishes, routed by a logical session
   (base id, never a generation); no `bot_ask`, no joined cross-bot call,
@@ -314,17 +346,17 @@ Release construction, snapshots, and tagged publication are documented in
   by an authored, immutable `botId` (`bots.name`) plus a mutable
   `displayName`; the uuid row key never leaves the database, and
   model-facing `bot_*` results carry `#N` and labels, never digests
-  (`activities/tool-views.ts`).
+  (`crates/bots/src/views.rs`).
 - Channels are bot triggers (P139). A chat connection is a `bot_triggers`
   row of kind `chat` (account, scope, activation, access, pairing); there
   is no binding record and no channel-owned session. Every activated
   message is one event through `admitTriggerEvent` (id
   `chat:<trigger>:…`), routed `perKey` per conversation into
   `bot:v1:<bot>:k-…`; the conversation workflow
-  (`channelConversationWorkflowV1`) is the *receiver* of that session's
+  (`ChannelConversationWorkflow`) is the *receiver* of that session's
   `message_*` tools, whose declarations travel on the event (`tools` CAS
   ref) and are merged verbatim at `ensureRoutedSession`. The controller
-  signals `bot_delivery_v1` `started` / `finished` receipts to the event's
+  signals `bot_delivery` `started` / `finished` receipts to the event's
   `notify` endpoint (typing, and the text-reply fallback when no
   `message_*` tool was used); a run that used a carried tool counts as
   `handled`. Messages are named to the model by the bot's `#N` in both
@@ -332,7 +364,10 @@ Release construction, snapshots, and tagged publication are documented in
   row — and `message_send { text, replyTo: 17 }` resolves numbers to
   provider ids inside the conversation workflow. Per-trigger
   `sessionTtlMs` (0 = never, the chat default) overrides
-  `routedSessionTtlMs`. Do not reintroduce bindings, a channel-owned
+  `routedSessionTtlMs`. Pairing is the routing authority: every bound
+  conversation has a pairing row (open triggers claim on first contact),
+  the paired trigger owns the chat while the row exists — a disabled
+  owner parks the chat, never reroutes it — and unpairing frees it. Do not reintroduce bindings, a channel-owned
   session, provider message ids in tool arguments, or a second lifecycle
   controller.
 - Bot decisions live in the controller's Temporal history; Postgres is the

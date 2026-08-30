@@ -4,6 +4,73 @@
  */
 
 /**
+ * This interface was referenced by `LightspeedWorkflowContract`'s JSON-Schema
+ * via the `definition` "BotId".
+ */
+export type BotId = string;
+/**
+ * This interface was referenced by `LightspeedWorkflowContract`'s JSON-Schema
+ * via the `definition` "BotTriggerId".
+ */
+export type BotTriggerId = string;
+/**
+ * This interface was referenced by `LightspeedWorkflowContract`'s JSON-Schema
+ * via the `definition` "ChannelAccountId".
+ */
+export type ChannelAccountId = string;
+/**
+ * What a connector executes: provider message ids and their direction.
+ *
+ * This interface was referenced by `LightspeedWorkflowContract`'s JSON-Schema
+ * via the `definition` "ChannelDeliveryOperation".
+ */
+export type ChannelDeliveryOperation =
+  | {
+      replyContext?: ReplyContext | null;
+      replyTo?: string | null;
+      text: string;
+      type: "send";
+    }
+  | {
+      messageId: string;
+      text: string;
+      type: "edit";
+    }
+  | {
+      emoji: string;
+      /**
+       * Whether the reacted-to message is the bot's own.
+       */
+      fromMe: boolean;
+      messageId: string;
+      type: "react";
+    };
+/**
+ * This interface was referenced by `LightspeedWorkflowContract`'s JSON-Schema
+ * via the `definition` "ChannelProvider".
+ */
+export type ChannelProvider = string;
+/**
+ * This interface was referenced by `LightspeedWorkflowContract`'s JSON-Schema
+ * via the `definition` "ChannelMediaKind".
+ */
+export type ChannelMediaKind = "image" | "audio" | "document";
+/**
+ * This interface was referenced by `LightspeedWorkflowContract`'s JSON-Schema
+ * via the `definition` "ChatTurnAccess".
+ */
+export type ChatTurnAccess = "anyone" | "listed";
+/**
+ * This interface was referenced by `LightspeedWorkflowContract`'s JSON-Schema
+ * via the `definition` "ChatGroupActivation".
+ */
+export type ChatGroupActivation = "mention" | "always";
+/**
+ * This interface was referenced by `LightspeedWorkflowContract`'s JSON-Schema
+ * via the `definition` "ChatScope".
+ */
+export type ChatScope = "direct" | "group";
+/**
  * Closed internal vocabulary carried by the shared delivery signal.
  *
  * Workflow-tool invocation bodies join this enum when the durable tool
@@ -138,6 +205,144 @@ export interface LightspeedWorkflowContract {
   [k: string]: unknown;
 }
 /**
+ * One connector activity call. `idempotency_key` is the invocation id, or
+ * `{invocation}:chunk:{i}/{n}` for a chunk of a split send.
+ *
+ * This interface was referenced by `LightspeedWorkflowContract`'s JSON-Schema
+ * via the `definition` "ChannelDeliveryCommand".
+ */
+export interface ChannelDeliveryCommand {
+  idempotencyKey: string;
+  invocationId: string;
+  operation: ChannelDeliveryOperation;
+  route: ChannelRoute;
+  version: number;
+}
+/**
+ * The message a send replies to, for providers that quote it themselves.
+ *
+ * This interface was referenced by `LightspeedWorkflowContract`'s JSON-Schema
+ * via the `definition` "ReplyContext".
+ */
+export interface ReplyContext {
+  senderId: string;
+  text: string;
+}
+/**
+ * Where a delivery goes: one account's chat, optionally a thread.
+ *
+ * This interface was referenced by `LightspeedWorkflowContract`'s JSON-Schema
+ * via the `definition` "ChannelRoute".
+ */
+export interface ChannelRoute {
+  accountId: ChannelAccountId;
+  chatId: string;
+  provider: ChannelProvider;
+  threadId?: string | null;
+}
+/**
+ * This interface was referenced by `LightspeedWorkflowContract`'s JSON-Schema
+ * via the `definition` "ChannelDeliveryResult".
+ */
+export interface ChannelDeliveryResult {
+  /**
+   * Every provider id the delivery produced (a chunked send has several;
+   * the first is the anchor).
+   */
+  messageIds: string[];
+  provider: ChannelProvider;
+  version: number;
+}
+/**
+ * A provider-owned attachment reference; never bytes. The connector
+ * downloads it when the conversation workflow asks (`prepare_channel_media`).
+ *
+ * This interface was referenced by `LightspeedWorkflowContract`'s JSON-Schema
+ * via the `definition` "ChannelInboundMedia".
+ */
+export interface ChannelInboundMedia {
+  byteSize?: number | null;
+  /**
+   * Provider file handle (a Telegram file id, a sealed WhatsApp locator).
+   */
+  fileId: string;
+  kind: ChannelMediaKind;
+  mime: string;
+  name?: string | null;
+}
+/**
+ * Who may take a turn and who may issue control commands, by provider
+ * handle (Telegram user id, WhatsApp JID). Handle allowlists on the
+ * trigger replace any platform membership lookup.
+ *
+ * This interface was referenced by `LightspeedWorkflowContract`'s JSON-Schema
+ * via the `definition` "ChatAccess".
+ */
+export interface ChatAccess {
+  /**
+   * Handles allowed to take a turn when `turn` is `listed`.
+   */
+  allowed?: string[];
+  /**
+   * Handles allowed to issue `/activation` and `/status`; empty denies
+   * control commands to everyone.
+   */
+  controllers?: string[];
+  turn?: ChatTurnAccess & string;
+}
+/**
+ * When the bot acts in a conversation.
+ *
+ * This interface was referenced by `LightspeedWorkflowContract`'s JSON-Schema
+ * via the `definition` "ChatActivation".
+ */
+export interface ChatActivation {
+  group?: ChatGroupActivation | null;
+  mentionNames?: string[];
+  triggerPrefixes?: string[];
+}
+/**
+ * The conversation a message belongs to: one account's chat, optionally
+ * a thread inside it.
+ *
+ * This interface was referenced by `LightspeedWorkflowContract`'s JSON-Schema
+ * via the `definition` "ConversationRef".
+ */
+export interface ConversationRef {
+  accountId: ChannelAccountId;
+  chatId: string;
+  threadId?: string | null;
+}
+/**
+ * Secret-free durable input of one conversation workflow: the chat trigger
+ * it serves and the conversation it fronts. The workflow owns nothing on
+ * the core side: the bot controller creates and controls the session; the
+ * workflow is the source of the conversation's events and the receiver of
+ * its `message_*` tools.
+ *
+ * This interface was referenced by `LightspeedWorkflowContract`'s JSON-Schema
+ * via the `definition` "ConversationStart".
+ */
+export interface ConversationStart {
+  access: ChatAccess;
+  accountId: ChannelAccountId;
+  activation: ChatActivation;
+  botId: BotId;
+  /**
+   * Task queue of the connector host serving the account.
+   */
+  connectorTaskQueue: string;
+  conversation: ConversationRef;
+  /**
+   * Human label of the conversation (routed session label, display name).
+   */
+  label: string;
+  provider: ChannelProvider;
+  scope: ChatScope;
+  triggerId: BotTriggerId;
+  universeId: string;
+}
+/**
  * Bounded durable record of one successful workflow-tool tool call.
  *
  * The model arguments remain in CAS and are referenced by `arguments_ref`.
@@ -185,6 +390,47 @@ export interface EmissionEnvelope {
   body: EmissionBody;
   emission_id: EmissionId;
   producer: EmissionProducer;
+}
+/**
+ * `maintain_channel_typing`: keep the provider's typing indicator up for
+ * the conversation until the activity is cancelled.
+ *
+ * This interface was referenced by `LightspeedWorkflowContract`'s JSON-Schema
+ * via the `definition` "MaintainChannelTypingInput".
+ */
+export interface MaintainChannelTypingInput {
+  route: ChannelRoute;
+}
+/**
+ * `prepare_channel_media`: the connector downloads the provider file and
+ * stores it in the universe's CAS.
+ *
+ * This interface was referenced by `LightspeedWorkflowContract`'s JSON-Schema
+ * via the `definition` "PrepareChannelMediaInput".
+ */
+export interface PrepareChannelMediaInput {
+  media: ChannelInboundMedia;
+  route: ChannelRoute;
+  universeId: string;
+}
+/**
+ * This interface was referenced by `LightspeedWorkflowContract`'s JSON-Schema
+ * via the `definition` "PrepareChannelMediaResult".
+ */
+export interface PrepareChannelMediaResult {
+  item: PreparedMediaItem;
+}
+/**
+ * A prepared attachment: a CAS reference, never bytes.
+ *
+ * This interface was referenced by `LightspeedWorkflowContract`'s JSON-Schema
+ * via the `definition` "PreparedMediaItem".
+ */
+export interface PreparedMediaItem {
+  blobRef: string;
+  kind: ChannelMediaKind;
+  mime: string;
+  name?: string | null;
 }
 /**
  * This interface was referenced by `LightspeedWorkflowContract`'s JSON-Schema

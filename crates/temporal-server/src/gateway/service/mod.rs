@@ -3,6 +3,8 @@
 mod api_config;
 mod auth_api;
 mod blobs;
+mod bots_api;
+pub(crate) mod channels_api;
 mod common;
 mod environment_credentials;
 mod environment_lifecycle;
@@ -478,6 +480,8 @@ pub struct GatewayAgentApiBuilder {
     client: Client,
     store: Arc<PgStore>,
     task_queue: String,
+    bot_task_queue: String,
+    channel_task_queue: String,
     default_model: ModelSelection,
     continue_as_new_history_threshold: Option<u32>,
     poll_interval: Duration,
@@ -496,6 +500,18 @@ pub struct GatewayAgentApiBuilder {
 impl GatewayAgentApiBuilder {
     pub fn with_task_queue(mut self, task_queue: impl Into<String>) -> Self {
         self.task_queue = task_queue.into();
+        self
+    }
+
+    /// Task queue of the `bots` worker role (bot controllers, trigger fires).
+    pub fn with_bot_task_queue(mut self, task_queue: impl Into<String>) -> Self {
+        self.bot_task_queue = task_queue.into();
+        self
+    }
+
+    /// Task queue of the `channels` worker role (conversation workflows).
+    pub fn with_channel_task_queue(mut self, task_queue: impl Into<String>) -> Self {
+        self.channel_task_queue = task_queue.into();
         self
     }
 
@@ -654,6 +670,8 @@ impl GatewayAgentApiBuilder {
             client: self.client,
             store: self.store,
             task_queue: self.task_queue,
+            bot_task_queue: self.bot_task_queue,
+            channel_task_queue: self.channel_task_queue,
             default_model: self.default_model,
             continue_as_new_history_threshold: self.continue_as_new_history_threshold,
             poll_interval: self.poll_interval,
@@ -675,6 +693,8 @@ pub struct GatewayAgentApi {
     client: Client,
     store: Arc<PgStore>,
     task_queue: String,
+    pub(crate) bot_task_queue: String,
+    pub(crate) channel_task_queue: String,
     default_model: ModelSelection,
     continue_as_new_history_threshold: Option<u32>,
     poll_interval: Duration,
@@ -700,6 +720,8 @@ impl GatewayAgentApi {
             client,
             store,
             task_queue: DEFAULT_TASK_QUEUE.to_owned(),
+            bot_task_queue: temporal_workflow::bots::DEFAULT_BOTS_TASK_QUEUE.to_owned(),
+            channel_task_queue: crate::config::DEFAULT_CHANNELS_TASK_QUEUE.to_owned(),
             default_model: default_model_from_env(),
             continue_as_new_history_threshold: None,
             poll_interval: DEFAULT_POLL_INTERVAL,
@@ -718,6 +740,15 @@ impl GatewayAgentApi {
 
     pub(crate) fn store(&self) -> &Arc<PgStore> {
         &self.store
+    }
+
+    pub(crate) fn temporal_client(&self) -> &Client {
+        &self.client
+    }
+
+    /// Task queue of the `bots` worker role.
+    pub(crate) fn bot_task_queue(&self) -> &str {
+        &self.bot_task_queue
     }
 
     pub fn new(client: Client, store: Arc<PgStore>) -> Self {
@@ -1020,9 +1051,21 @@ impl GatewayAgentApi {
         let workflow_tools = trusted_workflow_tools;
         let client_supplied_id = session_id.is_some();
         let session_id = match session_id {
-            Some(session_id) => SessionId::try_new(session_id).map_err(|error| {
-                AgentApiError::invalid_request(format!("invalid session id: {error}"))
-            })?,
+            Some(session_id) => {
+                // System workflow ids share the `{universe}/…` namespace
+                // with sessions; their segments are reserved.
+                if let Some(prefix) = ::bots::ids::RESERVED_SESSION_ID_PREFIXES
+                    .iter()
+                    .find(|prefix| session_id.starts_with(*prefix))
+                {
+                    return Err(AgentApiError::invalid_request(format!(
+                        "session id prefix `{prefix}` is reserved for system workflows"
+                    )));
+                }
+                SessionId::try_new(session_id).map_err(|error| {
+                    AgentApiError::invalid_request(format!("invalid session id: {error}"))
+                })?
+            }
             None => self.allocate_session_id(),
         };
         if let Some(workflow_tools) = workflow_tools.as_ref() {
@@ -1970,6 +2013,279 @@ fn has_all_core_environment_job_bindings(state: &engine::CoreAgentState) -> bool
 
 #[async_trait]
 impl AgentApiService for GatewayAgentApi {
+    // ── Bots ────────────────────────────────────────────────────────────
+
+    async fn create_bot(
+        &self,
+        params: BotCreateParams,
+    ) -> Result<AgentApiOutcome<BotCreateResponse>, AgentApiError> {
+        self.create_bot_record(params)
+            .await
+            .map(AgentApiOutcome::new)
+    }
+
+    async fn put_bot(
+        &self,
+        params: BotPutParams,
+    ) -> Result<AgentApiOutcome<BotPutResponse>, AgentApiError> {
+        let bot = self
+            .put_bot_record(params.bot, params.expected_revision)
+            .await?;
+        Ok(AgentApiOutcome::new(BotPutResponse { bot: bot.view() }))
+    }
+
+    async fn read_bot(
+        &self,
+        params: BotReadParams,
+    ) -> Result<AgentApiOutcome<BotReadResponse>, AgentApiError> {
+        let bot = ::bots::BotStore::read_bot(self.store.as_ref(), &params.bot_id)
+            .await
+            .map_err(crate::bots::map_bot_error)?;
+        Ok(AgentApiOutcome::new(BotReadResponse { bot: bot.view() }))
+    }
+
+    async fn list_bots(
+        &self,
+        _params: BotListParams,
+    ) -> Result<AgentApiOutcome<BotListResponse>, AgentApiError> {
+        self.list_bot_roster().await.map(AgentApiOutcome::new)
+    }
+
+    async fn close_bot(
+        &self,
+        params: BotCloseParams,
+    ) -> Result<AgentApiOutcome<BotCloseResponse>, AgentApiError> {
+        let bot = self.close_bot_record(&params.bot_id).await?;
+        Ok(AgentApiOutcome::new(BotCloseResponse { bot: bot.view() }))
+    }
+
+    async fn delete_bot(
+        &self,
+        params: BotDeleteParams,
+    ) -> Result<AgentApiOutcome<BotDeleteResponse>, AgentApiError> {
+        let (bot, deleted_sessions) = self.delete_bot_record(&params.bot_id).await?;
+        Ok(AgentApiOutcome::new(BotDeleteResponse {
+            bot: bot.view(),
+            deleted_sessions,
+        }))
+    }
+
+    async fn read_bot_state(
+        &self,
+        params: BotStateReadParams,
+    ) -> Result<AgentApiOutcome<BotStateReadResponse>, AgentApiError> {
+        let state = self.bot_state_view(&params.bot_id).await?;
+        Ok(AgentApiOutcome::new(BotStateReadResponse { state }))
+    }
+
+    async fn rotate_bot_session(
+        &self,
+        params: BotSessionRotateParams,
+    ) -> Result<AgentApiOutcome<BotSessionRotateResponse>, AgentApiError> {
+        let accepted = self
+            .rotate_bot_session_record(&params.bot_id, &params.session_id)
+            .await?;
+        Ok(AgentApiOutcome::new(BotSessionRotateResponse { accepted }))
+    }
+
+    async fn put_bot_trigger(
+        &self,
+        params: BotTriggerPutParams,
+    ) -> Result<AgentApiOutcome<BotTriggerPutResponse>, AgentApiError> {
+        let record = self
+            .put_bot_trigger_record(&params.bot_id, params.trigger, params.expected_revision)
+            .await?;
+        Ok(AgentApiOutcome::new(BotTriggerPutResponse {
+            trigger: self.trigger_view(&record),
+        }))
+    }
+
+    async fn read_bot_trigger(
+        &self,
+        params: BotTriggerReadParams,
+    ) -> Result<AgentApiOutcome<BotTriggerReadResponse>, AgentApiError> {
+        let record = ::bots::BotTriggerStore::read_bot_trigger(
+            self.store.as_ref(),
+            &params.bot_id,
+            &params.trigger_id,
+        )
+        .await
+        .map_err(crate::bots::map_bot_error)?;
+        Ok(AgentApiOutcome::new(BotTriggerReadResponse {
+            trigger: self.trigger_view(&record),
+        }))
+    }
+
+    async fn list_bot_triggers(
+        &self,
+        params: BotTriggerListParams,
+    ) -> Result<AgentApiOutcome<BotTriggerListResponse>, AgentApiError> {
+        ::bots::BotStore::read_bot(self.store.as_ref(), &params.bot_id)
+            .await
+            .map_err(crate::bots::map_bot_error)?;
+        let records =
+            ::bots::BotTriggerStore::list_bot_triggers(self.store.as_ref(), &params.bot_id)
+                .await
+                .map_err(crate::bots::map_bot_error)?;
+        Ok(AgentApiOutcome::new(BotTriggerListResponse {
+            triggers: records
+                .iter()
+                .map(|record| self.trigger_view(record))
+                .collect(),
+        }))
+    }
+
+    async fn delete_bot_trigger(
+        &self,
+        params: BotTriggerDeleteParams,
+    ) -> Result<AgentApiOutcome<BotTriggerDeleteResponse>, AgentApiError> {
+        let record = self
+            .delete_bot_trigger_record(&params.bot_id, &params.trigger_id)
+            .await?;
+        Ok(AgentApiOutcome::new(BotTriggerDeleteResponse {
+            trigger: self.trigger_view(&record),
+        }))
+    }
+
+    async fn admit_bot_event(
+        &self,
+        params: BotEventAdmitParams,
+    ) -> Result<AgentApiOutcome<BotEventAdmitResponse>, AgentApiError> {
+        let (record, duplicate) = self
+            .admit_bot_event_record(&params.bot_id, params.event)
+            .await?;
+        Ok(AgentApiOutcome::new(BotEventAdmitResponse {
+            event: record.view(),
+            duplicate,
+        }))
+    }
+
+    async fn replay_bot_event(
+        &self,
+        params: BotEventReplayParams,
+    ) -> Result<AgentApiOutcome<BotEventReplayResponse>, AgentApiError> {
+        let record = self
+            .replay_bot_event_record(&params.bot_id, params.seq)
+            .await?;
+        Ok(AgentApiOutcome::new(BotEventReplayResponse {
+            event: record.view(),
+        }))
+    }
+
+    async fn list_bot_events(
+        &self,
+        params: BotEventListParams,
+    ) -> Result<AgentApiOutcome<BotEventListResponse>, AgentApiError> {
+        let (records, next_cursor) = self
+            .list_bot_events_page(&params.bot_id, params.limit, params.cursor)
+            .await?;
+        Ok(AgentApiOutcome::new(BotEventListResponse {
+            events: records.iter().map(|record| record.view()).collect(),
+            next_cursor,
+        }))
+    }
+
+    async fn read_bot_event(
+        &self,
+        params: BotEventReadParams,
+    ) -> Result<AgentApiOutcome<BotEventReadResponse>, AgentApiError> {
+        self.read_bot_event_with_document(&params.bot_id, params.seq)
+            .await
+            .map(AgentApiOutcome::new)
+    }
+
+    async fn test_bot_filter(
+        &self,
+        params: BotFilterTestParams,
+    ) -> Result<AgentApiOutcome<BotFilterTestResponse>, AgentApiError> {
+        self.test_bot_filter_records(params)
+            .await
+            .map(AgentApiOutcome::new)
+    }
+
+    // ── Channels ────────────────────────────────────────────────────────
+
+    async fn create_channel_account(
+        &self,
+        params: ChannelAccountCreateParams,
+    ) -> Result<AgentApiOutcome<ChannelAccountCreateResponse>, AgentApiError> {
+        self.create_channel_account_record(params)
+            .await
+            .map(AgentApiOutcome::new)
+    }
+
+    async fn put_channel_account(
+        &self,
+        params: ChannelAccountPutParams,
+    ) -> Result<AgentApiOutcome<ChannelAccountPutResponse>, AgentApiError> {
+        self.put_channel_account_record(params)
+            .await
+            .map(AgentApiOutcome::new)
+    }
+
+    async fn read_channel_account(
+        &self,
+        params: ChannelAccountReadParams,
+    ) -> Result<AgentApiOutcome<ChannelAccountReadResponse>, AgentApiError> {
+        self.read_channel_account_record(params)
+            .await
+            .map(AgentApiOutcome::new)
+    }
+
+    async fn list_channel_accounts(
+        &self,
+        params: ChannelAccountListParams,
+    ) -> Result<AgentApiOutcome<ChannelAccountListResponse>, AgentApiError> {
+        self.list_channel_account_records(params)
+            .await
+            .map(AgentApiOutcome::new)
+    }
+
+    async fn delete_channel_account(
+        &self,
+        params: ChannelAccountDeleteParams,
+    ) -> Result<AgentApiOutcome<ChannelAccountDeleteResponse>, AgentApiError> {
+        self.delete_channel_account_record(params)
+            .await
+            .map(AgentApiOutcome::new)
+    }
+
+    async fn admit_channel_inbound(
+        &self,
+        params: ChannelInboundAdmitParams,
+    ) -> Result<AgentApiOutcome<ChannelInboundAdmitResponse>, AgentApiError> {
+        self.admit_channel_inbound_message(params)
+            .await
+            .map(AgentApiOutcome::new)
+    }
+
+    async fn list_channel_pairings(
+        &self,
+        params: ChannelPairingListParams,
+    ) -> Result<AgentApiOutcome<ChannelPairingListResponse>, AgentApiError> {
+        self.list_channel_pairing_records(params)
+            .await
+            .map(AgentApiOutcome::new)
+    }
+
+    async fn delete_channel_pairing(
+        &self,
+        params: ChannelPairingDeleteParams,
+    ) -> Result<AgentApiOutcome<ChannelPairingDeleteResponse>, AgentApiError> {
+        self.delete_channel_pairing_record(params)
+            .await
+            .map(AgentApiOutcome::new)
+    }
+
+    async fn read_channel_conversation(
+        &self,
+        params: ChannelConversationReadParams,
+    ) -> Result<AgentApiOutcome<ChannelConversationReadResponse>, AgentApiError> {
+        self.read_channel_conversation_snapshot(params)
+            .await
+            .map(AgentApiOutcome::new)
+    }
+
     async fn list_models(
         &self,
         params: ModelListParams,

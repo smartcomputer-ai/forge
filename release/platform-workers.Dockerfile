@@ -4,12 +4,11 @@ ENV NODE_ENV=production
 ARG LIGHTSPEED_RELEASE_VERSION=0.0.0
 ARG LIGHTSPEED_GIT_SHA=unknown
 ENV LIGHTSPEED_RELEASE_VERSION=$LIGHTSPEED_RELEASE_VERSION
-LABEL org.opencontainers.image.title="Lightspeed Platform workers" \
+LABEL org.opencontainers.image.title="Lightspeed connector host" \
       org.opencontainers.image.version=$LIGHTSPEED_RELEASE_VERSION \
       org.opencontainers.image.revision=$LIGHTSPEED_GIT_SHA \
       org.opencontainers.image.source="https://github.com/smartcomputer-ai/lightspeed"
 WORKDIR /app
 ADD --chown=node:node dist/runtime/platform-workers.tar.gz /app/
 USER node
-ENTRYPOINT ["node", "--import", "tsx", "platform/workers/src/main.ts"]
-CMD ["all"]
+ENTRYPOINT ["node", "--import", "tsx", "platform/connectors/src/host/main.ts"]

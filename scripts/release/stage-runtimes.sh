@@ -19,15 +19,13 @@ copy_workspace_manifests() {
   cp package.json package-lock.json tsconfig.json "$root/"
   for workspace in \
     clients/typescript \
-    platform/bots \
-    platform/channels \
     platform/cli \
     platform/configurator-mcp \
+    platform/connectors \
     platform/db \
     platform/server \
     platform/shared \
-    platform/web \
-    platform/workers; do
+    platform/web; do
     mkdir -p "$root/$workspace"
     cp "$workspace/package.json" "$root/$workspace/"
   done
@@ -50,12 +48,12 @@ stage_runtime() {
   (cd "$root" && npm "${install_args[@]}")
   rm -f "$root/package-lock.json"
   if [[ "$name" = platform ]]; then
-    rm -rf "$root/platform/channels" "$root/platform/cli" \
-      "$root/platform/configurator-mcp" "$root/platform/workers"
+    rm -rf "$root/platform/cli" "$root/platform/configurator-mcp" \
+      "$root/platform/connectors"
   else
     rm -rf "$root/platform/cli" "$root/platform/configurator-mcp" \
-      "$root/platform/server" \
-      "$root/platform/shared" "$root/platform/web"
+      "$root/platform/db" "$root/platform/server" "$root/platform/shared" \
+      "$root/platform/web"
   fi
   "$tar_command" --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner \
     -C "$root" -czf "$dist_dir/runtime/$name.tar.gz" .
@@ -63,16 +61,14 @@ stage_runtime() {
 
 stage_runtime platform @lightspeed/platform-server \
   clients/typescript/dist \
-  platform/bots/src \
   platform/server/src \
   platform/db/src \
   platform/db/migrations \
   platform/shared/src \
   platform/web/dist
-stage_runtime platform-workers @lightspeed/platform-workers \
+# The "platform-workers" runtime is the connector host (platform/connectors):
+# Bots and Channels core moved into the Rust runtime. The artifact keeps its
+# name so image references and manifest keys stay stable.
+stage_runtime platform-workers @lightspeed/connectors \
   clients/typescript/dist \
-  platform/bots/src \
-  platform/channels/src \
-  platform/db/src \
-  platform/db/migrations \
-  platform/workers/src
+  platform/connectors/src

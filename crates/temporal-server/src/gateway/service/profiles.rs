@@ -59,6 +59,9 @@ impl GatewayAgentApi {
             .put_agent_profile(params.profile, params.expected_revision, now_ms()?)
             .await
             .map_err(map_profile_error)?;
+        // Bots pin the profile by id: every open bot on it re-applies the
+        // new revision at its controller's next idle boundary.
+        self.signal_bots_for_profile(&profile.profile_id).await;
         Ok(ProfilePutResponse { profile })
     }
 
