@@ -572,7 +572,17 @@ function deliver(
     }
   }
   if (active && whenBusy === "append") {
-    applyEntries(session, [contextMessage(store.nextId("entry"), "user", prompt)], { runId: active.id });
+    applyEntries(
+      session,
+      [
+        contextMessage(store.nextId("entry"), "user", prompt, {
+          type: "runInput",
+          inputIndex: 0,
+          runId: active.id,
+        }),
+      ],
+      { runId: active.id },
+    );
     resolveEvent(record, event, "appended", `appended to run ${active.id}`, null, {
       deliveryId,
       sessionId: session.view.id,

@@ -4,6 +4,7 @@
 import type {
   ContextEntryView,
   ContextMessageRoleView,
+  ContextEntrySourceView,
   EventJoinsView,
   ModelConfig,
   RunAcceptedSourceView,
@@ -56,8 +57,19 @@ export function pushEvent(
   return event;
 }
 
-export function contextMessage(id: string, role: ContextMessageRoleView, text: string): ContextEntryView {
-  return { id, contentRef: `blob:${id}`, kind: { type: "message", role }, text } as ContextEntryView;
+export function contextMessage(
+  id: string,
+  role: ContextMessageRoleView,
+  text: string,
+  source?: ContextEntrySourceView,
+): ContextEntryView {
+  return {
+    id,
+    contentRef: `blob:${id}`,
+    kind: { type: "message", role },
+    text,
+    ...(source ? { source } : {}),
+  } as ContextEntryView;
 }
 
 export function contextToolCall(id: string, callId: string, name: string): ContextEntryView {
@@ -286,7 +298,16 @@ export function startRun(
   session.view.runs = [...(session.view.runs ?? []), run];
   if (input.submissionId) session.submissions.set(input.submissionId, run);
   const joins: EventJoinsView = { runId: run.id, submissionId: input.submissionId ?? null };
-  pushEvent(session, { type: "runAccepted", runId: run.id, source: inputSource(store, input.text) }, joins);
+  pushEvent(
+    session,
+    {
+      type: "runAccepted",
+      runId: run.id,
+      submissionId: input.submissionId ?? null,
+      source: inputSource(store, input.text),
+    },
+    joins,
+  );
 
   const begin = () => {
     run.status = "running";
@@ -294,7 +315,17 @@ export function startRun(
     session.view.status = "active";
     pushEvent(session, { type: "runStarted", runId: run.id }, joins);
     session.turns += 1;
-    applyEntries(session, [contextMessage(store.nextId("entry"), "user", input.text)], joins);
+    applyEntries(
+      session,
+      [
+        contextMessage(store.nextId("entry"), "user", input.text, {
+          type: "runInput",
+          inputIndex: 0,
+          runId: run.id,
+        }),
+      ],
+      joins,
+    );
     const respond = session.responder ?? universe.responder;
     const turn =
       input.turn ?? respond(input.text, { store, universe, session, turn: session.turns });
@@ -325,9 +356,20 @@ function afterTurns(
     onFinished?.(run);
     return;
   }
-  applyEntries(session, [contextMessage(store.nextId("entry"), "user", steer)], { runId: run.id });
+  applyEntries(
+    session,
+    [
+      contextMessage(store.nextId("entry"), "user", steer.text, {
+        type: "steering",
+        inputIndex: 0,
+        runId: run.id,
+        steeringId: steer.steeringId,
+      }),
+    ],
+    { runId: run.id },
+  );
   const respond = session.responder ?? universe.responder;
-  const turn = respond(steer, { store, universe, session, turn: session.turns });
+  const turn = respond(steer.text, { store, universe, session, turn: session.turns });
   schedule(session, run, turnSteps(store, session, run, turn, turnIndex), () =>
     afterTurns(store, universe, session, run, turnIndex + 1, onFinished),
   );
@@ -391,7 +433,7 @@ export function steerRun(
   const run = findRun(session, runId);
   if (!run || run.status !== "running") return null;
   const steeringId = store.nextId("steer");
-  session.steering.push(text);
+  session.steering.push({ text, steeringId });
   pushEvent(
     session,
     {
@@ -609,7 +651,18 @@ export function appendExchange(
   pushEvent(session, { type: "runAccepted", runId: run.id, source: inputSource(store, exchange.user) }, joins, at);
   pushEvent(session, { type: "runStarted", runId: run.id }, joins, at);
   session.turns += 1;
-  applyEntries(session, [contextMessage(store.nextId("entry"), "user", exchange.user)], joins, at);
+  applyEntries(
+    session,
+    [
+      contextMessage(store.nextId("entry"), "user", exchange.user, {
+        type: "runInput",
+        inputIndex: 0,
+        runId: run.id,
+      }),
+    ],
+    joins,
+    at,
+  );
   for (const step of turnSteps(store, session, run, exchange.turn, 1)) {
     at += step.delayMs * 4;
     step.apply(at);
@@ -661,7 +714,18 @@ export function appendScriptedRun(store: DemoStore, session: SessionRecord, scri
   pushEvent(session, { type: "runAccepted", runId: run.id, source: inputSource(store, script.user) }, runJoins, clock);
   pushEvent(session, { type: "runStarted", runId: run.id }, runJoins, clock);
   session.turns += 1;
-  applyEntries(session, [contextMessage(store.nextId("entry"), "user", script.user)], runJoins, clock);
+  applyEntries(
+    session,
+    [
+      contextMessage(store.nextId("entry"), "user", script.user, {
+        type: "runInput",
+        inputIndex: 0,
+        runId: run.id,
+      }),
+    ],
+    runJoins,
+    clock,
+  );
 
   let generation = 0;
   const generate = (turnId: string, joins: EventJoinsView, entries: ContextEntryView[], thinkMs: number) => {

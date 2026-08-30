@@ -115,16 +115,34 @@ describe("demo router", () => {
     const runId = (accepted.json as { run: { id: string; status: string } }).run.id;
     let after = 0;
     let completed = false;
+    let acceptedSubmission: string | null | undefined;
+    let userEntrySource: unknown = null;
     for (let i = 0; i < 20 && !completed; i++) {
       const page = (
         await call("GET", `/api/v1/universes/${universe!.id}/sessions/${sessionId}/events?after=${after}&limit=100&waitMs=3000`)
       ).json as SessionEventsPage;
       for (const event of page.events ?? []) {
         after = event.cursor.seq;
+        if (event.kind.type === "runAccepted" && event.kind.runId === runId) {
+          acceptedSubmission = event.kind.submissionId;
+        }
+        if (event.kind.type === "contextEntriesApplied") {
+          for (const entry of event.kind.entries) {
+            if (entry.kind.type === "message" && entry.kind.role === "user") {
+              userEntrySource = entry.source ?? null;
+            }
+          }
+        }
         if (event.kind.type === "runCompleted" && event.kind.runId === runId) completed = true;
       }
     }
     expect(completed).toBe(true);
+    // The page reconciles its optimistic bubble through these two joins:
+    // `runAccepted.submissionId` maps the send to its run, and the user
+    // entry's `source.runId` confirms the echo. Losing either shows a
+    // double bubble in the demo.
+    expect(acceptedSubmission).toBe("sub-1");
+    expect(userEntrySource).toMatchObject({ type: "runInput", runId });
     const view = (await call("GET", `/api/v1/universes/${universe!.id}/sessions/${sessionId}`)).json as {
       status: string;
       runs: Array<{ id: string; status: string }>;

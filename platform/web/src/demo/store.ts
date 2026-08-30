@@ -90,9 +90,9 @@ export interface SessionRecord {
   submissions: Map<string, RunView>;
   /// Runs queued behind the active one.
   queue: Array<{ runId: string; begin: () => void }>;
-  /// Steering text admitted while a run is in flight; consumed at the
-  /// run's next turn boundary.
-  steering: string[];
+  /// Steering admitted while a run is in flight; consumed at the run's
+  /// next turn boundary, where the entry carries its steering source.
+  steering: Array<{ text: string; steeringId: string }>;
   timers: Set<ReturnType<typeof setTimeout>>;
   /// Long-poll wakers, notified on every appended event.
   waiters: Set<() => void>;

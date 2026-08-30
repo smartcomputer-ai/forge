@@ -780,4 +780,7 @@ and core-Channels variable groups in `docs/variables.md`.
   dedupe `cursor` and the advancing `PollCursorState` under one JSON key —
   the runtime field is now `cursorState`. The chat access UI moved to the
   handle-allowlist `ChatAccess` shape (the org-role model died with
-  `channel_identities`).
+  `channel_identities`). Post-cut-over fix: the demo engine's user entries
+  now carry `source` (`runInput` / `steering`) and `runAccepted` carries
+  `submissionId`, like the live projection — without them the page cannot
+  reconcile its optimistic bubble and shows it twice until the run ends.
