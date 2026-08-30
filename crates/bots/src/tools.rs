@@ -1103,7 +1103,7 @@ mod tests {
     fn receiver() -> WorkflowEndpointInput {
         WorkflowEndpointInput {
             workflow_id: "wf".to_owned(),
-            workflow_kind: "botControllerWorkflowV1".to_owned(),
+            workflow_kind: "BotControllerWorkflow".to_owned(),
         }
     }
 

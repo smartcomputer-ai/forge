@@ -171,8 +171,8 @@ fn vectors() -> Value {
     let (split_universe, split_session) =
         split_workflow_id(&session_workflow_id).expect("composed session workflow id splits");
     let recipe = WorkflowToolRecipeV1 {
-        workflow_type: "botControllerWorkflowV1".to_owned(),
-        task_queue: "lightspeed-bots-workflows-v1".to_owned(),
+        workflow_type: "BotControllerWorkflow".to_owned(),
+        task_queue: "lightspeed-bots".to_owned(),
     };
     let recipe_json = serde_json::to_string(&recipe).expect("recipe serializes");
     let invocation = WorkflowToolInvocation {

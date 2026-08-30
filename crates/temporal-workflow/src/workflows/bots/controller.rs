@@ -50,7 +50,7 @@ use state::{
 
 /// `workflow_kind` the controller records as lifecycle controller and
 /// pushed-tool receiver of its sessions.
-pub const BOT_CONTROLLER_WORKFLOW_KIND: &str = "bots.controller";
+pub const BOT_CONTROLLER_WORKFLOW_KIND: &str = "BotControllerWorkflow";
 
 /// Start argument of the controller: the bot's configuration and, after a
 /// continue-as-new, what the previous execution carried over.

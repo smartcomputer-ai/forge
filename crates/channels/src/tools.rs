@@ -272,7 +272,7 @@ mod tests {
     fn receiver() -> WorkflowEndpointInput {
         WorkflowEndpointInput {
             workflow_id: "channels/one".to_owned(),
-            workflow_kind: "channelConversationWorkflowV1".to_owned(),
+            workflow_kind: "ChannelConversationWorkflow".to_owned(),
         }
     }
 

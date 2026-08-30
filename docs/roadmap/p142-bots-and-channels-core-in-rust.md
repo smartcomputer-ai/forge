@@ -736,6 +736,14 @@ and core-Channels variable groups in `docs/variables.md`.
   triggers claim silently. `channel_accounts` gained the
   matches-document CHECKs (`provider`, `provider_account_id`) that
   `bot_triggers.kind` already had.
+- **Naming pass (2026-08-30).** The two core `workflow_kind` values are
+  the registered workflow type names (`BotControllerWorkflow`,
+  `ChannelConversationWorkflow` — previously `bots.controller` vs the
+  type name); test fixtures and the recipe contract vector stopped using
+  the TS-era `botControllerWorkflowV1` / `channelConversationWorkflowV1`
+  strings and the retired `lightspeed-bots-workflows-v1` queue name;
+  AGENTS.md now names the real workflow type and the `bot_delivery`
+  signal.
 - **Deviations recorded while porting:** the filter's `event.occurredAtMs`
   is an integer; poll cursors advance only over delivered items (the TS
   silently dropped items past the per-fire cap); `resolve_inbox` reports a

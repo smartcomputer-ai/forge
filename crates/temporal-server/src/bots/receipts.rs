@@ -334,7 +334,7 @@ mod tests {
             media: Vec::new(),
             receiver: notify.map(|(workflow_id, token)| EventReceiver::Workflow {
                 workflow_id: workflow_id.to_owned(),
-                workflow_kind: "channelConversationWorkflowV1".to_owned(),
+                workflow_kind: "ChannelConversationWorkflow".to_owned(),
                 token: token.to_owned(),
                 tools_ref: None,
             }),

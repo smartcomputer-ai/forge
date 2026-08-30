@@ -860,7 +860,7 @@ mod tests {
             target: WorkflowToolTargetInput::Bound {
                 receiver: WorkflowEndpointInput {
                     workflow_id: "wf".to_owned(),
-                    workflow_kind: "channelConversationWorkflowV1".to_owned(),
+                    workflow_kind: "ChannelConversationWorkflow".to_owned(),
                 },
                 dispatch: BoundWorkflowToolDispatchInput::Push,
             },
@@ -1026,7 +1026,7 @@ mod tests {
         let declarations = bot_workflow_tool_declarations(
             WorkflowEndpointInput {
                 workflow_id: "u/bot-triage".to_owned(),
-                workflow_kind: "botControllerWorkflowV1".to_owned(),
+                workflow_kind: "BotControllerWorkflow".to_owned(),
             },
             &schema_refs,
             &description_refs,

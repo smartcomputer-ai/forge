@@ -183,17 +183,17 @@ export const WORKFLOW_CONTRACT_MANIFEST =
       "jobGroupId": "job_1",
       "producerWorkflowId": "lightspeed.bots.v1/6f3a1a52-58c1-4f0e-9c2d-1a2b3c4d5e6f/triage",
       "promiseId": "promise_1",
-      "recipeJson": "{\"workflowType\":\"botControllerWorkflowV1\",\"taskQueue\":\"lightspeed-bots-workflows-v1\"}",
+      "recipeJson": "{\"workflowType\":\"BotControllerWorkflow\",\"taskQueue\":\"lightspeed-bots\"}",
       "runId": 7,
       "sessionId": "bot:v1:triage",
       "token": "terminal-token-1",
       "universeId": "6f3a1a52-58c1-4f0e-9c2d-1a2b3c4d5e6f"
     },
     "recipe": {
-      "taskQueue": "lightspeed-bots-workflows-v1",
-      "workflowType": "botControllerWorkflowV1"
+      "taskQueue": "lightspeed-bots",
+      "workflowType": "BotControllerWorkflow"
     },
-    "recipeFingerprint": "wtr:sha256:72cbf89c16b7eb218d174f90de14a978ff062fb608e14bc18007d587363951ec",
+    "recipeFingerprint": "wtr:sha256:7c3d35ba94ba53a7d51d12749aa2fb43e8026d6a3b69dfca7ef4b9422b846010",
     "recoveryResult": {
       "resolutions": {
         "reply": {

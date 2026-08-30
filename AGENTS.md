@@ -353,10 +353,10 @@ Release construction, snapshots, and tagged publication are documented in
   message is one event through `admitTriggerEvent` (id
   `chat:<trigger>:…`), routed `perKey` per conversation into
   `bot:v1:<bot>:k-…`; the conversation workflow
-  (`channelConversationWorkflowV1`) is the *receiver* of that session's
+  (`ChannelConversationWorkflow`) is the *receiver* of that session's
   `message_*` tools, whose declarations travel on the event (`tools` CAS
   ref) and are merged verbatim at `ensureRoutedSession`. The controller
-  signals `bot_delivery_v1` `started` / `finished` receipts to the event's
+  signals `bot_delivery` `started` / `finished` receipts to the event's
   `notify` endpoint (typing, and the text-reply fallback when no
   `message_*` tool was used); a run that used a carried tool counts as
   `handled`. Messages are named to the model by the bot's `#N` in both
