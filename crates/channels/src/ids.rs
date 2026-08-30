@@ -84,16 +84,3 @@ pub fn connector_task_queue(
     digest.truncate(24);
     format!("lightspeed-connector-{provider}-{digest}")
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn conversation(thread: Option<&str>) -> ConversationRef {
-        ConversationRef {
-            account_id: ChannelAccountId::new("tg-main"),
-            chat_id: "12345".to_owned(),
-            thread_id: thread.map(str::to_owned),
-        }
-    }
-}
