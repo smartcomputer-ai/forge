@@ -60,15 +60,16 @@ Environment variables are documented separately in
 
 ## Features
 
-What constitutes an "agent harness" is a rapidly expanding set of table-stakes features. Lightspeed is not 1.0 yet, but it is far enough along to try: everything checked below works today (see [Quick start](#quick-start)), and the unchecked items are actively in flight:
+Lightspeed covers the table stakes of a modern agent harness and keeps shipping fast. Everything below works today — run it with the [Quick start](#quick-start).
 
 **Models & providers**
 
 - [x] **OpenAI and Anthropic, provider-native**: reasoning traces, native compaction, advanced tool configs, provider tools, files and images, OAuth login, multiple API keys
-- [x] **OpenAI-compatible providers** via universe-scoped endpoint records:
-  OpenRouter, DeepSeek, vLLM, Ollama, and similar Chat Completions or Responses
-  servers can each carry their own URL, credential, non-secret headers, and
-  admitted API kinds without putting transport configuration in a session
+- [x] **OpenAI-compatible providers**: OpenRouter, DeepSeek, vLLM, Ollama, and
+  similar servers, each configured with its own endpoint and credential
+- [x] **Prompt caching**: cache breakpoints and cache keys are placed
+  automatically, context is append-only where it counts, and cache usage is
+  reported per run
 
 **Agent capabilities**
 
@@ -83,6 +84,21 @@ What constitutes an "agent harness" is a rapidly expanding set of table-stakes f
 - [x] **Agent profiles**: reusable session setups, shared across clients and sub-agents;
   a profile can activate an existing environment or provision a fresh one per session
 
+**Bots & channels**
+
+- [x] **Bots**: durable event routers that own their sessions. Triggers fire on
+  schedules, webhooks, polls, or chat messages; events are filtered, coalesced,
+  and delivered under budgets and flood breakers
+- [x] **A numbered event log** per bot: every event gets a `#N` handle and a
+  write-once outcome the model records itself
+- [x] **Bot federation**: bots address each other through inbox triggers with
+  `bot_emit`, bounded by hop and rate limits, with deterministic reply receipts
+- [x] **Chat channels**: Telegram and WhatsApp today through a thin connector
+  host. A chat pairs to a bot once and keeps that route; replies, media, and
+  typing indicators flow both ways
+- [x] **Open channel model**: a new chat provider is a new connector, never a
+  core change
+
 **Durability & scale**
 
 - [x] **Long-running agents**: sessions that last weeks to months and survive restarts
@@ -90,13 +106,14 @@ What constitutes an "agent harness" is a rapidly expanding set of table-stakes f
   aborted, no farewell turn), steer it with a message the model sees at its
   next turn, or queue the next message behind it
 - [x] **Session fork & clone**: cheap forks of a running agent's full state, straight from the event-sourced log
-- [x] **Managed sessions and workflow-backed tools**: trusted workflow
-  controllers can create sessions with immutable tool bindings, durable
-  emissions, keyed completions, deadlines, and cancellation; receiver
-  implementers use the generated
+- [x] **Managed sessions and workflow-backed tools**: external workflows create
+  sessions and add durable tools — deliveries, keyed completions, deadlines,
+  cancellation — against the generated
   [workflow contract](crates/temporal-workflow/contract/workflow-contract.md)
 - [x] **Eval harness** for regression-testing agent and tool workflows
-- [ ] **Timers, schedules, wake-ups**
+- [x] **Timers, schedules, wake-ups**
+- [x] **One binary, every role**: `lightspeed-server` runs gateway, sessions,
+  bots, and channels together by default, or split per role and task type
 
 **Borrowed compute**
 
@@ -108,9 +125,14 @@ What constitutes an "agent harness" is a rapidly expanding set of table-stakes f
 
 - [x] **Encrypted secrets**: AEAD-encrypted secret store, plus an OAuth token broker with automatic refresh
 - [x] **Credential injection**: secrets reach environments and jobs without ever being exposed to the model
+- [x] **Multi-tenant by default**: universes isolate tenants on one deployment,
+  and dedicated per-tenant deployments share the same platform
+  ([docs](docs/multi-tenancy.md))
 
 **Interfaces**
 
+- [x] **Web app**: manage universes, sessions, profiles, bots, and channels
+  from the browser
 - [x] **Typed JSON-RPC API**: committed schema contract, generated TypeScript client
 - [x] **Configurator MCP**: a configurable universe API surface as generated tools over
   Streamable HTTP
