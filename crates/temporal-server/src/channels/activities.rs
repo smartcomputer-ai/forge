@@ -18,7 +18,7 @@ use api::{
 };
 use bots::{
     BotError, BotEventStore, BotRecord, BotRefusalCode, BotStore, BotTriggerRecord,
-    BotTriggerStore, EventNotify,
+    BotTriggerStore, EventReceiver,
     ids::{chat_message_event_id, chat_sent_event_id},
 };
 use channels::{
@@ -619,11 +619,11 @@ pub async fn emit_chat_event(
     let mut input = StoreBotEventInput::new(event_id.clone(), chat_message_document(&request));
     input.prompt_data = Some(chat_prompt_data(&request.media));
     input.media = request.media.into_iter().map(BotEventMedia::from).collect();
-    input.tools_ref = Some(request.tools_ref);
-    input.notify = Some(EventNotify {
+    input.receiver = Some(EventReceiver::Workflow {
         workflow_id: request.notify.workflow_id,
         workflow_kind: request.notify.workflow_kind,
         token: request.notify_token,
+        tools_ref: Some(request.tools_ref),
     });
     match api.admit_trigger_event(&bot, &trigger, input).await {
         Ok(AdmitTriggerOutcome::Admitted(stored)) => Ok(if stored.duplicate {

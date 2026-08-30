@@ -10,14 +10,32 @@
 --   `008_bots.sql`) and the account; a re-pair replaces the row for the
 --   same `pairing_key`.
 
+-- ═══════════════════════════════════════════════════════════════════════════
+-- channel_accounts
+-- ═══════════════════════════════════════════════════════════════════════════
+
 CREATE TABLE IF NOT EXISTS channel_accounts (
+    -- ── Identity ───────────────────────────────────────────────────────────
     universe_id uuid NOT NULL
         REFERENCES universes (universe_id) ON DELETE CASCADE,
+    -- Authored account id, unique per universe; chat triggers point at it
+    -- and the connector queue name derives from it.
     account_id text NOT NULL,
+    -- Copy of the document's provider for indexed listing: telegram |
+    -- whatsapp.
     provider text NOT NULL,
+    -- Provider-native account identity (Telegram bot username or id,
+    -- WhatsApp phone number); unique per universe and provider.
     provider_account_id text NOT NULL,
+
+    -- ── The operator's document ────────────────────────────────────────────
+    -- Bumped by every put.
     revision bigint NOT NULL,
+    -- ChannelAccountDocument: provider, providerAccountId, displayName,
+    -- credentialGrantId, settings, enabled. Never secret material.
     document_json jsonb NOT NULL,
+
+    -- ── Runtime-owned ──────────────────────────────────────────────────────
     created_at_ms bigint NOT NULL,
     updated_at_ms bigint NOT NULL,
 
@@ -58,12 +76,24 @@ COMMENT ON COLUMN channel_accounts.created_at_ms IS
 COMMENT ON COLUMN channel_accounts.updated_at_ms IS
     'Last document write in Unix milliseconds.';
 
+-- ═══════════════════════════════════════════════════════════════════════════
+-- channel_pairings
+-- ═══════════════════════════════════════════════════════════════════════════
+
 CREATE TABLE IF NOT EXISTS channel_pairings (
+    -- ── Identity ───────────────────────────────────────────────────────────
     universe_id uuid NOT NULL,
+    -- Opaque key derived from account and chat; never message data.
     pairing_key text NOT NULL,
+
+    -- ── What paired with what ──────────────────────────────────────────────
+    -- The chat trigger the conversation paired with; a re-pair moves the
+    -- chat to another trigger.
     bot_id text NOT NULL,
     trigger_id text NOT NULL,
+    -- Channel account the conversation arrived through.
     account_id text NOT NULL,
+    -- Provider chat identifier of the conversation.
     chat_id text NOT NULL,
     paired_at_ms bigint NOT NULL,
 
@@ -81,9 +111,11 @@ CREATE TABLE IF NOT EXISTS channel_pairings (
         CHECK (paired_at_ms >= 0)
 );
 
+-- Inbound lookup: is this chat paired on this account?
 CREATE INDEX IF NOT EXISTS channel_pairings_chat_idx
     ON channel_pairings (universe_id, account_id, chat_id);
 
+-- The trigger's pairing list.
 CREATE INDEX IF NOT EXISTS channel_pairings_trigger_idx
     ON channel_pairings (universe_id, bot_id, trigger_id);
 

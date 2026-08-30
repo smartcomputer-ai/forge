@@ -262,8 +262,6 @@ pub struct BotRecordOutcomesRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub delivery_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run_id: Option<String>,
 }
 

@@ -765,6 +765,9 @@ pub struct BotEventReplyRef {
     pub seq: u64,
 }
 
+/// One row of the bot's event log. Grouped like the `bot_events` table:
+/// identity, what arrived, the delivery plan, federation, and the
+/// write-once outcome. The receiver route is private and never shown.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct BotEventView {
@@ -774,34 +777,41 @@ pub struct BotEventView {
     /// Dedupe identity: provider delivery id where known, otherwise
     /// derived.
     pub event_id: String,
+    /// Admitting trigger; absent for an operator admit.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trigger_id: Option<BotTriggerId>,
+    /// Event kind as authored by the source (`github.push`,
+    /// `schedule.fire`, `chat.message`, `bot.reply`).
     pub kind: String,
-    pub source: String,
     pub summary: String,
+    /// When the source says it happened.
     pub occurred_at_ms: i64,
+    /// Admission time; the log is ordered by it.
     pub received_at_ms: i64,
     /// CAS ref of the full envelope document.
     pub document_ref: String,
+    /// CAS ref of the model-facing rendering; what the session saw.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt_ref: Option<String>,
+    /// The routed session; absent means the bot's main session.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session: Option<BotRoutedSessionView>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub media: Vec<BotEventMedia>,
     /// Sending bot for bot-originated events (self or addressed).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sender_bot_id: Option<BotId>,
+    /// Bot-to-bot hops from the world.
     #[serde(default)]
     pub hops: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub in_reply_to: Option<BotEventReplyRef>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub media: Vec<BotEventMedia>,
+    /// Absent while the delivery is pending.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub outcome: Option<BotEventOutcome>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub outcome_detail: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub delivery_id: Option<String>,
+    /// Run that resolved the event, when one was started.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run_id: Option<RunId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -282,7 +282,6 @@ async fn bots_live_manual_event_runs_and_records_outcome() -> anyhow::Result<()>
         // unresolved — with the run that handled it recorded on the row.
         assert_eq!(event.outcome, Some(BotEventOutcome::Unresolved));
         assert!(event.run_id.is_some(), "{event:#?}");
-        assert_eq!(event.delivery_id.as_deref(), Some(event.event_id.as_str()));
 
         let snapshot = wait_for_controller(&api, &bot_id, |controller| {
             controller.is_some_and(|snapshot| snapshot.recent_deliveries.len() == 1)
@@ -430,16 +429,15 @@ async fn bots_live_webhook_trigger_coalesces_events() -> anyhow::Result<()> {
 
         let events = wait_for_outcomes(&api, &bot_id, 3).await?;
         assert_eq!(events.len(), 3, "the filtered event was never stored");
-        let delivery_ids: std::collections::BTreeSet<_> = events
+        let run_ids: std::collections::BTreeSet<_> = events
             .iter()
-            .map(|event| event.delivery_id.clone().expect("delivery id"))
+            .map(|event| event.run_id.clone().expect("run id"))
             .collect();
         assert_eq!(
-            delivery_ids.len(),
+            run_ids.len(),
             1,
-            "coalesced into one delivery: {events:#?}"
+            "coalesced into one delivery and one run: {events:#?}"
         );
-        assert!(delivery_ids.iter().next().unwrap().starts_with("batch-"));
         let snapshot = wait_for_controller(&api, &bot_id, |controller| {
             controller.is_some_and(|snapshot| snapshot.recent_deliveries.len() == 1)
         })

@@ -518,7 +518,6 @@ async fn settle_delivery(
             event_ids: delivery.event_ids(),
             outcome: outcome.outcome,
             detail: outcome.summary.clone(),
-            delivery_id: Some(delivery.id.clone()),
             run_id: outcome.run_id.clone(),
         },
     )

@@ -14,7 +14,7 @@ use api::{
 };
 use bots::{
     BOT_DELIVERY_SIGNAL, BotDeliveryReceipt, BotError, BotEventRecord, BotEventStore as _,
-    BotRecord, BotStore as _, BotTriggerRecord, BotTriggerStore as _,
+    BotRecord, BotStore as _, BotTriggerRecord, BotTriggerStore as _, EventReceiver,
     ids::{MAX_BOT_HOPS, receipt_event_id},
     views::{BOT_DIRECTORY_KEY, bot_directory_item, directory_entries_for, receipt_document},
 };
@@ -55,11 +55,17 @@ struct NotifyTarget {
 fn notify_targets(records: &[BotEventRecord]) -> Vec<NotifyTarget> {
     let mut seen = BTreeSet::new();
     let mut targets = Vec::new();
-    for notify in records.iter().filter_map(|record| record.notify.as_ref()) {
-        if seen.insert((notify.workflow_id.as_str(), notify.token.as_str())) {
+    for record in records {
+        let Some(EventReceiver::Workflow {
+            workflow_id, token, ..
+        }) = record.receiver.as_ref()
+        else {
+            continue;
+        };
+        if seen.insert((workflow_id.as_str(), token.as_str())) {
             targets.push(NotifyTarget {
-                workflow_id: notify.workflow_id.clone(),
-                token: notify.token.clone(),
+                workflow_id: workflow_id.clone(),
+                token: token.clone(),
             });
         }
     }
@@ -114,7 +120,6 @@ pub async fn record_outcomes(
             &request.event_ids,
             request.outcome,
             request.detail,
-            request.delivery_id,
             request.run_id,
         )
         .await
@@ -208,7 +213,7 @@ pub async fn send_bot_receipts(
         .map_err(|error| bot_error("read delivery events", error))?;
     let asked: Vec<&BotEventRecord> = records
         .iter()
-        .filter(|record| record.reply_to.is_some())
+        .filter(|record| record.reply_route().is_some())
         .collect();
     let Some(hops) = receipt_hops(request.hops) else {
         // Hop bound reached: the loop is cut here, silently by design.
@@ -220,10 +225,10 @@ pub async fn send_bot_receipts(
     let mut sent = 0;
     let mut skipped = 0;
     for record in asked {
-        let Some(route) = record.reply_to.as_ref() else {
+        let Some((asker_id, asker_session)) = record.reply_route() else {
             continue;
         };
-        let asker = match api.load_bot_for_admission(&route.bot_id).await {
+        let asker = match api.load_bot_for_admission(asker_id).await {
             Ok(bot) => bot,
             Err(BotError::Refused { .. }) => {
                 skipped += 1;
@@ -247,7 +252,7 @@ pub async fn send_bot_receipts(
             receipt_event_id(&answering.bot_id, &request.delivery_id, &record.event_id),
             document,
         );
-        input.session = route.session.clone();
+        input.session = asker_session.cloned();
         input.when_busy = Some(BotWhenBusy::Queue);
         input.sender_bot_id = Some(answering.bot_id.clone());
         input.hops = hops;
@@ -308,7 +313,7 @@ pub async fn publish_directory(
 mod tests {
     use super::*;
     use api::{BotDocument, BotTriggerDocument, BotTriggerId, BotTriggerSpec, ProfileId};
-    use bots::{BotTriggerSecrets, EventNotify};
+    use bots::BotTriggerSecrets;
 
     fn event(event_id: &str, seq: u64, notify: Option<(&str, &str)>) -> BotEventRecord {
         BotEventRecord {
@@ -317,7 +322,6 @@ mod tests {
             seq,
             trigger_id: None,
             kind: "chat.message".to_owned(),
-            source: "chat:tg".to_owned(),
             summary: String::new(),
             occurred_at_ms: 0,
             received_at_ms: 0,
@@ -326,18 +330,16 @@ mod tests {
             session: None,
             sender_bot_id: None,
             hops: 0,
-            reply_to: None,
             in_reply_to: None,
             media: Vec::new(),
-            tools_ref: None,
-            notify: notify.map(|(workflow_id, token)| EventNotify {
+            receiver: notify.map(|(workflow_id, token)| EventReceiver::Workflow {
                 workflow_id: workflow_id.to_owned(),
                 workflow_kind: "channelConversationWorkflowV1".to_owned(),
                 token: token.to_owned(),
+                tools_ref: None,
             }),
             outcome: None,
             outcome_detail: None,
-            delivery_id: None,
             run_id: None,
             resolved_at_ms: None,
         }

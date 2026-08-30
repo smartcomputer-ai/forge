@@ -610,7 +610,6 @@ impl BotEventStore for InMemoryBotStore {
             }
             record.outcome = Some(write.outcome);
             record.outcome_detail = write.detail.clone();
-            record.delivery_id = write.delivery_id.clone();
             record.run_id = write.run_id.clone();
             record.resolved_at_ms = Some(write.resolved_at_ms);
             changed += 1;
@@ -726,7 +725,6 @@ mod tests {
             seq,
             trigger_id: None,
             kind: "webhook".to_owned(),
-            source: "github".to_owned(),
             summary: format!("event {event_id}"),
             occurred_at_ms: received_at_ms,
             received_at_ms,
@@ -735,14 +733,11 @@ mod tests {
             session: None,
             sender_bot_id: None,
             hops: 0,
-            reply_to: None,
             in_reply_to: None,
             media: Vec::new(),
-            tools_ref: None,
-            notify: None,
+            receiver: None,
             outcome: None,
             outcome_detail: None,
-            delivery_id: None,
             run_id: None,
             resolved_at_ms: None,
         }
@@ -752,7 +747,6 @@ mod tests {
         BotEventOutcomeWrite {
             outcome: kind,
             detail: Some("done".to_owned()),
-            delivery_id: Some("delivery-1".to_owned()),
             run_id: Some("run-1".to_owned()),
             resolved_at_ms,
         }
@@ -1905,7 +1899,6 @@ mod tests {
         let record = store.read_bot_event(&triage, "e-1").await.unwrap();
         assert_eq!(record.outcome, Some(BotEventOutcome::Handled));
         assert_eq!(record.outcome_detail.as_deref(), Some("done"));
-        assert_eq!(record.delivery_id.as_deref(), Some("delivery-1"));
         assert_eq!(record.run_id.as_deref(), Some("run-1"));
         assert_eq!(record.resolved_at_ms, Some(T0 + 9));
         assert!(!record.is_pending());

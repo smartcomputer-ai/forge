@@ -597,7 +597,7 @@ impl GatewayAgentApi {
         input.document_ref = Some(original.document_ref.clone());
         input.session = original.session.clone();
         input.media = original.media.clone();
-        input.tools_ref = original.tools_ref.clone();
+        input.receiver = original.receiver.clone();
         input.hops = original.hops;
         input.sender_bot_id = original.sender_bot_id.clone();
         let stored = self

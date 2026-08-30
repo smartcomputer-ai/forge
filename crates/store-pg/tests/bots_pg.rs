@@ -130,7 +130,6 @@ fn event(
         seq,
         trigger_id: trigger_id.map(BotTriggerId::new),
         kind: "test.event".to_owned(),
-        source: "test".to_owned(),
         summary: format!("event {seq}"),
         occurred_at_ms: received_at_ms,
         received_at_ms,
@@ -143,14 +142,11 @@ fn event(
         }),
         sender_bot_id: sender_bot_id.map(BotId::new),
         hops: 1,
-        reply_to: None,
         in_reply_to: None,
         media: Vec::new(),
-        tools_ref: None,
-        notify: None,
+        receiver: None,
         outcome: None,
         outcome_detail: None,
-        delivery_id: None,
         run_id: None,
         resolved_at_ms: None,
     }
@@ -840,7 +836,6 @@ async fn pg_live_bot_events_log_rates_outcomes_and_roster() {
     let write = BotEventOutcomeWrite {
         outcome: BotEventOutcome::Handled,
         detail: Some("done".to_owned()),
-        delivery_id: Some("d-1".to_owned()),
         run_id: Some("run-1".to_owned()),
         resolved_at_ms: 500,
     };
@@ -867,7 +862,6 @@ async fn pg_live_bot_events_log_rates_outcomes_and_roster() {
                 BotEventOutcomeWrite {
                     outcome: BotEventOutcome::Ignored,
                     detail: None,
-                    delivery_id: None,
                     run_id: None,
                     resolved_at_ms: 600,
                 },
@@ -882,7 +876,6 @@ async fn pg_live_bot_events_log_rates_outcomes_and_roster() {
         .expect("read resolved");
     assert_eq!(resolved.outcome, Some(BotEventOutcome::Handled));
     assert_eq!(resolved.outcome_detail.as_deref(), Some("done"));
-    assert_eq!(resolved.delivery_id.as_deref(), Some("d-1"));
     assert_eq!(resolved.run_id.as_deref(), Some("run-1"));
     assert_eq!(resolved.resolved_at_ms, Some(500));
     assert!(!resolved.is_pending());

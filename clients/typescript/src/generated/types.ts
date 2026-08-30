@@ -2901,11 +2901,14 @@ export interface BotEventAdmitResponse {
   event: BotEventView;
 }
 /**
+ * One row of the bot's event log. Grouped like the `bot_events` table:
+ * identity, what arrived, the delivery plan, federation, and the
+ * write-once outcome. The receiver route is private and never shown.
+ *
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "BotEventView".
  */
 export interface BotEventView {
-  deliveryId?: string | null;
   /**
    * CAS ref of the full envelope document.
    */
@@ -2915,16 +2918,38 @@ export interface BotEventView {
    * derived.
    */
   eventId: string;
+  /**
+   * Bot-to-bot hops from the world.
+   */
   hops?: number;
   inReplyTo?: BotEventReplyRef | null;
+  /**
+   * Event kind as authored by the source (`github.push`,
+   * `schedule.fire`, `chat.message`, `bot.reply`).
+   */
   kind: string;
   media?: BotEventMedia[];
+  /**
+   * When the source says it happened.
+   */
   occurredAtMs: number;
+  /**
+   * Absent while the delivery is pending.
+   */
   outcome?: BotEventOutcome | null;
   outcomeDetail?: string | null;
+  /**
+   * CAS ref of the model-facing rendering; what the session saw.
+   */
   promptRef?: string | null;
+  /**
+   * Admission time; the log is ordered by it.
+   */
   receivedAtMs: number;
   resolvedAtMs?: number | null;
+  /**
+   * Run that resolved the event, when one was started.
+   */
   runId?: string | null;
   /**
    * Sending bot for bot-originated events (self or addressed).
@@ -2935,9 +2960,14 @@ export interface BotEventView {
    * humans.
    */
   seq: number;
+  /**
+   * The routed session; absent means the bot's main session.
+   */
   session?: BotRoutedSessionView | null;
-  source: string;
   summary: string;
+  /**
+   * Admitting trigger; absent for an operator admit.
+   */
   triggerId?: BotTriggerId | null;
 }
 /**

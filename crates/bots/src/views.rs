@@ -277,7 +277,11 @@ pub fn event_list_row_view(record: &BotEventRecord) -> Value {
     let mut view = Map::new();
     view.insert("seq".to_owned(), json!(record.seq));
     view.insert("kind".to_owned(), json!(record.kind));
-    view.insert("source".to_owned(), json!(record.source));
+    insert_some(
+        &mut view,
+        "trigger",
+        record.trigger_id.as_ref().map(|trigger| json!(trigger)),
+    );
     view.insert(
         "occurredAt".to_owned(),
         json!(iso_time(record.occurred_at_ms)),
@@ -302,7 +306,11 @@ pub fn filter_result_view(record: &BotEventRecord, matched: bool, error: Option<
     let mut view = Map::new();
     view.insert("seq".to_owned(), json!(record.seq));
     view.insert("kind".to_owned(), json!(record.kind));
-    view.insert("source".to_owned(), json!(record.source));
+    insert_some(
+        &mut view,
+        "trigger",
+        record.trigger_id.as_ref().map(|trigger| json!(trigger)),
+    );
     view.insert("summary".to_owned(), json!(record.summary));
     view.insert("matched".to_owned(), json!(matched));
     insert_some(&mut view, "error", error.map(str::to_owned));
@@ -314,7 +322,7 @@ fn envelope(record: &BotEventRecord, document: &BotEventDocument) -> Map<String,
     let mut view = Map::new();
     view.insert("seq".to_owned(), json!(record.seq));
     view.insert("kind".to_owned(), json!(record.kind));
-    view.insert("source".to_owned(), json!(record.source));
+    view.insert("source".to_owned(), json!(document.source));
     view.insert(
         "occurredAt".to_owned(),
         json!(iso_time(record.occurred_at_ms)),
@@ -639,7 +647,7 @@ pub fn steer_input_items(events: &[BotEvent]) -> Vec<InputItem> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::records::{BotTriggerSecrets, EventReplyRoute, RoutedSession};
+    use crate::records::{BotTriggerSecrets, EventReceiver, RoutedSession};
     use api::{
         BotActiveDeliverySnapshot, BotBreaker, BotBufferSnapshot, BotDocument, BotEventMedia,
         BotRecentDeliverySnapshot, BotSessionKind, BotSessionSnapshot, BotTriggerDocument,
@@ -762,7 +770,6 @@ mod tests {
             seq,
             trigger_id: Some(BotTriggerId::new("github")),
             kind: "pull_request.opened".to_owned(),
-            source: "webhook:github".to_owned(),
             summary: "PR #12 opened".to_owned(),
             occurred_at_ms: T0,
             received_at_ms: T0 + 1_000,
@@ -775,34 +782,27 @@ mod tests {
             }),
             sender_bot_id: None,
             hops: 0,
-            reply_to: None,
             in_reply_to: None,
             media: Vec::new(),
-            tools_ref: None,
-            notify: None,
+            receiver: None,
             outcome: None,
             outcome_detail: None,
-            delivery_id: None,
             run_id: None,
             resolved_at_ms: None,
         }
     }
 
     fn events() -> Vec<BotEventRecord> {
-        let mut poll = event(13, &format!("poll:github:{}", "d".repeat(32)));
-        poll.source = "poll:issues".to_owned();
+        let poll = event(13, &format!("poll:github:{}", "d".repeat(32)));
         let mut schedule = event(14, "schedule:nightly:1787738400000");
-        schedule.source = "schedule:nightly".to_owned();
         schedule.session = None;
         schedule.outcome = Some(BotEventOutcome::Handled);
         schedule.outcome_detail = Some("done".to_owned());
-        schedule.delivery_id = Some(format!("batch-{}", "e".repeat(64)));
         schedule.run_id = Some("run_0123456789abcdef0123456789abcdef".to_owned());
         let mut addressed = event(16, &format!("bot:triage:{}", "e".repeat(64)));
-        addressed.source = "bot:infra".to_owned();
         addressed.sender_bot_id = Some(BotId::new("infra"));
         addressed.hops = 2;
-        addressed.reply_to = Some(EventReplyRoute {
+        addressed.receiver = Some(EventReceiver::Bot {
             bot_id: BotId::new("infra"),
             session: Some(RoutedSession {
                 session_id: "bot:v1:infra:k-inc-7-abcd1234".to_owned(),
@@ -812,7 +812,6 @@ mod tests {
         });
         let mut reply = event(17, &format!("reply:infra:{}", "f".repeat(64)));
         reply.kind = "bot.reply".to_owned();
-        reply.source = "bot:infra".to_owned();
         reply.sender_bot_id = Some(BotId::new("infra"));
         reply.hops = 3;
         reply.in_reply_to = Some(BotEventReplyRef {

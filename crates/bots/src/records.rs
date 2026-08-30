@@ -280,6 +280,7 @@ pub enum RoutedSessionTtl {
 
 /// Routing target computed at admission; absent means the main session.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RoutedSession {
     pub session_id: String,
     pub label: String,
@@ -296,52 +297,102 @@ impl RoutedSession {
     }
 }
 
-/// Private return route of an addressed event that asked for a receipt:
-/// the asking bot and its logical session (base id, never a generation).
+/// Who admitted the event and hears back when its delivery finishes.
+/// Private to the runtime: never part of a view.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct EventReplyRoute {
-    pub bot_id: BotId,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub session: Option<RoutedSession>,
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum EventReceiver {
+    /// The admitting workflow (a chat conversation): signalled `started` /
+    /// `finished` delivery receipts with its token, and the owner of the
+    /// receiver-bound tool declarations (`message_*`) at `tools_ref` that
+    /// the routed session is created with.
+    Workflow {
+        workflow_id: String,
+        workflow_kind: String,
+        token: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tools_ref: Option<String>,
+    },
+    /// The asking bot of an addressed `bot_emit { reply: true }`: sent a
+    /// `bot.reply` receipt at its logical session (base id, never a
+    /// generation).
+    Bot {
+        bot_id: BotId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session: Option<RoutedSession>,
+    },
 }
 
-/// Private delivery-receipt route of the admitting source: a workflow
-/// endpoint signalled `started` / `finished` with the caller's token.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct EventNotify {
-    pub workflow_id: String,
-    pub workflow_kind: String,
-    pub token: String,
+impl EventReceiver {
+    /// CAS ref of the receiver-bound tool declarations, when the receiver
+    /// serves any.
+    pub fn tools_ref(&self) -> Option<&str> {
+        match self {
+            Self::Workflow { tools_ref, .. } => tools_ref.as_deref(),
+            Self::Bot { .. } => None,
+        }
+    }
 }
 
+/// One row of the bot's numbered event log. The groups mirror the
+/// `bot_events` table: identity, what arrived, the delivery plan computed
+/// at admission, federation, the receiver, and the write-once outcome.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BotEventRecord {
+    // ── Identity and order ──
     pub bot_id: BotId,
+    /// Dedupe identity: the provider delivery id where known, otherwise
+    /// derived at admission.
     pub event_id: String,
+    /// Per-bot `#N`; the only event handle shown to models and humans.
     pub seq: u64,
+
+    // ── What arrived ──
+    /// Admitting trigger; `None` for an operator admit. History outlives
+    /// the trigger.
     pub trigger_id: Option<BotTriggerId>,
+    /// Event kind as authored by the source (`github.push`,
+    /// `schedule.fire`, `chat.message`, `bot.reply`).
     pub kind: String,
-    pub source: String,
     pub summary: String,
+    /// When the source says it happened.
     pub occurred_at_ms: i64,
+    /// Admission time; log order and rate windows are keyed on it.
     pub received_at_ms: i64,
     /// CAS ref of the envelope document.
     pub document_ref: String,
-    /// CAS ref of the model-facing rendering delivered to sessions.
+
+    // ── Delivery plan, computed at admission ──
+    /// CAS ref of the model-facing rendering delivered to sessions; pins
+    /// what the session saw. `None` only for archived rows.
     pub prompt_ref: Option<String>,
+    /// The routed session; `None` means the bot's main session.
     pub session: Option<RoutedSession>,
-    pub sender_bot_id: Option<BotId>,
-    pub hops: u32,
-    pub reply_to: Option<EventReplyRoute>,
-    pub in_reply_to: Option<BotEventReplyRef>,
+    /// Prepared attachments appended to the run input.
     pub media: Vec<BotEventMedia>,
-    /// CAS ref of receiver-bound tool declarations the routed session is
-    /// created with (a chat conversation's `message_*` tools).
-    pub tools_ref: Option<String>,
-    pub notify: Option<EventNotify>,
+
+    // ── Federation ──
+    /// Sending bot for bot-originated events; counted against the sender
+    /// rate cap.
+    pub sender_bot_id: Option<BotId>,
+    /// Bot-to-bot hops from the world; bounded by `MAX_BOT_HOPS`.
+    pub hops: u32,
+    /// Public correlation of a receipt with the asked event.
+    pub in_reply_to: Option<BotEventReplyRef>,
+
+    // ── Receiver ──
+    /// Who hears back when the delivery finishes; `None` when nobody
+    /// listens.
+    pub receiver: Option<EventReceiver>,
+
+    // ── Outcome, written once when the delivery finishes ──
     pub outcome: Option<BotEventOutcome>,
     pub outcome_detail: Option<String>,
-    pub delivery_id: Option<String>,
+    /// Run that resolved the event, when one was started.
     pub run_id: Option<String>,
     pub resolved_at_ms: Option<i64>,
 }
@@ -351,26 +402,39 @@ impl BotEventRecord {
         self.outcome.is_none()
     }
 
+    /// CAS ref of the receiver-bound tool declarations the routed session
+    /// is created with (a chat conversation's `message_*` tools).
+    pub fn tools_ref(&self) -> Option<&str> {
+        self.receiver.as_ref().and_then(EventReceiver::tools_ref)
+    }
+
+    /// The asking bot and its logical session when the event asked for a
+    /// `bot.reply` receipt.
+    pub fn reply_route(&self) -> Option<(&BotId, Option<&RoutedSession>)> {
+        match self.receiver.as_ref()? {
+            EventReceiver::Bot { bot_id, session } => Some((bot_id, session.as_ref())),
+            EventReceiver::Workflow { .. } => None,
+        }
+    }
+
     pub fn view(&self) -> BotEventView {
         BotEventView {
             seq: self.seq,
             event_id: self.event_id.clone(),
             trigger_id: self.trigger_id.clone(),
             kind: self.kind.clone(),
-            source: self.source.clone(),
             summary: self.summary.clone(),
             occurred_at_ms: self.occurred_at_ms,
             received_at_ms: self.received_at_ms,
             document_ref: self.document_ref.clone(),
             prompt_ref: self.prompt_ref.clone(),
             session: self.session.as_ref().map(RoutedSession::view),
+            media: self.media.clone(),
             sender_bot_id: self.sender_bot_id.clone(),
             hops: self.hops,
             in_reply_to: self.in_reply_to.clone(),
-            media: self.media.clone(),
             outcome: self.outcome,
             outcome_detail: self.outcome_detail.clone(),
-            delivery_id: self.delivery_id.clone(),
             run_id: self.run_id.clone(),
             resolved_at_ms: self.resolved_at_ms,
         }
@@ -422,7 +486,6 @@ pub enum BotEventRateScope<'a> {
 pub struct BotEventOutcomeWrite {
     pub outcome: BotEventOutcome,
     pub detail: Option<String>,
-    pub delivery_id: Option<String>,
     pub run_id: Option<String>,
     pub resolved_at_ms: i64,
 }

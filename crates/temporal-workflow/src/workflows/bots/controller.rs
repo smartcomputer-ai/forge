@@ -798,7 +798,6 @@ async fn teardown(ctx: &Ctx) {
                 event_ids,
                 outcome: BotEventOutcome::Archived,
                 detail: Some("bot_closed".to_owned()),
-                delivery_id: None,
                 run_id: None,
             },
         )

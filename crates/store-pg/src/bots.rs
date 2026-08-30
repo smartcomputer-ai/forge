@@ -35,23 +35,19 @@ const EVENT_COLUMN_NAMES: &[&str] = &[
     "seq",
     "trigger_id",
     "kind",
-    "source",
     "summary",
     "occurred_at_ms",
     "received_at_ms",
     "document_ref",
     "prompt_ref",
     "session_json",
+    "media_json",
     "sender_bot_id",
     "hops",
-    "reply_to_json",
     "in_reply_to_json",
-    "media_json",
-    "tools_ref",
-    "notify_json",
+    "receiver_json",
     "outcome",
     "outcome_detail",
-    "delivery_id",
     "run_id",
     "resolved_at_ms",
 ];
@@ -859,14 +855,16 @@ impl BotEventStore for PgStore {
         let query = format!(
             r#"
             INSERT INTO bot_events (
-                universe_id, bot_id, event_id, seq, trigger_id, kind, source, summary,
-                occurred_at_ms, received_at_ms, document_ref, prompt_ref, session_json,
-                sender_bot_id, hops, reply_to_json, in_reply_to_json, media_json, tools_ref,
-                notify_json, outcome, outcome_detail, delivery_id, run_id, resolved_at_ms
+                universe_id, bot_id, event_id, seq,
+                trigger_id, kind, summary, occurred_at_ms, received_at_ms, document_ref,
+                prompt_ref, session_json, media_json,
+                sender_bot_id, hops, in_reply_to_json,
+                receiver_json,
+                outcome, outcome_detail, run_id, resolved_at_ms
             )
             VALUES (
                 $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17,
-                $18, $19, $20, $21, $22, $23, $24, $25
+                $18, $19, $20, $21
             )
             ON CONFLICT (universe_id, bot_id, event_id) DO NOTHING
             RETURNING {columns}
@@ -880,7 +878,6 @@ impl BotEventStore for PgStore {
                 .bind(u64_to_i64(record.seq, "seq")?)
                 .bind(record.trigger_id.as_ref().map(BotTriggerId::as_str))
                 .bind(record.kind.as_str())
-                .bind(record.source.as_str())
                 .bind(record.summary.as_str())
                 .bind(record.occurred_at_ms)
                 .bind(record.received_at_ms)
@@ -893,17 +890,11 @@ impl BotEventStore for PgStore {
                         .map(|session| json_value("serialize routed session", session))
                         .transpose()?,
                 )
+                .bind(json_value("serialize event media", &record.media)?)
                 .bind(record.sender_bot_id.as_ref().map(BotId::as_str))
                 .bind(i32::try_from(record.hops).map_err(|_| {
                     BotError::invalid(format!("hops {} exceeds i32::MAX", record.hops))
                 })?)
-                .bind(
-                    record
-                        .reply_to
-                        .as_ref()
-                        .map(|route| json_value("serialize reply route", route))
-                        .transpose()?,
-                )
                 .bind(
                     record
                         .in_reply_to
@@ -911,18 +902,15 @@ impl BotEventStore for PgStore {
                         .map(|reply| json_value("serialize in-reply-to", reply))
                         .transpose()?,
                 )
-                .bind(json_value("serialize event media", &record.media)?)
-                .bind(record.tools_ref.as_deref())
                 .bind(
                     record
-                        .notify
+                        .receiver
                         .as_ref()
-                        .map(|notify| json_value("serialize notify route", notify))
+                        .map(|receiver| json_value("serialize event receiver", receiver))
                         .transpose()?,
                 )
                 .bind(record.outcome.map(BotEventOutcome::as_str))
                 .bind(record.outcome_detail.as_deref())
-                .bind(record.delivery_id.as_deref())
                 .bind(record.run_id.as_deref())
                 .bind(record.resolved_at_ms)
                 .fetch_optional(&self.pool)
@@ -1119,9 +1107,8 @@ impl BotEventStore for PgStore {
             UPDATE bot_events SET
                 outcome = $4,
                 outcome_detail = $5,
-                delivery_id = $6,
-                run_id = $7,
-                resolved_at_ms = $8
+                run_id = $6,
+                resolved_at_ms = $7
             WHERE universe_id = $1 AND bot_id = $2 AND event_id = ANY($3::text[])
               AND outcome IS NULL
             "#,
@@ -1131,7 +1118,6 @@ impl BotEventStore for PgStore {
         .bind(event_ids.to_vec())
         .bind(write.outcome.as_str())
         .bind(write.detail.as_deref())
-        .bind(write.delivery_id.as_deref())
         .bind(write.run_id.as_deref())
         .bind(write.resolved_at_ms)
         .execute(&self.pool)
@@ -1198,23 +1184,19 @@ fn event_from_row(row: &sqlx::postgres::PgRow, prefix: &str) -> Result<BotEventR
         seq: i64_to_u64(seq, "seq")?,
         trigger_id: trigger_id.map(parse_trigger_id).transpose()?,
         kind: column(row, &name("kind"))?,
-        source: column(row, &name("source"))?,
         summary: column(row, &name("summary"))?,
         occurred_at_ms: column(row, &name("occurred_at_ms"))?,
         received_at_ms: column(row, &name("received_at_ms"))?,
         document_ref: column(row, &name("document_ref"))?,
         prompt_ref: column(row, &name("prompt_ref"))?,
         session: optional_json_column(row, &name("session_json"))?,
+        media: json_column(row, &name("media_json"))?,
         sender_bot_id: sender_bot_id.map(parse_bot_id).transpose()?,
         hops: u32::try_from(hops).map_err(|_| store_message("hops is negative"))?,
-        reply_to: optional_json_column(row, &name("reply_to_json"))?,
         in_reply_to: optional_json_column(row, &name("in_reply_to_json"))?,
-        media: json_column(row, &name("media_json"))?,
-        tools_ref: column(row, &name("tools_ref"))?,
-        notify: optional_json_column(row, &name("notify_json"))?,
+        receiver: optional_json_column(row, &name("receiver_json"))?,
         outcome: outcome.as_deref().map(outcome_from_str).transpose()?,
         outcome_detail: column(row, &name("outcome_detail"))?,
-        delivery_id: column(row, &name("delivery_id"))?,
         run_id: column(row, &name("run_id"))?,
         resolved_at_ms: column(row, &name("resolved_at_ms"))?,
     })

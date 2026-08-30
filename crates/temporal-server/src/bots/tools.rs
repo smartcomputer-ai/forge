@@ -17,7 +17,7 @@ use api::{
 };
 use bots::{
     BotError, BotEventStore, BotRecord, BotRefusalCode, BotTriggerRecord, BotTriggerStore,
-    EventReplyRoute, RoutedSession, RoutedSessionTtl,
+    EventReceiver, RoutedSession, RoutedSessionTtl,
     ids::{MAX_BOT_HOPS, bot_emit_event_id, bot_keyed_session_id},
     tools::{
         BOT_BRIEF_PUT_TOOL_ID, BOT_EMIT_TOOL_ID, BOT_EVENT_LIST_TOOL_ID, BOT_EVENT_READ_TOOL_ID,
@@ -725,7 +725,7 @@ async fn emit(
         });
     }
     if emit.reply {
-        input.reply_to = Some(EventReplyRoute {
+        input.receiver = Some(EventReceiver::Bot {
             bot_id: bot.bot_id.clone(),
             session: request.controller.routed_session.clone(),
         });

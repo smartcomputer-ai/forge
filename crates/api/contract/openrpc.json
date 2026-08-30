@@ -4230,13 +4230,8 @@
         "type": "object"
       },
       "BotEventView": {
+        "description": "One row of the bot's event log. Grouped like the `bot_events` table:\nidentity, what arrived, the delivery plan, federation, and the\nwrite-once outcome. The receiver route is private and never shown.",
         "properties": {
-          "deliveryId": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
           "documentRef": {
             "description": "CAS ref of the full envelope document.",
             "type": "string"
@@ -4247,6 +4242,7 @@
           },
           "hops": {
             "default": 0,
+            "description": "Bot-to-bot hops from the world.",
             "format": "uint32",
             "minimum": 0,
             "type": "integer"
@@ -4262,6 +4258,7 @@
             ]
           },
           "kind": {
+            "description": "Event kind as authored by the source (`github.push`,\n`schedule.fire`, `chat.message`, `bot.reply`).",
             "type": "string"
           },
           "media": {
@@ -4271,6 +4268,7 @@
             "type": "array"
           },
           "occurredAtMs": {
+            "description": "When the source says it happened.",
             "format": "int64",
             "type": "integer"
           },
@@ -4282,7 +4280,8 @@
               {
                 "type": "null"
               }
-            ]
+            ],
+            "description": "Absent while the delivery is pending."
           },
           "outcomeDetail": {
             "type": [
@@ -4291,12 +4290,14 @@
             ]
           },
           "promptRef": {
+            "description": "CAS ref of the model-facing rendering; what the session saw.",
             "type": [
               "string",
               "null"
             ]
           },
           "receivedAtMs": {
+            "description": "Admission time; the log is ordered by it.",
             "format": "int64",
             "type": "integer"
           },
@@ -4308,6 +4309,7 @@
             ]
           },
           "runId": {
+            "description": "Run that resolved the event, when one was started.",
             "type": [
               "string",
               "null"
@@ -4338,10 +4340,8 @@
               {
                 "type": "null"
               }
-            ]
-          },
-          "source": {
-            "type": "string"
+            ],
+            "description": "The routed session; absent means the bot's main session."
           },
           "summary": {
             "type": "string"
@@ -4354,14 +4354,14 @@
               {
                 "type": "null"
               }
-            ]
+            ],
+            "description": "Admitting trigger; absent for an operator admit."
           }
         },
         "required": [
           "seq",
           "eventId",
           "kind",
-          "source",
           "summary",
           "occurredAtMs",
           "receivedAtMs",

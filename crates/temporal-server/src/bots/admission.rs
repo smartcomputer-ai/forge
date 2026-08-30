@@ -14,8 +14,8 @@ use api::{
 };
 use bots::{
     BotCoalesceParams, BotControllerConfig, BotError, BotEvent, BotEventRecord, BotEventStore,
-    BotRecord, BotRefusalCode, BotStore, BotTriggerRecord, BotTriggerStore, EventNotify,
-    EventReplyRoute, InsertBotEventOutcome, RoutedSession, RoutedSessionTtl,
+    BotRecord, BotRefusalCode, BotStore, BotTriggerRecord, BotTriggerStore, EventReceiver,
+    InsertBotEventOutcome, RoutedSession, RoutedSessionTtl,
     filter::{FilterContext, RoutePreset, compute_route_session, evaluate_filter},
     ids::{bot_controller_workflow_id, coalesce_key},
     records::{BotEventOutcomeWrite, BotEventRateScope},
@@ -50,11 +50,11 @@ pub struct StoreBotEventInput {
     pub when_busy: Option<BotWhenBusy>,
     pub sender_bot_id: Option<BotId>,
     pub hops: u32,
-    pub reply_to: Option<EventReplyRoute>,
     pub in_reply_to: Option<BotEventReplyRef>,
     pub media: Vec<BotEventMedia>,
-    pub tools_ref: Option<String>,
-    pub notify: Option<EventNotify>,
+    /// Who hears back when the delivery finishes: the admitting chat
+    /// conversation, or the asking bot of a `bot_emit { reply: true }`.
+    pub receiver: Option<EventReceiver>,
     /// `false` archives the row at birth (a chat send, a replay's original)
     /// and never wakes the controller.
     pub deliver: bool,
@@ -74,11 +74,9 @@ impl StoreBotEventInput {
             when_busy: None,
             sender_bot_id: None,
             hops: 0,
-            reply_to: None,
             in_reply_to: None,
             media: Vec::new(),
-            tools_ref: None,
-            notify: None,
+            receiver: None,
             deliver: true,
             document_ref: None,
         }
@@ -153,23 +151,19 @@ impl GatewayAgentApi {
             seq,
             trigger_id: input.trigger_id.clone(),
             kind: input.document.kind.clone(),
-            source: input.document.source.clone(),
             summary: input.document.summary.clone(),
             occurred_at_ms: input.document.occurred_at_ms,
             received_at_ms: now,
             document_ref,
             prompt_ref: Some(prompt_ref),
             session: input.session.clone(),
+            media: input.media.clone(),
             sender_bot_id: input.sender_bot_id.clone(),
             hops: input.hops,
-            reply_to: input.reply_to.clone(),
             in_reply_to: input.in_reply_to.clone(),
-            media: input.media.clone(),
-            tools_ref: input.tools_ref.clone(),
-            notify: input.notify.clone(),
+            receiver: input.receiver.clone(),
             outcome: (!input.deliver).then_some(BotEventOutcome::Archived),
             outcome_detail: None,
-            delivery_id: None,
             run_id: None,
             resolved_at_ms: (!input.deliver).then_some(now),
         };
@@ -189,10 +183,10 @@ impl GatewayAgentApi {
             coalesce: input.coalesce,
             when_busy: input.when_busy,
             hops: input.hops,
-            reply: input.reply_to.is_some(),
+            reply: matches!(input.receiver, Some(EventReceiver::Bot { .. })),
             media: input.media,
-            tools_ref: input.tools_ref,
-            notify: input.notify.is_some(),
+            tools_ref: record.tools_ref().map(str::to_owned),
+            notify: matches!(input.receiver, Some(EventReceiver::Workflow { .. })),
         };
         if input.deliver
             && let Err(error) = self.wake_bot_controller(bot, &event).await
@@ -433,7 +427,6 @@ impl GatewayAgentApi {
         event_ids: &[String],
         outcome: BotEventOutcome,
         detail: Option<String>,
-        delivery_id: Option<String>,
         run_id: Option<String>,
     ) -> Result<u64, BotError> {
         self.store()
@@ -443,7 +436,6 @@ impl GatewayAgentApi {
                 BotEventOutcomeWrite {
                     outcome,
                     detail,
-                    delivery_id,
                     run_id,
                     resolved_at_ms: now_ms(),
                 },
