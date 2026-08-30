@@ -1,6 +1,18 @@
 # Lightspeed Roadmap
 
 ## Work
+- [ ] [P142](p142-bots-and-channels-core-in-rust.md) — bots and Channels
+  core in the Rust runtime (proposed 2026-08-30): `crates/bots` and
+  `crates/channels` domain crates, `bots` / `bot_triggers` / `bot_events`
+  / `channel_accounts` / `channel_pairings` in `store-pg`, `bots/*` and
+  `channels/*` folded into the core API plus a gateway hook route,
+  `BotControllerWorkflow` / `BotTriggerFireWorkflow` /
+  `ChannelConversationWorkflow` in one process with per-subsystem roles
+  and queues (`--roles gateway|sessions|bots|channels`, then
+  `--task-types`); a TypeScript multi-account connector host over
+  `channels/inbound/admit` and per-account activity queues; the
+  Platform keeps people and passthroughs and stops being a Temporal
+  client. Reverses P124's non-goal for this scope.
 - [x] [P141](p141-bot-console.md) — bots as the product (implemented
   2026-08-27): a three-tab bot page (Chat with the main conversation and
   threads inline, Activity timeline, one Setup page with per-section
