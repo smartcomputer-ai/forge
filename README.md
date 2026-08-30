@@ -137,6 +137,16 @@ its own workflows, and rely on Lightspeed to deliver calls, wait for results,
 handle timeouts, and cancel work. Plugins stay independent from the core
 session worker.
 
+Bots — durable event routers that own managed sessions — and the core of
+Channels (chat conversations as bot triggers) run inside the same runtime:
+`bots/*` and `channels/*` are ordinary API methods, bot controllers and
+conversation workflows are Temporal workflows of the same server, and the
+Telegram/WhatsApp bridges are a thin TypeScript connector host that speaks to
+the core over `channels/inbound/admit` and three activities on its own task
+queue. One `lightspeed-server` process runs every role by default
+(`gateway`, `sessions`, `bots`, `channels`); `--roles` selects a subset and
+`--task-types workflows|activities` splits a worker role further.
+
 The full design walk-through is in [docs/design.md](docs/design.md).
 
 <p align="center">

@@ -808,6 +808,322 @@ export type AuthProviderConfigView =
 export type AuthProviderStatus = "active" | "needsConfiguration" | "disabled";
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "BotId".
+ */
+export type BotId = string;
+/**
+ * The whole configuration of one trigger, replaced with an expected
+ * revision.
+ *
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "BotTriggerView".
+ */
+export type BotTriggerView = {
+  botId: BotId;
+  coalesce?: BotCoalescePolicy | null;
+  createdAtMs: number;
+  /**
+   * Poll triggers: the advancing cursor.
+   */
+  cursor?: PollCursorState | null;
+  deliver?: BotDeliverPolicy | null;
+  disabledAtMs?: number | null;
+  disabledReason?: BotTriggerDisabledReason | null;
+  enabled?: boolean;
+  /**
+   * CEL over `{event, data, headers}`; a non-matching event is refused
+   * and never stored. Fails closed.
+   */
+  filter?: string | null;
+  /**
+   * Webhook triggers: the ingest path including its URL token, for
+   * managing principals only.
+   */
+  ingestPath?: string | null;
+  /**
+   * Last runtime failure of the CEL filter (the event was refused);
+   * cleared by the next match.
+   */
+  lastFilterError?: string | null;
+  lastFilterErrorAtMs?: number | null;
+  /**
+   * Chat triggers with `pairing: code`: the code, for managing
+   * principals only.
+   */
+  pairingCode?: string | null;
+  revision: number;
+  route?: BotTriggerRoute | null;
+  /**
+   * Retention of the sessions this trigger routes to: absent inherits the
+   * bot's `routedSessionTtlMs`, `0` keeps them open indefinitely (the
+   * chat default).
+   */
+  sessionTtlMs?: number | null;
+  triggerId: BotTriggerId;
+  updatedAtMs: number;
+} & BotTriggerView1;
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "BotWhenBusy".
+ */
+export type BotWhenBusy = "queue" | "steer" | "append";
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "BotTriggerDisabledReason".
+ */
+export type BotTriggerDisabledReason =
+  "breaker" | "poll_failed" | "one_shot" | "operator" | "bot_closed";
+/**
+ * Which session a trigger's events are delivered to; absent means the
+ * bot's main session.
+ *
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "BotTriggerRoute".
+ */
+export type BotTriggerRoute =
+  | {
+      policy: "bot";
+    }
+  | {
+      key?: string | null;
+      policy: "perKey";
+    }
+  | {
+      policy: "perEvent";
+    };
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "BotTriggerId".
+ */
+export type BotTriggerId = string;
+export type BotTriggerView1 =
+  | {
+      /**
+       * One-shot instant; the trigger disables itself after firing.
+       */
+      atMs?: number | null;
+      /**
+       * Classic 5-field cron or an `@macro`; exclusive with `atMs`.
+       */
+      cron?: string | null;
+      kind: "schedule";
+      /**
+       * What the fired event asks the session to do.
+       */
+      summary: string;
+      /**
+       * IANA timezone for cron evaluation; default `UTC`.
+       */
+      timezone?: string;
+    }
+  | {
+      kind: "webhook";
+      preset?: WebhookPreset | null;
+      verification?: WebhookVerification;
+    }
+  | {
+      cursor: PollCursorSpec;
+      intervalMs: number;
+      /**
+       * Dot path to the item array in the payload; absent = the payload
+       * is the item list (or one item).
+       */
+      items?: string | null;
+      kind: "poll";
+      source: PollSource;
+    }
+  | {
+      from?: BotId[] | null;
+      kind: "bot";
+    }
+  | {
+      access?: ChatAccess;
+      /**
+       * The universe's channel account this connection serves.
+       */
+      accountId: string;
+      activation?: ChatActivation;
+      kind: "chat";
+      matchScope?: ChatScope | null;
+      pairing?: ChatPairing & string;
+      /**
+       * Lower wins among matching chat triggers on one account.
+       */
+      priority?: number;
+    };
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "WebhookPreset".
+ */
+export type WebhookPreset = "github";
+/**
+ * How an inbound webhook proves it comes from the sender: possession of
+ * the URL token, or additionally an HMAC-SHA256 over the raw body with a
+ * secret leased from a retrievable grant.
+ *
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "WebhookVerification".
+ */
+export type WebhookVerification =
+  | {
+      scheme: "token";
+    }
+  | {
+      audience?: string | null;
+      grantId: string;
+      header: string;
+      prefix?: string | null;
+      scheme: "hmac-sha256";
+    };
+/**
+ * Dedupe discipline of a poll: an id set for unordered feeds, a watermark
+ * for ordered ones.
+ *
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "PollCursorSpec".
+ */
+export type PollCursorSpec =
+  | {
+      id: string;
+      kind: "idSet";
+    }
+  | {
+      field: string;
+      kind: "watermark";
+    };
+/**
+ * Where a poll trigger reads from.
+ *
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "PollSource".
+ */
+export type PollSource =
+  | {
+      auth?: PollHttpAuth | null;
+      body?: string | null;
+      /**
+       * Non-secret headers only; credentials come from `auth`.
+       */
+      headers?: {
+        [k: string]: string;
+      };
+      kind: "http";
+      method?: PollHttpMethod & string;
+      url: string;
+    }
+  | {
+      argv: string[];
+      cwd?: string | null;
+      /**
+       * Universe environment the command runs in (woken on use); absent
+       * runs in the bot's own environment (the profile's `existing`
+       * one), resolved at fire time.
+       */
+      environmentId?: string | null;
+      kind: "exec";
+      /**
+       * Job wall-clock budget; also bounds the fire activity's wait.
+       */
+      timeoutMs?: number | null;
+    };
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "PollHttpMethod".
+ */
+export type PollHttpMethod = "GET" | "POST";
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "ChatTurnAccess".
+ */
+export type ChatTurnAccess = "anyone" | "listed";
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "ChatGroupActivation".
+ */
+export type ChatGroupActivation = "mention" | "always";
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "ChatScope".
+ */
+export type ChatScope = "direct" | "group";
+/**
+ * Whether a conversation must present a pairing code before it connects.
+ *
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "ChatPairing".
+ */
+export type ChatPairing = "code" | "open";
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "BotEventMediaKind".
+ */
+export type BotEventMediaKind = "image" | "audio" | "document";
+/**
+ * What came of an event: the model's decision (`handled`, `deferred`,
+ * `ignored`, `blocked`) or the system's when no decision was possible.
+ * `archived` rows were stored for the record and never delivered.
+ *
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "BotEventOutcome".
+ */
+export type BotEventOutcome =
+  | "handled"
+  | "deferred"
+  | "ignored"
+  | "blocked"
+  | "unresolved"
+  | "run_failed"
+  | "steered"
+  | "appended"
+  | "archived";
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "BotControllerStatus".
+ */
+export type BotControllerStatus =
+  | "initializing"
+  | "degraded"
+  | "idle"
+  | "delivering_event"
+  | "budget_exhausted"
+  | "closing"
+  | "closed";
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "BotSessionKind".
+ */
+export type BotSessionKind = "main" | "perKey" | "perEvent";
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "BotSetupStatus".
+ */
+export type BotSetupStatus = "initializing" | "degraded" | "ready";
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "SessionLifecycleStatus".
+ */
+export type SessionLifecycleStatus = "new" | "open" | "closed";
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "ChannelAccountId".
+ */
+export type ChannelAccountId = string;
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "ChannelProvider".
+ */
+export type ChannelProvider = "telegram" | "whatsapp";
+/**
+ * What the connector should do after admission. Pairing replies are the
+ * connector's to send, in the provider's own voice.
+ *
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "ChannelInboundDecision".
+ */
+export type ChannelInboundDecision =
+  "bound" | "paired" | "pairing_required" | "pairing_pending" | "unbound";
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "InputAdmissionFailureKind".
  */
 export type InputAdmissionFailureKind =
@@ -1062,11 +1378,6 @@ export type ProfileInstructions =
     };
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "SessionLifecycleStatus".
- */
-export type SessionLifecycleStatus = "new" | "open" | "closed";
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "SkillActivationScope".
  */
 export type SkillActivationScope = "run" | "session";
@@ -1107,6 +1418,97 @@ export type AuthProviderConfigInput =
       endpoint: ModelEndpointConfig;
       type: "modelEndpoint";
     };
+/**
+ * The whole configuration of one trigger, replaced with an expected
+ * revision.
+ *
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "BotTriggerInput".
+ */
+export type BotTriggerInput = {
+  coalesce?: BotCoalescePolicy | null;
+  deliver?: BotDeliverPolicy | null;
+  enabled?: boolean;
+  /**
+   * CEL over `{event, data, headers}`; a non-matching event is refused
+   * and never stored. Fails closed.
+   */
+  filter?: string | null;
+  /**
+   * Chat triggers with `pairing: code`: set a specific pairing code
+   * (8–64 chars) instead of the server-minted one. Never returned to
+   * non-managing principals.
+   */
+  pairingCode?: string | null;
+  route?: BotTriggerRoute | null;
+  /**
+   * Retention of the sessions this trigger routes to: absent inherits the
+   * bot's `routedSessionTtlMs`, `0` keeps them open indefinitely (the
+   * chat default).
+   */
+  sessionTtlMs?: number | null;
+  triggerId: BotTriggerId;
+} & BotTriggerInput1;
+export type BotTriggerInput1 =
+  | {
+      /**
+       * One-shot instant; the trigger disables itself after firing.
+       */
+      atMs?: number | null;
+      /**
+       * Classic 5-field cron or an `@macro`; exclusive with `atMs`.
+       */
+      cron?: string | null;
+      kind: "schedule";
+      /**
+       * What the fired event asks the session to do.
+       */
+      summary: string;
+      /**
+       * IANA timezone for cron evaluation; default `UTC`.
+       */
+      timezone?: string;
+    }
+  | {
+      kind: "webhook";
+      preset?: WebhookPreset | null;
+      verification?: WebhookVerification;
+    }
+  | {
+      cursor: PollCursorSpec;
+      intervalMs: number;
+      /**
+       * Dot path to the item array in the payload; absent = the payload
+       * is the item list (or one item).
+       */
+      items?: string | null;
+      kind: "poll";
+      source: PollSource;
+    }
+  | {
+      from?: BotId[] | null;
+      kind: "bot";
+    }
+  | {
+      access?: ChatAccess;
+      /**
+       * The universe's channel account this connection serves.
+       */
+      accountId: string;
+      activation?: ChatActivation;
+      kind: "chat";
+      matchScope?: ChatScope | null;
+      pairing?: ChatPairing & string;
+      /**
+       * Lower wins among matching chat triggers on one account.
+       */
+      priority?: number;
+    };
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "ChannelMediaKind".
+ */
+export type ChannelMediaKind = "image" | "audio" | "document";
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "SessionJobCancelScopeView".
@@ -2269,6 +2671,963 @@ export interface BlobReadResponse {
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "AgentApiOutcomeOfBotCloseResponse".
+ */
+export interface AgentApiOutcomeOfBotCloseResponse {
+  notifications?: AgentNotification[];
+  result: BotCloseResponse;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "BotCloseResponse".
+ */
+export interface BotCloseResponse {
+  bot: BotView;
+}
+/**
+ * The mutable configuration of a bot, replaced whole with an expected
+ * revision. The bot id, event counter, and lifecycle columns live on the
+ * record, not here.
+ *
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "BotView".
+ */
+export interface BotView {
+  botId: BotId;
+  breaker?: BotBreaker | null;
+  /**
+   * Standing instructions appended to the profile's instructions — the
+   * bot's job description.
+   */
+  brief?: string | null;
+  /**
+   * Terminal: set once by `bots/close`; a closed bot keeps its record
+   * and history but refuses events and cannot be re-enabled.
+   */
+  closedAtMs?: number | null;
+  /**
+   * Sessions the controller force-closed on the way out; `bots/delete`
+   * erases them.
+   */
+  closedSessions?: string[];
+  createdAtMs: number;
+  /**
+   * One line other bots read in the directory.
+   */
+  description?: string | null;
+  /**
+   * Mutable label for humans; the bot id stays the identity.
+   */
+  displayName?: string | null;
+  /**
+   * Capability grant: `bot_emit` — events to itself or another bot's
+   * inbox. Emitting bots are rate-capped.
+   */
+  emit?: boolean;
+  /**
+   * Reversible pause: sessions and chat context stay, nothing is
+   * delivered.
+   */
+  enabled?: boolean;
+  /**
+   * Highest `#N` admitted so far.
+   */
+  eventSeq: number;
+  profileId: ProfileId;
+  revision: number;
+  /**
+   * Close routed (`perKey` / `perEvent`) sessions idle longer than this;
+   * absent keeps them open. A trigger's `sessionTtlMs` overrides it.
+   */
+  routedSessionTtlMs?: number | null;
+  /**
+   * Budget: runs started per UTC day (sub-agent descendants count);
+   * absent means unlimited.
+   */
+  runsPerDay?: number | null;
+  /**
+   * Capability grant: the mutating self-configuration tools
+   * (`bot_trigger_put`, `bot_trigger_delete`, `bot_brief_put`).
+   */
+  selfConfig?: boolean;
+  updatedAtMs: number;
+}
+/**
+ * Per-trigger flood breaker: a trigger that admits more than `fires`
+ * events inside `window_ms` is disabled until a human re-enables it.
+ *
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "BotBreaker".
+ */
+export interface BotBreaker {
+  fires: number;
+  windowMs: number;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "AgentApiOutcomeOfBotCreateResponse".
+ */
+export interface AgentApiOutcomeOfBotCreateResponse {
+  notifications?: AgentNotification[];
+  result: BotCreateResponse;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "BotCreateResponse".
+ */
+export interface BotCreateResponse {
+  bot: BotView;
+  triggers?: BotTriggerView[];
+}
+/**
+ * Coalescing window: events sharing a route flush as one delivery.
+ *
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "BotCoalescePolicy".
+ */
+export interface BotCoalescePolicy {
+  debounceMs: number;
+  maxCount: number;
+  maxWaitMs: number;
+}
+/**
+ * Poll cursor state: Lightspeed-owned, operator-visible, reset by a spec
+ * edit. Absent until the baseline poll.
+ *
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "PollCursorState".
+ */
+export interface PollCursorState {
+  baselinedAtMs?: number | null;
+  consecutiveFailures?: number;
+  ids?: string[];
+  lastPolledAtMs?: number | null;
+  watermark?: unknown;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "BotDeliverPolicy".
+ */
+export interface BotDeliverPolicy {
+  whenBusy?: BotWhenBusy & string;
+}
+/**
+ * Leased credential for an HTTP poll source; the value never appears in
+ * the trigger document.
+ *
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "PollHttpAuth".
+ */
+export interface PollHttpAuth {
+  audience?: string | null;
+  grantId: string;
+  /**
+   * Header carrying the credential; default `authorization`.
+   */
+  header?: string | null;
+  /**
+   * Scheme prefix; default `Bearer`, empty sends the token raw.
+   */
+  scheme?: string | null;
+}
+/**
+ * Who may take a turn and who may issue control commands, by provider
+ * handle (Telegram user id, WhatsApp JID). Handle allowlists on the
+ * trigger replace any platform membership lookup.
+ *
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "ChatAccess".
+ */
+export interface ChatAccess {
+  /**
+   * Handles allowed to take a turn when `turn` is `listed`.
+   */
+  allowed?: string[];
+  /**
+   * Handles allowed to issue `/activation` and `/status`; empty denies
+   * control commands to everyone.
+   */
+  controllers?: string[];
+  turn?: ChatTurnAccess & string;
+}
+/**
+ * When the bot acts in a conversation.
+ *
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "ChatActivation".
+ */
+export interface ChatActivation {
+  group?: ChatGroupActivation | null;
+  mentionNames?: string[];
+  triggerPrefixes?: string[];
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "AgentApiOutcomeOfBotDeleteResponse".
+ */
+export interface AgentApiOutcomeOfBotDeleteResponse {
+  notifications?: AgentNotification[];
+  result: BotDeleteResponse;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "BotDeleteResponse".
+ */
+export interface BotDeleteResponse {
+  bot: BotView;
+  /**
+   * Sessions deleted along with the bot.
+   */
+  deletedSessions?: string[];
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "AgentApiOutcomeOfBotEventAdmitResponse".
+ */
+export interface AgentApiOutcomeOfBotEventAdmitResponse {
+  notifications?: AgentNotification[];
+  result: BotEventAdmitResponse;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "BotEventAdmitResponse".
+ */
+export interface BotEventAdmitResponse {
+  /**
+   * The event id was already stored; the existing row is returned and
+   * the controller is woken again.
+   */
+  duplicate: boolean;
+  event: BotEventView;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "BotEventView".
+ */
+export interface BotEventView {
+  deliveryId?: string | null;
+  /**
+   * CAS ref of the full envelope document.
+   */
+  documentRef: string;
+  /**
+   * Dedupe identity: provider delivery id where known, otherwise
+   * derived.
+   */
+  eventId: string;
+  hops?: number;
+  inReplyTo?: BotEventReplyRef | null;
+  kind: string;
+  media?: BotEventMedia[];
+  occurredAtMs: number;
+  outcome?: BotEventOutcome | null;
+  outcomeDetail?: string | null;
+  promptRef?: string | null;
+  receivedAtMs: number;
+  resolvedAtMs?: number | null;
+  runId?: string | null;
+  /**
+   * Sending bot for bot-originated events (self or addressed).
+   */
+  senderBotId?: BotId | null;
+  /**
+   * Per-bot sequence number: the only event handle shown to models and
+   * humans.
+   */
+  seq: number;
+  session?: BotRoutedSessionView | null;
+  source: string;
+  summary: string;
+  triggerId?: BotTriggerId | null;
+}
+/**
+ * Public correlation of a receipt: the asked event's `#N` at the answering
+ * bot.
+ *
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "BotEventReplyRef".
+ */
+export interface BotEventReplyRef {
+  bot: BotId;
+  seq: number;
+}
+/**
+ * A prepared attachment appended to the run input after the rendering;
+ * bytes live in the CAS.
+ *
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "BotEventMedia".
+ */
+export interface BotEventMedia {
+  blobRef: string;
+  kind: BotEventMediaKind;
+  mime: string;
+  name?: string | null;
+}
+/**
+ * The routed session an event was admitted to.
+ *
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "BotRoutedSessionView".
+ */
+export interface BotRoutedSessionView {
+  label: string;
+  sessionId: string;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "AgentApiOutcomeOfBotEventListResponse".
+ */
+export interface AgentApiOutcomeOfBotEventListResponse {
+  notifications?: AgentNotification[];
+  result: BotEventListResponse;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "BotEventListResponse".
+ */
+export interface BotEventListResponse {
+  /**
+   * Newest first.
+   */
+  events?: BotEventView[];
+  nextCursor?: string | null;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "AgentApiOutcomeOfBotEventReadResponse".
+ */
+export interface AgentApiOutcomeOfBotEventReadResponse {
+  notifications?: AgentNotification[];
+  result: BotEventReadResponse;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "BotEventReadResponse".
+ */
+export interface BotEventReadResponse {
+  document: BotEventDocument;
+  event: BotEventView;
+}
+/**
+ * The envelope document stored in the CAS and shown to the session as
+ * untrusted input.
+ *
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "BotEventDocument".
+ */
+export interface BotEventDocument {
+  correlationId?: string | null;
+  data?: unknown;
+  headers?: {
+    [k: string]: string;
+  };
+  hops?: number;
+  inReplyTo?: BotEventReplyRef | null;
+  kind: string;
+  links?: string[];
+  occurredAtMs: number;
+  sender?: BotEventSender | null;
+  source: string;
+  summary: string;
+  version: number;
+}
+/**
+ * Sender of a bot-originated event, as the receiver sees it.
+ *
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "BotEventSender".
+ */
+export interface BotEventSender {
+  bot: BotId;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "AgentApiOutcomeOfBotEventReplayResponse".
+ */
+export interface AgentApiOutcomeOfBotEventReplayResponse {
+  notifications?: AgentNotification[];
+  result: BotEventReplayResponse;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "BotEventReplayResponse".
+ */
+export interface BotEventReplayResponse {
+  /**
+   * The fresh replay event, routed like the original.
+   */
+  event: BotEventView;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "AgentApiOutcomeOfBotFilterTestResponse".
+ */
+export interface AgentApiOutcomeOfBotFilterTestResponse {
+  notifications?: AgentNotification[];
+  result: BotFilterTestResponse;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "BotFilterTestResponse".
+ */
+export interface BotFilterTestResponse {
+  errors: number;
+  matched: number;
+  results?: BotFilterTestResult[];
+  sampled: number;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "BotFilterTestResult".
+ */
+export interface BotFilterTestResult {
+  error?: string | null;
+  matched: boolean;
+  seq?: number | null;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "AgentApiOutcomeOfBotListResponse".
+ */
+export interface AgentApiOutcomeOfBotListResponse {
+  notifications?: AgentNotification[];
+  result: BotListResponse;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "BotListResponse".
+ */
+export interface BotListResponse {
+  bots?: BotListItem[];
+}
+/**
+ * Roster row: the bot plus what the console needs at a glance.
+ *
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "BotListItem".
+ */
+export interface BotListItem {
+  botId: BotId;
+  breaker?: BotBreaker | null;
+  /**
+   * Standing instructions appended to the profile's instructions — the
+   * bot's job description.
+   */
+  brief?: string | null;
+  /**
+   * Terminal: set once by `bots/close`; a closed bot keeps its record
+   * and history but refuses events and cannot be re-enabled.
+   */
+  closedAtMs?: number | null;
+  /**
+   * Sessions the controller force-closed on the way out; `bots/delete`
+   * erases them.
+   */
+  closedSessions?: string[];
+  createdAtMs: number;
+  /**
+   * One line other bots read in the directory.
+   */
+  description?: string | null;
+  /**
+   * Mutable label for humans; the bot id stays the identity.
+   */
+  displayName?: string | null;
+  /**
+   * Capability grant: `bot_emit` — events to itself or another bot's
+   * inbox. Emitting bots are rate-capped.
+   */
+  emit?: boolean;
+  /**
+   * Reversible pause: sessions and chat context stay, nothing is
+   * delivered.
+   */
+  enabled?: boolean;
+  /**
+   * Highest `#N` admitted so far.
+   */
+  eventSeq: number;
+  lastEvent?: BotEventView | null;
+  /**
+   * Events whose delivery has not finished.
+   */
+  pendingCount: number;
+  profileId: ProfileId;
+  revision: number;
+  /**
+   * Close routed (`perKey` / `perEvent`) sessions idle longer than this;
+   * absent keeps them open. A trigger's `sessionTtlMs` overrides it.
+   */
+  routedSessionTtlMs?: number | null;
+  /**
+   * Budget: runs started per UTC day (sub-agent descendants count);
+   * absent means unlimited.
+   */
+  runsPerDay?: number | null;
+  /**
+   * Capability grant: the mutating self-configuration tools
+   * (`bot_trigger_put`, `bot_trigger_delete`, `bot_brief_put`).
+   */
+  selfConfig?: boolean;
+  triggerCount: number;
+  updatedAtMs: number;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "AgentApiOutcomeOfBotPutResponse".
+ */
+export interface AgentApiOutcomeOfBotPutResponse {
+  notifications?: AgentNotification[];
+  result: BotPutResponse;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "BotPutResponse".
+ */
+export interface BotPutResponse {
+  bot: BotView;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "AgentApiOutcomeOfBotReadResponse".
+ */
+export interface AgentApiOutcomeOfBotReadResponse {
+  notifications?: AgentNotification[];
+  result: BotReadResponse;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "BotReadResponse".
+ */
+export interface BotReadResponse {
+  bot: BotView;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "AgentApiOutcomeOfBotSessionRotateResponse".
+ */
+export interface AgentApiOutcomeOfBotSessionRotateResponse {
+  notifications?: AgentNotification[];
+  result: BotSessionRotateResponse;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "BotSessionRotateResponse".
+ */
+export interface BotSessionRotateResponse {
+  accepted: boolean;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "AgentApiOutcomeOfBotStateReadResponse".
+ */
+export interface AgentApiOutcomeOfBotStateReadResponse {
+  notifications?: AgentNotification[];
+  result: BotStateReadResponse;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "BotStateReadResponse".
+ */
+export interface BotStateReadResponse {
+  state: BotStateView;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "BotStateView".
+ */
+export interface BotStateView {
+  /**
+   * Absent when the controller workflow is not running (a bot that never
+   * received an event, or a closed bot whose workflow completed).
+   */
+  controller?: BotControllerSnapshot | null;
+  /**
+   * Sub-agent sessions delegated under the bot's sessions.
+   */
+  descendants?: SessionSummaryView[];
+}
+/**
+ * The controller's live snapshot (its `bot_state` query).
+ *
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "BotControllerSnapshot".
+ */
+export interface BotControllerSnapshot {
+  activeDeliveries?: BotActiveDeliverySnapshot[];
+  appliedProfileRevision?: number | null;
+  buffers?: BotBufferSnapshot[];
+  closed: boolean;
+  controllerStatus: BotControllerStatus;
+  descendantsToday?: number;
+  duplicateEvents?: number;
+  enabled: boolean;
+  eventsProcessed?: number;
+  lastError?: string | null;
+  mainSessionId: string;
+  pendingDeliveries?: number;
+  recentDeliveries?: BotRecentDeliverySnapshot[];
+  /**
+   * UTC day (`YYYY-MM-DD`) the budget counters belong to.
+   */
+  runDay?: string | null;
+  runsToday?: number;
+  sessions?: BotSessionSnapshot[];
+  setupStatus: BotSetupStatus;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "BotActiveDeliverySnapshot".
+ */
+export interface BotActiveDeliverySnapshot {
+  deliveryId: string;
+  runId?: string | null;
+  seqs: number[];
+  sessionId: string;
+  startedAtMs: number;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "BotBufferSnapshot".
+ */
+export interface BotBufferSnapshot {
+  firstAtMs: number;
+  flushAtMs: number;
+  key: string;
+  lastAtMs: number;
+  seqs: number[];
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "BotRecentDeliverySnapshot".
+ */
+export interface BotRecentDeliverySnapshot {
+  deliveryId: string;
+  finishedAtMs: number;
+  outcome: BotEventOutcome;
+  runId?: string | null;
+  seqs: number[];
+  sessionId: string;
+  summary?: string | null;
+  usage?: LlmUsageView | null;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "BotSessionSnapshot".
+ */
+export interface BotSessionSnapshot {
+  /**
+   * A delivery lane or sidecar is running on it.
+   */
+  busy: boolean;
+  generation: number;
+  kind: BotSessionKind;
+  label: string;
+  lastActiveAtMs?: number | null;
+  sessionId: string;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "SessionSummaryView".
+ */
+export interface SessionSummaryView {
+  createdAtMs: number;
+  displayName?: string | null;
+  id: string;
+  lifecycleStatus: SessionLifecycleStatus;
+  /**
+   * True only when immutable lifecycle ownership was admitted with a
+   * lifecycle controller at managed-session creation.
+   */
+  managed: boolean;
+  /**
+   * Sub-agent lineage; absent for root sessions.
+   */
+  origin?: SessionOriginView | null;
+  updatedAtMs: number;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "AgentApiOutcomeOfBotTriggerDeleteResponse".
+ */
+export interface AgentApiOutcomeOfBotTriggerDeleteResponse {
+  notifications?: AgentNotification[];
+  result: BotTriggerDeleteResponse;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "BotTriggerDeleteResponse".
+ */
+export interface BotTriggerDeleteResponse {
+  trigger: BotTriggerView;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "AgentApiOutcomeOfBotTriggerListResponse".
+ */
+export interface AgentApiOutcomeOfBotTriggerListResponse {
+  notifications?: AgentNotification[];
+  result: BotTriggerListResponse;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "BotTriggerListResponse".
+ */
+export interface BotTriggerListResponse {
+  triggers?: BotTriggerView[];
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "AgentApiOutcomeOfBotTriggerPutResponse".
+ */
+export interface AgentApiOutcomeOfBotTriggerPutResponse {
+  notifications?: AgentNotification[];
+  result: BotTriggerPutResponse;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "BotTriggerPutResponse".
+ */
+export interface BotTriggerPutResponse {
+  trigger: BotTriggerView;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "AgentApiOutcomeOfBotTriggerReadResponse".
+ */
+export interface AgentApiOutcomeOfBotTriggerReadResponse {
+  notifications?: AgentNotification[];
+  result: BotTriggerReadResponse;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "BotTriggerReadResponse".
+ */
+export interface BotTriggerReadResponse {
+  trigger: BotTriggerView;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "AgentApiOutcomeOfChannelAccountCreateResponse".
+ */
+export interface AgentApiOutcomeOfChannelAccountCreateResponse {
+  notifications?: AgentNotification[];
+  result: ChannelAccountCreateResponse;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "ChannelAccountCreateResponse".
+ */
+export interface ChannelAccountCreateResponse {
+  account: ChannelAccountView;
+}
+/**
+ * A provider account served by the connector host. Secret material stays
+ * in the referenced grant; this document is routing identity and
+ * operational configuration.
+ *
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "ChannelAccountView".
+ */
+export interface ChannelAccountView {
+  accountId: ChannelAccountId;
+  createdAtMs: number;
+  /**
+   * Retrievable auth grant holding the provider token (a Telegram bot
+   * token); the connector host leases it. Absent for providers whose
+   * credential is a session state directory (WhatsApp).
+   */
+  credentialGrantId?: string | null;
+  displayName: string;
+  enabled?: boolean;
+  provider: ChannelProvider;
+  /**
+   * Provider-native account identity: the Telegram bot username or
+   * numeric id, the WhatsApp phone number. Unique per universe and
+   * provider.
+   */
+  providerAccountId: string;
+  revision: number;
+  settings?: ChannelAccountSettings;
+  updatedAtMs: number;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "ChannelAccountSettings".
+ */
+export interface ChannelAccountSettings {
+  /**
+   * WhatsApp: print the pairing QR code on the connector's terminal.
+   */
+  printQr?: boolean | null;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "AgentApiOutcomeOfChannelAccountDeleteResponse".
+ */
+export interface AgentApiOutcomeOfChannelAccountDeleteResponse {
+  notifications?: AgentNotification[];
+  result: ChannelAccountDeleteResponse;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "ChannelAccountDeleteResponse".
+ */
+export interface ChannelAccountDeleteResponse {
+  account: ChannelAccountView;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "AgentApiOutcomeOfChannelAccountListResponse".
+ */
+export interface AgentApiOutcomeOfChannelAccountListResponse {
+  notifications?: AgentNotification[];
+  result: ChannelAccountListResponse;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "ChannelAccountListResponse".
+ */
+export interface ChannelAccountListResponse {
+  accounts?: ChannelAccountView[];
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "AgentApiOutcomeOfChannelAccountPutResponse".
+ */
+export interface AgentApiOutcomeOfChannelAccountPutResponse {
+  notifications?: AgentNotification[];
+  result: ChannelAccountPutResponse;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "ChannelAccountPutResponse".
+ */
+export interface ChannelAccountPutResponse {
+  account: ChannelAccountView;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "AgentApiOutcomeOfChannelAccountReadResponse".
+ */
+export interface AgentApiOutcomeOfChannelAccountReadResponse {
+  notifications?: AgentNotification[];
+  result: ChannelAccountReadResponse;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "ChannelAccountReadResponse".
+ */
+export interface ChannelAccountReadResponse {
+  account: ChannelAccountView;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "AgentApiOutcomeOfChannelConversationReadResponse".
+ */
+export interface AgentApiOutcomeOfChannelConversationReadResponse {
+  notifications?: AgentNotification[];
+  result: ChannelConversationReadResponse;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "ChannelConversationReadResponse".
+ */
+export interface ChannelConversationReadResponse {
+  /**
+   * Absent when no conversation workflow exists for the chat yet.
+   */
+  conversation?: ChannelConversationSnapshot | null;
+}
+/**
+ * The conversation workflow's live snapshot, for debugging.
+ *
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "ChannelConversationSnapshot".
+ */
+export interface ChannelConversationSnapshot {
+  activeDeliveries: number;
+  botId: string;
+  deliveredCount: number;
+  deniedInboundCount: number;
+  droppedInboundCount: number;
+  duplicateInboundCount: number;
+  emittedCount: number;
+  failedDeliveryCount: number;
+  inboundCount: number;
+  label: string;
+  protocolErrors?: string[];
+  triggerId: string;
+  typing: boolean;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "AgentApiOutcomeOfChannelInboundAdmitResponse".
+ */
+export interface AgentApiOutcomeOfChannelInboundAdmitResponse {
+  notifications?: AgentNotification[];
+  result: ChannelInboundAdmitResponse;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "ChannelInboundAdmitResponse".
+ */
+export interface ChannelInboundAdmitResponse {
+  /**
+   * The bot serving the conversation, when decided.
+   */
+  botId?: BotId | null;
+  decision: ChannelInboundDecision;
+  triggerId?: BotTriggerId | null;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "AgentApiOutcomeOfChannelPairingDeleteResponse".
+ */
+export interface AgentApiOutcomeOfChannelPairingDeleteResponse {
+  notifications?: AgentNotification[];
+  result: ChannelPairingDeleteResponse;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "ChannelPairingDeleteResponse".
+ */
+export interface ChannelPairingDeleteResponse {
+  pairing: ChannelPairingView;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "ChannelPairingView".
+ */
+export interface ChannelPairingView {
+  accountId: ChannelAccountId;
+  botId: BotId;
+  chatId: string;
+  pairedAtMs: number;
+  /**
+   * Opaque key derived from account and chat; never message data.
+   */
+  pairingKey: string;
+  triggerId: BotTriggerId;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "AgentApiOutcomeOfChannelPairingListResponse".
+ */
+export interface AgentApiOutcomeOfChannelPairingListResponse {
+  notifications?: AgentNotification[];
+  result: ChannelPairingListResponse;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "ChannelPairingListResponse".
+ */
+export interface ChannelPairingListResponse {
+  pairings?: ChannelPairingView[];
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "AgentApiOutcomeOfContextAppendResponse".
  */
 export interface AgentApiOutcomeOfContextAppendResponse {
@@ -3121,6 +4480,51 @@ export interface OperatorApiKeyRevokeResponse {
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "AgentApiOutcomeOfOperatorChannelAccountListResponse".
+ */
+export interface AgentApiOutcomeOfOperatorChannelAccountListResponse {
+  notifications?: AgentNotification[];
+  result: OperatorChannelAccountListResponse;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "OperatorChannelAccountListResponse".
+ */
+export interface OperatorChannelAccountListResponse {
+  accounts?: OperatorChannelAccountView[];
+}
+/**
+ * One channel account of any universe, for the connector host's discovery
+ * pass.
+ *
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "OperatorChannelAccountView".
+ */
+export interface OperatorChannelAccountView {
+  accountId: ChannelAccountId;
+  createdAtMs: number;
+  /**
+   * Retrievable auth grant holding the provider token (a Telegram bot
+   * token); the connector host leases it. Absent for providers whose
+   * credential is a session state directory (WhatsApp).
+   */
+  credentialGrantId?: string | null;
+  displayName: string;
+  enabled?: boolean;
+  provider: ChannelProvider;
+  /**
+   * Provider-native account identity: the Telegram bot username or
+   * numeric id, the WhatsApp phone number. Unique per universe and
+   * provider.
+   */
+  providerAccountId: string;
+  revision: number;
+  settings?: ChannelAccountSettings;
+  universeId: string;
+  updatedAtMs: number;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "AgentApiOutcomeOfOperatorEnvironmentAdoptResponse".
  */
 export interface AgentApiOutcomeOfOperatorEnvironmentAdoptResponse {
@@ -3586,26 +4990,6 @@ export interface AgentApiOutcomeOfSessionDeleteResponse {
  */
 export interface SessionDeleteResponse {
   session: SessionSummaryView;
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "SessionSummaryView".
- */
-export interface SessionSummaryView {
-  createdAtMs: number;
-  displayName?: string | null;
-  id: string;
-  lifecycleStatus: SessionLifecycleStatus;
-  /**
-   * True only when immutable lifecycle ownership was admitted with a
-   * lifecycle controller at managed-session creation.
-   */
-  managed: boolean;
-  /**
-   * Sub-agent lineage; absent for root sessions.
-   */
-  origin?: SessionOriginView | null;
-  updatedAtMs: number;
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
@@ -4174,6 +5558,380 @@ export interface BlobReadParams {
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "BotCloseParams".
+ */
+export interface BotCloseParams {
+  botId: BotId;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "BotCreateParams".
+ */
+export interface BotCreateParams {
+  bot: BotInput;
+  /**
+   * Triggers created with the bot in one go; a failure rolls the bot
+   * back.
+   */
+  triggers?: BotTriggerInput[];
+}
+/**
+ * The mutable configuration of a bot, replaced whole with an expected
+ * revision. The bot id, event counter, and lifecycle columns live on the
+ * record, not here.
+ *
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "BotInput".
+ */
+export interface BotInput {
+  botId: BotId;
+  breaker?: BotBreaker | null;
+  /**
+   * Standing instructions appended to the profile's instructions — the
+   * bot's job description.
+   */
+  brief?: string | null;
+  /**
+   * One line other bots read in the directory.
+   */
+  description?: string | null;
+  /**
+   * Mutable label for humans; the bot id stays the identity.
+   */
+  displayName?: string | null;
+  /**
+   * Capability grant: `bot_emit` — events to itself or another bot's
+   * inbox. Emitting bots are rate-capped.
+   */
+  emit?: boolean;
+  /**
+   * Reversible pause: sessions and chat context stay, nothing is
+   * delivered.
+   */
+  enabled?: boolean;
+  profileId: ProfileId;
+  /**
+   * Close routed (`perKey` / `perEvent`) sessions idle longer than this;
+   * absent keeps them open. A trigger's `sessionTtlMs` overrides it.
+   */
+  routedSessionTtlMs?: number | null;
+  /**
+   * Budget: runs started per UTC day (sub-agent descendants count);
+   * absent means unlimited.
+   */
+  runsPerDay?: number | null;
+  /**
+   * Capability grant: the mutating self-configuration tools
+   * (`bot_trigger_put`, `bot_trigger_delete`, `bot_brief_put`).
+   */
+  selfConfig?: boolean;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "BotDeleteParams".
+ */
+export interface BotDeleteParams {
+  botId: BotId;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "BotEventAdmitParams".
+ */
+export interface BotEventAdmitParams {
+  botId: BotId;
+  event: BotEventInput;
+}
+/**
+ * A manually admitted event: what an operator posts through
+ * `bots/events/admit`.
+ *
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "BotEventInput".
+ */
+export interface BotEventInput {
+  correlationId?: string | null;
+  data?: unknown;
+  /**
+   * Dedupe identity; generated when absent.
+   */
+  eventId?: string | null;
+  headers?: {
+    [k: string]: string;
+  };
+  kind: string;
+  links?: string[];
+  occurredAtMs?: number | null;
+  summary: string;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "BotEventListParams".
+ */
+export interface BotEventListParams {
+  botId: BotId;
+  /**
+   * Opaque cursor from a previous page.
+   */
+  cursor?: string | null;
+  /**
+   * Page size; server-clamped.
+   */
+  limit?: number | null;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "BotEventReadParams".
+ */
+export interface BotEventReadParams {
+  botId: BotId;
+  seq: number;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "BotEventReplayParams".
+ */
+export interface BotEventReplayParams {
+  botId: BotId;
+  seq: number;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "BotFilterTestParams".
+ */
+export interface BotFilterTestParams {
+  botId: BotId;
+  /**
+   * CEL over `{event, data, headers}`.
+   */
+  filter: string;
+  /**
+   * How many recent stored events to sample when no payload is given.
+   */
+  limit?: number | null;
+  /**
+   * A document to test instead of stored events: `{kind?, data?,
+   * headers?}`.
+   */
+  payload?: {
+    [k: string]: unknown;
+  };
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "BotListParams".
+ */
+export interface BotListParams {}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "BotPutParams".
+ */
+export interface BotPutParams {
+  bot: BotInput;
+  /**
+   * Checked only when the bot already exists; absent replaces (or
+   * creates) unconditionally.
+   */
+  expectedRevision?: number | null;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "BotReadParams".
+ */
+export interface BotReadParams {
+  botId: BotId;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "BotSessionRotateParams".
+ */
+export interface BotSessionRotateParams {
+  botId: BotId;
+  /**
+   * One of the bot's sessions (main or routed); the controller closes it
+   * at its next idle boundary and continues on a successor generation.
+   */
+  sessionId: string;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "BotStateReadParams".
+ */
+export interface BotStateReadParams {
+  botId: BotId;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "BotTriggerDeleteParams".
+ */
+export interface BotTriggerDeleteParams {
+  botId: BotId;
+  triggerId: BotTriggerId;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "BotTriggerListParams".
+ */
+export interface BotTriggerListParams {
+  botId: BotId;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "BotTriggerPutParams".
+ */
+export interface BotTriggerPutParams {
+  botId: BotId;
+  /**
+   * Checked only when the trigger already exists; absent replaces (or
+   * creates) unconditionally.
+   */
+  expectedRevision?: number | null;
+  trigger: BotTriggerInput;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "BotTriggerReadParams".
+ */
+export interface BotTriggerReadParams {
+  botId: BotId;
+  triggerId: BotTriggerId;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "ChannelAccountCreateParams".
+ */
+export interface ChannelAccountCreateParams {
+  account: ChannelAccountInput;
+}
+/**
+ * A provider account served by the connector host. Secret material stays
+ * in the referenced grant; this document is routing identity and
+ * operational configuration.
+ *
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "ChannelAccountInput".
+ */
+export interface ChannelAccountInput {
+  accountId: ChannelAccountId;
+  /**
+   * Retrievable auth grant holding the provider token (a Telegram bot
+   * token); the connector host leases it. Absent for providers whose
+   * credential is a session state directory (WhatsApp).
+   */
+  credentialGrantId?: string | null;
+  displayName: string;
+  enabled?: boolean;
+  provider: ChannelProvider;
+  /**
+   * Provider-native account identity: the Telegram bot username or
+   * numeric id, the WhatsApp phone number. Unique per universe and
+   * provider.
+   */
+  providerAccountId: string;
+  settings?: ChannelAccountSettings;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "ChannelAccountDeleteParams".
+ */
+export interface ChannelAccountDeleteParams {
+  accountId: ChannelAccountId;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "ChannelAccountListParams".
+ */
+export interface ChannelAccountListParams {
+  provider?: ChannelProvider | null;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "ChannelAccountPutParams".
+ */
+export interface ChannelAccountPutParams {
+  account: ChannelAccountInput;
+  expectedRevision?: number | null;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "ChannelAccountReadParams".
+ */
+export interface ChannelAccountReadParams {
+  accountId: ChannelAccountId;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "ChannelConversationReadParams".
+ */
+export interface ChannelConversationReadParams {
+  accountId: ChannelAccountId;
+  chatId: string;
+  threadId?: string | null;
+}
+/**
+ * One normalized provider message, as the connector host hands it to the
+ * core. Provider and account come from the admitting account.
+ *
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "ChannelInbound".
+ */
+export interface ChannelInbound {
+  chatId: string;
+  isDirect: boolean;
+  isReplyToBot: boolean;
+  media?: ChannelInboundMedia[];
+  mentionedBot: boolean;
+  messageId: string;
+  /**
+   * Provider handle of the sender (Telegram user id, WhatsApp JID).
+   */
+  senderId: string;
+  senderName: string;
+  text: string;
+  threadId?: string | null;
+  timestampMs: number;
+}
+/**
+ * A provider-owned attachment reference; never bytes. The connector
+ * downloads it when the conversation workflow asks (`prepare_channel_media`).
+ *
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "ChannelInboundMedia".
+ */
+export interface ChannelInboundMedia {
+  byteSize?: number | null;
+  /**
+   * Provider file handle (a Telegram file id, a sealed WhatsApp locator).
+   */
+  fileId: string;
+  kind: ChannelMediaKind;
+  mime: string;
+  name?: string | null;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "ChannelInboundAdmitParams".
+ */
+export interface ChannelInboundAdmitParams {
+  accountId: ChannelAccountId;
+  inbound: ChannelInbound;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "ChannelPairingDeleteParams".
+ */
+export interface ChannelPairingDeleteParams {
+  pairingKey: string;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "ChannelPairingListParams".
+ */
+export interface ChannelPairingListParams {
+  accountId?: ChannelAccountId | null;
+  botId?: BotId | null;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "ClientCapabilities".
  */
 export interface ClientCapabilities {
@@ -4600,6 +6358,17 @@ export interface OperatorApiKeyListParams {
 export interface OperatorApiKeyRevokeParams {
   keyPrefix: string;
   universeId: string;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "OperatorChannelAccountListParams".
+ */
+export interface OperatorChannelAccountListParams {
+  /**
+   * Include disabled accounts; by default only enabled ones are listed.
+   */
+  includeDisabled?: boolean;
+  provider?: ChannelProvider | null;
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema

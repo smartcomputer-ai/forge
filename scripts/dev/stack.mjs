@@ -193,14 +193,21 @@ function createPlan(profile, sourceEnv) {
   }
   validateConnectorEnvironment(connectorNames, sourceEnv);
 
-  const healthUrls = connectorNames.map((connector) => {
-    const port = connectorHealthPort(connector, sourceEnv);
-    return `http://127.0.0.1:${port}`;
-  });
+  const connectorHealthPort = positivePort(
+    sourceEnv.LIGHTSPEED_CONNECTOR_HEALTH_PORT,
+    8_090,
+    "LIGHTSPEED_CONNECTOR_HEALTH_PORT",
+  );
+  const connectorMetricsPort = positivePort(
+    sourceEnv.LIGHTSPEED_CONNECTOR_METRICS_PORT,
+    9_090,
+    "LIGHTSPEED_CONNECTOR_METRICS_PORT",
+  );
+  const healthUrls =
+    connectorNames.length === 0 ? [] : [`http://127.0.0.1:${connectorHealthPort}`];
   const env = {
     ...sourceEnv,
     LIGHTSPEED_API_URL: platformApiUrl,
-    LIGHTSPEED_ENDPOINT: runtimeRpc,
     LIGHTSPEED_AUTH_MODE: runtimeAuthMode,
     LIGHTSPEED_PLATFORM_DATABASE_URL: platformDatabaseUrl,
     LIGHTSPEED_PLATFORM_AUTH_SECRET:
@@ -315,13 +322,7 @@ function createPlan(profile, sourceEnv) {
 
   if (profile === "full") {
     ports.push({ name: "Configurator MCP", port: configuratorPort });
-    ports.push({ name: "Channels workflow metrics", port: 9_090 });
-    ports.push({ name: "Channels activity metrics", port: 9_093 });
-    readiness.push(
-      { name: "Configurator MCP", url: `http://127.0.0.1:${configuratorPort}/health` },
-      { name: "Channels workflow worker", port: 9_090 },
-      { name: "Channels activity worker", port: 9_093 },
-    );
+    readiness.push({ name: "Configurator MCP", url: `http://127.0.0.1:${configuratorPort}/health` });
     processes.splice(1, 0, {
       name: "configurator",
       command: tsx,
@@ -329,34 +330,43 @@ function createPlan(profile, sourceEnv) {
       cwd: repoRoot,
       env,
     });
-    processes.push(
-      platformWorkerProcess("channels-workflows", "channels-workflows", 9_090, env, tsx),
-      platformWorkerProcess("channels-activities", "channels-activities", 9_093, env, tsx),
-      platformWorkerProcess("bots-workflows", "bots-workflows", undefined, env, tsx),
-      {
-        ...platformWorkerProcess("bots-activities", "bots-activities", undefined, env, tsx),
-        // Temporal may already have due schedule work when the stack starts.
-        // Do not poll for it until the gateway needed by those activities is
-        // accepting requests, or a normal cold start produces a noisy first
-        // attempt failure before the runtime binds its port.
+    // Bots and Channels core run inside the Rust runtime. The only Node
+    // worker left is the connector host: one process serving every enabled
+    // Telegram/WhatsApp account it discovers through the core API.
+    if (connectorNames.length > 0) {
+      ports.push({ name: "connector host health", port: connectorHealthPort });
+      ports.push({ name: "connector host metrics", port: connectorMetricsPort });
+      readiness.push({
+        name: "connector host",
+        url: `http://127.0.0.1:${connectorHealthPort}/healthz`,
+      });
+      processes.push({
+        name: "connectors",
+        command: tsx,
+        args: ["platform/connectors/src/host/main.ts"],
+        cwd: repoRoot,
+        env: {
+          ...env,
+          LIGHTSPEED_CONNECTOR_PROVIDERS: connectorNames.join(","),
+          LIGHTSPEED_CONNECTOR_HEALTH_PORT: String(connectorHealthPort),
+          LIGHTSPEED_CONNECTOR_METRICS_PORT: String(connectorMetricsPort),
+          ...(connectorNames.includes("whatsapp") && !env.LIGHTSPEED_CONNECTOR_WHATSAPP_AUTH_DIR
+            ? {
+                LIGHTSPEED_CONNECTOR_WHATSAPP_AUTH_DIR: path.join(
+                  repoRoot,
+                  ".lightspeed-dev",
+                  "whatsapp-auth",
+                ),
+              }
+            : {}),
+        },
+        // Discovery needs the core API; wait for the gateway so a cold start
+        // does not log a failed first pass.
         startAfter: {
           name: "runtime gateway",
           url: `http://127.0.0.1:${runtimePort}/health`,
         },
-      },
-    );
-    for (const connector of connectorNames) {
-      const metricsPort = connector === "telegram" ? 9_091 : 9_092;
-      const healthPort = connectorHealthPort(connector, env);
-      ports.push({ name: `${connector} metrics`, port: metricsPort });
-      ports.push({ name: `${connector} health`, port: healthPort });
-      readiness.push({
-        name: `${connector} connector`,
-        url: `http://127.0.0.1:${healthPort}/healthz`,
       });
-      processes.push(
-        platformWorkerProcess(`channels-${connector}`, connector, metricsPort, env, tsx),
-      );
     }
   }
 
@@ -375,21 +385,6 @@ function createPlan(profile, sourceEnv) {
   };
 }
 
-function platformWorkerProcess(name, role, metricsPort, env, tsx) {
-  return {
-    name,
-    command: tsx,
-    args: ["platform/workers/src/main.ts", role],
-    cwd: repoRoot,
-    env: {
-      ...env,
-      ...(metricsPort === undefined
-        ? {}
-        : { LIGHTSPEED_CHANNELS_METRICS_PORT: String(metricsPort) }),
-    },
-  };
-}
-
 function parseConnectors(value) {
   if (value === undefined || value.trim() === "") return [];
   const result = [];
@@ -405,33 +400,17 @@ function parseConnectors(value) {
   return result;
 }
 
+// Provider tokens are leased from the core (`auth/grants/lease`), so a
+// Telegram connector needs no local credential. WhatsApp keeps its Baileys
+// session on disk and seals media locators with a deployment key.
 function validateConnectorEnvironment(connectors, env) {
-  const requirements = {
-    telegram: ["LIGHTSPEED_CHANNELS_TELEGRAM_BOT_TOKEN", "LIGHTSPEED_CHANNELS_TELEGRAM_ACCOUNT_ID"],
-    whatsapp: [
-      "LIGHTSPEED_CHANNELS_WHATSAPP_ACCOUNT_ID",
-      "LIGHTSPEED_CHANNELS_WHATSAPP_AUTH_DIR",
-      "LIGHTSPEED_CHANNELS_WHATSAPP_MEDIA_LOCATOR_KEY",
-    ],
-  };
-  for (const connector of connectors) {
-    const missing = requirements[connector].filter((name) => !env[name]?.trim());
-    if (missing.length > 0) {
-      throw new TypeError(`${connector} development connector requires ${missing.join(", ")}`);
-    }
-  }
-}
-
-function connectorHealthPort(connector, env) {
-  const specific =
-    connector === "telegram"
-      ? env.LIGHTSPEED_CHANNELS_TELEGRAM_HEALTH_PORT
-      : env.LIGHTSPEED_CHANNELS_WHATSAPP_HEALTH_PORT;
-  return positivePort(
-    specific ?? env.LIGHTSPEED_CHANNELS_HEALTH_PORT,
-    connector === "telegram" ? 8_091 : 8_092,
-    `LIGHTSPEED_CHANNELS_${connector.toUpperCase()}_HEALTH_PORT`,
+  if (!connectors.includes("whatsapp")) return;
+  const missing = ["LIGHTSPEED_CONNECTOR_WHATSAPP_MEDIA_LOCATOR_KEY"].filter(
+    (name) => !env[name]?.trim(),
   );
+  if (missing.length > 0) {
+    throw new TypeError(`whatsapp development connector requires ${missing.join(", ")}`);
+  }
 }
 
 function positivePort(raw, fallback, name) {
@@ -771,7 +750,7 @@ function printRunning(plan) {
   console.log("\nLightspeed development stack is running:");
   console.log(`  profile       ${plan.profile}`);
   if (plan.profile === "runtime" || plan.profile === "full") {
-    console.log(`  runtime       ${plan.env.LIGHTSPEED_ENDPOINT}`);
+    console.log(`  runtime       ${plan.env.LIGHTSPEED_API_URL}`);
     if (plan.envd) {
       console.log(`  envd          ${plan.envd.endpoint}  (attach: Environments -> Register external)`);
     }
@@ -819,9 +798,9 @@ function printHelp() {
 The npm run dev commands are aliases for the same launcher.
 
 Profiles:
-  full      Infrastructure, Rust runtime, Configurator, Platform, web, and
-            Platform Channels/Bots workers. LIGHTSPEED_CHANNELS_CONNECTORS optionally
-            adds telegram and/or whatsapp.
+  full      Infrastructure, Rust runtime (with Bots and Channels core),
+            Configurator, Platform, and web. LIGHTSPEED_CHANNELS_CONNECTORS
+            optionally adds the connector host serving telegram and/or whatsapp.
   platform  Infrastructure, Platform API, and web UI against the runtime at
             LIGHTSPEED_API_URL (start one with the runtime profile).
   runtime   Infrastructure and the migrated Rust runtime.

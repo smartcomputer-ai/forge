@@ -84,6 +84,32 @@ export const METHODS = [
   "auth/providers/delete",
   "auth/github/installations/list",
   "auth/github/installations/grant",
+  "bots/create",
+  "bots/put",
+  "bots/read",
+  "bots/list",
+  "bots/close",
+  "bots/delete",
+  "bots/state/read",
+  "bots/sessions/rotate",
+  "bots/triggers/put",
+  "bots/triggers/read",
+  "bots/triggers/list",
+  "bots/triggers/delete",
+  "bots/events/admit",
+  "bots/events/replay",
+  "bots/events/list",
+  "bots/events/read",
+  "bots/filters/test",
+  "channels/accounts/create",
+  "channels/accounts/put",
+  "channels/accounts/read",
+  "channels/accounts/list",
+  "channels/accounts/delete",
+  "channels/inbound/admit",
+  "channels/pairings/list",
+  "channels/pairings/delete",
+  "channels/conversations/read",
   "operator/universes/create",
   "operator/universes/list",
   "operator/universes/read",
@@ -98,6 +124,7 @@ export const METHODS = [
   "operator/environment-providers/bindings/put",
   "operator/environment-providers/bindings/delete",
   "operator/environments/adopt",
+  "operator/channels/accounts/list",
 ] as const;
 
 export const METHOD_INFO = {
@@ -496,6 +523,136 @@ export const METHOD_INFO = {
     summary: "Grant access to a GitHub App installation",
     description: "Creates or refreshes a universe auth grant for one accessible installation. The installation token is brokered internally and never returned.",
   },
+  "bots/create": {
+    scope: "universe",
+    summary: "Create a bot",
+    description: "Creates the bot record, optionally with its triggers, and starts its controller. Fails if the bot id exists; a trigger failure rolls the bot back.",
+  },
+  "bots/put": {
+    scope: "universe",
+    summary: "Create or replace a bot document",
+    description: "Replaces the mutable configuration whole and signals the controller, which applies it at its next idle boundary. Pass expectedRevision when replacing; a closed bot accepts label-only edits.",
+  },
+  "bots/read": {
+    scope: "universe",
+    summary: "Read a bot",
+    description: "Returns the bot record, its current revision, and lifecycle columns.",
+  },
+  "bots/list": {
+    scope: "universe",
+    summary: "List bots",
+    description: "Returns the roster: every bot with its trigger count, pending event count, and latest event.",
+  },
+  "bots/close": {
+    scope: "universe",
+    summary: "Close a bot",
+    description: "Terminal and idempotent: disables every trigger, drops schedules, and tells the controller to archive pending events and force-close its sessions. Returns once signalled; follow bots/state/read for closing to closed.",
+  },
+  "bots/delete": {
+    scope: "universe",
+    summary: "Delete a bot",
+    description: "Closes the bot if needed, waits for its controller to complete, deletes the sessions it closed, and removes the record so the bot id is free again.",
+  },
+  "bots/state/read": {
+    scope: "universe",
+    summary: "Read bot controller state",
+    description: "Queries the controller workflow for its live snapshot (sessions, buffers, active and recent deliveries, budget) and lists sub-agent descendants. The controller is absent until the bot's first event.",
+  },
+  "bots/sessions/rotate": {
+    scope: "universe",
+    summary: "Rotate a bot session",
+    description: "Asks the controller to close one of the bot's sessions at its next idle boundary and continue on a fresh generation; queued deliveries follow.",
+  },
+  "bots/triggers/put": {
+    scope: "universe",
+    summary: "Create or replace a trigger",
+    description: "Validates the trigger document (CEL parses, grants exist, one inbox per bot, chat routes per conversation), reconciles its Temporal Schedule, and stores it. A poll spec edit resets the cursor; a webhook keeps its URL token.",
+  },
+  "bots/triggers/read": {
+    scope: "universe",
+    summary: "Read a trigger",
+    description: "Returns one trigger with its incidents and cursor; the ingest path and pairing code are shown only to managing principals.",
+  },
+  "bots/triggers/list": {
+    scope: "universe",
+    summary: "List a bot's triggers",
+    description: "Returns every trigger of the bot ordered by id, secrets redacted for non-managing principals.",
+  },
+  "bots/triggers/delete": {
+    scope: "universe",
+    summary: "Delete a trigger",
+    description: "Drops the trigger's Temporal Schedule and pairings, then the record; stored events keep their history.",
+  },
+  "bots/events/admit": {
+    scope: "universe",
+    summary: "Admit an event manually",
+    description: "Stores an operator-authored event for the bot's main session and wakes the controller. eventId is the dedupe identity; a duplicate returns the stored row.",
+  },
+  "bots/events/replay": {
+    scope: "universe",
+    summary: "Replay a stored event",
+    description: "Re-admits the stored envelope as a fresh event with the original routing; the replay never coalesces.",
+  },
+  "bots/events/list": {
+    scope: "universe",
+    summary: "List a bot's events",
+    description: "Cursor-paginated event log, newest first, with outcomes; payload documents stay in the CAS.",
+  },
+  "bots/events/read": {
+    scope: "universe",
+    summary: "Read an event by number",
+    description: "Returns the event row and its full stored envelope document.",
+  },
+  "bots/filters/test": {
+    scope: "universe",
+    summary: "Test a CEL filter",
+    description: "Evaluates a filter against one payload or a sample of recent stored events, reporting matches and evaluation errors without changing anything.",
+  },
+  "channels/accounts/create": {
+    scope: "universe",
+    summary: "Create a channel account",
+    description: "Registers a provider account (Telegram, WhatsApp) for this universe. The credential is a retrievable grant reference; no token is accepted here.",
+  },
+  "channels/accounts/put": {
+    scope: "universe",
+    summary: "Create or replace a channel account",
+    description: "Replaces the account document whole; pass expectedRevision when replacing. The connector host picks the change up on its next discovery pass.",
+  },
+  "channels/accounts/read": {
+    scope: "universe",
+    summary: "Read a channel account",
+    description: "Returns the account document and revision.",
+  },
+  "channels/accounts/list": {
+    scope: "universe",
+    summary: "List channel accounts",
+    description: "Lists this universe's provider accounts, optionally by provider.",
+  },
+  "channels/accounts/delete": {
+    scope: "universe",
+    summary: "Delete a channel account",
+    description: "Removes the account and its pairings; chat triggers that reference it stop serving conversations.",
+  },
+  "channels/inbound/admit": {
+    scope: "service",
+    summary: "Admit a provider message",
+    description: "Service callers only. Resolves the chat trigger for the conversation, applies pairing, and signals the conversation workflow. Returns the decision so the connector can send pairing prompts itself; acknowledge the provider only after this returns.",
+  },
+  "channels/pairings/list": {
+    scope: "universe",
+    summary: "List chat pairings",
+    description: "Lists conversations paired to chat triggers, optionally by account or bot.",
+  },
+  "channels/pairings/delete": {
+    scope: "universe",
+    summary: "Unpair a conversation",
+    description: "Removes one pairing; the conversation must present the pairing code again to reconnect.",
+  },
+  "channels/conversations/read": {
+    scope: "universe",
+    summary: "Read a conversation snapshot",
+    description: "Queries the conversation workflow's live state for one chat, for debugging; absent when no workflow exists yet.",
+  },
   "operator/universes/create": {
     scope: "operator",
     summary: "Create a universe",
@@ -565,6 +722,11 @@ export const METHOD_INFO = {
     scope: "operator",
     summary: "Adopt a provider environment",
     description: "Creates a universe environment by transferring an existing provider target into Lightspeed's managed lifecycle. The caller must explicitly accept ownership transfer.",
+  },
+  "operator/channels/accounts/list": {
+    scope: "operator",
+    summary: "List channel accounts across universes",
+    description: "The connector host's discovery call: every enabled provider account of the deployment with its universe id and credential grant reference. Re-poll to pick up accounts created or disabled since.",
   },
 } as const;
 
@@ -1293,6 +1455,240 @@ export interface MethodMap {
     result: Api.AgentApiOutcomeOfAuthGitHubInstallationGrantResponse;
   };
   /**
+   * Create a bot
+   *
+   * Creates the bot record, optionally with its triggers, and starts its controller. Fails if the bot id exists; a trigger failure rolls the bot back.
+   */
+  "bots/create": {
+    params: Api.BotCreateParams;
+    result: Api.AgentApiOutcomeOfBotCreateResponse;
+  };
+  /**
+   * Create or replace a bot document
+   *
+   * Replaces the mutable configuration whole and signals the controller, which applies it at its next idle boundary. Pass expectedRevision when replacing; a closed bot accepts label-only edits.
+   */
+  "bots/put": {
+    params: Api.BotPutParams;
+    result: Api.AgentApiOutcomeOfBotPutResponse;
+  };
+  /**
+   * Read a bot
+   *
+   * Returns the bot record, its current revision, and lifecycle columns.
+   */
+  "bots/read": {
+    params: Api.BotReadParams;
+    result: Api.AgentApiOutcomeOfBotReadResponse;
+  };
+  /**
+   * List bots
+   *
+   * Returns the roster: every bot with its trigger count, pending event count, and latest event.
+   */
+  "bots/list": {
+    params: Api.BotListParams;
+    result: Api.AgentApiOutcomeOfBotListResponse;
+  };
+  /**
+   * Close a bot
+   *
+   * Terminal and idempotent: disables every trigger, drops schedules, and tells the controller to archive pending events and force-close its sessions. Returns once signalled; follow bots/state/read for closing to closed.
+   */
+  "bots/close": {
+    params: Api.BotCloseParams;
+    result: Api.AgentApiOutcomeOfBotCloseResponse;
+  };
+  /**
+   * Delete a bot
+   *
+   * Closes the bot if needed, waits for its controller to complete, deletes the sessions it closed, and removes the record so the bot id is free again.
+   */
+  "bots/delete": {
+    params: Api.BotDeleteParams;
+    result: Api.AgentApiOutcomeOfBotDeleteResponse;
+  };
+  /**
+   * Read bot controller state
+   *
+   * Queries the controller workflow for its live snapshot (sessions, buffers, active and recent deliveries, budget) and lists sub-agent descendants. The controller is absent until the bot's first event.
+   */
+  "bots/state/read": {
+    params: Api.BotStateReadParams;
+    result: Api.AgentApiOutcomeOfBotStateReadResponse;
+  };
+  /**
+   * Rotate a bot session
+   *
+   * Asks the controller to close one of the bot's sessions at its next idle boundary and continue on a fresh generation; queued deliveries follow.
+   */
+  "bots/sessions/rotate": {
+    params: Api.BotSessionRotateParams;
+    result: Api.AgentApiOutcomeOfBotSessionRotateResponse;
+  };
+  /**
+   * Create or replace a trigger
+   *
+   * Validates the trigger document (CEL parses, grants exist, one inbox per bot, chat routes per conversation), reconciles its Temporal Schedule, and stores it. A poll spec edit resets the cursor; a webhook keeps its URL token.
+   */
+  "bots/triggers/put": {
+    params: Api.BotTriggerPutParams;
+    result: Api.AgentApiOutcomeOfBotTriggerPutResponse;
+  };
+  /**
+   * Read a trigger
+   *
+   * Returns one trigger with its incidents and cursor; the ingest path and pairing code are shown only to managing principals.
+   */
+  "bots/triggers/read": {
+    params: Api.BotTriggerReadParams;
+    result: Api.AgentApiOutcomeOfBotTriggerReadResponse;
+  };
+  /**
+   * List a bot's triggers
+   *
+   * Returns every trigger of the bot ordered by id, secrets redacted for non-managing principals.
+   */
+  "bots/triggers/list": {
+    params: Api.BotTriggerListParams;
+    result: Api.AgentApiOutcomeOfBotTriggerListResponse;
+  };
+  /**
+   * Delete a trigger
+   *
+   * Drops the trigger's Temporal Schedule and pairings, then the record; stored events keep their history.
+   */
+  "bots/triggers/delete": {
+    params: Api.BotTriggerDeleteParams;
+    result: Api.AgentApiOutcomeOfBotTriggerDeleteResponse;
+  };
+  /**
+   * Admit an event manually
+   *
+   * Stores an operator-authored event for the bot's main session and wakes the controller. eventId is the dedupe identity; a duplicate returns the stored row.
+   */
+  "bots/events/admit": {
+    params: Api.BotEventAdmitParams;
+    result: Api.AgentApiOutcomeOfBotEventAdmitResponse;
+  };
+  /**
+   * Replay a stored event
+   *
+   * Re-admits the stored envelope as a fresh event with the original routing; the replay never coalesces.
+   */
+  "bots/events/replay": {
+    params: Api.BotEventReplayParams;
+    result: Api.AgentApiOutcomeOfBotEventReplayResponse;
+  };
+  /**
+   * List a bot's events
+   *
+   * Cursor-paginated event log, newest first, with outcomes; payload documents stay in the CAS.
+   */
+  "bots/events/list": {
+    params: Api.BotEventListParams;
+    result: Api.AgentApiOutcomeOfBotEventListResponse;
+  };
+  /**
+   * Read an event by number
+   *
+   * Returns the event row and its full stored envelope document.
+   */
+  "bots/events/read": {
+    params: Api.BotEventReadParams;
+    result: Api.AgentApiOutcomeOfBotEventReadResponse;
+  };
+  /**
+   * Test a CEL filter
+   *
+   * Evaluates a filter against one payload or a sample of recent stored events, reporting matches and evaluation errors without changing anything.
+   */
+  "bots/filters/test": {
+    params: Api.BotFilterTestParams;
+    result: Api.AgentApiOutcomeOfBotFilterTestResponse;
+  };
+  /**
+   * Create a channel account
+   *
+   * Registers a provider account (Telegram, WhatsApp) for this universe. The credential is a retrievable grant reference; no token is accepted here.
+   */
+  "channels/accounts/create": {
+    params: Api.ChannelAccountCreateParams;
+    result: Api.AgentApiOutcomeOfChannelAccountCreateResponse;
+  };
+  /**
+   * Create or replace a channel account
+   *
+   * Replaces the account document whole; pass expectedRevision when replacing. The connector host picks the change up on its next discovery pass.
+   */
+  "channels/accounts/put": {
+    params: Api.ChannelAccountPutParams;
+    result: Api.AgentApiOutcomeOfChannelAccountPutResponse;
+  };
+  /**
+   * Read a channel account
+   *
+   * Returns the account document and revision.
+   */
+  "channels/accounts/read": {
+    params: Api.ChannelAccountReadParams;
+    result: Api.AgentApiOutcomeOfChannelAccountReadResponse;
+  };
+  /**
+   * List channel accounts
+   *
+   * Lists this universe's provider accounts, optionally by provider.
+   */
+  "channels/accounts/list": {
+    params: Api.ChannelAccountListParams;
+    result: Api.AgentApiOutcomeOfChannelAccountListResponse;
+  };
+  /**
+   * Delete a channel account
+   *
+   * Removes the account and its pairings; chat triggers that reference it stop serving conversations.
+   */
+  "channels/accounts/delete": {
+    params: Api.ChannelAccountDeleteParams;
+    result: Api.AgentApiOutcomeOfChannelAccountDeleteResponse;
+  };
+  /**
+   * Admit a provider message
+   *
+   * Service callers only. Resolves the chat trigger for the conversation, applies pairing, and signals the conversation workflow. Returns the decision so the connector can send pairing prompts itself; acknowledge the provider only after this returns.
+   */
+  "channels/inbound/admit": {
+    params: Api.ChannelInboundAdmitParams;
+    result: Api.AgentApiOutcomeOfChannelInboundAdmitResponse;
+  };
+  /**
+   * List chat pairings
+   *
+   * Lists conversations paired to chat triggers, optionally by account or bot.
+   */
+  "channels/pairings/list": {
+    params: Api.ChannelPairingListParams;
+    result: Api.AgentApiOutcomeOfChannelPairingListResponse;
+  };
+  /**
+   * Unpair a conversation
+   *
+   * Removes one pairing; the conversation must present the pairing code again to reconnect.
+   */
+  "channels/pairings/delete": {
+    params: Api.ChannelPairingDeleteParams;
+    result: Api.AgentApiOutcomeOfChannelPairingDeleteResponse;
+  };
+  /**
+   * Read a conversation snapshot
+   *
+   * Queries the conversation workflow's live state for one chat, for debugging; absent when no workflow exists yet.
+   */
+  "channels/conversations/read": {
+    params: Api.ChannelConversationReadParams;
+    result: Api.AgentApiOutcomeOfChannelConversationReadResponse;
+  };
+  /**
    * Create a universe
    *
    * Creates the deployment tenant boundary for an explicit UUID. The operation is idempotent and reports whether a new universe was created.
@@ -1417,6 +1813,15 @@ export interface MethodMap {
   "operator/environments/adopt": {
     params: Api.OperatorEnvironmentAdoptParams;
     result: Api.AgentApiOutcomeOfOperatorEnvironmentAdoptResponse;
+  };
+  /**
+   * List channel accounts across universes
+   *
+   * The connector host's discovery call: every enabled provider account of the deployment with its universe id and credential grant reference. Re-poll to pick up accounts created or disabled since.
+   */
+  "operator/channels/accounts/list": {
+    params: Api.OperatorChannelAccountListParams;
+    result: Api.AgentApiOutcomeOfOperatorChannelAccountListResponse;
   };
 }
 
@@ -2061,6 +2466,214 @@ export const rpc = {
     return client.call("auth/github/installations/grant", params);
   },
   /**
+   * Create a bot
+   *
+   * Creates the bot record, optionally with its triggers, and starts its controller. Fails if the bot id exists; a trigger failure rolls the bot back.
+   */
+  botsCreate(client: RpcCaller, params: Api.BotCreateParams): Promise<Api.AgentApiOutcomeOfBotCreateResponse> {
+    return client.call("bots/create", params);
+  },
+  /**
+   * Create or replace a bot document
+   *
+   * Replaces the mutable configuration whole and signals the controller, which applies it at its next idle boundary. Pass expectedRevision when replacing; a closed bot accepts label-only edits.
+   */
+  botsPut(client: RpcCaller, params: Api.BotPutParams): Promise<Api.AgentApiOutcomeOfBotPutResponse> {
+    return client.call("bots/put", params);
+  },
+  /**
+   * Read a bot
+   *
+   * Returns the bot record, its current revision, and lifecycle columns.
+   */
+  botsRead(client: RpcCaller, params: Api.BotReadParams): Promise<Api.AgentApiOutcomeOfBotReadResponse> {
+    return client.call("bots/read", params);
+  },
+  /**
+   * List bots
+   *
+   * Returns the roster: every bot with its trigger count, pending event count, and latest event.
+   */
+  botsList(client: RpcCaller, params: Api.BotListParams): Promise<Api.AgentApiOutcomeOfBotListResponse> {
+    return client.call("bots/list", params);
+  },
+  /**
+   * Close a bot
+   *
+   * Terminal and idempotent: disables every trigger, drops schedules, and tells the controller to archive pending events and force-close its sessions. Returns once signalled; follow bots/state/read for closing to closed.
+   */
+  botsClose(client: RpcCaller, params: Api.BotCloseParams): Promise<Api.AgentApiOutcomeOfBotCloseResponse> {
+    return client.call("bots/close", params);
+  },
+  /**
+   * Delete a bot
+   *
+   * Closes the bot if needed, waits for its controller to complete, deletes the sessions it closed, and removes the record so the bot id is free again.
+   */
+  botsDelete(client: RpcCaller, params: Api.BotDeleteParams): Promise<Api.AgentApiOutcomeOfBotDeleteResponse> {
+    return client.call("bots/delete", params);
+  },
+  /**
+   * Read bot controller state
+   *
+   * Queries the controller workflow for its live snapshot (sessions, buffers, active and recent deliveries, budget) and lists sub-agent descendants. The controller is absent until the bot's first event.
+   */
+  botsStateRead(client: RpcCaller, params: Api.BotStateReadParams): Promise<Api.AgentApiOutcomeOfBotStateReadResponse> {
+    return client.call("bots/state/read", params);
+  },
+  /**
+   * Rotate a bot session
+   *
+   * Asks the controller to close one of the bot's sessions at its next idle boundary and continue on a fresh generation; queued deliveries follow.
+   */
+  botsSessionsRotate(client: RpcCaller, params: Api.BotSessionRotateParams): Promise<Api.AgentApiOutcomeOfBotSessionRotateResponse> {
+    return client.call("bots/sessions/rotate", params);
+  },
+  /**
+   * Create or replace a trigger
+   *
+   * Validates the trigger document (CEL parses, grants exist, one inbox per bot, chat routes per conversation), reconciles its Temporal Schedule, and stores it. A poll spec edit resets the cursor; a webhook keeps its URL token.
+   */
+  botsTriggersPut(client: RpcCaller, params: Api.BotTriggerPutParams): Promise<Api.AgentApiOutcomeOfBotTriggerPutResponse> {
+    return client.call("bots/triggers/put", params);
+  },
+  /**
+   * Read a trigger
+   *
+   * Returns one trigger with its incidents and cursor; the ingest path and pairing code are shown only to managing principals.
+   */
+  botsTriggersRead(client: RpcCaller, params: Api.BotTriggerReadParams): Promise<Api.AgentApiOutcomeOfBotTriggerReadResponse> {
+    return client.call("bots/triggers/read", params);
+  },
+  /**
+   * List a bot's triggers
+   *
+   * Returns every trigger of the bot ordered by id, secrets redacted for non-managing principals.
+   */
+  botsTriggersList(client: RpcCaller, params: Api.BotTriggerListParams): Promise<Api.AgentApiOutcomeOfBotTriggerListResponse> {
+    return client.call("bots/triggers/list", params);
+  },
+  /**
+   * Delete a trigger
+   *
+   * Drops the trigger's Temporal Schedule and pairings, then the record; stored events keep their history.
+   */
+  botsTriggersDelete(client: RpcCaller, params: Api.BotTriggerDeleteParams): Promise<Api.AgentApiOutcomeOfBotTriggerDeleteResponse> {
+    return client.call("bots/triggers/delete", params);
+  },
+  /**
+   * Admit an event manually
+   *
+   * Stores an operator-authored event for the bot's main session and wakes the controller. eventId is the dedupe identity; a duplicate returns the stored row.
+   */
+  botsEventsAdmit(client: RpcCaller, params: Api.BotEventAdmitParams): Promise<Api.AgentApiOutcomeOfBotEventAdmitResponse> {
+    return client.call("bots/events/admit", params);
+  },
+  /**
+   * Replay a stored event
+   *
+   * Re-admits the stored envelope as a fresh event with the original routing; the replay never coalesces.
+   */
+  botsEventsReplay(client: RpcCaller, params: Api.BotEventReplayParams): Promise<Api.AgentApiOutcomeOfBotEventReplayResponse> {
+    return client.call("bots/events/replay", params);
+  },
+  /**
+   * List a bot's events
+   *
+   * Cursor-paginated event log, newest first, with outcomes; payload documents stay in the CAS.
+   */
+  botsEventsList(client: RpcCaller, params: Api.BotEventListParams): Promise<Api.AgentApiOutcomeOfBotEventListResponse> {
+    return client.call("bots/events/list", params);
+  },
+  /**
+   * Read an event by number
+   *
+   * Returns the event row and its full stored envelope document.
+   */
+  botsEventsRead(client: RpcCaller, params: Api.BotEventReadParams): Promise<Api.AgentApiOutcomeOfBotEventReadResponse> {
+    return client.call("bots/events/read", params);
+  },
+  /**
+   * Test a CEL filter
+   *
+   * Evaluates a filter against one payload or a sample of recent stored events, reporting matches and evaluation errors without changing anything.
+   */
+  botsFiltersTest(client: RpcCaller, params: Api.BotFilterTestParams): Promise<Api.AgentApiOutcomeOfBotFilterTestResponse> {
+    return client.call("bots/filters/test", params);
+  },
+  /**
+   * Create a channel account
+   *
+   * Registers a provider account (Telegram, WhatsApp) for this universe. The credential is a retrievable grant reference; no token is accepted here.
+   */
+  channelsAccountsCreate(client: RpcCaller, params: Api.ChannelAccountCreateParams): Promise<Api.AgentApiOutcomeOfChannelAccountCreateResponse> {
+    return client.call("channels/accounts/create", params);
+  },
+  /**
+   * Create or replace a channel account
+   *
+   * Replaces the account document whole; pass expectedRevision when replacing. The connector host picks the change up on its next discovery pass.
+   */
+  channelsAccountsPut(client: RpcCaller, params: Api.ChannelAccountPutParams): Promise<Api.AgentApiOutcomeOfChannelAccountPutResponse> {
+    return client.call("channels/accounts/put", params);
+  },
+  /**
+   * Read a channel account
+   *
+   * Returns the account document and revision.
+   */
+  channelsAccountsRead(client: RpcCaller, params: Api.ChannelAccountReadParams): Promise<Api.AgentApiOutcomeOfChannelAccountReadResponse> {
+    return client.call("channels/accounts/read", params);
+  },
+  /**
+   * List channel accounts
+   *
+   * Lists this universe's provider accounts, optionally by provider.
+   */
+  channelsAccountsList(client: RpcCaller, params: Api.ChannelAccountListParams): Promise<Api.AgentApiOutcomeOfChannelAccountListResponse> {
+    return client.call("channels/accounts/list", params);
+  },
+  /**
+   * Delete a channel account
+   *
+   * Removes the account and its pairings; chat triggers that reference it stop serving conversations.
+   */
+  channelsAccountsDelete(client: RpcCaller, params: Api.ChannelAccountDeleteParams): Promise<Api.AgentApiOutcomeOfChannelAccountDeleteResponse> {
+    return client.call("channels/accounts/delete", params);
+  },
+  /**
+   * Admit a provider message
+   *
+   * Service callers only. Resolves the chat trigger for the conversation, applies pairing, and signals the conversation workflow. Returns the decision so the connector can send pairing prompts itself; acknowledge the provider only after this returns.
+   */
+  channelsInboundAdmit(client: RpcCaller, params: Api.ChannelInboundAdmitParams): Promise<Api.AgentApiOutcomeOfChannelInboundAdmitResponse> {
+    return client.call("channels/inbound/admit", params);
+  },
+  /**
+   * List chat pairings
+   *
+   * Lists conversations paired to chat triggers, optionally by account or bot.
+   */
+  channelsPairingsList(client: RpcCaller, params: Api.ChannelPairingListParams): Promise<Api.AgentApiOutcomeOfChannelPairingListResponse> {
+    return client.call("channels/pairings/list", params);
+  },
+  /**
+   * Unpair a conversation
+   *
+   * Removes one pairing; the conversation must present the pairing code again to reconnect.
+   */
+  channelsPairingsDelete(client: RpcCaller, params: Api.ChannelPairingDeleteParams): Promise<Api.AgentApiOutcomeOfChannelPairingDeleteResponse> {
+    return client.call("channels/pairings/delete", params);
+  },
+  /**
+   * Read a conversation snapshot
+   *
+   * Queries the conversation workflow's live state for one chat, for debugging; absent when no workflow exists yet.
+   */
+  channelsConversationsRead(client: RpcCaller, params: Api.ChannelConversationReadParams): Promise<Api.AgentApiOutcomeOfChannelConversationReadResponse> {
+    return client.call("channels/conversations/read", params);
+  },
+  /**
    * Create a universe
    *
    * Creates the deployment tenant boundary for an explicit UUID. The operation is idempotent and reports whether a new universe was created.
@@ -2171,5 +2784,13 @@ export const rpc = {
    */
   operatorEnvironmentsAdopt(client: RpcCaller, params: Api.OperatorEnvironmentAdoptParams): Promise<Api.AgentApiOutcomeOfOperatorEnvironmentAdoptResponse> {
     return client.call("operator/environments/adopt", params);
+  },
+  /**
+   * List channel accounts across universes
+   *
+   * The connector host's discovery call: every enabled provider account of the deployment with its universe id and credential grant reference. Re-poll to pick up accounts created or disabled since.
+   */
+  operatorChannelsAccountsList(client: RpcCaller, params: Api.OperatorChannelAccountListParams): Promise<Api.AgentApiOutcomeOfOperatorChannelAccountListResponse> {
+    return client.call("operator/channels/accounts/list", params);
   },
 } as const;

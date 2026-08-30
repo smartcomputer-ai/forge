@@ -1,19 +1,21 @@
 //! Temporal worker process support and activity implementations.
 
 mod activities;
+mod bots;
+mod channels;
 mod fake;
 mod reaper;
 mod secrets;
 mod session_tools;
-
-use std::sync::Arc;
 
 use temporalio_client::Client;
 use temporalio_common::{telemetry::TelemetryOptions, worker::WorkerTaskTypes};
 use temporalio_sdk::{Worker, WorkerOptions};
 use temporalio_sdk_core::{CoreRuntime, RuntimeOptions};
 
-use crate::{config::DeploymentStores, universe::UniverseRuntime};
+use temporal_workflow::{
+    BotControllerWorkflow, BotTriggerFireWorkflow, ChannelConversationWorkflow,
+};
 
 pub use activities::{
     ActivityState, AudioTranscodeError, AudioTranscodeOutput, AudioTranscodeRequest,
@@ -22,6 +24,8 @@ pub use activities::{
     RuntimeProjectionActivityDeps, StorageActivityDeps, ToolActivityDeps, WorkerActivities,
     default_audio_transcoder_from_env, subagent_catalog_snapshot,
 };
+pub use bots::BotWorkerActivities;
+pub use channels::ChannelWorkerActivities;
 pub use fake::{FAKE_TRANSIENT_RETRY_AFTER, FakeLlm, FakeRuntimeCounters, FakeTools};
 pub use reaper::{PromiseReaper, ReaperStats};
 pub use secrets::{BrokerSecretResolver, StoredModelProviderResolver, StoredProviderKeyResolver};
@@ -54,13 +58,6 @@ pub use temporal_workflow::{
     AwaitEnvironmentReadyActivityResult, ToolInvokeCallActivityResult,
 };
 
-#[derive(Clone, Debug)]
-pub struct WorkerServerConfig {
-    pub task_queue: String,
-    pub temporal_target: String,
-    pub namespace: String,
-}
-
 pub fn core_runtime() -> anyhow::Result<CoreRuntime> {
     CoreRuntime::new_assume_tokio(
         RuntimeOptions::builder()
@@ -70,56 +67,71 @@ pub fn core_runtime() -> anyhow::Result<CoreRuntime> {
     )
 }
 
+/// The `sessions` worker: session, environment-job, and sub-agent
+/// workflows with their activities, polling every task type.
 pub fn worker_with_activities(
     runtime: &CoreRuntime,
     client: Client,
     task_queue: String,
     activities: WorkerActivities,
 ) -> anyhow::Result<Worker> {
+    sessions_worker(
+        runtime,
+        client,
+        task_queue,
+        activities,
+        WorkerTaskTypes::all(),
+    )
+}
+
+pub fn sessions_worker(
+    runtime: &CoreRuntime,
+    client: Client,
+    task_queue: String,
+    activities: WorkerActivities,
+    task_types: WorkerTaskTypes,
+) -> anyhow::Result<Worker> {
     let worker_options = WorkerOptions::new(task_queue)
         .register_workflow::<AgentSessionWorkflow>()
         .register_workflow::<EnvironmentJobWorkflow>()
         .register_workflow::<SubagentExecutionWorkflow>()
         .register_activities(activities)
-        .task_types(WorkerTaskTypes::all())
+        .task_types(task_types)
         .build();
     Worker::new(runtime, client, worker_options).map_err(|error| anyhow::anyhow!("{error}"))
 }
 
-pub async fn run_worker(config: WorkerServerConfig) -> anyhow::Result<()> {
-    let runtime = core_runtime()?;
-    let client = connect_temporal(&config.temporal_target, &config.namespace).await?;
-    let stores = DeploymentStores::from_env()
-        .await?
-        .with_blob_cache(crate::config::blob_cache_from_env()?);
-    let reaper_stores = stores.clone();
-    // The worker serves every universe of the deployment regardless of the
-    // gateway's auth mode; per-universe state resolves lazily from the
-    // universe-composed workflow id of each activity task.
-    let universes = Arc::new(UniverseRuntime::new(
-        client.clone(),
-        config.task_queue.clone(),
-        None,
-        stores,
-    )?);
-    let activities = WorkerActivities::with_runtime(universes);
-    let mut worker = worker_with_activities(
-        &runtime,
-        client.clone(),
-        config.task_queue.clone(),
-        activities,
-    )?;
-    let reaper = PromiseReaper::new(client.clone(), reaper_stores);
-    let reaper_task = tokio::spawn(reaper.run_forever());
-    tracing::info!(
-        target: "temporal_server",
-        temporal_target = %config.temporal_target,
-        namespace = %config.namespace,
-        task_queue = %config.task_queue,
-        "temporal worker polling"
-    );
-    let result = worker.run().await;
-    reaper_task.abort();
-    result?;
-    Ok(())
+/// The `bots` worker: bot controllers and trigger fires with their
+/// activities.
+pub fn bots_worker(
+    runtime: &CoreRuntime,
+    client: Client,
+    task_queue: String,
+    activities: BotWorkerActivities,
+    task_types: WorkerTaskTypes,
+) -> anyhow::Result<Worker> {
+    let worker_options = WorkerOptions::new(task_queue)
+        .register_workflow::<BotControllerWorkflow>()
+        .register_workflow::<BotTriggerFireWorkflow>()
+        .register_activities(activities)
+        .task_types(task_types)
+        .build();
+    Worker::new(runtime, client, worker_options).map_err(|error| anyhow::anyhow!("{error}"))
+}
+
+/// The `channels` worker: conversation workflows with their core-side
+/// activities.
+pub fn channels_worker(
+    runtime: &CoreRuntime,
+    client: Client,
+    task_queue: String,
+    activities: ChannelWorkerActivities,
+    task_types: WorkerTaskTypes,
+) -> anyhow::Result<Worker> {
+    let worker_options = WorkerOptions::new(task_queue)
+        .register_workflow::<ChannelConversationWorkflow>()
+        .register_activities(activities)
+        .task_types(task_types)
+        .build();
+    Worker::new(runtime, client, worker_options).map_err(|error| anyhow::anyhow!("{error}"))
 }

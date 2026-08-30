@@ -3,12 +3,15 @@
 //! This crate owns the process-facing Temporal gateway and worker wiring. The
 //! deterministic workflow contract remains in `temporal-workflow`.
 
+pub mod bots;
+pub mod channels;
 pub mod config;
 pub(crate) mod credential_injection;
 pub mod environment;
 pub mod environment_gateway;
 pub(crate) mod environment_resolver;
 pub mod gateway;
+pub mod roles;
 pub mod subagents;
 pub(crate) mod transcript;
 pub mod universe;

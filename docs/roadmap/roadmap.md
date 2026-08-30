@@ -2,7 +2,8 @@
 
 ## Work
 - [ ] [P142](p142-bots-and-channels-core-in-rust.md) — bots and Channels
-  core in the Rust runtime (proposed 2026-08-30): `crates/bots` and
+  core in the Rust runtime (slices 1–3 implemented 2026-08-30, live-tested
+  incl. a real-model resolve; slice 4 Platform cut-over open): `crates/bots` and
   `crates/channels` domain crates, `bots` / `bot_triggers` / `bot_events`
   / `channel_accounts` / `channel_pairings` in `store-pg`, `bots/*` and
   `channels/*` folded into the core API plus a gateway hook route,

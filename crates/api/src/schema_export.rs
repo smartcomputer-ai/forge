@@ -176,13 +176,13 @@ mod tests {
         methods.sort_unstable();
         methods.dedup();
         assert_eq!(methods.len(), total, "duplicate method in manifest");
-        assert_eq!(total, 93);
+        assert_eq!(total, 120);
         assert_eq!(
             manifest
                 .iter()
                 .filter(|spec| spec.scope == crate::MethodScope::Operator)
                 .count(),
-            14
+            15
         );
     }
 
@@ -248,8 +248,10 @@ mod tests {
 
     /// The `session/` prefix is the wire marker for session-scoped methods:
     /// everything under it addresses one session through a `sessionId` param,
-    /// and nothing outside it may take one. `session/list` queries the
-    /// collection, so it is the single exemption.
+    /// and nothing outside it may take one. Two exemptions: `session/list`
+    /// queries the collection, and `bots/sessions/rotate` addresses a bot
+    /// (the session's lifecycle controller), naming which of its sessions
+    /// to rotate.
     #[test]
     fn session_prefix_matches_session_id_in_params() {
         let exported = export_schemas();
@@ -268,8 +270,9 @@ mod tests {
                 None => &entry["params"]["schema"],
             };
             let has_session_id = !params["properties"]["sessionId"].is_null();
-            let session_scoped =
-                method.starts_with("session/") && method != crate::METHOD_SESSION_LIST;
+            let session_scoped = (method.starts_with("session/")
+                && method != crate::METHOD_SESSION_LIST)
+                || method == crate::METHOD_BOTS_SESSIONS_ROTATE;
             assert_eq!(
                 has_session_id, session_scoped,
                 "{method}: sessionId param presence must match its session/ prefix"

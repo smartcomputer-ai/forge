@@ -414,4 +414,137 @@ pub trait AgentApiService: Send + Sync {
         &self,
         params: AuthGitHubInstallationGrantParams,
     ) -> Result<AgentApiOutcome<AuthGitHubInstallationGrantResponse>, AgentApiError>;
+    // ── Bots ────────────────────────────────────────────────────────────────
+
+    async fn create_bot(
+        &self,
+        params: BotCreateParams,
+    ) -> Result<AgentApiOutcome<BotCreateResponse>, AgentApiError>;
+
+    async fn put_bot(
+        &self,
+        params: BotPutParams,
+    ) -> Result<AgentApiOutcome<BotPutResponse>, AgentApiError>;
+
+    async fn read_bot(
+        &self,
+        params: BotReadParams,
+    ) -> Result<AgentApiOutcome<BotReadResponse>, AgentApiError>;
+
+    async fn list_bots(
+        &self,
+        params: BotListParams,
+    ) -> Result<AgentApiOutcome<BotListResponse>, AgentApiError>;
+
+    async fn close_bot(
+        &self,
+        params: BotCloseParams,
+    ) -> Result<AgentApiOutcome<BotCloseResponse>, AgentApiError>;
+
+    async fn delete_bot(
+        &self,
+        params: BotDeleteParams,
+    ) -> Result<AgentApiOutcome<BotDeleteResponse>, AgentApiError>;
+
+    async fn read_bot_state(
+        &self,
+        params: BotStateReadParams,
+    ) -> Result<AgentApiOutcome<BotStateReadResponse>, AgentApiError>;
+
+    async fn rotate_bot_session(
+        &self,
+        params: BotSessionRotateParams,
+    ) -> Result<AgentApiOutcome<BotSessionRotateResponse>, AgentApiError>;
+
+    async fn put_bot_trigger(
+        &self,
+        params: BotTriggerPutParams,
+    ) -> Result<AgentApiOutcome<BotTriggerPutResponse>, AgentApiError>;
+
+    async fn read_bot_trigger(
+        &self,
+        params: BotTriggerReadParams,
+    ) -> Result<AgentApiOutcome<BotTriggerReadResponse>, AgentApiError>;
+
+    async fn list_bot_triggers(
+        &self,
+        params: BotTriggerListParams,
+    ) -> Result<AgentApiOutcome<BotTriggerListResponse>, AgentApiError>;
+
+    async fn delete_bot_trigger(
+        &self,
+        params: BotTriggerDeleteParams,
+    ) -> Result<AgentApiOutcome<BotTriggerDeleteResponse>, AgentApiError>;
+
+    async fn admit_bot_event(
+        &self,
+        params: BotEventAdmitParams,
+    ) -> Result<AgentApiOutcome<BotEventAdmitResponse>, AgentApiError>;
+
+    async fn replay_bot_event(
+        &self,
+        params: BotEventReplayParams,
+    ) -> Result<AgentApiOutcome<BotEventReplayResponse>, AgentApiError>;
+
+    async fn list_bot_events(
+        &self,
+        params: BotEventListParams,
+    ) -> Result<AgentApiOutcome<BotEventListResponse>, AgentApiError>;
+
+    async fn read_bot_event(
+        &self,
+        params: BotEventReadParams,
+    ) -> Result<AgentApiOutcome<BotEventReadResponse>, AgentApiError>;
+
+    async fn test_bot_filter(
+        &self,
+        params: BotFilterTestParams,
+    ) -> Result<AgentApiOutcome<BotFilterTestResponse>, AgentApiError>;
+
+    // ── Channels ────────────────────────────────────────────────────────────
+
+    async fn create_channel_account(
+        &self,
+        params: ChannelAccountCreateParams,
+    ) -> Result<AgentApiOutcome<ChannelAccountCreateResponse>, AgentApiError>;
+
+    async fn put_channel_account(
+        &self,
+        params: ChannelAccountPutParams,
+    ) -> Result<AgentApiOutcome<ChannelAccountPutResponse>, AgentApiError>;
+
+    async fn read_channel_account(
+        &self,
+        params: ChannelAccountReadParams,
+    ) -> Result<AgentApiOutcome<ChannelAccountReadResponse>, AgentApiError>;
+
+    async fn list_channel_accounts(
+        &self,
+        params: ChannelAccountListParams,
+    ) -> Result<AgentApiOutcome<ChannelAccountListResponse>, AgentApiError>;
+
+    async fn delete_channel_account(
+        &self,
+        params: ChannelAccountDeleteParams,
+    ) -> Result<AgentApiOutcome<ChannelAccountDeleteResponse>, AgentApiError>;
+
+    async fn admit_channel_inbound(
+        &self,
+        params: ChannelInboundAdmitParams,
+    ) -> Result<AgentApiOutcome<ChannelInboundAdmitResponse>, AgentApiError>;
+
+    async fn list_channel_pairings(
+        &self,
+        params: ChannelPairingListParams,
+    ) -> Result<AgentApiOutcome<ChannelPairingListResponse>, AgentApiError>;
+
+    async fn delete_channel_pairing(
+        &self,
+        params: ChannelPairingDeleteParams,
+    ) -> Result<AgentApiOutcome<ChannelPairingDeleteResponse>, AgentApiError>;
+
+    async fn read_channel_conversation(
+        &self,
+        params: ChannelConversationReadParams,
+    ) -> Result<AgentApiOutcome<ChannelConversationReadResponse>, AgentApiError>;
 }

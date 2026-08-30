@@ -24,9 +24,14 @@ const LIGHTSPEED_TABLES: &[&str] = &[
     "auth_grants",
     "auth_providers",
     "auth_secrets",
+    "bot_events",
+    "bot_triggers",
+    "bots",
     "cas_blob_edges",
     "cas_blobs",
     "cas_session_roots",
+    "channel_accounts",
+    "channel_pairings",
     "environment_credentials",
     "environment_incarnations",
     "environment_provider_bindings",
@@ -83,9 +88,19 @@ pub const MIGRATIONS: &[EmbeddedMigration] = &[
         name: "api_keys",
         sql: include_str!("../migrations/007_api_keys.sql"),
     },
+    EmbeddedMigration {
+        version: 8,
+        name: "bots",
+        sql: include_str!("../migrations/008_bots.sql"),
+    },
+    EmbeddedMigration {
+        version: 9,
+        name: "channels",
+        sql: include_str!("../migrations/009_channels.sql"),
+    },
 ];
 
-pub const REQUIRED_SCHEMA_REVISION: i64 = 7;
+pub const REQUIRED_SCHEMA_REVISION: i64 = 9;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SchemaStatus {

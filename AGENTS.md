@@ -20,10 +20,11 @@ Use these files as the index:
 - `Cargo.toml` — workspace membership.
 - `clients/typescript/` — generated public TypeScript API client.
 - `platform/` — first-party TypeScript management server, web UI, operator CLI,
-  shared inputs, database schema, Channels workers, Bots workers, and
-  Configurator MCP. `platform/workers/` is their shared runtime role dispatcher,
-  and `platform/web/src/demo/` is the in-browser demo backend
-  (the only mock of the platform API; see `platform/README.md`).
+  shared inputs, database schema, the connector host (`platform/connectors/`:
+  the Telegram and WhatsApp bridges over the core API), and Configurator MCP.
+  `platform/web/src/demo/` is the in-browser demo backend (the only mock of
+  the platform API; see `platform/README.md`). Bots and Channels core live in
+  the Rust runtime (P142).
 - `crates/api/contract/` — committed generated API schema, method manifest,
   OpenRPC, and human reference.
 - `dev.sh` and `scripts/dev/` — first-run bootstrap, unified profile-aware
@@ -39,6 +40,8 @@ cargo test
 cargo test -p engine
 cargo test -p api
 cargo test -p api-projection
+cargo test -p bots
+cargo test -p channels
 cargo test -p temporal-workflow
 cargo test -p temporal-server
 cargo test -p test-support
@@ -56,8 +59,7 @@ cargo test -p llm-clients test_name
 cargo test -p llm-clients -- --nocapture
 npm install
 npm run check
-npm run test:integration:channels
-npm run test:integration:bots
+npm run test --workspace @lightspeed/connectors
 LIGHTSPEED_PLATFORM_MIGRATION_TEST_URL=postgres://... npm run test:migrations
 ```
 
@@ -85,6 +87,8 @@ tests use the local stack configuration:
 source scripts/dev/env.sh
 cargo test -p temporal-server --test temporal_live -- --ignored --test-threads=1
 cargo test -p temporal-server --test environment_provider_live -- --ignored --test-threads=1
+cargo test -p temporal-server --test bots_live -- --ignored --test-threads=1
+cargo test -p temporal-server --test channels_live -- --ignored --test-threads=1
 cargo test -p temporal-server --test preprocess_live -- --ignored --test-threads=1
 cargo test -p temporal-server --test environment_provider_live temporal_live_environment_daemon_jobs_round_trip -- --ignored --test-threads=1 --nocapture
 ```
@@ -134,9 +138,9 @@ cargo run -p cli -- chat --api-url http://127.0.0.1:18080/rpc --session session_
 ```
 
 Unified development profiles run through the root `dev.sh` launcher. `full`
-is the default; `npm run dev` delegates to the same launcher, and connector
-processes remain opt-in through
-`LIGHTSPEED_CHANNELS_CONNECTORS`:
+is the default; `npm run dev` delegates to the same launcher, and the
+connector host (one process for every discovered Telegram/WhatsApp account)
+remains opt-in through `LIGHTSPEED_CHANNELS_CONNECTORS`:
 
 ```bash
 ./dev.sh
@@ -211,6 +215,15 @@ Release construction, snapshots, and tagged publication are documented in
 - `crates/profiles/` — agent profile registry validation helpers,
   errors, and the substrate-neutral `ProfileStore` trait over `api` profile
   DTOs.
+- `crates/bots/` — bots domain crate (P142): bot, trigger, and event records
+  with their store traits, validation, CEL filters and routing, webhook
+  verification and presets, event rendering, poll cursors, the `bot_*` tool
+  declarations, model-facing views, and every bot identity derivation. No
+  I/O.
+- `crates/channels/` — channels domain crate (P142): provider accounts and
+  pairings, the normalized inbound envelope, activation/access/control
+  policy, delivery commands and chunked plans, media validation,
+  conversation state, and the `message_*` tool declarations. No I/O.
 - `crates/auth/` — generic auth grant/secret/provider records,
   OAuth client and authorization-flow records, PKCE helpers, the MCP OAuth
   and GitHub App drivers, store traits, typed broker errors, the runtime
@@ -229,6 +242,25 @@ Release construction, snapshots, and tagged publication are documented in
 - `crates/cli/` — command-line chat client for the API gateway.
 
 ## Architecture Rules
+
+- Bots and Channels core are core (P142). Records, admission, the
+  controller, the conversation workflow, tool execution, Temporal
+  Schedules, and every table live in `bots`, `channels`, `temporal-workflow`,
+  `temporal-server`, and `store-pg`; the API is `bots/*` and `channels/*`
+  on the one gateway plus the public `POST /hooks/bots/{universe}/{bot}/{trigger}/{token}`
+  route. Connectors are TypeScript bridges that speak `channels/inbound/admit`
+  inbound and serve three activities on their per-account task queue
+  outbound; they read no database and hold no bot or trigger knowledge.
+- One binary, roles per subsystem: `lightspeed-server --roles gateway,sessions,bots,channels`
+  (all by default), each worker role its own task queue
+  (`LIGHTSPEED_TASK_QUEUE`, `LIGHTSPEED_TASK_QUEUE_BOTS`, `LIGHTSPEED_TASK_QUEUE_CHANNELS`)
+  with its workflows and activities end to end, and `--task-types workflows|activities`
+  as the further split. Cross-subsystem traffic is signals and queue-carrying
+  workflow starts, never an activity on another role's queue. Do not add
+  bot- or channel-specific binaries or a second gateway.
+- Session ids starting with `bot-`, `botfire-`, `botsched-`, `chat-`, or
+  `envjob-` are reserved for system workflow ids and rejected by
+  `session/start`.
 
 - Keep `engine` deterministic. It should not execute provider calls, shell
   commands, filesystem operations, network I/O, or workflow activities.

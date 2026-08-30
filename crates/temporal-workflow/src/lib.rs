@@ -67,4 +67,9 @@ pub use types::{
     compose_environment_job_workflow_id, compose_workflow_id, split_workflow_id,
     workflow_tool_recipe_fingerprint,
 };
-pub use workflows::{AgentSessionWorkflow, EnvironmentJobWorkflow, SubagentExecutionWorkflow};
+pub use workflows::bots;
+pub use workflows::channels;
+pub use workflows::{
+    AgentSessionWorkflow, BotControllerWorkflow, BotTriggerFireWorkflow,
+    ChannelConversationWorkflow, EnvironmentJobWorkflow, SubagentExecutionWorkflow,
+};

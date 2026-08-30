@@ -341,6 +341,32 @@ impl OperatorApiService for GatewayOperatorApi {
         }))
     }
 
+    /// The connector host's discovery call: every enabled provider account
+    /// of the deployment with its universe id.
+    async fn list_deployment_channel_accounts(
+        &self,
+        params: api::OperatorChannelAccountListParams,
+    ) -> Result<AgentApiOutcome<api::OperatorChannelAccountListResponse>, AgentApiError> {
+        let accounts = store_pg::list_channel_accounts_all(
+            self.pool(),
+            params.provider,
+            params.include_disabled,
+        )
+        .await
+        .map_err(map_store_error)?;
+        Ok(AgentApiOutcome::new(
+            api::OperatorChannelAccountListResponse {
+                accounts: accounts
+                    .into_iter()
+                    .map(|(universe_id, record)| api::OperatorChannelAccountView {
+                        universe_id: universe_id.to_string(),
+                        account: record.view(),
+                    })
+                    .collect(),
+            },
+        ))
+    }
+
     async fn read_universe(
         &self,
         params: OperatorUniverseReadParams,

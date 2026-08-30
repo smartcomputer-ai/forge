@@ -1,6 +1,6 @@
 # Lightspeed platform
 
-The first-party Lightspeed management plane, web UI, channel workers, and
+The first-party Lightspeed management plane, web UI, connector host, and
 supporting TypeScript packages. The repository root is the npm workspace root;
 run Node commands from there.
 
@@ -13,9 +13,13 @@ run Node commands from there.
 - `shared/` — Zod input schemas and deterministic helpers shared by the server,
   web UI, and CLI.
 - `db/` — Drizzle schemas, migrations, and the platform database adapter.
-- `bots/` — durable bot controllers, activities, triggers, and federation.
-- `channels/` — Temporal-managed Telegram and optional WhatsApp channel roles.
-- `workers/` — the shared Channels/Bots/connector runtime role dispatcher.
+- `connectors/` — the connector host: one process serving every enabled
+  Telegram and WhatsApp account across universes, discovered through the core
+  API, with grant-leased provider tokens and one Temporal activity worker per
+  account queue. It replaces the former `bots/`, `channels/`, and `workers/`
+  packages; Bots and Channels core now live in the Rust runtime.
+- `bots/` — legacy bot helpers still imported by `server/` until the Platform
+  cut-over (P142 slice 4); nothing starts its workers any more.
 - `configurator-mcp/` — generated Streamable HTTP MCP facade over the
   universe-scoped Lightspeed API.
 - `scripts/` — product-identity check and the generated profile configuration
@@ -31,7 +35,7 @@ The repository-level Docker Compose development environment lives under
 
 The authoritative configuration reference is
 [`docs/variables.md`](../docs/variables.md), with separate sections for the
-Platform server, Platform workers, Configurator MCP, and development-only
+Platform server, connector host, Configurator MCP, and development-only
 settings.
 
 ## Development
@@ -104,20 +108,19 @@ Imported pre-release aliases were removed as part of the greenfield
 product-identity reset. Platform deployments must use the
 `LIGHTSPEED_PLATFORM_*` names above.
 
-Live database or Temporal integration tests require explicit opt-in variables
-and are not part of the ordinary unit-test run. Never use production connector
-credentials for local Telegram or WhatsApp workers.
+Live database tests require explicit opt-in variables and are not part of the
+ordinary unit-test run. Never point a local connector host at production
+channel accounts.
 
-CI runs those integration boundaries explicitly. To reproduce them:
+CI runs the migration boundary explicitly. To reproduce it:
 
 ```bash
 LIGHTSPEED_PLATFORM_MIGRATION_TEST_URL=postgres://... npm run test:migrations
-npm run test:integration:channels
 ```
 
-Release construction stages one platform runtime and one Platform workers
-runtime. The Platform workers image includes Channels, Bots, and every
-connector dependency. It starts a granular role, the `channels` or `bots`
-composite, or `all`; connectors remain opt-in through
-`LIGHTSPEED_CHANNELS_CONNECTORS`. The release manifest records one digest for
-each image.
+Release construction stages one platform runtime and one connector-host
+runtime (still published as the `platform-workers` image so image references
+and manifest keys stay stable). The connector host serves the providers named
+by `LIGHTSPEED_CONNECTOR_PROVIDERS` for every account the core reports; see
+`connectors/README.md`. The release manifest records one digest for each
+image.

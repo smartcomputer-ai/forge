@@ -2,6 +2,10 @@
 
 **Status**
 
+- **Slices 1–3 implemented 2026-08-30** (uncommitted on `p142-rust-bots`);
+  slice 4 (Platform cut-over: routes to passthroughs, web/demo on the
+  generated types, deleting `platform/db`'s bot/channel schemas) is open.
+  Implementation log at the end of this document.
 - Proposed 2026-08-30 from a design conversation with Lukas, after a
   survey of `platform/bots`, `platform/channels`, `platform/workers`, the
   Platform server/db/web glue, and the Rust runtime crates.
@@ -169,12 +173,12 @@ traits, an in-memory store for tests — with no I/O:
   reconciler, tool executor, session ensure/rotate), `worker/activities/
   {bots,channels}.rs`, `gateway/service/{bots_api,channels_api}.rs`,
   `gateway/hooks.rs`, and the `--task-types` role knob (§6).
-- `store-pg`: `migrations/008_bots.sql`, `src/bots.rs`, `src/channels.rs`.
+- `store-pg`: `migrations/008_bots.sql`, `migrations/009_channels.sql`, `src/bots.rs`, `src/channels.rs`.
 
 ### 2. Tables
 
-One migration, `008_bots.sql`, in the core schema (`REQUIRED_SCHEMA_REVISION`
-→ 8), following `006_agent_profiles.sql` conventions: composite primary
+Two migrations, `008_bots.sql` and `009_channels.sql`, in the core schema (`REQUIRED_SCHEMA_REVISION`
+→ 9), following `006_agent_profiles.sql` conventions: composite primary
 keys on `(universe_id, …)`, `REFERENCES universes(universe_id) ON DELETE
 CASCADE`, `*_ms bigint` timestamps, `document_json jsonb` for the sparse
 configuration document, `COMMENT ON` for every table and column.
@@ -567,6 +571,21 @@ and core-Channels variable groups in `docs/variables.md`.
    porting the two conversation scenarios with a fake connector worker;
    `platform/connectors` rewrite of the two workers onto the API +
    activity-worker seam, grant-leased tokens.
+   *Connector side done (2026-08-30):* `platform/connectors` is the
+   multi-account host of §7 — discovery through
+   `operator/channels/accounts/list`, per-account runners with
+   grant-leased Telegram tokens and per-account WhatsApp session
+   directories, `channels/inbound/admit` with the decision → reply
+   mapping, one activity worker per `connectorTaskQueue` (derivation
+   exported from `@lightspeed/agent-client/workflow` and asserted
+   against the contract vector), one health/metrics listener.
+   `platform/channels` and `platform/workers` are deleted; `dev.sh
+   full` starts one `connectors` process behind
+   `LIGHTSPEED_CHANNELS_CONNECTORS`. `platform/bots` survives only
+   because `platform/server` still imports it (slice 4). The WhatsApp
+   group-join pairing announcement was dropped: the core has no
+   "is pairing required" query, and the first message in the group
+   yields `pairing_required` anyway.
 4. **Platform cut-over** — routes to passthroughs, web and demo stubs on
    the generated types, delete `platform/bots` and the Channels core,
    regenerate the Platform db baseline, `platform/workers` to connector
@@ -625,3 +644,62 @@ and core-Channels variable groups in `docs/variables.md`.
   bots or channels.
 - Any compatibility path for existing Platform rows, workflow histories,
   Schedules, or connector configuration.
+
+## Implementation log
+
+2026-08-30, slices 1–3 in one pass:
+
+- **Foundations.** `crates/api/src/{bots,channels}.rs`: 26 universe methods
+  (`bots/*` ×17, `channels/*` ×9) plus `operator/channels/accounts/list`
+  (120 methods, 15 operator); `bots/sessions/rotate` is the one non-`session/`
+  method carrying a `sessionId` (it addresses the bot). `crates/bots`
+  (records, store traits, in-memory store, validation with save-time CEL and
+  cron parsing, filter/route, webhook verification + GitHub projection,
+  rendering, poll cursors, tool declarations, views, identities; 125 unit
+  tests) and `crates/channels` (accounts, pairings, inbound, policy,
+  delivery plans, media, conversation state, `message_*` declarations; 55
+  tests). `store-pg` migrations `008_bots.sql` (`bots`, `bot_triggers`,
+  `bot_events`) and `009_channels.sql` (`channel_accounts`,
+  `channel_pairings`) with the store implementations and four live pg
+  tests. Contract artifacts and the
+  TypeScript client regenerated; the workflow contract now exports
+  `ConversationStart`, the connector activity payloads, the connector queue
+  derivation, and channel vectors.
+- **Runtime roles.** `lightspeed-server [--roles gateway,sessions,bots,channels] [--task-types all|workflows|activities]`
+  replaces the `gateway`/`worker`/`both` subcommands; per-role queues
+  `LIGHTSPEED_TASK_QUEUE` (`lightspeed-sessions`), `LIGHTSPEED_TASK_QUEUE_BOTS`,
+  `LIGHTSPEED_TASK_QUEUE_CHANNELS`; the bot schedule reconciler runs beside
+  the environment reconciler and power reaper.
+- **Bots runtime.** `BotControllerWorkflow` (lanes as boxed futures polled
+  under the loop, no custom wakers; 32 unit tests) and one
+  `BotTriggerFireWorkflow`; `temporal-server/src/bots/`: store-then-wake
+  admission with row compensation, Temporal Schedules through the raw
+  workflow service (the typed client cannot carry workflow input), the
+  controller's session activities, the pushed `bot_*` executor, receipts and
+  the directory, schedule/poll fires (HTTP with in-process grant leases,
+  exec through environment jobs), the public hook route
+  `POST /hooks/bots/{universe}/{bot}/{trigger}/{token}`, `profiles/put`
+  signalling open bots, and reserved session-id prefixes.
+- **Channels core.** `ChannelConversationWorkflow` (12 unit tests),
+  `channels/inbound/admit` control plane (candidates by priority, open /
+  paired / code / prompt decisions, signal-with-start), the core-side
+  activities, and the connector seam: three activities on
+  `lightspeed-connector-{provider}-{digest}` served by the TypeScript
+  connector host in `platform/connectors`.
+- **Live proof** (`cargo test -p temporal-server --test bots_live|channels_live -- --ignored --test-threads=1`):
+  manual event → run → outcome, duplicate admission keeps `#N`; webhook
+  trigger with filter and coalescing into one batch delivery, filtered and
+  probed requests refused; daily budget parking; Temporal Schedule create /
+  manual fire / pause on bot disable / delete with the trigger; close
+  (archive, force-close, recorded sessions, refused events) and delete; a
+  real OpenAI model resolving a delivery `handled`; a chat message admitted
+  through `channels/inbound/admit` reaching the bot's routed session and its
+  reply going out through the connector queue with the `chat.sent` row
+  archived; pairing required → paired → bound → unpaired.
+- **Deviations recorded while porting:** the filter's `event.occurredAtMs`
+  is an integer; poll cursors advance only over delivered items (the TS
+  silently dropped items past the per-fire cap); `resolve_inbox` reports a
+  disabled inbox as `trigger_disabled`; the inbound dedupe key / receipt
+  token uses U+001F as separator (jsonb rejects U+0000); chat event
+  documents carry `data.conversation` / `data.message` (CEL filters written
+  against the TS layout need updating).

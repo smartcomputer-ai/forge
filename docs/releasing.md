@@ -2,7 +2,7 @@
 
 Lightspeed owns and publishes a coherent release containing the hosted runtime,
 the Incus provider, envd, the CLI, Configurator MCP, the platform server/web
-image, one Platform workers image startable in each supported role, the generated
+image, the connector-host image (published as `platform-workers`), the generated
 TypeScript client, the static in-browser demo, API contracts, checksums, an
 SPDX SBOM, and a release manifest. A consumer should pin one manifest rather
 than selecting components separately.
@@ -15,7 +15,7 @@ starting any gateway or worker process:
 ```bash
 lightspeed-server migrate
 lightspeed-server schema-version
-lightspeed-server both
+lightspeed-server
 ```
 
 The migrate command uses `LIGHTSPEED_POSTGRES_URL` (falling back to the test
@@ -87,15 +87,16 @@ builds the generated client, Configurator, and web UI, and produces `dist/`.
 The demo build is packaged as a target-independent static archive whose files
 are served under `/demo/` with an `index.html` fallback; it is not included in
 the Platform image.
-The same root lockfile deterministically stages platform and Platform workers runtime
-payloads. `make release-images` copies those prebuilt files into the `runtime`,
-Configurator, platform, and Platform workers images; it does not invoke Cargo
-or rebuild the web UI. The `platform-workers` image includes Channels, Bots,
-and all connector dependencies. It selects a granular worker or connector,
-the `channels` or `bots` composite, or `all`; connectors join `all` only when
-named by `LIGHTSPEED_CHANNELS_CONNECTORS`. Image smoke tests compare the runtime's
-`lightspeed-server` executable byte-for-byte, start the platform image against
-PostgreSQL, check its health and SPA, and validate every Platform workers role.
+The same root lockfile deterministically stages the platform and connector-host
+runtime payloads. `make release-images` copies those prebuilt files into the
+`runtime`, Configurator, platform, and `platform-workers` images; it does not
+invoke Cargo or rebuild the web UI. The `platform-workers` image is the
+connector host (`platform/connectors`) with every provider dependency; it
+keeps its name so image references and manifest keys stay stable while Bots
+and Channels core run inside the `runtime` image. Image smoke tests compare
+the runtime's `lightspeed-server` executable byte-for-byte, start the platform
+image against PostgreSQL, check its health and SPA, and load the connector
+host's configuration and task-queue derivation from the staged runtime.
 
 The Rust container is named `runtime` because it is the hosted product core,
 not merely an HTTP server. Its executable and standalone archive remain named

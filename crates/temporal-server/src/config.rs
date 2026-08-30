@@ -7,7 +7,7 @@ use store_pg::{
     BlobCache, PgStore, PgStoreConfig, PgStoreError, S3ObjectStoreConfig, SchemaStatus,
     SecretsMasterKey, build_s3_object_store,
 };
-use temporal_workflow::{DEFAULT_MODEL, DEFAULT_TASK_QUEUE};
+use temporal_workflow::{DEFAULT_MODEL, DEFAULT_TASK_QUEUE, bots::DEFAULT_BOTS_TASK_QUEUE};
 use uuid::Uuid;
 
 pub fn default_model_from_env() -> ModelSelection {
@@ -102,6 +102,60 @@ pub fn task_queue_from_env() -> anyhow::Result<String> {
         return Ok(task_queue);
     }
     Ok(DEFAULT_TASK_QUEUE.to_owned())
+}
+
+/// Default task queue of the `channels` worker role.
+pub const DEFAULT_CHANNELS_TASK_QUEUE: &str = "lightspeed-channels";
+
+/// One Temporal task queue per worker role. The gateway knows all of them
+/// because it starts sessions, wakes bot controllers, and starts
+/// conversations; a worker role serves only its own.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TaskQueues {
+    pub sessions: String,
+    pub bots: String,
+    pub channels: String,
+}
+
+impl TaskQueues {
+    pub fn defaults() -> Self {
+        Self {
+            sessions: DEFAULT_TASK_QUEUE.to_owned(),
+            bots: DEFAULT_BOTS_TASK_QUEUE.to_owned(),
+            channels: DEFAULT_CHANNELS_TASK_QUEUE.to_owned(),
+        }
+    }
+
+    /// Every queue derived from one sessions queue name — for tests that
+    /// isolate a whole deployment under a random prefix.
+    pub fn derived_from(sessions: impl Into<String>) -> Self {
+        let sessions = sessions.into();
+        Self {
+            bots: format!("{sessions}-bots"),
+            channels: format!("{sessions}-channels"),
+            sessions,
+        }
+    }
+
+    pub fn for_role(&self, role: crate::roles::Role) -> Option<&str> {
+        match role {
+            crate::roles::Role::Gateway => None,
+            crate::roles::Role::Sessions => Some(&self.sessions),
+            crate::roles::Role::Bots => Some(&self.bots),
+            crate::roles::Role::Channels => Some(&self.channels),
+        }
+    }
+}
+
+/// `LIGHTSPEED_TASK_QUEUE` (sessions), `LIGHTSPEED_TASK_QUEUE_BOTS`, and
+/// `LIGHTSPEED_TASK_QUEUE_CHANNELS`, with the deployment defaults.
+pub fn task_queues_from_env() -> anyhow::Result<TaskQueues> {
+    let defaults = TaskQueues::defaults();
+    Ok(TaskQueues {
+        sessions: task_queue_from_env()?,
+        bots: optional_env("LIGHTSPEED_TASK_QUEUE_BOTS").unwrap_or(defaults.bots),
+        channels: optional_env("LIGHTSPEED_TASK_QUEUE_CHANNELS").unwrap_or(defaults.channels),
+    })
 }
 
 /// Deployment-scoped storage handles shared by every universe: one Postgres
