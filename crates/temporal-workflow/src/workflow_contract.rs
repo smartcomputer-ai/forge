@@ -294,8 +294,8 @@ fn channel_vectors(universe: Uuid) -> Value {
             "chatId": "12345",
             "threadId": "7",
         },
-        "connectorTaskQueue": connector_task_queue(universe, api::ChannelProvider::Telegram, &account_id),
-        "conversationWorkflowId": conversation_workflow_id(universe, api::ChannelProvider::Telegram, &conversation),
+        "connectorTaskQueue": connector_task_queue(universe, &api::ChannelProvider::new("telegram"), &account_id),
+        "conversationWorkflowId": conversation_workflow_id(universe, &api::ChannelProvider::new("telegram"), &conversation),
         "conversationKey": conversation.key(),
         "pairingKey": pairing_key(&account_id, "12345"),
     })

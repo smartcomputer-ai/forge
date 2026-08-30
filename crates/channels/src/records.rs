@@ -19,8 +19,8 @@ pub struct ChannelAccountRecord {
 }
 
 impl ChannelAccountRecord {
-    pub fn provider(&self) -> ChannelProvider {
-        self.document.provider
+    pub fn provider(&self) -> &ChannelProvider {
+        &self.document.provider
     }
 
     pub fn enabled(&self) -> bool {

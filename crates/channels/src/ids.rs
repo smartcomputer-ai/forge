@@ -61,7 +61,7 @@ impl ConversationRef {
 /// Conversation workflow id: `{universe}/chat-{provider}-{digest}`.
 pub fn conversation_workflow_id(
     universe_id: Uuid,
-    provider: ChannelProvider,
+    provider: &ChannelProvider,
     conversation: &ConversationRef,
 ) -> String {
     let mut digest = conversation.digest();
@@ -74,7 +74,7 @@ pub fn conversation_workflow_id(
 /// account id.
 pub fn connector_task_queue(
     universe_id: Uuid,
-    provider: ChannelProvider,
+    provider: &ChannelProvider,
     account_id: &ChannelAccountId,
 ) -> String {
     let universe = universe_id.hyphenated().to_string();
@@ -108,14 +108,18 @@ mod tests {
     #[test]
     fn workflow_ids_hide_chat_ids_and_split() {
         let universe = Uuid::parse_str("6f3a1a52-58c1-4f0e-9c2d-1a2b3c4d5e6f").unwrap();
-        let id = conversation_workflow_id(universe, ChannelProvider::Telegram, &conversation(None));
+        let id = conversation_workflow_id(
+            universe,
+            &ChannelProvider::new("telegram"),
+            &conversation(None),
+        );
         assert!(id.starts_with("6f3a1a52-58c1-4f0e-9c2d-1a2b3c4d5e6f/chat-telegram-"));
         assert!(!id.contains("12345"));
         assert_ne!(
             id,
             conversation_workflow_id(
                 universe,
-                ChannelProvider::Telegram,
+                &ChannelProvider::new("telegram"),
                 &conversation(Some("7"))
             )
         );
@@ -128,7 +132,7 @@ mod tests {
         let universe = Uuid::nil();
         let queue = connector_task_queue(
             universe,
-            ChannelProvider::Whatsapp,
+            &ChannelProvider::new("whatsapp"),
             &ChannelAccountId::new("wa"),
         );
         assert!(queue.starts_with("lightspeed-connector-whatsapp-"));

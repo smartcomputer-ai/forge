@@ -49,7 +49,7 @@ export type ChannelDeliveryOperation =
  * This interface was referenced by `LightspeedWorkflowContract`'s JSON-Schema
  * via the `definition` "ChannelProvider".
  */
-export type ChannelProvider = "telegram" | "whatsapp";
+export type ChannelProvider = string;
 /**
  * This interface was referenced by `LightspeedWorkflowContract`'s JSON-Schema
  * via the `definition` "ChannelMediaKind".

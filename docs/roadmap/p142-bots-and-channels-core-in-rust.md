@@ -696,6 +696,23 @@ and core-Channels variable groups in `docs/variables.md`.
   through `channels/inbound/admit` reaching the bot's routed session and its
   reply going out through the connector queue with the `chat.sent` row
   archived; pairing required → paired → bound → unpaired.
+- **Schema review (2026-08-30, after the first pass).** `008_bots.sql` split
+  into bots (008) and channels (009), `REQUIRED_SCHEMA_REVISION` → 9, both
+  files regrouped (identity / operator document / runtime-owned; the event
+  log's five groups) with per-column documentation. `bot_events` lost
+  `source` (the source is the trigger or the sender bot) and `delivery_id`
+  (deliveries live in the controller's history; `run_id` is the durable
+  handle), and `reply_to_json` + `notify_json` + `tools_ref` merged into one
+  private tagged `receiver_json` (`EventReceiver`: `workflow` with receipt
+  token and receiver-bound tools, or `bot` with the asker's logical
+  session). `ChannelProvider` became an open, format-checked name — the
+  core never enumerates providers, so a new channel type is a connector
+  concern, not a core change — with provider-specific account settings in
+  an uninterpreted `settings` extension map, and
+  `channel_accounts_provider_account_unique` became deployment-wide: one
+  provider account belongs to exactly one universe, refused at create with
+  a typed error instead of failing later as two runners fighting over one
+  token.
 - **Deviations recorded while porting:** the filter's `event.occurredAtMs`
   is an integer; poll cursors advance only over delivered items (the TS
   silently dropped items past the per-fire cap); `resolve_inbox` reports a

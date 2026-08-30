@@ -400,7 +400,7 @@ mod tests {
         let input = PrepareChannelMediaInput {
             universe_id: Uuid::nil(),
             route: ChannelRoute {
-                provider: ChannelProvider::Telegram,
+                provider: ChannelProvider::new("telegram"),
                 account_id: ChannelAccountId::new("primary"),
                 chat_id: "123".to_owned(),
                 thread_id: None,

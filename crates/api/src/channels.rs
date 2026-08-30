@@ -86,35 +86,78 @@ impl JsonSchema for ChannelAccountId {
     }
 }
 
-#[derive(
-    Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
-)]
-#[serde(rename_all = "camelCase")]
-pub enum ChannelProvider {
-    Telegram,
-    Whatsapp,
-}
+/// Chat provider name: an open, authored slug (`telegram`, `whatsapp`,
+/// `slack`, …). The core never enumerates providers — it routes by this
+/// name and derives connector queues from it; everything provider-specific
+/// lives in the connector that serves the name.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ChannelProvider(String);
 
 impl ChannelProvider {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Telegram => "telegram",
-            Self::Whatsapp => "whatsapp",
-        }
+    pub fn new(value: impl Into<String>) -> Self {
+        let value = value.into();
+        Self::try_new(value).unwrap_or_else(|error| panic!("invalid ChannelProvider: {error}"))
     }
 
-    pub fn parse(value: &str) -> Option<Self> {
-        match value {
-            "telegram" => Some(Self::Telegram),
-            "whatsapp" => Some(Self::Whatsapp),
-            _ => None,
-        }
+    pub fn try_new(value: impl Into<String>) -> Result<Self, BotIdError> {
+        let value = value.into();
+        validate_bot_name("channel provider", &value)?;
+        Ok(Self(value))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for ChannelProvider {
+    type Error = BotIdError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        Self::try_new(value)
+    }
+}
+
+impl FromStr for ChannelProvider {
+    type Err = BotIdError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        Self::try_new(value)
     }
 }
 
 impl fmt::Display for ChannelProvider {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.as_str())
+        f.write_str(&self.0)
+    }
+}
+
+impl Serialize for ChannelProvider {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        serializer.serialize_str(&self.0)
+    }
+}
+
+impl<'de> Deserialize<'de> for ChannelProvider {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        Self::try_new(value).map_err(de::Error::custom)
+    }
+}
+
+impl JsonSchema for ChannelProvider {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "ChannelProvider".into()
+    }
+
+    fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        String::json_schema(generator)
     }
 }
 
@@ -126,6 +169,10 @@ pub struct ChannelAccountSettings {
     /// WhatsApp: print the pairing QR code on the connector's terminal.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub print_qr: Option<bool>,
+    /// Provider-specific settings the core does not interpret; a new
+    /// connector reads its own keys from here without a core change.
+    #[serde(flatten, default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub extra: BTreeMap<String, serde_json::Value>,
 }
 
 /// A provider account served by the connector host. Secret material stays

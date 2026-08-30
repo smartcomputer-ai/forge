@@ -191,10 +191,6 @@
       "type": "string"
     },
     "ChannelProvider": {
-      "enum": [
-        "telegram",
-        "whatsapp"
-      ],
       "type": "string"
     },
     "ChannelRoute": {

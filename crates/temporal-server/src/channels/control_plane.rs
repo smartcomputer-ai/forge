@@ -214,7 +214,7 @@ impl GatewayAgentApi {
         }
         let inbound = normalize_inbound(&params.inbound).map_err(map_channel_error)?;
         let inbound = NormalizedInbound {
-            provider: account.provider(),
+            provider: account.provider().clone(),
             account_id: account.account_id.clone(),
             inbound,
         };
@@ -295,13 +295,13 @@ impl GatewayAgentApi {
             bot_id: candidate.bot.bot_id.clone(),
             trigger_id: candidate.trigger.trigger_id.clone(),
             account_id: account_id.clone(),
-            provider: inbound.provider,
+            provider: inbound.provider.clone(),
             conversation: conversation.clone(),
             scope: inbound.scope(),
             activation,
             access: access.clone(),
             label: conversation_label(&inbound),
-            connector_task_queue: connector_task_queue(universe_id, inbound.provider, account_id),
+            connector_task_queue: connector_task_queue(universe_id, &inbound.provider, account_id),
         };
         let authorization = authorize_sender(&access, &inbound.inbound.sender_id);
         let admitted = AdmittedInbound {
@@ -457,7 +457,7 @@ mod tests {
 
     fn inbound(text: &str, direct: bool) -> NormalizedInbound {
         NormalizedInbound {
-            provider: api::ChannelProvider::Telegram,
+            provider: api::ChannelProvider::new("telegram"),
             account_id: api::ChannelAccountId::new("tg"),
             inbound: ChannelInbound {
                 message_id: "1".to_owned(),

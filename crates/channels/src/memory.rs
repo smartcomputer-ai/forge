@@ -144,7 +144,11 @@ impl ChannelAccountStore for InMemoryChannelStore {
             .read_state()?
             .accounts
             .values()
-            .filter(|record| provider.is_none_or(|provider| record.provider() == provider))
+            .filter(|record| {
+                provider
+                    .as_ref()
+                    .is_none_or(|provider| record.provider() == provider)
+            })
             .cloned()
             .collect())
     }
@@ -269,7 +273,7 @@ mod tests {
 
     fn document(provider: ChannelProvider, provider_account_id: &str) -> ChannelAccountDocument {
         ChannelAccountDocument {
-            provider,
+            provider: provider.clone(),
             provider_account_id: provider_account_id.to_owned(),
             display_name: format!("{provider} {provider_account_id}"),
             credential_grant_id: None,
@@ -298,8 +302,12 @@ mod tests {
     fn store_with(accounts: &[(&str, ChannelProvider)]) -> InMemoryChannelStore {
         let store = InMemoryChannelStore::new();
         for (name, provider) in accounts {
-            block_on(store.create_channel_account(account(name), document(*provider, name), T0))
-                .unwrap();
+            block_on(store.create_channel_account(
+                account(name),
+                document(provider.clone(), name),
+                T0,
+            ))
+            .unwrap();
         }
         store
     }
@@ -318,12 +326,12 @@ mod tests {
         let store = InMemoryChannelStore::new();
         let record = block_on(store.create_channel_account(
             account("tg-main"),
-            document(ChannelProvider::Telegram, "@triage_bot"),
+            document(ChannelProvider::new("telegram"), "@triage_bot"),
             T0,
         ))
         .unwrap();
         assert_eq!(record.revision, 1);
-        assert_eq!(record.provider(), ChannelProvider::Telegram);
+        assert_eq!(record.provider(), &ChannelProvider::new("telegram"));
         assert!(record.enabled());
         assert_eq!(record.created_at_ms, T0);
         assert_eq!(record.updated_at_ms, T0);
@@ -334,7 +342,7 @@ mod tests {
 
         let error = block_on(store.create_channel_account(
             account("tg-main"),
-            document(ChannelProvider::Whatsapp, "+15550100"),
+            document(ChannelProvider::new("whatsapp"), "+15550100"),
             T0 + 1,
         ))
         .unwrap_err();
@@ -354,8 +362,8 @@ mod tests {
 
     #[test]
     fn create_and_put_validate_the_document() {
-        let store = store_with(&[("tg-main", ChannelProvider::Telegram)]);
-        let mut invalid = document(ChannelProvider::Telegram, "@triage_bot");
+        let store = store_with(&[("tg-main", ChannelProvider::new("telegram"))]);
+        let mut invalid = document(ChannelProvider::new("telegram"), "@triage_bot");
         invalid.display_name = "   ".to_owned();
         assert!(matches!(
             block_on(store.create_channel_account(account("other"), invalid.clone(), T0))
@@ -382,7 +390,7 @@ mod tests {
         // Absent: created at revision 1, whatever the expectation.
         let created = block_on(store.put_channel_account(
             account("tg-main"),
-            document(ChannelProvider::Telegram, "@triage_bot"),
+            document(ChannelProvider::new("telegram"), "@triage_bot"),
             Some(7),
             T0,
         ))
@@ -390,7 +398,7 @@ mod tests {
         assert_eq!(created.revision, 1);
         assert_eq!(created.created_at_ms, T0);
 
-        let mut next = document(ChannelProvider::Telegram, "@triage_bot");
+        let mut next = document(ChannelProvider::new("telegram"), "@triage_bot");
         next.credential_grant_id = Some("grant-1".to_owned());
         next.settings.print_qr = Some(true);
         let replaced =
@@ -427,9 +435,9 @@ mod tests {
     #[test]
     fn list_accounts_orders_by_id_and_filters_by_provider() {
         let store = store_with(&[
-            ("wa-shop", ChannelProvider::Whatsapp),
-            ("tg-main", ChannelProvider::Telegram),
-            ("tg-alerts", ChannelProvider::Telegram),
+            ("wa-shop", ChannelProvider::new("whatsapp")),
+            ("tg-main", ChannelProvider::new("telegram")),
+            ("tg-alerts", ChannelProvider::new("telegram")),
         ]);
         let names = |provider| -> Vec<String> {
             block_on(store.list_channel_accounts(provider))
@@ -440,10 +448,13 @@ mod tests {
         };
         assert_eq!(names(None), vec!["tg-alerts", "tg-main", "wa-shop"]);
         assert_eq!(
-            names(Some(ChannelProvider::Telegram)),
+            names(Some(ChannelProvider::new("telegram"))),
             vec!["tg-alerts", "tg-main"]
         );
-        assert_eq!(names(Some(ChannelProvider::Whatsapp)), vec!["wa-shop"]);
+        assert_eq!(
+            names(Some(ChannelProvider::new("whatsapp"))),
+            vec!["wa-shop"]
+        );
         assert!(
             block_on(InMemoryChannelStore::new().list_channel_accounts(None))
                 .unwrap()
@@ -454,8 +465,8 @@ mod tests {
     #[test]
     fn delete_account_removes_its_pairings_only() {
         let store = store_with(&[
-            ("tg-main", ChannelProvider::Telegram),
-            ("wa-shop", ChannelProvider::Whatsapp),
+            ("tg-main", ChannelProvider::new("telegram")),
+            ("wa-shop", ChannelProvider::new("whatsapp")),
         ]);
         block_on(store.upsert_channel_pairing(pairing("p-1", "tg-main", "chat", "c-1", T0)))
             .unwrap();
@@ -493,7 +504,7 @@ mod tests {
 
     #[test]
     fn upsert_pairing_replaces_by_key_and_needs_the_account() {
-        let store = store_with(&[("tg-main", ChannelProvider::Telegram)]);
+        let store = store_with(&[("tg-main", ChannelProvider::new("telegram"))]);
         let first = pairing("p-1", "tg-main", "support", "c-1", T0);
         assert_eq!(
             block_on(store.upsert_channel_pairing(first.clone())).unwrap(),
@@ -532,8 +543,8 @@ mod tests {
     #[test]
     fn list_pairings_newest_first_honoring_every_filter() {
         let store = store_with(&[
-            ("tg-main", ChannelProvider::Telegram),
-            ("wa-shop", ChannelProvider::Whatsapp),
+            ("tg-main", ChannelProvider::new("telegram")),
+            ("wa-shop", ChannelProvider::new("whatsapp")),
         ]);
         let mut other_bot = pairing("p-4", "tg-main", "support", "c-1", T0 + 40);
         other_bot.bot_id = BotId::new("other");
@@ -608,7 +619,7 @@ mod tests {
 
     #[test]
     fn delete_pairing_returns_the_row_then_not_found() {
-        let store = store_with(&[("tg-main", ChannelProvider::Telegram)]);
+        let store = store_with(&[("tg-main", ChannelProvider::new("telegram"))]);
         let record = pairing("p-1", "tg-main", "support", "c-1", T0);
         block_on(store.upsert_channel_pairing(record.clone())).unwrap();
         assert_eq!(

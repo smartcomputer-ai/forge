@@ -61,14 +61,14 @@ impl NormalizedInbound {
     }
 
     pub fn route(&self) -> ChannelRoute {
-        ChannelRoute::new(self.provider, &self.conversation())
+        ChannelRoute::new(self.provider.clone(), &self.conversation())
     }
 }
 
 /// The label a conversation gets from its first message: who it is with,
 /// never an id the model copies.
 pub fn conversation_label(inbound: &NormalizedInbound) -> String {
-    let provider = inbound.provider;
+    let provider = &inbound.provider;
     if inbound.inbound.is_direct {
         return format!("{provider} dm · {}", inbound.inbound.sender_name);
     }
@@ -171,11 +171,11 @@ pub struct ConversationStart {
 
 impl ConversationStart {
     pub fn workflow_id(&self) -> String {
-        conversation_workflow_id(self.universe_id, self.provider, &self.conversation)
+        conversation_workflow_id(self.universe_id, &self.provider, &self.conversation)
     }
 
     pub fn route(&self) -> ChannelRoute {
-        ChannelRoute::new(self.provider, &self.conversation)
+        ChannelRoute::new(self.provider.clone(), &self.conversation)
     }
 
     /// An inbound signal must belong to this conversation: same provider,
@@ -221,7 +221,7 @@ mod tests {
 
     fn normalized(inbound: ChannelInbound) -> NormalizedInbound {
         NormalizedInbound::new(
-            ChannelProvider::Telegram,
+            ChannelProvider::new("telegram"),
             ChannelAccountId::new("primary"),
             inbound,
         )
@@ -243,7 +243,7 @@ mod tests {
             bot_id: BotId::new("concierge"),
             trigger_id: BotTriggerId::new("tg"),
             account_id: ChannelAccountId::new("primary"),
-            provider: ChannelProvider::Telegram,
+            provider: ChannelProvider::new("telegram"),
             conversation: ConversationRef {
                 account_id: ChannelAccountId::new("primary"),
                 chat_id: "123".to_owned(),
@@ -431,7 +431,7 @@ mod tests {
             Err(ChannelError::InvalidInput { message }) if message.contains("scope")
         ));
         let other_account = NormalizedInbound::new(
-            ChannelProvider::Telegram,
+            ChannelProvider::new("telegram"),
             ChannelAccountId::new("secondary"),
             inbound(),
         );

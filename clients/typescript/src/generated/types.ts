@@ -1112,7 +1112,7 @@ export type ChannelAccountId = string;
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "ChannelProvider".
  */
-export type ChannelProvider = "telegram" | "whatsapp";
+export type ChannelProvider = string;
 /**
  * What the connector should do after admission. Pairing replies are the
  * connector's to send, in the provider's own voice.
@@ -3491,6 +3491,7 @@ export interface ChannelAccountSettings {
    * WhatsApp: print the pairing QR code on the connector's terminal.
    */
   printQr?: boolean | null;
+  [k: string]: unknown;
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema

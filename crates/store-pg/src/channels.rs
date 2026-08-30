@@ -164,7 +164,7 @@ impl ChannelAccountStore for PgStore {
         );
         let rows = sqlx::query(&query)
             .bind(self.config.universe_id)
-            .bind(provider.map(ChannelProvider::as_str))
+            .bind(provider.as_ref().map(ChannelProvider::as_str))
             .fetch_all(&self.pool)
             .await
             .map_err(|error| channel_sql_error("list channel accounts", error))?;
@@ -359,7 +359,7 @@ pub async fn list_channel_accounts_all(
          ORDER BY universe_id, account_id"
     );
     let rows = sqlx::query(&query)
-        .bind(provider.map(ChannelProvider::as_str))
+        .bind(provider.as_ref().map(ChannelProvider::as_str))
         .bind(include_disabled)
         .fetch_all(pool)
         .await?;
@@ -443,9 +443,9 @@ fn constraint_name(error: &sqlx::Error) -> Option<&str> {
 
 fn map_account_write_error(action: &str, error: sqlx::Error) -> ChannelError {
     match constraint_name(&error) {
-        Some("channel_accounts_provider_account_unique") => {
-            ChannelError::invalid("another channel account already serves this provider account id")
-        }
+        Some("channel_accounts_provider_account_unique") => ChannelError::invalid(
+            "this provider account is already registered as a channel account (an account serves exactly one universe)",
+        ),
         _ => channel_sql_error(action, error),
     }
 }

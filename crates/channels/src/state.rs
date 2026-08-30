@@ -894,7 +894,7 @@ mod tests {
     #[test]
     fn inbound_key_is_jsonb_safe() {
         let inbound = crate::inbound::NormalizedInbound {
-            provider: api::ChannelProvider::Telegram,
+            provider: api::ChannelProvider::new("telegram"),
             account_id: api::ChannelAccountId::new("tg"),
             inbound: api::ChannelInbound {
                 message_id: "m".to_owned(),
@@ -932,7 +932,7 @@ mod tests {
             bot_id: BotId::new("concierge"),
             trigger_id: BotTriggerId::new("tg"),
             account_id: ChannelAccountId::new("primary"),
-            provider: ChannelProvider::Telegram,
+            provider: ChannelProvider::new("telegram"),
             conversation: ConversationRef {
                 account_id: ChannelAccountId::new("primary"),
                 chat_id: "123".to_owned(),
@@ -952,7 +952,7 @@ mod tests {
 
     fn inbound(message_id: &str) -> NormalizedInbound {
         NormalizedInbound::new(
-            ChannelProvider::Telegram,
+            ChannelProvider::new("telegram"),
             ChannelAccountId::new("primary"),
             ChannelInbound {
                 message_id: message_id.to_owned(),

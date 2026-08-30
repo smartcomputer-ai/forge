@@ -420,7 +420,7 @@ async fn deliver_planned(
 ) -> Result<Vec<String>, StepError> {
     let (provider, route, queue) = ctx.state(|wf| {
         (
-            wf.start.provider,
+            wf.start.provider.clone(),
             wf.start.route(),
             wf.start.connector_task_queue.clone(),
         )
@@ -437,7 +437,7 @@ async fn deliver_planned(
             )
         })
         .await?;
-        validate_delivery_result(&result, provider).map_err(StepError::Failed)?;
+        validate_delivery_result(&result, &provider).map_err(StepError::Failed)?;
         message_ids.extend(result.message_ids);
     }
     Ok(message_ids)
@@ -633,7 +633,7 @@ async fn emit_message(
             bot_id: wf.start.bot_id.clone(),
             trigger_id: wf.start.trigger_id.clone(),
             account_id: wf.start.account_id.clone(),
-            provider: wf.start.provider,
+            provider: wf.start.provider.clone(),
             conversation: wf.start.conversation.clone(),
             label: wf.start.label.clone(),
             scope: wf.start.scope,
@@ -966,7 +966,7 @@ async fn deliver_invocation(
                 bot_id: wf.start.bot_id.clone(),
                 trigger_id: wf.start.trigger_id.clone(),
                 account_id: wf.start.account_id.clone(),
-                provider: wf.start.provider,
+                provider: wf.start.provider.clone(),
                 conversation: wf.start.conversation.clone(),
                 label: wf.start.label.clone(),
                 invocation_key: invocation_id.to_owned(),
@@ -1203,7 +1203,7 @@ async fn reconcile_fallback(
         bot_id: wf.start.bot_id.clone(),
         trigger_id: wf.start.trigger_id.clone(),
         account_id: wf.start.account_id.clone(),
-        provider: wf.start.provider,
+        provider: wf.start.provider.clone(),
         conversation: wf.start.conversation.clone(),
         label: wf.start.label.clone(),
         invocation_key,
@@ -1588,7 +1588,7 @@ mod tests {
             bot_id: BotId::new("concierge"),
             trigger_id: BotTriggerId::new("tg"),
             account_id: ChannelAccountId::new("primary"),
-            provider: ChannelProvider::Telegram,
+            provider: ChannelProvider::new("telegram"),
             conversation: ConversationRef {
                 account_id: ChannelAccountId::new("primary"),
                 chat_id: "123".to_owned(),
@@ -1613,7 +1613,7 @@ mod tests {
     ) -> AdmittedInbound {
         AdmittedInbound {
             inbound: NormalizedInbound::new(
-                ChannelProvider::Telegram,
+                ChannelProvider::new("telegram"),
                 ChannelAccountId::new("primary"),
                 ChannelInbound {
                     message_id: "42".to_owned(),

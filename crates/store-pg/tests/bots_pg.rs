@@ -930,7 +930,7 @@ async fn pg_live_channel_accounts_and_pairings() {
     let universe_id = store.config().universe_id;
     let account_id = ChannelAccountId::new("tg-main");
     let document = ChannelAccountDocument {
-        provider: ChannelProvider::Telegram,
+        provider: ChannelProvider::new("telegram"),
         provider_account_id: "@triage_bot".to_owned(),
         display_name: "Triage on Telegram".to_owned(),
         credential_grant_id: Some("grant-tg".to_owned()),
@@ -982,7 +982,7 @@ async fn pg_live_channel_accounts_and_pairings() {
         .put_channel_account(
             ChannelAccountId::new("wa-main"),
             ChannelAccountDocument {
-                provider: ChannelProvider::Whatsapp,
+                provider: ChannelProvider::new("whatsapp"),
                 provider_account_id: "+15550000000".to_owned(),
                 display_name: "Triage on WhatsApp".to_owned(),
                 credential_grant_id: None,
@@ -1008,7 +1008,7 @@ async fn pg_live_channel_accounts_and_pairings() {
         vec!["tg-main", "wa-main"]
     );
     let telegram_only = store
-        .list_channel_accounts(Some(ChannelProvider::Telegram))
+        .list_channel_accounts(Some(ChannelProvider::new("telegram")))
         .await
         .expect("list telegram");
     assert_eq!(telegram_only.len(), 1);
@@ -1041,7 +1041,7 @@ async fn pg_live_channel_accounts_and_pairings() {
         mine(
             store_pg::list_channel_accounts_all(
                 store.pool(),
-                Some(ChannelProvider::Telegram),
+                Some(ChannelProvider::new("telegram")),
                 true
             )
             .await

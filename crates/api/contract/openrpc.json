@@ -6036,6 +6036,7 @@
         "type": "object"
       },
       "ChannelAccountSettings": {
+        "additionalProperties": true,
         "properties": {
           "printQr": {
             "description": "WhatsApp: print the pairing QR code on the connector's terminal.",
@@ -6493,10 +6494,6 @@
         "type": "object"
       },
       "ChannelProvider": {
-        "enum": [
-          "telegram",
-          "whatsapp"
-        ],
         "type": "string"
       },
       "ChatAccess": {

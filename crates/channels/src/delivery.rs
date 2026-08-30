@@ -203,9 +203,9 @@ fn handle(value: &Value, name: &str) -> Result<u64, String> {
 
 pub fn validate_delivery_result(
     result: &ChannelDeliveryResult,
-    expected_provider: ChannelProvider,
+    expected_provider: &ChannelProvider,
 ) -> Result<(), String> {
-    if result.version != CHANNEL_DELIVERY_VERSION || result.provider != expected_provider {
+    if result.version != CHANNEL_DELIVERY_VERSION || &result.provider != expected_provider {
         return Err("delivery result does not match the command provider".to_owned());
     }
     if result.message_ids.is_empty()
@@ -339,7 +339,7 @@ mod tests {
 
     fn route() -> ChannelRoute {
         ChannelRoute {
-            provider: ChannelProvider::Telegram,
+            provider: ChannelProvider::new("telegram"),
             account_id: ChannelAccountId::new("primary"),
             chat_id: "123".to_owned(),
             thread_id: None,
@@ -431,40 +431,42 @@ mod tests {
     fn rejects_empty_or_cross_provider_receipts() {
         let result = ChannelDeliveryResult {
             version: 1,
-            provider: ChannelProvider::Whatsapp,
+            provider: ChannelProvider::new("whatsapp"),
             message_ids: vec!["42".to_owned()],
         };
         assert!(
-            validate_delivery_result(&result, ChannelProvider::Telegram)
+            validate_delivery_result(&result, &ChannelProvider::new("telegram"))
                 .unwrap_err()
                 .contains("does not match")
         );
         assert_eq!(
-            validate_delivery_result(&result, ChannelProvider::Whatsapp),
+            validate_delivery_result(&result, &ChannelProvider::new("whatsapp")),
             Ok(())
         );
         let empty = ChannelDeliveryResult {
             version: 1,
-            provider: ChannelProvider::Telegram,
+            provider: ChannelProvider::new("telegram"),
             message_ids: Vec::new(),
         };
         assert!(
-            validate_delivery_result(&empty, ChannelProvider::Telegram)
+            validate_delivery_result(&empty, &ChannelProvider::new("telegram"))
                 .unwrap_err()
                 .contains("1 to 32")
         );
         let too_many = ChannelDeliveryResult {
             version: 1,
-            provider: ChannelProvider::Telegram,
+            provider: ChannelProvider::new("telegram"),
             message_ids: (0..33).map(|index| index.to_string()).collect(),
         };
-        assert!(validate_delivery_result(&too_many, ChannelProvider::Telegram).is_err());
+        assert!(validate_delivery_result(&too_many, &ChannelProvider::new("telegram")).is_err());
         let wrong_version = ChannelDeliveryResult {
             version: 2,
-            provider: ChannelProvider::Telegram,
+            provider: ChannelProvider::new("telegram"),
             message_ids: vec!["42".to_owned()],
         };
-        assert!(validate_delivery_result(&wrong_version, ChannelProvider::Telegram).is_err());
+        assert!(
+            validate_delivery_result(&wrong_version, &ChannelProvider::new("telegram")).is_err()
+        );
     }
 
     #[test]
@@ -617,8 +619,8 @@ mod tests {
             chat_id: "-100".to_owned(),
             thread_id: Some("3".to_owned()),
         };
-        let route = ChannelRoute::new(ChannelProvider::Whatsapp, &conversation);
+        let route = ChannelRoute::new(ChannelProvider::new("whatsapp"), &conversation);
         assert_eq!(route.conversation(), conversation);
-        assert_eq!(route.provider, ChannelProvider::Whatsapp);
+        assert_eq!(route.provider, ChannelProvider::new("whatsapp"));
     }
 }

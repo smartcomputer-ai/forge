@@ -5,7 +5,12 @@
 -- Design notes:
 -- - Accounts are universe resources with authored ids; the credential is a
 --   grant reference in the document, never a token. One token serves one
---   universe; the connector host discovers accounts across universes.
+--   universe — enforced deployment-wide by
+--   `channel_accounts_provider_account_unique` — and the connector host
+--   discovers accounts across universes.
+-- - `provider` is an open, authored name (`telegram`, `whatsapp`,
+--   `slack`, …): format-checked, never enumerated. Adding a channel type
+--   is a connector concern, not a core schema change.
 -- - Channel pairings cascade from both the chat trigger (`bot_triggers`,
 --   `008_bots.sql`) and the account; a re-pair replaces the row for the
 --   same `pairing_key`.
@@ -21,11 +26,11 @@ CREATE TABLE IF NOT EXISTS channel_accounts (
     -- Authored account id, unique per universe; chat triggers point at it
     -- and the connector queue name derives from it.
     account_id text NOT NULL,
-    -- Copy of the document's provider for indexed listing: telegram |
-    -- whatsapp.
+    -- Copy of the document's provider name for indexed listing; open
+    -- vocabulary, format-checked only.
     provider text NOT NULL,
     -- Provider-native account identity (Telegram bot username or id,
-    -- WhatsApp phone number); unique per universe and provider.
+    -- WhatsApp phone number); unique per provider across the deployment.
     provider_account_id text NOT NULL,
 
     -- ── The operator's document ────────────────────────────────────────────
@@ -40,13 +45,16 @@ CREATE TABLE IF NOT EXISTS channel_accounts (
     updated_at_ms bigint NOT NULL,
 
     PRIMARY KEY (universe_id, account_id),
+    -- Deployment-wide: one provider account (one bot token, one number)
+    -- belongs to exactly one universe. Two runners on one token would
+    -- fight over the provider connection.
     CONSTRAINT channel_accounts_provider_account_unique
-        UNIQUE (universe_id, provider, provider_account_id),
+        UNIQUE (provider, provider_account_id),
 
     CONSTRAINT channel_accounts_account_id_format
         CHECK (account_id ~ '^[a-z0-9][a-z0-9-]{0,63}$'),
-    CONSTRAINT channel_accounts_provider_known
-        CHECK (provider IN ('telegram', 'whatsapp')),
+    CONSTRAINT channel_accounts_provider_format
+        CHECK (provider ~ '^[a-z0-9][a-z0-9-]{0,63}$'),
     CONSTRAINT channel_accounts_provider_account_id_not_empty
         CHECK (provider_account_id <> ''),
     CONSTRAINT channel_accounts_revision_positive
@@ -64,9 +72,9 @@ COMMENT ON TABLE channel_accounts IS
 COMMENT ON COLUMN channel_accounts.account_id IS
     'Authored channel account id, unique per universe; chat triggers point at it.';
 COMMENT ON COLUMN channel_accounts.provider IS
-    'Chat provider copied from the document for indexed listing; telegram|whatsapp.';
+    'Chat provider name copied from the document for indexed listing; open vocabulary, format-checked only.';
 COMMENT ON COLUMN channel_accounts.provider_account_id IS
-    'Provider-native account identity (Telegram bot username or id, WhatsApp phone number); unique per universe and provider.';
+    'Provider-native account identity (Telegram bot username or id, WhatsApp phone number); unique per provider across the whole deployment.';
 COMMENT ON COLUMN channel_accounts.revision IS
     'Document revision, bumped by every put.';
 COMMENT ON COLUMN channel_accounts.document_json IS

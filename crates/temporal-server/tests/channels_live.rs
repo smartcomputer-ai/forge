@@ -186,7 +186,7 @@ where
         account: ChannelAccountInput {
             account_id: account_id.clone(),
             document: ChannelAccountDocument {
-                provider: ChannelProvider::Telegram,
+                provider: ChannelProvider::new("telegram"),
                 provider_account_id: unique("bot"),
                 display_name: "Live Telegram".to_owned(),
                 credential_grant_id: None,
@@ -197,7 +197,8 @@ where
     })
     .await?;
     let connector = FakeConnector::default();
-    let connector_queue = connector_task_queue(universe, ChannelProvider::Telegram, &account_id);
+    let connector_queue =
+        connector_task_queue(universe, &ChannelProvider::new("telegram"), &account_id);
     let mut connector_worker = Worker::new(
         &runtime,
         client.clone(),
@@ -389,7 +390,7 @@ async fn channels_live_open_chat_message_round_trips_to_a_reply() -> anyhow::Res
         let deliveries = wait_for_deliveries(&live.connector, 1).await?;
         let command = &deliveries[0];
         assert_eq!(command.route.chat_id, "chat-1");
-        assert_eq!(command.route.provider, ChannelProvider::Telegram);
+        assert_eq!(command.route.provider, ChannelProvider::new("telegram"));
         let ChannelDeliveryOperation::Send { text, .. } = &command.operation else {
             anyhow::bail!("expected a send, got {command:#?}");
         };
