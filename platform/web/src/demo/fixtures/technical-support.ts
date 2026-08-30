@@ -29,6 +29,8 @@ import {
   botSession,
   botState,
   briefPut,
+  channelAccount,
+  channelPairing,
   chatMessage,
   chatSent,
   chatTrigger,
@@ -638,6 +640,47 @@ function nw(argv: string[], output: string): DemoToolCall {
 // Universe resources
 // ---------------------------------------------------------------------------
 
+/// The universe's channel accounts and the pairing rows binding each
+/// seeded conversation to the helpdesk's chat triggers.
+function seedChannels(universe: UniverseState): void {
+  channelAccount(universe, {
+    accountId: TELEGRAM_ACCOUNT_ID,
+    provider: "telegram",
+    providerAccountId: "northwind_support_bot",
+    displayName: "Northwind Developer Support (Telegram)",
+    credentialGrantId: "grant-telegram-bot-token",
+    createdAtMs: Date.parse("2026-07-02T10:00:00.000Z"),
+    updatedAtMs: Date.parse("2026-08-15T10:00:00.000Z"),
+  });
+  channelAccount(universe, {
+    accountId: WHATSAPP_ACCOUNT_ID,
+    provider: "whatsapp",
+    providerAccountId: "+4915112345678",
+    displayName: "Northwind Developer Support (WhatsApp)",
+    settings: { printQr: false },
+    createdAtMs: Date.parse("2026-07-20T10:00:00.000Z"),
+    updatedAtMs: Date.parse("2026-08-22T10:00:00.000Z"),
+  });
+  for (const conversation of [DEVS_GROUP, DANA, LEE]) {
+    channelPairing(universe, {
+      accountId: TELEGRAM_ACCOUNT_ID,
+      botId: BOT.helpdesk,
+      triggerId: "telegram",
+      chatId: conversation.chatId,
+      pairedVia: "open",
+      pairedAtMs: ago(12 * DAY_MS),
+    });
+  }
+  channelPairing(universe, {
+    accountId: WHATSAPP_ACCOUNT_ID,
+    botId: BOT.helpdesk,
+    triggerId: "whatsapp",
+    chatId: WA_DEV.chatId,
+    pairedVia: "code",
+    pairedAtMs: ago(9 * DAY_MS),
+  });
+}
+
 function seedMembers(store: DemoStore, universe: UniverseState): void {
   universe.members.push(
     member(store, universe, "user-jonas", "admin", ago(47 * DAY_MS)),
@@ -1029,13 +1072,13 @@ function seedHelpdesk(store: DemoStore, universe: UniverseState): void {
     [
       "telegram",
       chatTrigger(
-        store,
+        BOT.helpdesk,
         "telegram",
         {
-          channelAccountId: TELEGRAM_ACCOUNT_ID,
+          accountId: TELEGRAM_ACCOUNT_ID,
           matchScope: null,
           activation: { group: "mention", mentionNames: ["@northwind_support_bot"] },
-          access: { turn: "conversation", control: "members" },
+          access: { turn: "anyone" },
           pairingCode: null,
           priority: 10,
         },
@@ -1045,13 +1088,13 @@ function seedHelpdesk(store: DemoStore, universe: UniverseState): void {
     [
       "whatsapp",
       chatTrigger(
-        store,
+        BOT.helpdesk,
         "whatsapp",
         {
-          channelAccountId: WHATSAPP_ACCOUNT_ID,
+          accountId: WHATSAPP_ACCOUNT_ID,
           matchScope: "direct",
           activation: null,
-          access: { turn: "conversation", control: "admins" },
+          access: { turn: "anyone" },
           pairingCode: "NW-DEV-7K2Q",
           priority: 20,
         },
@@ -1060,7 +1103,7 @@ function seedHelpdesk(store: DemoStore, universe: UniverseState): void {
     ],
     [
       "inbox",
-      inboxTrigger([BOT.oncall, BOT.escalations], {
+      inboxTrigger(BOT.helpdesk, [BOT.oncall, BOT.escalations], {
         route: { policy: "bot" },
         deliver: { whenBusy: "queue" },
         createdAtMs: ago(29 * DAY_MS),
@@ -1340,7 +1383,7 @@ function seedHelpdesk(store: DemoStore, universe: UniverseState): void {
     appliedProfileRevision: SUPPORT_PROFILE.revision,
     runsToday: 3,
   });
-  universe.bots.set(BOT.helpdesk, { bot: record, triggers, events: log.events, state, lineage: {} });
+  universe.bots.set(BOT.helpdesk, { bot: record, triggers, events: log.events, state, descendants: [] });
 }
 
 // ---------------------------------------------------------------------------
@@ -1381,11 +1424,12 @@ function seedEscalations(store: DemoStore, universe: UniverseState): void {
   const triggers = new Map([
     [
       "inbox",
-      inboxTrigger([BOT.helpdesk], { route: { policy: "bot" }, deliver: { whenBusy: "queue" }, createdAtMs: ago(21 * DAY_MS) }),
+      inboxTrigger(BOT.escalations, [BOT.helpdesk], { route: { policy: "bot" }, deliver: { whenBusy: "queue" }, createdAtMs: ago(21 * DAY_MS) }),
     ],
     [
       "weekly-bug-digest",
       scheduleTrigger(
+        BOT.escalations,
         "weekly-bug-digest",
         {
           cron: "0 15 * * 5",
@@ -1557,7 +1601,7 @@ function seedEscalations(store: DemoStore, universe: UniverseState): void {
     appliedProfileRevision: ESCALATION_PROFILE.revision,
     runsToday: 1,
   });
-  universe.bots.set(BOT.escalations, { bot: record, triggers, events: log.events, state, lineage: {} });
+  universe.bots.set(BOT.escalations, { bot: record, triggers, events: log.events, state, descendants: [] });
 }
 
 // ---------------------------------------------------------------------------
@@ -1614,6 +1658,7 @@ function seedStatusWatch(store: DemoStore, universe: UniverseState): void {
     [
       "statuspage-poll",
       pollTrigger(
+        BOT.statusWatch,
         "statuspage-poll",
         {
           source: {
@@ -1632,11 +1677,11 @@ function seedStatusWatch(store: DemoStore, universe: UniverseState): void {
           route: { policy: "bot" },
           coalesce: { debounceMs: 45_000, maxWaitMs: 2 * MINUTE_MS, maxCount: 10 },
           deliver: { whenBusy: "queue" },
-          cursor: {
+          cursorState: {
             watermark: agoIso(65 * MINUTE_MS),
             consecutiveFailures: 0,
-            baselinedAt: agoIso(30 * DAY_MS),
-            lastPolledAt: agoIso(80_000),
+            baselinedAtMs: ago(30 * DAY_MS),
+            lastPolledAtMs: ago(80_000),
           },
           createdAtMs: ago(30 * DAY_MS),
           updatedAtMs: ago(9 * DAY_MS),
@@ -1646,7 +1691,7 @@ function seedStatusWatch(store: DemoStore, universe: UniverseState): void {
   ]);
 
   const log = eventLog(store, BOT.statusWatch);
-  const pollEvent = (incident: Incident, atMs: number, outcome: "handled" | "ignored", detail: string, deliveryId?: string): ScriptedEvent =>
+  const pollEvent = (incident: Incident, atMs: number, outcome: "handled" | "ignored", detail: string): ScriptedEvent =>
     log.add({
       kind: "poll",
       source: "poll:statuspage-poll",
@@ -1656,7 +1701,6 @@ function seedStatusWatch(store: DemoStore, universe: UniverseState): void {
       session: main(BOT.statusWatch),
       outcome,
       detail,
-      ...(deliveryId === undefined ? {} : { deliveryId }),
       data: { ...incident, updated_at: atIso(atMs) },
     });
 
@@ -1675,9 +1719,8 @@ function seedStatusWatch(store: DemoStore, universe: UniverseState): void {
     detail: "On-call has it (#inc-0819); nothing further until the impact changes",
     data: { status: "handled" },
   });
-  const batch = `dlv-${BOT.statusWatch}-delay-updates`;
-  const s3 = pollEvent({ ...DELAY_INCIDENT, status: "identified", body: "A delivery-worker build tripled CPU per delivery; a rollback is in progress and the EU backlog is draining." }, at(9, 14, 42), "handled", "Two updates in one delivery: identified, then the drain ETA — impact unchanged, no new page", batch);
-  const s4 = pollEvent({ ...DELAY_INCIDENT, status: "identified", body: "Backlog draining at about 14 k deliveries/s; ETA for a clean queue 15:15." }, at(9, 14, 43), "handled", "Two updates in one delivery: identified, then the drain ETA — impact unchanged, no new page", batch);
+  const s3 = pollEvent({ ...DELAY_INCIDENT, status: "identified", body: "A delivery-worker build tripled CPU per delivery; a rollback is in progress and the EU backlog is draining." }, at(9, 14, 42), "handled", "Two updates in one delivery: identified, then the drain ETA — impact unchanged, no new page");
+  const s4 = pollEvent({ ...DELAY_INCIDENT, status: "identified", body: "Backlog draining at about 14 k deliveries/s; ETA for a clean queue 15:15." }, at(9, 14, 43), "handled", "Two updates in one delivery: identified, then the drain ETA — impact unchanged, no new page");
   const s5 = pollEvent({ ...DELAY_INCIDENT, status: "monitoring", body: "The backlog has drained and deliveries are current. We are monitoring." }, at(9, 15, 20), "handled", `Monitoring, backlog gone — impact changed, told oncall (incident.update, #${SEQ.oncallUpdate} there)`);
   const s6 = pollEvent(
     { id: "inc_7e55", name: "Scheduled maintenance: sandbox database upgrade", status: "scheduled", impact: "maintenance", shortlink: `${STATUS_PAGE_URL}/incidents/inc_7e55`, components: ["Sandbox API"], body: "The sandbox database is upgraded on Aug 30, 02:00–02:30 UTC, right after the weekly reset. No production impact." },
@@ -1788,7 +1831,7 @@ function seedStatusWatch(store: DemoStore, universe: UniverseState): void {
     appliedProfileRevision: TRIAGE_PROFILE.revision,
     runsToday: 137,
   });
-  universe.bots.set(BOT.statusWatch, { bot: record, triggers, events: log.events, state, lineage: {} });
+  universe.bots.set(BOT.statusWatch, { bot: record, triggers, events: log.events, state, descendants: [] });
 }
 
 interface Page {
@@ -1812,10 +1855,11 @@ function seedOncall(store: DemoStore, universe: UniverseState): void {
     updatedAtMs: ago(2 * DAY_MS),
   });
   const triggers = new Map([
-    ["inbox", inboxTrigger([BOT.statusWatch], { route: { policy: "bot" }, deliver: { whenBusy: "steer" }, createdAtMs: ago(30 * DAY_MS) })],
+    ["inbox", inboxTrigger(BOT.oncall, [BOT.statusWatch], { route: { policy: "bot" }, deliver: { whenBusy: "steer" }, createdAtMs: ago(30 * DAY_MS) })],
     [
       "pagerduty",
       webhookTrigger(
+        universe,
         BOT.oncall,
         "pagerduty",
         {
@@ -1834,6 +1878,7 @@ function seedOncall(store: DemoStore, universe: UniverseState): void {
     [
       "daily-digest",
       scheduleTrigger(
+        BOT.oncall,
         "daily-digest",
         { cron: "0 8 * * *", summary: "Post yesterday's incident digest to #ops: every page, who acknowledged it, and any postmortem action item due this week." },
         {
@@ -1841,7 +1886,7 @@ function seedOncall(store: DemoStore, universe: UniverseState): void {
           deliver: { whenBusy: "queue" },
           enabled: false,
           disabledReason: "operator",
-          disabledAt: agoIso(2 * DAY_MS),
+          disabledAtMs: ago(2 * DAY_MS),
           createdAtMs: ago(28 * DAY_MS),
           updatedAtMs: ago(2 * DAY_MS),
         },
@@ -1883,7 +1928,6 @@ function seedOncall(store: DemoStore, universe: UniverseState): void {
     data: { incident: DELAY_INCIDENT.id, severity: 2, components: DELAY_INCIDENT.components },
   });
   const o2 = page({ id: "PD-4482", title: "Webhook delivery lag p95 above 120 s (eu-1)", urgency: "high", service: "Webhooks" }, at(9, 14, 6), "steered", `Steered into the run for #${SEQ.oncallIncident}: PagerDuty's page for the same incident`);
-  o2.envelope.deliveryId = o1.envelope.deliveryId;
   const o3 = log.add({
     kind: "incident.update",
     source: `bot:${BOT.statusWatch}`,
@@ -2013,7 +2057,7 @@ function seedOncall(store: DemoStore, universe: UniverseState): void {
     appliedProfileRevision: TRIAGE_PROFILE.revision,
     runsToday: 1,
   });
-  universe.bots.set(BOT.oncall, { bot: record, triggers, events: log.events, state, lineage: {} });
+  universe.bots.set(BOT.oncall, { bot: record, triggers, events: log.events, state, descendants: [] });
 }
 
 // ---------------------------------------------------------------------------
@@ -2306,6 +2350,7 @@ export function seedTechnicalSupport(store: DemoStore): void {
   seedWorkspaces(store, universe);
   seedEnvironments(universe);
   seedIntegrations(universe);
+  seedChannels(universe);
   seedHelpdesk(store, universe);
   seedEscalations(store, universe);
   seedStatusWatch(store, universe);

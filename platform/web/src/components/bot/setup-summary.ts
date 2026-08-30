@@ -1,4 +1,4 @@
-import type { Bot, Environment, ProfileEnvironment } from "@/api";
+import type { BotView, Environment, ProfileEnvironment } from "@/api";
 import { describeIdlePolicy } from "@/components/environment/power-controls";
 
 const FEATURE_LABELS: Record<string, string> = {
@@ -38,7 +38,7 @@ export function environmentSummary(
   return "Inherits the session's environment";
 }
 
-export function briefSummary(brief: string | null): string {
+export function briefSummary(brief: string | null | undefined): string {
   const text = brief?.trim() ?? "";
   if (!text) return "No brief yet";
   const line = text.split(/\n/)[0] ?? "";
@@ -46,10 +46,10 @@ export function briefSummary(brief: string | null): string {
 }
 
 export function guardrailsSummary(
-  bot: Pick<Bot, "runsPerDay" | "breaker" | "routedSessionTtlMs" | "selfConfig">,
+  bot: Pick<BotView, "runsPerDay" | "breaker" | "routedSessionTtlMs" | "selfConfig">,
 ): string {
   return [
-    bot.runsPerDay === null ? "no daily limit" : `${bot.runsPerDay} runs a day`,
+    bot.runsPerDay == null ? "no daily limit" : `${bot.runsPerDay} runs a day`,
     bot.breaker ? `flood ${bot.breaker.fires}/${Math.round(bot.breaker.windowMs / 60_000)} min` : null,
     bot.routedSessionTtlMs ? `threads close after ${Math.round(bot.routedSessionTtlMs / 86_400_000)}d` : "threads kept",
     bot.selfConfig ? "can change own triggers" : null,

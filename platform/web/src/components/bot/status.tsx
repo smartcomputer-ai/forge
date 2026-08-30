@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import { Badge } from "@/components/ui/badge";
-import type { Bot, BotState } from "@/api";
+import type { BotControllerSnapshot, BotControllerStatus, BotView } from "@/api";
 import { cn } from "@/lib/utils";
 
 export type BotTone = "live" | "idle" | "paused" | "attention" | "closed";
@@ -8,23 +8,25 @@ export type BotTone = "live" | "idle" | "paused" | "attention" | "closed";
 /**
  * One status word for the header and the roster, in the person's language:
  * the record's lifecycle first (closed, paused), then what the controller is
- * doing. `#N` names the delivery a working bot is on.
+ * doing.
  */
 export function botStatus(
-  bot: Pick<Bot, "enabled" | "closedAt">,
-  state: BotState | undefined,
+  bot: Pick<BotView, "enabled" | "closedAtMs">,
+  controller: BotControllerSnapshot | undefined,
   stateError?: string,
 ): { label: string; tone: BotTone } {
-  if (bot.closedAt) return { label: "Closed", tone: "closed" };
-  if (!bot.enabled) return { label: "Paused", tone: "paused" };
+  if (bot.closedAtMs != null) return { label: "Closed", tone: "closed" };
+  if (bot.enabled === false) return { label: "Paused", tone: "paused" };
   if (stateError) return { label: "Needs attention", tone: "attention" };
-  if (!state) return { label: "Starting", tone: "idle" };
-  switch (state.controllerStatus) {
+  if (!controller) return { label: "Starting", tone: "idle" };
+  switch (controller.controllerStatus) {
     case "initializing":
       return { label: "Starting", tone: "idle" };
-    case "session_busy":
     case "delivering_event": {
-      const count = state.activeDeliveries.reduce((sum, delivery) => sum + delivery.eventCount, 0);
+      const count = (controller.activeDeliveries ?? []).reduce(
+        (sum, delivery) => sum + delivery.seqs.length,
+        0,
+      );
       return { label: count > 1 ? `Working on ${count} events` : "Working", tone: "live" };
     }
     case "budget_exhausted":
@@ -63,12 +65,12 @@ export function StatusDot({ tone, className }: { tone: BotTone; className?: stri
   );
 }
 
-export function BotStatusBadge({ status }: { status?: BotState["controllerStatus"] }) {
+export function BotStatusBadge({ status }: { status?: BotControllerStatus }) {
   if (!status) return <Badge variant="outline">starting</Badge>;
   if (status === "degraded") return <Badge variant="destructive">needs attention</Badge>;
   if (status === "budget_exhausted") return <Badge variant="destructive">out of budget</Badge>;
   if (status === "idle") return <Badge variant="secondary">idle</Badge>;
-  if (status === "session_busy" || status === "delivering_event") return <Badge variant="secondary">working</Badge>;
+  if (status === "delivering_event") return <Badge variant="secondary">working</Badge>;
   return <Badge variant="outline">{status.replaceAll("_", " ")}</Badge>;
 }
 

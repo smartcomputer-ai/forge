@@ -664,9 +664,11 @@ pub struct BotTriggerView {
     pub last_filter_error: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_filter_error_at_ms: Option<i64>,
-    /// Poll triggers: the advancing cursor.
+    /// Poll triggers: the advancing runtime cursor. Named apart from the
+    /// poll spec's dedupe `cursor`, which the flattened document already
+    /// serializes under that key.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cursor: Option<PollCursorState>,
+    pub cursor_state: Option<PollCursorState>,
     /// Webhook triggers: the ingest path including its URL token, for
     /// managing principals only.
     #[serde(default, skip_serializing_if = "Option::is_none")]

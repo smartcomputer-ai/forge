@@ -33,12 +33,10 @@ const upgradeName = checkedIdentifier(`lightspeed_platform_upgrade_${suffix}`);
 const admin = new pg.Client({ connectionString: baseUrl });
 const previousMigrations = await mkdtemp(path.join(tmpdir(), "lightspeed-platform-migrations-"));
 let adminConnected = false;
-let workerRoleCreated = false;
 
 try {
   await admin.connect();
   adminConnected = true;
-  workerRoleCreated = await ensureWorkerRole(admin);
   await createDatabase(admin, emptyName);
   await createDatabase(admin, upgradeName);
 
@@ -62,7 +60,6 @@ try {
   if (adminConnected) {
     await dropDatabase(admin, emptyName);
     await dropDatabase(admin, upgradeName);
-    if (workerRoleCreated) await admin.query("DROP ROLE lightspeed_channels");
   }
   await admin.end().catch(() => undefined);
   await rm(previousMigrations, { recursive: true, force: true });
@@ -72,24 +69,34 @@ async function checkEmptyInstall(connectionString: string): Promise<void> {
   const handle = createDb(connectionString);
   try {
     await migrateDb(handle);
-    await requireTable(handle.pool, "universes");
-    await requireTable(handle.pool, "bot_triggers");
-    await requireTable(handle.pool, "bot_events");
-    await requireColumn(handle.pool, "bots", "emit");
-    await requireColumn(handle.pool, "bots", "display_name");
-    await requireColumn(handle.pool, "bots", "closed_at");
-    await requireColumn(handle.pool, "bots", "closed_sessions");
-    await requireColumn(handle.pool, "bot_events", "sender_bot_id");
-    await requireColumn(handle.pool, "bot_events", "notify");
-    await requireColumn(handle.pool, "bot_triggers", "session_ttl_ms");
-    await requireColumn(handle.pool, "channel_pairings", "trigger_id");
-    await requireNoTable(handle.pool, "channel_bindings");
-    await requireColumn(handle.pool, "bot_events", "outcome");
-    await requireColumn(handle.pool, "bot_triggers", "disabled_reason");
-    await requireNoTable(handle.pool, "bot_activity");
-    await requireWorkerGrants(handle.pool);
+    await requirePlatformShape(handle.pool);
   } finally {
     await handle.pool.end();
+  }
+}
+
+/// The platform database holds people and the universe mapping, nothing else:
+/// better-auth tables plus universes and setup installations. Bots, triggers,
+/// events, channel accounts, and pairings are core tables in the Rust
+/// runtime's schema (crates/store-pg) and must never reappear here.
+async function requirePlatformShape(pool: pg.Pool): Promise<void> {
+  await requireTable(pool, "universes");
+  await requireTable(pool, "universe_setup_installations");
+  await requireTable(pool, "user");
+  await requireTable(pool, "organization");
+  await requireTable(pool, "member");
+  await requireColumn(pool, "universes", "lightspeed_universe_id");
+  for (const table of [
+    "bots",
+    "bot_triggers",
+    "bot_events",
+    "channel_accounts",
+    "channel_identities",
+    "channel_pairings",
+    "channel_bindings",
+    "bot_activity",
+  ]) {
+    await requireNoTable(pool, table);
   }
 }
 
@@ -122,53 +129,10 @@ async function checkUpgrade(
     const baselineIndex = journal.entries.findIndex((entry) => entry.tag === upgradeFrom);
     await requireLedgerLength(handle.pool, baselineIndex + 1);
     await migrateDb(handle);
-    await requireTable(handle.pool, "bot_triggers");
-    await requireTable(handle.pool, "bot_events");
-    // The squashed bots baseline must land on an upgraded database too.
-    await requireColumn(handle.pool, "bots", "emit");
-    await requireColumn(handle.pool, "bot_events", "reply_to");
-    // Chat connections are triggers; the retired binding table must stay gone.
-    await requireColumn(handle.pool, "channel_pairings", "trigger_id");
-    await requireNoTable(handle.pool, "channel_bindings");
-    // Event outcomes replace the retired activity feed.
-    await requireColumn(handle.pool, "bot_events", "outcome");
-    await requireNoTable(handle.pool, "bot_activity");
-    await requireWorkerGrants(handle.pool);
+    await requirePlatformShape(handle.pool);
     await requireLedgerLength(handle.pool, journal.entries.length);
   } finally {
     await handle.pool.end();
-  }
-}
-
-async function ensureWorkerRole(client: pg.Client): Promise<boolean> {
-  const result = await client.query<{ present: boolean }>(
-    "select exists (select 1 from pg_roles where rolname = 'lightspeed_channels') as present",
-  );
-  if (result.rows[0]?.present === true) return false;
-  await client.query("CREATE ROLE lightspeed_channels");
-  return true;
-}
-
-async function requireWorkerGrants(pool: pg.Pool): Promise<void> {
-  const readTables = ["member", "universes", "channel_accounts", "channel_identities"];
-  const managedTables = ["bots", "bot_triggers", "bot_events", "channel_pairings"];
-  for (const table of readTables) {
-    await requireTablePrivilege(pool, table, "SELECT");
-  }
-  for (const table of managedTables) {
-    for (const privilege of ["SELECT", "INSERT", "UPDATE", "DELETE"]) {
-      await requireTablePrivilege(pool, table, privilege);
-    }
-  }
-}
-
-async function requireTablePrivilege(pool: pg.Pool, table: string, privilege: string): Promise<void> {
-  const result = await pool.query<{ present: boolean }>(
-    "select has_table_privilege('lightspeed_channels', $1, $2) as present",
-    [`public.${table}`, privilege],
-  );
-  if (result.rows[0]?.present !== true) {
-    throw new Error(`lightspeed_channels lacks ${privilege} on public.${table}`);
   }
 }
 
@@ -204,22 +168,27 @@ async function preparePreviousMigrations(destination: string, journal: Journal):
   }
 }
 
-async function requireTable(pool: pg.Pool, table: string): Promise<void> {
-  const result = await pool.query<{ relation: string | null }>(
-    "select to_regclass($1) as relation",
-    [`public.${table}`],
+/// information_schema instead of to_regclass: reserved identifiers
+/// (better-auth's "user") trip regclass parsing.
+async function tableExists(pool: pg.Pool, table: string): Promise<boolean> {
+  const result = await pool.query<{ present: boolean }>(
+    `select exists (
+       select 1 from information_schema.tables
+       where table_schema = 'public' and table_name = $1
+     ) as present`,
+    [table],
   );
-  if (result.rows[0]?.relation !== table) {
+  return result.rows[0]?.present === true;
+}
+
+async function requireTable(pool: pg.Pool, table: string): Promise<void> {
+  if (!(await tableExists(pool, table))) {
     throw new Error(`migration did not create public.${table}`);
   }
 }
 
 async function requireNoTable(pool: pg.Pool, table: string): Promise<void> {
-  const result = await pool.query<{ relation: string | null }>(
-    "select to_regclass($1) as relation",
-    [`public.${table}`],
-  );
-  if (result.rows[0]?.relation !== null) {
+  if (await tableExists(pool, table)) {
     throw new Error(`migration left public.${table} in place`);
   }
 }

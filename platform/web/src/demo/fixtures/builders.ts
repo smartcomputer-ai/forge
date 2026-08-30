@@ -5,17 +5,6 @@
 /// clocks, ids, tool calls as transcripts show them, records with their
 /// defaults, bot event logs, bot state — lives here.
 import type {
-  Bot,
-  BotChatSpec,
-  BotEventEnvelope,
-  BotEventOutcome,
-  BotManagedSession,
-  BotPollSpec,
-  BotRecentEvent,
-  BotSessionLineage,
-  BotState,
-  BotTrigger,
-  BotWebhookSpec,
   EnvironmentProviderBinding,
   EnvironmentTemplate,
   ManagedWorkflowTool,
@@ -30,7 +19,35 @@ import type {
   VfsTreeEntry,
   WorkspaceTree,
 } from "@/api";
-import type { ModelConfig, ToolCallDisplayView } from "@lightspeed/agent-client";
+import type {
+  BotBreaker,
+  BotCoalescePolicy,
+  BotControllerSnapshot,
+  BotDeliverPolicy,
+  BotEventDocument,
+  BotEventOutcome,
+  BotEventReplyRef,
+  BotEventView,
+  BotRecentDeliverySnapshot,
+  BotSessionSnapshot,
+  BotTriggerDisabledReason,
+  BotTriggerRoute,
+  BotTriggerView,
+  BotView,
+  ChannelAccountView,
+  ChannelPairingView,
+  ChatActivation,
+  ChatAccess,
+  ChatScope,
+  ModelConfig,
+  PollCursorSpec,
+  PollCursorState,
+  PollSource,
+  SessionSummaryView,
+  ToolCallDisplayView,
+  WebhookPreset,
+  WebhookVerification,
+} from "@lightspeed/agent-client";
 import { DEFAULT_MODEL, newSession } from "../engine";
 import type { DemoStore, DemoToolCall, SessionRecord, UniverseState } from "../store";
 import { INCUS_PROVIDER_ID } from "./platform";
@@ -545,18 +562,21 @@ export interface BotInit {
   profileId: string;
   brief: string;
   runsPerDay: number | null;
-  breaker: Bot["breaker"];
+  breaker: BotBreaker | null;
   routedSessionTtlMs?: number | null;
   selfConfig?: boolean;
   emit: boolean;
+  revision?: number;
   createdAtMs: number;
   updatedAtMs: number;
 }
 
-export function bot(universe: UniverseState, init: BotInit): Bot {
+/// A bot record in the core wire shape. `eventSeq` is recomputed from the
+/// event log by the routes, so the seed value never has to be maintained.
+export function bot(universe: UniverseState, init: BotInit): BotView {
+  void universe;
   return {
     botId: init.botId,
-    universeId: universe.universe.id,
     displayName: init.displayName,
     description: init.description,
     profileId: init.profileId,
@@ -567,88 +587,142 @@ export function bot(universe: UniverseState, init: BotInit): Bot {
     selfConfig: init.selfConfig ?? false,
     emit: init.emit,
     enabled: true,
-    closedAt: null,
-    closedSessions: null,
-    createdAt: atIso(init.createdAtMs),
-    updatedAt: atIso(init.updatedAtMs),
+    eventSeq: 0,
+    revision: init.revision ?? 1,
+    createdAtMs: init.createdAtMs,
+    updatedAtMs: init.updatedAtMs,
   };
 }
-
-export type TriggerInit = Pick<BotTrigger, "name" | "kind" | "spec"> &
-  Partial<Omit<BotTrigger, "name" | "kind" | "spec" | "createdAt" | "updatedAt">> & {
-    createdAtMs: number;
-    updatedAtMs?: number;
-  };
 
 /// Everything a trigger may carry beyond what its kind fixes.
-export type TriggerRest = Omit<TriggerInit, "name" | "kind" | "spec">;
+export interface TriggerRest {
+  filter?: string | null;
+  route?: BotTriggerRoute | null;
+  coalesce?: BotCoalescePolicy | null;
+  deliver?: BotDeliverPolicy | null;
+  sessionTtlMs?: number | null;
+  enabled?: boolean;
+  disabledReason?: BotTriggerDisabledReason | null;
+  disabledAtMs?: number | null;
+  /// Poll triggers: the advancing runtime cursor state (`cursorState`).
+  cursorState?: Partial<PollCursorState>;
+  revision?: number;
+  createdAtMs: number;
+  updatedAtMs?: number;
+}
 
-export function trigger(init: TriggerInit): BotTrigger {
-  const { createdAtMs, updatedAtMs, ...rest } = init;
+function baseTrigger(botId: string, triggerId: string, rest: TriggerRest) {
   return {
-    filter: null,
-    route: null,
-    coalesce: null,
-    deliver: null,
-    sessionTtlMs: null,
-    enabled: true,
-    disabledReason: null,
-    disabledAt: null,
+    botId,
+    triggerId,
+    revision: rest.revision ?? 1,
+    filter: rest.filter ?? null,
+    route: rest.route ?? null,
+    coalesce: rest.coalesce ?? null,
+    deliver: rest.deliver ?? null,
+    sessionTtlMs: rest.sessionTtlMs ?? null,
+    enabled: rest.enabled ?? true,
+    disabledReason: rest.disabledReason ?? null,
+    disabledAtMs: rest.disabledAtMs ?? null,
     lastFilterError: null,
-    lastFilterErrorAt: null,
-    ...rest,
-    createdAt: atIso(createdAtMs),
-    updatedAt: atIso(updatedAtMs ?? createdAtMs),
+    lastFilterErrorAtMs: null,
+    createdAtMs: rest.createdAtMs,
+    updatedAtMs: rest.updatedAtMs ?? rest.createdAtMs,
   };
 }
 
-/// A webhook trigger with its capability-URL ingest path.
-export function webhookTrigger(botId: string, name: string, spec: BotWebhookSpec, rest: TriggerRest): BotTrigger {
-  return trigger({
-    ...rest,
-    name,
+export interface WebhookSpecInit {
+  token: string;
+  verification?: WebhookVerification;
+  preset?: WebhookPreset | null;
+}
+
+/// A webhook trigger with its capability-URL ingest path in the core shape:
+/// `/hooks/bots/{universeId}/{botId}/{triggerId}/{token}`.
+export function webhookTrigger(
+  universe: UniverseState,
+  botId: string,
+  triggerId: string,
+  spec: WebhookSpecInit,
+  rest: TriggerRest,
+): BotTriggerView {
+  return {
+    ...baseTrigger(botId, triggerId, rest),
     kind: "webhook",
-    spec,
-    ingestPath: `/api/v1/hooks/bots/${botId}--${name}/${spec.token}`,
-  });
+    verification: spec.verification ?? { scheme: "token" },
+    preset: spec.preset ?? null,
+    ingestPath: `/hooks/bots/${universe.universe.lightspeedUniverseId}/${botId}/${triggerId}/${spec.token}`,
+  } as BotTriggerView;
 }
 
 export function scheduleTrigger(
-  name: string,
+  botId: string,
+  triggerId: string,
   spec: { cron: string; summary: string; timezone?: string },
   rest: TriggerRest,
-): BotTrigger {
-  return trigger({
-    ...rest,
-    name,
+): BotTriggerView {
+  return {
+    ...baseTrigger(botId, triggerId, rest),
     kind: "schedule",
-    spec: { cron: spec.cron, at: null, timezone: spec.timezone ?? "Europe/Berlin", summary: spec.summary },
-  });
+    cron: spec.cron,
+    atMs: null,
+    timezone: spec.timezone ?? "Europe/Berlin",
+    summary: spec.summary,
+  } as BotTriggerView;
 }
 
-export function pollTrigger(name: string, spec: BotPollSpec, rest: TriggerRest): BotTrigger {
-  return trigger({ ...rest, name, kind: "poll", spec });
+export interface PollSpecInit {
+  source: PollSource;
+  intervalMs: number;
+  items?: string | null;
+  cursor: PollCursorSpec;
+}
+
+export function pollTrigger(botId: string, triggerId: string, spec: PollSpecInit, rest: TriggerRest): BotTriggerView {
+  return {
+    ...baseTrigger(botId, triggerId, rest),
+    kind: "poll",
+    source: spec.source,
+    intervalMs: spec.intervalMs,
+    items: spec.items ?? null,
+    cursor: spec.cursor,
+    cursorState: rest.cursorState ? { consecutiveFailures: 0, ...rest.cursorState } : null,
+  } as BotTriggerView;
 }
 
 /// The bot's single inbox; `from` undefined accepts every bot in the universe.
-export function inboxTrigger(from: string[] | undefined, rest: TriggerRest): BotTrigger {
-  return trigger({ ...rest, name: "inbox", kind: "bot", spec: from === undefined ? {} : { from } });
+export function inboxTrigger(botId: string, from: string[] | undefined, rest: TriggerRest): BotTriggerView {
+  return {
+    ...baseTrigger(botId, "inbox", rest),
+    kind: "bot",
+    from: from ?? null,
+  } as BotTriggerView;
+}
+
+export interface ChatSpecInit {
+  /// The universe's channel account this connection serves.
+  accountId: string;
+  matchScope?: ChatScope | null;
+  activation?: ChatActivation | null;
+  access?: ChatAccess | null;
+  /// A code makes the connection `pairing: "code"`; null opens it.
+  pairingCode?: string | null;
+  priority?: number;
 }
 
 /// A chat connection: one session per conversation, kept forever.
-export function chatTrigger(store: DemoStore, name: string, spec: BotChatSpec, rest: TriggerRest): BotTrigger {
-  const account = store.channelAccounts.get(spec.channelAccountId);
-  return trigger({
-    name,
+export function chatTrigger(botId: string, triggerId: string, spec: ChatSpecInit, rest: TriggerRest): BotTriggerView {
+  return {
+    ...baseTrigger(botId, triggerId, { route: { policy: "perKey", key: null }, sessionTtlMs: 0, ...rest }),
     kind: "chat",
-    spec,
-    route: { policy: "perKey", key: null },
-    sessionTtlMs: 0,
-    channelAccount: account
-      ? { id: account.id, provider: account.provider, accountId: account.accountId, displayName: account.displayName }
-      : null,
-    ...rest,
-  });
+    accountId: spec.accountId,
+    matchScope: spec.matchScope ?? null,
+    ...(spec.activation ? { activation: spec.activation } : {}),
+    ...(spec.access ? { access: spec.access } : {}),
+    pairing: spec.pairingCode ? "code" : "open",
+    priority: spec.priority ?? 100,
+    pairingCode: spec.pairingCode ?? null,
+  } as BotTriggerView;
 }
 
 export interface ManagedInit {
@@ -705,7 +779,10 @@ export function renderEvent(input: RenderedEvent): string {
 
 export interface EventInit {
   kind: string;
+  /// Document source string (`webhook:github`, `bot:planner`, `manual`, …).
   source: string;
+  /// Admitting trigger; derived from `source` when absent.
+  triggerId?: string | null;
   /// When it happened; received 900 ms later.
   at: number;
   summary: string;
@@ -715,16 +792,14 @@ export interface EventInit {
   session?: { sessionId: string; label: string } | null;
   sender?: string;
   hops?: number;
-  inReplyTo?: { bot: string; seq: number };
+  inReplyTo?: BotEventReplyRef;
   outcome: BotEventOutcome | null;
   detail?: string;
-  /// Shared by every event of one coalesced delivery.
-  deliveryId?: string;
   resolvedAfterMs?: number;
 }
 
 export interface ScriptedEvent {
-  envelope: BotEventEnvelope;
+  envelope: BotEventView;
   /// The event as the session read it.
   prompt: string;
 }
@@ -732,15 +807,31 @@ export interface ScriptedEvent {
 export interface EventLog {
   botId: string;
   /// Newest last; `seq` is the position in the log.
-  events: BotEventEnvelope[];
+  events: BotEventView[];
   add(init: EventInit): ScriptedEvent;
+}
+
+/// The bot each seeded event belongs to, so `recent` can name the main
+/// session without carrying non-wire fields on the view itself.
+const eventOwners = new WeakMap<BotEventView, string>();
+
+/// The admitting trigger, read off the document source the fixtures name:
+/// `webhook:x`/`poll:x`/`schedule:x` → `x`, a bot sender → the inbox, a
+/// chat provider source → the provider-named chat trigger.
+function triggerIdFromSource(source: string): string | null {
+  const prefixed = /^(?:webhook|poll|schedule|chat):(.+)$/.exec(source);
+  if (prefixed?.[1]) return prefixed[1];
+  if (source.startsWith("bot:")) return "inbox";
+  const provider = /^(telegram|whatsapp):/.exec(source);
+  if (provider?.[1]) return provider[1];
+  return null;
 }
 
 /// A bot's numbered event log. `add` stores the prompt and the event
 /// document as blobs, like admission does; `runId` is set by whoever
 /// appends the run that handled it.
 export function eventLog(store: DemoStore, botId: string): EventLog {
-  const events: BotEventEnvelope[] = [];
+  const events: BotEventView[] = [];
   const add = (init: EventInit): ScriptedEvent => {
     const seq = events.length + 1;
     const inReplyTo = init.inReplyTo ?? null;
@@ -753,38 +844,39 @@ export function eventLog(store: DemoStore, botId: string): EventLog {
       ...(init.body === undefined ? {} : { body: init.body }),
       inReplyTo,
     });
-    const document = {
+    const document: BotEventDocument = {
       version: 1,
       kind: init.kind,
       source: init.source,
-      occurredAt: atIso(init.at),
+      occurredAtMs: init.at,
       summary: init.summary,
       ...(init.data === undefined ? {} : { data: init.data }),
       ...(init.sender === undefined ? {} : { sender: { bot: init.sender } }),
       ...(init.hops ? { hops: init.hops } : {}),
       ...(inReplyTo ? { inReplyTo } : {}),
     };
-    const envelope: BotEventEnvelope = {
-      id: `${botId}-evt-${seq}`,
-      eventId: init.eventId ?? `${init.kind}:${botId}:${seq}`,
+    const triggerId = init.triggerId !== undefined ? init.triggerId : triggerIdFromSource(init.source);
+    const envelope: BotEventView = {
       seq,
-      promptRef: store.putText(prompt),
+      eventId: init.eventId ?? `${init.kind}:${botId}:${seq}`,
+      ...(triggerId === null ? {} : { triggerId }),
       kind: init.kind,
-      source: init.source,
-      occurredAt: atIso(init.at),
-      ref: store.putText(JSON.stringify(document, null, 2)),
+      summary: init.summary,
+      occurredAtMs: init.at,
+      receivedAtMs: init.at + 900,
+      promptRef: store.putText(prompt),
+      documentRef: store.putText(JSON.stringify(document, null, 2)),
       session: init.session ? { sessionId: init.session.sessionId, label: init.session.label } : null,
-      sender: init.sender ?? null,
+      senderBotId: init.sender ?? null,
       hops: init.hops ?? 0,
       inReplyTo,
-      receivedAt: atIso(init.at + 900),
       outcome: init.outcome,
       outcomeDetail: init.detail ?? null,
-      deliveryId: init.outcome === "blocked" ? null : (init.deliveryId ?? `dlv-${botId}-${seq}`),
       runId: null,
-      resolvedAt: init.outcome === null ? null : atIso(init.at + (init.resolvedAfterMs ?? 40_000)),
+      resolvedAtMs: init.outcome === null ? null : init.at + (init.resolvedAfterMs ?? 40_000),
     };
     events.push(envelope);
+    eventOwners.set(envelope, botId);
     return { envelope, prompt };
   };
   return { botId, events, add };
@@ -815,6 +907,7 @@ export function chatMessage(
   return log.add({
     kind: "chat.message",
     source: conversation.source,
+    triggerId: trigger,
     at,
     summary: `${sender} (${clockLabel(at)}): ${text}`,
     eventId: `chat:${trigger}:${conversation.chatId}:${messageId}`,
@@ -850,6 +943,7 @@ export function chatSent(
   return log.add({
     kind: "chat.sent",
     source: conversation.source,
+    triggerId: conversation.provider,
     at,
     summary: line,
     eventId: `chat:${conversation.provider}:${conversation.chatId}:sent:${log.events.length + 1}`,
@@ -940,65 +1034,71 @@ export function subagentSession(store: DemoStore, universe: UniverseState, init:
   });
 }
 
-/// One descendant as the bot page's lineage lists it.
-export function lineageChild(
-  session: SessionRecord,
-  profileId: string,
-  depth: number,
-): BotSessionLineage["children"][number] {
+/// A session summary in the core wire shape (bot-state descendants).
+export function sessionSummaryOf(session: SessionRecord): SessionSummaryView {
+  const view = session.view;
   return {
-    id: session.view.id,
-    displayName: session.view.displayName ?? null,
-    lifecycleStatus: session.view.status === "closed" ? "closed" : "open",
-    profileId,
-    depth,
-    updatedAtMs: session.view.updatedAtMs,
+    id: view.id,
+    displayName: view.displayName ?? null,
+    createdAtMs: view.createdAtMs,
+    updatedAtMs: view.updatedAtMs,
+    lifecycleStatus: view.status === "closed" ? "closed" : "open",
+    managed: view.managed,
+    origin: view.origin ?? null,
   };
+}
+
+/// One descendant as the bot state's flat list carries it; profile and
+/// depth already travel on the session's own `origin`.
+export function lineageChild(session: SessionRecord, profileId: string, depth: number): SessionSummaryView {
+  void profileId;
+  void depth;
+  return sessionSummaryOf(session);
 }
 
 /// A session as the controller lists it; the label defaults to "Main" for
 /// the main session and to the display name for a keyed one.
 export function botSession(
   session: SessionRecord,
-  kind: BotManagedSession["kind"],
+  kind: "main" | "keyed" | "event",
   label?: string,
-): BotManagedSession {
+): BotSessionSnapshot {
   return {
     sessionId: session.view.id,
     label: label ?? (kind === "main" ? "Main" : (session.view.displayName ?? session.view.id)),
-    kind,
+    kind: kind === "main" ? "main" : kind === "keyed" ? "perKey" : "perEvent",
+    busy: false,
+    generation: 1,
     lastActiveAtMs: session.view.updatedAtMs,
   };
 }
 
-/// The delivery's decision as the controller remembers it, so the activity
-/// page can fill in cache figures beside the stored outcome.
+/// The delivery as the controller remembers it, so the activity page can
+/// fill in cache figures beside the stored outcome.
 export function recent(
-  envelope: BotEventEnvelope,
+  envelope: BotEventView,
   usage?: { inputTokens: number; cachedInputTokens: number },
-): BotRecentEvent {
-  const outcome = envelope.outcome ?? "unresolved";
+): BotRecentDeliverySnapshot {
+  const botId = eventOwners.get(envelope);
   return {
-    id: envelope.eventId,
-    ref: envelope.ref,
-    seqs: envelope.seq === null ? [] : [envelope.seq],
+    deliveryId: `dlv-${botId ?? "bot"}-${envelope.seq}`,
+    seqs: [envelope.seq],
+    sessionId: envelope.session?.sessionId ?? `bot:v1:${botId ?? "bot"}`,
+    finishedAtMs: envelope.resolvedAtMs ?? envelope.receivedAtMs,
+    outcome: envelope.outcome ?? "unresolved",
+    ...(envelope.runId ? { runId: envelope.runId } : {}),
+    ...(envelope.outcomeDetail === null || envelope.outcomeDetail === undefined
+      ? {}
+      : { summary: envelope.outcomeDetail }),
     ...(usage === undefined ? {} : { usage }),
-    outcome,
-    eventCount: 1,
-    ...(envelope.runId === null ? {} : { runId: envelope.runId }),
-    ...(outcome === "run_failed"
-      ? { failure: envelope.outcomeDetail ?? "run failed" }
-      : envelope.outcomeDetail === null
-        ? {}
-        : { summary: envelope.outcomeDetail }),
   };
 }
 
 export interface StateInit {
-  bot: Bot;
+  bot: BotView;
   /// The main session first.
-  sessions: BotManagedSession[];
-  recentEvents: BotRecentEvent[];
+  sessions: BotSessionSnapshot[];
+  recentEvents: BotRecentDeliverySnapshot[];
   eventsProcessed: number;
   duplicateEventCount?: number;
   appliedProfileRevision: number;
@@ -1007,27 +1107,66 @@ export interface StateInit {
 }
 
 /// The controller's live snapshot for an idle bot.
-export function botState(init: StateInit): BotState {
+export function botState(init: StateInit): BotControllerSnapshot {
   return {
-    botName: init.bot.botId,
-    displayName: init.bot.displayName,
-    profileId: init.bot.profileId,
-    sessionId: init.sessions.find((session) => session.kind === "main")?.sessionId ?? `bot:v1:${init.bot.botId}`,
+    mainSessionId:
+      init.sessions.find((session) => session.kind === "main")?.sessionId ?? `bot:v1:${init.bot.botId}`,
     sessions: init.sessions,
     controllerStatus: "idle",
+    setupStatus: "ready",
+    enabled: init.bot.enabled ?? true,
+    closed: false,
     activeDeliveries: [],
-    sessionReady: true,
-    pendingEventCount: 0,
-    pendingDeliveryCount: 0,
     buffers: [],
-    recentEvents: init.recentEvents,
+    pendingDeliveries: 0,
+    recentDeliveries: init.recentEvents,
     eventsProcessed: init.eventsProcessed,
-    duplicateEventCount: init.duplicateEventCount ?? 0,
-    duplicateEmissionCount: 0,
+    duplicateEvents: init.duplicateEventCount ?? 0,
     appliedProfileRevision: init.appliedProfileRevision,
-    runsPerDay: init.bot.runsPerDay,
+    runDay: new Date(NOW).toISOString().slice(0, 10),
     runsToday: init.runsToday,
     descendantsToday: init.descendantsToday ?? 0,
     lastError: null,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Channels
+// ---------------------------------------------------------------------------
+
+export interface ChannelAccountInit {
+  accountId: string;
+  provider: string;
+  /// Provider-native identity: the Telegram bot username, the WhatsApp number.
+  providerAccountId: string;
+  displayName: string;
+  credentialGrantId?: string | null;
+  settings?: ChannelAccountView["settings"];
+  enabled?: boolean;
+  createdAtMs: number;
+  updatedAtMs: number;
+}
+
+/// A universe channel account in the core wire shape, stored on the universe.
+export function channelAccount(universe: UniverseState, init: ChannelAccountInit): ChannelAccountView {
+  const account: ChannelAccountView = {
+    accountId: init.accountId,
+    provider: init.provider,
+    providerAccountId: init.providerAccountId,
+    displayName: init.displayName,
+    credentialGrantId: init.credentialGrantId ?? null,
+    settings: init.settings ?? {},
+    enabled: init.enabled ?? true,
+    revision: 1,
+    createdAtMs: init.createdAtMs,
+    updatedAtMs: init.updatedAtMs,
+  };
+  universe.channelAccounts.set(account.accountId, account);
+  return account;
+}
+
+/// A pairing row: the routing authority binding one conversation to a bot.
+export function channelPairing(universe: UniverseState, pairing: ChannelPairingView): ChannelPairingView {
+  universe.channelPairings.push(pairing);
+  return pairing;
 }

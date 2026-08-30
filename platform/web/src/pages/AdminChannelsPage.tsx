@@ -1,7 +1,14 @@
-import { useState, type FormEvent } from "react";
+import { useMemo, useState, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Plus } from "lucide-react";
-import { api, type ChannelAccount, type ChannelsStatus } from "@/api";
+import {
+  api,
+  type ChannelAccountInput,
+  type ChannelsStatus,
+  type OperatorChannelAccountListResponse,
+  type OperatorChannelAccountView,
+  type Universe,
+} from "@/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -40,32 +47,61 @@ import {
   TableTitleCell,
 } from "@/components/ui/table";
 import { LoadingNote, PageHeader } from "@/components/page";
+import { useUniverses } from "@/lib/universes";
+
+/// Channel accounts are universe resources in the core; this admin page
+/// reads the deployment-wide operator listing and manages each row through
+/// its universe's routes. Operator rows carry the CORE universe id, so
+/// management calls map it to the platform universe that links to it.
+function accountInputOf(row: OperatorChannelAccountView): ChannelAccountInput {
+  return {
+    accountId: row.accountId,
+    provider: row.provider,
+    providerAccountId: row.providerAccountId,
+    displayName: row.displayName,
+    credentialGrantId: row.credentialGrantId ?? null,
+    enabled: row.enabled ?? true,
+    ...(row.settings ? { settings: row.settings } : {}),
+  };
+}
 
 export function AdminChannelsPage() {
   const queryClient = useQueryClient();
   const accounts = useQuery({
-    queryKey: ["channel-accounts"],
-    queryFn: () => api<ChannelAccount[]>("GET", "/api/v1/channel-accounts"),
+    queryKey: ["admin-channel-accounts"],
+    queryFn: () => api<OperatorChannelAccountListResponse>("GET", "/api/v1/channel-accounts"),
   });
+  const universes = useUniverses();
   const status = useQuery({
     queryKey: ["channels-status"],
     queryFn: () => api<ChannelsStatus>("GET", "/api/v1/status/channels"),
     refetchInterval: 10_000,
   });
+  const universeByCoreId = useMemo(
+    () => new Map((universes.data ?? []).map((universe) => [universe.lightspeedUniverseId, universe])),
+    [universes.data],
+  );
   const toggle = useMutation({
-    mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) =>
-      api<ChannelAccount>("PATCH", `/api/v1/channel-accounts/${id}`, { enabled }),
+    mutationFn: (row: OperatorChannelAccountView) => {
+      const universe = universeByCoreId.get(row.universeId);
+      if (!universe) throw new Error(`No platform universe links to ${row.universeId}.`);
+      return api("PUT", `/api/v1/universes/${universe.id}/channel-accounts/${row.accountId}`, {
+        account: { ...accountInputOf(row), enabled: !(row.enabled ?? true) },
+        expectedRevision: row.revision,
+      });
+    },
     onSuccess: () =>
-      void queryClient.invalidateQueries({ queryKey: ["channel-accounts"] }),
+      void queryClient.invalidateQueries({ queryKey: ["admin-channel-accounts"] }),
   });
 
   const [createOpen, setCreateOpen] = useState(false);
+  const rows = accounts.data?.accounts ?? [];
 
   return (
     <>
       <PageHeader
         title="Channels"
-        description="Provider accounts and live connector state for this deployment."
+        description="Provider accounts across universes and live connector state for this deployment."
         actions={
           <Button onClick={() => setCreateOpen(true)}>
             <Plus data-icon="inline-start" />
@@ -73,7 +109,7 @@ export function AdminChannelsPage() {
           </Button>
         }
       />
-      <CreateAccountDialog open={createOpen} onOpenChange={setCreateOpen} />
+      <CreateAccountDialog open={createOpen} onOpenChange={setCreateOpen} universes={universes.data ?? []} />
       <div className="grid gap-6">
         <Card>
           <CardHeader>
@@ -133,12 +169,14 @@ export function AdminChannelsPage() {
           <CardHeader>
             <CardTitle>Channel accounts</CardTitle>
             <CardDescription>
-              Chat triggers on bots target one stable provider account. Secret values stay outside Postgres.
+              Chat triggers on bots target one stable provider account in their universe. Secret values stay
+              outside Postgres.
             </CardDescription>
           </CardHeader>
           <CardContent className="grid gap-5">
             {accounts.isLoading && <LoadingNote />}
             {accounts.error && <p className="text-sm text-destructive">{accounts.error.message}</p>}
+            {toggle.error && <p className="text-sm text-destructive">{toggle.error.message}</p>}
             {accounts.data && (
               <TableCard>
                 <Table>
@@ -146,35 +184,46 @@ export function AdminChannelsPage() {
                     <TableRow>
                       <TableHead>Account</TableHead>
                       <TableHead>Provider</TableHead>
+                      <TableHead>Universe</TableHead>
                       <TableHead>Status</TableHead>
                       <TableHead className="w-0" />
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {accounts.data.map((account) => (
-                      <TableRow key={account.id}>
-                        <TableTitleCell
-                          title={account.displayName}
-                          subtitle={account.accountId}
-                        />
-                        <TableCell>{account.provider}</TableCell>
-                        <TableCell>
-                          <Badge variant={account.enabled ? "secondary" : "outline"}>
-                            {account.enabled ? "enabled" : "disabled"}
-                          </Badge>
-                        </TableCell>
-                        <TableActionsCell>
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            disabled={toggle.isPending}
-                            onClick={() => toggle.mutate({ id: account.id, enabled: !account.enabled })}
-                          >
-                            {account.enabled ? "Disable" : "Enable"}
-                          </Button>
-                        </TableActionsCell>
-                      </TableRow>
-                    ))}
+                    {rows.map((account) => {
+                      const universe = universeByCoreId.get(account.universeId);
+                      return (
+                        <TableRow key={`${account.universeId}/${account.accountId}`}>
+                          <TableTitleCell
+                            title={account.displayName}
+                            subtitle={account.accountId}
+                          />
+                          <TableCell>
+                            {account.provider}
+                            <span className="block text-xs text-muted-foreground">{account.providerAccountId}</span>
+                          </TableCell>
+                          <TableCell className="text-muted-foreground">
+                            {universe?.name ?? account.universeId}
+                          </TableCell>
+                          <TableCell>
+                            <Badge variant={(account.enabled ?? true) ? "secondary" : "outline"}>
+                              {(account.enabled ?? true) ? "enabled" : "disabled"}
+                            </Badge>
+                          </TableCell>
+                          <TableActionsCell>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              disabled={toggle.isPending || !universe}
+                              title={universe ? undefined : "No platform universe links to this account's universe."}
+                              onClick={() => toggle.mutate(account)}
+                            >
+                              {(account.enabled ?? true) ? "Disable" : "Enable"}
+                            </Button>
+                          </TableActionsCell>
+                        </TableRow>
+                      );
+                    })}
                   </TableBody>
                 </Table>
               </TableCard>
@@ -189,39 +238,44 @@ export function AdminChannelsPage() {
 function CreateAccountDialog({
   open,
   onOpenChange,
+  universes,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  universes: Universe[];
 }) {
   const queryClient = useQueryClient();
+  const [universeId, setUniverseId] = useState("");
   const [provider, setProvider] = useState<"telegram" | "whatsapp">("telegram");
   const [accountId, setAccountId] = useState("");
+  const [providerAccountId, setProviderAccountId] = useState("");
   const [displayName, setDisplayName] = useState("");
-  const [credentialRef, setCredentialRef] = useState("");
-  const [stateRef, setStateRef] = useState("");
+  const [credentialGrantId, setCredentialGrantId] = useState("");
   const [error, setError] = useState<string | null>(null);
 
   const reset = () => {
+    setUniverseId("");
     setProvider("telegram");
     setAccountId("");
+    setProviderAccountId("");
     setDisplayName("");
-    setCredentialRef("");
-    setStateRef("");
+    setCredentialGrantId("");
     setError(null);
   };
 
   const create = useMutation({
     mutationFn: () =>
-      api<ChannelAccount>("POST", "/api/v1/channel-accounts", {
-        provider,
-        accountId: accountId.trim(),
-        displayName: displayName.trim(),
-        credentialRef: credentialRef.trim() || null,
-        stateRef: stateRef.trim() || null,
-        settings: {},
+      api("POST", `/api/v1/universes/${universeId}/channel-accounts`, {
+        account: {
+          accountId: accountId.trim(),
+          provider,
+          providerAccountId: providerAccountId.trim(),
+          displayName: displayName.trim(),
+          ...(credentialGrantId.trim() ? { credentialGrantId: credentialGrantId.trim() } : {}),
+        } satisfies ChannelAccountInput,
       }),
     onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ["channel-accounts"] });
+      await queryClient.invalidateQueries({ queryKey: ["admin-channel-accounts"] });
       onOpenChange(false);
       reset();
     },
@@ -239,12 +293,27 @@ function CreateAccountDialog({
         <DialogHeader>
           <DialogTitle>Add channel account</DialogTitle>
           <DialogDescription>
-            Registers a provider account for the Channels connectors. Universe owners
-            connect conversations to it with a chat trigger on one of their bots.
+            Registers a provider account in one universe. Its owners connect conversations to it
+            with a chat trigger on one of their bots.
           </DialogDescription>
         </DialogHeader>
         <form onSubmit={submit} className="grid gap-4">
           <div className="grid gap-4 sm:grid-cols-2">
+            <Field>
+              <FieldLabel htmlFor="channel-universe">Universe</FieldLabel>
+              <Select value={universeId} onValueChange={(value) => value && setUniverseId(value)}>
+                <SelectTrigger id="channel-universe">
+                  <SelectValue placeholder="Select a universe" />
+                </SelectTrigger>
+                <SelectContent>
+                  {universes.map((universe) => (
+                    <SelectItem key={universe.id} value={universe.id}>
+                      {universe.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </Field>
             <Field>
               <FieldLabel htmlFor="channel-provider">Provider</FieldLabel>
               <Select
@@ -260,6 +329,8 @@ function CreateAccountDialog({
                 </SelectContent>
               </Select>
             </Field>
+          </div>
+          <div className="grid gap-4 sm:grid-cols-2">
             <Field>
               <FieldLabel htmlFor="channel-account-id">Stable account id</FieldLabel>
               <Input
@@ -269,6 +340,19 @@ function CreateAccountDialog({
                 required
                 autoFocus
               />
+              <FieldDescription>How triggers and the API name this account.</FieldDescription>
+            </Field>
+            <Field>
+              <FieldLabel htmlFor="channel-provider-account-id">Provider account</FieldLabel>
+              <Input
+                id="channel-provider-account-id"
+                value={providerAccountId}
+                onChange={(e) => setProviderAccountId(e.target.value)}
+                required
+              />
+              <FieldDescription>
+                The Telegram bot username or id, or the WhatsApp phone number.
+              </FieldDescription>
             </Field>
           </div>
           <Field>
@@ -280,30 +364,21 @@ function CreateAccountDialog({
               required
             />
           </Field>
-          <div className="grid gap-4 sm:grid-cols-2">
-            <Field>
-              <FieldLabel htmlFor="channel-credential-ref">Credential reference</FieldLabel>
-              <Input
-                id="channel-credential-ref"
-                value={credentialRef}
-                onChange={(e) => setCredentialRef(e.target.value)}
-                placeholder="optional"
-              />
-            </Field>
-            <Field>
-              <FieldLabel htmlFor="channel-state-ref">State reference</FieldLabel>
-              <Input
-                id="channel-state-ref"
-                value={stateRef}
-                onChange={(e) => setStateRef(e.target.value)}
-                placeholder="optional"
-              />
-            </Field>
-          </div>
-          <FieldDescription>
-            References are opaque handles resolved by the connector; secrets never
-            pass through this form.
-          </FieldDescription>
+          <Field>
+            <FieldLabel htmlFor="channel-credential-grant">Credential grant id</FieldLabel>
+            <Input
+              id="channel-credential-grant"
+              value={credentialGrantId}
+              onChange={(e) => setCredentialGrantId(e.target.value)}
+              placeholder="optional"
+              className="font-mono"
+              autoComplete="off"
+            />
+            <FieldDescription>
+              Retrievable grant holding the provider token (Telegram); WhatsApp accounts keep their
+              session state on the connector instead. Secrets never pass through this form.
+            </FieldDescription>
+          </Field>
           {error && <p className="text-sm text-destructive">{error}</p>}
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
@@ -311,7 +386,13 @@ function CreateAccountDialog({
             </Button>
             <Button
               type="submit"
-              disabled={create.isPending || !accountId.trim() || !displayName.trim()}
+              disabled={
+                create.isPending ||
+                !universeId ||
+                !accountId.trim() ||
+                !providerAccountId.trim() ||
+                !displayName.trim()
+              }
             >
               {create.isPending ? "Adding…" : "Add account"}
             </Button>

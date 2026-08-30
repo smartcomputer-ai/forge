@@ -6,8 +6,8 @@
 /// steers a CI failure into the running task, pr-reviewer reviews, and
 /// release-scribe drafts the changelog. Everything the universe pages show
 /// is seeded here, with timestamps hung off boot time.
-import type { BotEventOutcome, BotLineage, BotSessionLineage, Environment, GitHubApp, ProfileEnvironment, SecretGrant, SessionOrigin, UniverseSetup } from "@/api";
-import type { ModelConfig } from "@lightspeed/agent-client";
+import type { Environment, GitHubApp, ProfileEnvironment, SecretGrant, SessionOrigin, UniverseSetup } from "@/api";
+import type { BotEventOutcome, ModelConfig, SessionSummaryView } from "@lightspeed/agent-client";
 import { appendExchange, appendScriptedRun, closeSession, newSession } from "../engine";
 import type { DemoResponder, DemoStore, DemoToolCall, DemoTurn, SessionRecord, UniverseState } from "../store";
 import {
@@ -288,14 +288,18 @@ function subagentSession(store: DemoStore, universe: UniverseState, init: Subage
   });
 }
 
-function lineageChild(session: SessionRecord, profileId: string, depth: number): BotSessionLineage["children"][number] {
+/// One descendant as the bot state's flat list carries it; profile and
+/// depth already travel on the session's own `origin`.
+function lineageChild(session: SessionRecord): SessionSummaryView {
+  const view = session.view;
   return {
-    id: session.view.id,
-    displayName: session.view.displayName ?? null,
-    lifecycleStatus: session.view.status === "closed" ? "closed" : "open",
-    profileId,
-    depth,
-    updatedAtMs: session.view.updatedAtMs,
+    id: view.id,
+    displayName: view.displayName ?? null,
+    createdAtMs: view.createdAtMs,
+    updatedAtMs: view.updatedAtMs,
+    lifecycleStatus: view.status === "closed" ? "closed" : "open",
+    managed: view.managed,
+    origin: view.origin ?? null,
   };
 }
 
@@ -1971,7 +1975,7 @@ function pullRequestEvent(
   outcome: BotEventOutcome | null,
   detail: string,
   resolvedAfterMs: number,
-  extra: { author?: string; deliveryId?: string } = {},
+  extra: { author?: string } = {},
 ): ScriptedEvent {
   const delivery = uuidLike(`gh:${task.pr}:${action}:${atMs}`);
   return log.add({
@@ -1985,7 +1989,6 @@ function pullRequestEvent(
     outcome,
     detail,
     resolvedAfterMs,
-    ...(extra.deliveryId === undefined ? {} : { deliveryId: extra.deliveryId }),
     data: {
       action,
       repository: "acme/acme-web",
@@ -2051,6 +2054,7 @@ function seedIntake(store: DemoStore, universe: UniverseState): void {
   });
   const triggers = [
     webhookTrigger(
+      universe,
       BOT.intake,
       "linear-webhook",
       { token: LINEAR_WEBHOOK_TOKEN, verification: { scheme: "hmac-sha256", grantId: GRANT.linearWebhook, header: "linear-signature" } },
@@ -2062,12 +2066,13 @@ function seedIntake(store: DemoStore, universe: UniverseState): void {
         updatedAtMs: ago(20 * DAY_MS),
       },
     ),
-    inboxTrigger([BOT.planner, BOT.reviewer], {
+    inboxTrigger(BOT.intake, [BOT.planner, BOT.reviewer], {
       route: { policy: "perKey", key: "data.issue" },
       deliver: { whenBusy: "queue" },
       createdAtMs: ago(30 * DAY_MS),
     }),
     scheduleTrigger(
+      BOT.intake,
       "weekly-backlog",
       { cron: "30 8 * * 1", summary: "Monday backlog: issues labeled ready-for-build without a spec, and what each is missing." },
       { route: { policy: "bot" }, deliver: { whenBusy: "queue" }, createdAtMs: ago(30 * DAY_MS) },
@@ -2339,7 +2344,7 @@ function seedIntake(store: DemoStore, universe: UniverseState): void {
 
   universe.bots.set(BOT.intake, {
     bot: record,
-    triggers: new Map(triggers.map((entry) => [entry.name, entry])),
+    triggers: new Map(triggers.map((entry) => [entry.triggerId, entry])),
     events: log.events,
     state: botState({
       bot: record,
@@ -2354,7 +2359,7 @@ function seedIntake(store: DemoStore, universe: UniverseState): void {
       appliedProfileRevision: INTAKE_PROFILE.revision,
       runsToday: 3,
     }),
-    lineage: {},
+    descendants: [],
   });
 }
 
@@ -2378,8 +2383,9 @@ function seedPlanner(store: DemoStore, universe: UniverseState): void {
     updatedAtMs: ago(5 * DAY_MS),
   });
   const triggers = [
-    inboxTrigger([BOT.intake, BOT.implementer], { route: { policy: "bot" }, deliver: { whenBusy: "queue" }, createdAtMs: ago(31 * DAY_MS) }),
+    inboxTrigger(BOT.planner, [BOT.intake, BOT.implementer], { route: { policy: "bot" }, deliver: { whenBusy: "queue" }, createdAtMs: ago(31 * DAY_MS) }),
     scheduleTrigger(
+      BOT.planner,
       "nightly-replan",
       { cron: "0 2 * * *", summary: "Re-read every open plan against main and note tasks that no longer apply." },
       {
@@ -2387,7 +2393,7 @@ function seedPlanner(store: DemoStore, universe: UniverseState): void {
         deliver: { whenBusy: "queue" },
         enabled: false,
         disabledReason: "operator",
-        disabledAt: agoIso(5 * DAY_MS - HOUR_MS),
+        disabledAtMs: ago(5 * DAY_MS - HOUR_MS),
         createdAtMs: ago(28 * DAY_MS),
         updatedAtMs: ago(5 * DAY_MS - HOUR_MS),
       },
@@ -2541,7 +2547,7 @@ function seedPlanner(store: DemoStore, universe: UniverseState): void {
 
   universe.bots.set(BOT.planner, {
     bot: record,
-    triggers: new Map(triggers.map((entry) => [entry.name, entry])),
+    triggers: new Map(triggers.map((entry) => [entry.triggerId, entry])),
     events: log.events,
     state: botState({
       bot: record,
@@ -2556,7 +2562,7 @@ function seedPlanner(store: DemoStore, universe: UniverseState): void {
       appliedProfileRevision: PLANNER_PROFILE.revision,
       runsToday: 4,
     }),
-    lineage: {},
+    descendants: [],
   });
 }
 
@@ -2785,7 +2791,7 @@ function seedImplementer(store: DemoStore, universe: UniverseState): void {
     updatedAtMs: ago(2 * DAY_MS),
   });
   const triggers = [
-    inboxTrigger([BOT.planner, BOT.ci, BOT.reviewer], {
+    inboxTrigger(BOT.implementer, [BOT.planner, BOT.ci, BOT.reviewer], {
       route: { policy: "perKey", key: "data.task.id" },
       deliver: { whenBusy: "steer" },
       createdAtMs: ago(30 * DAY_MS),
@@ -3289,14 +3295,16 @@ function seedImplementer(store: DemoStore, universe: UniverseState): void {
     },
   }).id;
 
-  const lineage: BotLineage = {
-    [SESSION.taskA]: { open: 0, total: 3, children: [lineageChild(exploreBucket, PROFILE.explorer, 1), lineageChild(testsBucket, PROFILE.tests, 1), lineageChild(conventions, PROFILE.explorer, 2)] },
-    [SESSION.taskB]: { open: 0, total: 1, children: [lineageChild(exploreConfig, PROFILE.explorer, 1)] },
-    [SESSION.taskC]: { open: 1, total: 1, children: [lineageChild(testsMetrics, PROFILE.tests, 1)] },
-  };
+  const descendants: SessionSummaryView[] = [
+    lineageChild(exploreBucket),
+    lineageChild(testsBucket),
+    lineageChild(conventions),
+    lineageChild(exploreConfig),
+    lineageChild(testsMetrics),
+  ];
   universe.bots.set(BOT.implementer, {
     bot: record,
-    triggers: new Map(triggers.map((entry) => [entry.name, entry])),
+    triggers: new Map(triggers.map((entry) => [entry.triggerId, entry])),
     events: log.events,
     state: botState({
       bot: record,
@@ -3315,7 +3323,7 @@ function seedImplementer(store: DemoStore, universe: UniverseState): void {
       runsToday: 6,
       descendantsToday: 5,
     }),
-    lineage,
+    descendants,
   });
 }
 
@@ -3347,6 +3355,7 @@ function seedPrReviewer(store: DemoStore, universe: UniverseState): void {
   });
   const triggers = [
     webhookTrigger(
+      universe,
       BOT.reviewer,
       "github-webhook",
       { token: GITHUB_WEBHOOK_TOKEN, verification: { scheme: "hmac-sha256", grantId: GRANT.github, header: "x-hub-signature-256", prefix: "sha256=" }, preset: "github" },
@@ -3359,13 +3368,14 @@ function seedPrReviewer(store: DemoStore, universe: UniverseState): void {
         updatedAtMs: ago(5 * DAY_MS),
       },
     ),
-    inboxTrigger([BOT.implementer, BOT.ci], {
+    inboxTrigger(BOT.reviewer, [BOT.implementer, BOT.ci], {
       route: { policy: "perKey", key: "data.pr" },
       deliver: { whenBusy: "steer" },
       createdAtMs: ago(8 * DAY_MS),
       updatedAtMs: ago(2 * DAY_MS),
     }),
     scheduleTrigger(
+      BOT.reviewer,
       "morning-triage",
       { cron: "0 9 * * 1-5", summary: "Weekday morning triage: open PRs and who they wait on, anything older than two days, reviews deferred yesterday." },
       { route: { policy: "bot" }, deliver: { whenBusy: "queue" }, createdAtMs: ago(11 * DAY_MS) },
@@ -3695,7 +3705,7 @@ function seedPrReviewer(store: DemoStore, universe: UniverseState): void {
 
   universe.bots.set(BOT.reviewer, {
     bot: record,
-    triggers: new Map(triggers.map((entry) => [entry.name, entry])),
+    triggers: new Map(triggers.map((entry) => [entry.triggerId, entry])),
     events: log.events,
     state: botState({
       bot: record,
@@ -3715,7 +3725,7 @@ function seedPrReviewer(store: DemoStore, universe: UniverseState): void {
       appliedProfileRevision: REVIEWER_PROFILE.revision,
       runsToday: 8,
     }),
-    lineage: {},
+    descendants: [],
   });
 }
 
@@ -3740,6 +3750,7 @@ function seedCiWatch(store: DemoStore, universe: UniverseState): void {
   });
   const triggers = [
     pollTrigger(
+      BOT.ci,
       "ci-status-poll",
       {
         source: {
@@ -3758,17 +3769,17 @@ function seedCiWatch(store: DemoStore, universe: UniverseState): void {
         route: { policy: "bot" },
         coalesce: { debounceMs: 60_000, maxWaitMs: 5 * MINUTE_MS, maxCount: 20 },
         deliver: { whenBusy: "queue" },
-        cursor: {
+        cursorState: {
           ids: ["9140", "9151", "9160", "9172", "9181", "9185", String(CI_RUN_492), "9189", "9190", "9193", "9194", "9196"],
           consecutiveFailures: 0,
-          baselinedAt: agoIso(20 * DAY_MS),
-          lastPolledAt: agoIso(MINUTE_MS + 20_000),
+          baselinedAtMs: ago(20 * DAY_MS),
+          lastPolledAtMs: ago(MINUTE_MS + 20_000),
         },
         createdAtMs: ago(20 * DAY_MS),
         updatedAtMs: ago(MINUTE_MS + 20_000),
       },
     ),
-    inboxTrigger([BOT.implementer, BOT.reviewer], { route: { policy: "bot" }, deliver: { whenBusy: "queue" }, createdAtMs: ago(20 * DAY_MS) }),
+    inboxTrigger(BOT.ci, [BOT.implementer, BOT.reviewer], { route: { policy: "bot" }, deliver: { whenBusy: "queue" }, createdAtMs: ago(20 * DAY_MS) }),
   ];
   const main = managedSession(store, universe, { id: SESSION.ciMain, botId: BOT.ci, displayName: "CI Watch", profile: CI_PROFILE, tools: [...BOT_TOOLS, EMIT_TOOL], createdAtMs: ago(20 * DAY_MS) });
   introduce(
@@ -3788,7 +3799,6 @@ function seedCiWatch(store: DemoStore, universe: UniverseState): void {
     outcome: BotEventOutcome,
     detail: string,
     resolvedAfterMs: number,
-    deliveryId?: string,
   ): ScriptedEvent =>
     log.add({
       kind: "poll",
@@ -3801,7 +3811,6 @@ function seedCiWatch(store: DemoStore, universe: UniverseState): void {
       outcome,
       detail,
       resolvedAfterMs,
-      ...(deliveryId === undefined ? {} : { deliveryId }),
       data: {
         id: run.id,
         name: "ci.yml",
@@ -3865,14 +3874,12 @@ function seedCiWatch(store: DemoStore, universe: UniverseState): void {
     }),
     SEQ.ciReceiptReviewer,
   );
-  const mainBatch = `dlv-${BOT.ci}-e2e-timeouts`;
   const e6 = pollEvent(
     { id: 9193, branch: "main", pr: null, job: "e2e (checkout)", head: "e41b2c7", author: "priya-n" },
     p(23),
     "handled",
     "Runs 9193 and 9194 are the same e2e job on main timing out against the Stripe sandbox (no code change between them). One issue, #494.",
     span(23, 27),
-    mainBatch,
   );
   const e7 = pollEvent(
     { id: 9194, branch: "main", pr: null, job: "e2e (checkout)", head: "e41b2c7", author: "priya-n" },
@@ -3880,7 +3887,6 @@ function seedCiWatch(store: DemoStore, universe: UniverseState): void {
     "handled",
     "Runs 9193 and 9194 are the same e2e job on main timing out against the Stripe sandbox (no code change between them). One issue, #494.",
     span(26, 27),
-    mainBatch,
   );
 
   e1.envelope.runId = appendScriptedRun(store, main, {
@@ -4007,7 +4013,7 @@ function seedCiWatch(store: DemoStore, universe: UniverseState): void {
 
   universe.bots.set(BOT.ci, {
     bot: record,
-    triggers: new Map(triggers.map((entry) => [entry.name, entry])),
+    triggers: new Map(triggers.map((entry) => [entry.triggerId, entry])),
     events: log.events,
     state: botState({
       bot: record,
@@ -4016,13 +4022,13 @@ function seedCiWatch(store: DemoStore, universe: UniverseState): void {
         recent(e3.envelope, { inputTokens: 9_400, cachedInputTokens: 8_100 }),
         recent(e4.envelope, { inputTokens: 10_900, cachedInputTokens: 10_500 }),
         recent(e5.envelope, { inputTokens: 11_300, cachedInputTokens: 10_900 }),
-        { ...recent(e6.envelope, { inputTokens: 12_800, cachedInputTokens: 11_600 }), seqs: [6, 7], eventCount: 2 },
+        { ...recent(e6.envelope, { inputTokens: 12_800, cachedInputTokens: 11_600 }), seqs: [6, 7] },
       ],
       eventsProcessed: 212,
       appliedProfileRevision: CI_PROFILE.revision,
       runsToday: 4,
     }),
-    lineage: {},
+    descendants: [],
   });
 }
 
@@ -4047,11 +4053,12 @@ function seedReleaseScribe(store: DemoStore, universe: UniverseState): void {
   });
   const triggers = [
     scheduleTrigger(
+      BOT.scribe,
       "friday-notes",
       { cron: "0 16 * * 5", summary: "Every Friday afternoon, draft release notes for everything merged since the last tag and open a docs PR." },
       { route: { policy: "bot" }, deliver: { whenBusy: "queue" }, createdAtMs: ago(30 * DAY_MS) },
     ),
-    inboxTrigger(undefined, { route: { policy: "bot" }, deliver: { whenBusy: "queue" }, createdAtMs: ago(30 * DAY_MS) }),
+    inboxTrigger(BOT.scribe, undefined, { route: { policy: "bot" }, deliver: { whenBusy: "queue" }, createdAtMs: ago(30 * DAY_MS) }),
   ];
   const main = managedSession(store, universe, { id: SESSION.scribeMain, botId: BOT.scribe, displayName: "Release Scribe", profile: SCRIBE_PROFILE, tools: BOT_TOOLS, createdAtMs: ago(30 * DAY_MS) });
   introduce(
@@ -4215,7 +4222,7 @@ function seedReleaseScribe(store: DemoStore, universe: UniverseState): void {
 
   universe.bots.set(BOT.scribe, {
     bot: record,
-    triggers: new Map(triggers.map((entry) => [entry.name, entry])),
+    triggers: new Map(triggers.map((entry) => [entry.triggerId, entry])),
     events: log.events,
     state: botState({
       bot: record,
@@ -4229,7 +4236,7 @@ function seedReleaseScribe(store: DemoStore, universe: UniverseState): void {
       appliedProfileRevision: SCRIBE_PROFILE.revision,
       runsToday: 1,
     }),
-    lineage: {},
+    descendants: [],
   });
 }
 

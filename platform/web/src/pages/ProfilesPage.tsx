@@ -227,10 +227,9 @@ function ProfileEditor({
 
   const save = useMutation({
     mutationFn: async (document: ProfileDocument) => {
+      // The core reconciles bots applying this profile onto the new
+      // revision on its own.
       await api("PUT", `/api/v1/universes/${universeId}/profiles/${profileId}`, document);
-      // Bots applying this profile learn about the new revision now, not at
-      // their next unrelated config change.
-      await api("POST", `/api/v1/universes/${universeId}/bots/reconcile`, { profileId });
     },
     onSuccess: () => {
       setError(null);

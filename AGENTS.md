@@ -337,7 +337,7 @@ Release construction, snapshots, and tagged publication are documented in
   returns `{ to, seq }` or a typed refusal; the sender rate cap and
   `MAX_BOT_HOPS` bound every exchange. Every event path — webhook, poll,
   schedule, self and addressed emits, receipts — goes through
-  `platform/bots/src/admission.ts` (`storeBotEvent` / `admitTriggerEvent`).
+  `crates/temporal-server/src/bots/admission.rs` (`store_bot_event` / `admit_trigger_event`).
   Replies are deterministic receipts (`bot.reply`) sent by the receiver's
   controller when the delivery finishes, routed by a logical session
   (base id, never a generation); no `bot_ask`, no joined cross-bot call,
@@ -346,7 +346,7 @@ Release construction, snapshots, and tagged publication are documented in
   by an authored, immutable `botId` (`bots.name`) plus a mutable
   `displayName`; the uuid row key never leaves the database, and
   model-facing `bot_*` results carry `#N` and labels, never digests
-  (`activities/tool-views.ts`).
+  (`crates/bots/src/views.rs`).
 - Channels are bot triggers (P139). A chat connection is a `bot_triggers`
   row of kind `chat` (account, scope, activation, access, pairing); there
   is no binding record and no channel-owned session. Every activated

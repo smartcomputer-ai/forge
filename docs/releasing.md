@@ -60,19 +60,18 @@ gate with a non-production database whose user may create temporary databases:
 LIGHTSPEED_PLATFORM_MIGRATION_TEST_URL=postgres://... npm run test:migrations
 ```
 
-The platform ledger was rebased on 2026-08-26 to one entry per product
-area: `0000_platform_baseline` (auth, universes, setup installations),
-`0001_channels` (`channel_accounts`, `channel_identities`), and
-`0002_bots` (bots, triggers, events, and chat-trigger pairings). A chat
-connection is a `chat` trigger; the retired `channel_bindings` and
-`bot_activity` tables are not part of the baseline. Keep that shape: a new
-area gets its own migration, and its tables live in their own
-`platform/db/src/schema/<area>.ts`. A rebase invalidates the Drizzle ledger of
-every existing database: either reset the database (`./dev.sh reset` for development) or
-replace the rows in `drizzle.__drizzle_migrations` with one row per journal
-entry (any hash, `created_at` = the entry's `when`) so only later migrations
-apply. A journal with a single entry passes the gate on the empty-install
-check alone; the upgrade check resumes with the next migration.
+The platform ledger was rebased on 2026-08-30 to the single
+`0000_platform_baseline` entry (auth, universes, setup installations): bots,
+triggers, events, channel accounts, and pairings moved into the Rust core
+schema (P142), so the platform database holds people and the universe mapping
+and nothing else. Keep that shape: a new area gets its own migration, and its
+tables live in their own `platform/db/src/schema/<area>.ts`. A rebase
+invalidates the Drizzle ledger of every existing database: either reset the
+database (`./dev.sh reset` for development) or replace the rows in
+`drizzle.__drizzle_migrations` with one row per journal entry (any hash,
+`created_at` = the entry's `when`) so only later migrations apply. A journal
+with a single entry passes the gate on the empty-install check alone; the
+upgrade check resumes with the next migration.
 
 ## Local release build
 

@@ -5595,7 +5595,7 @@
           "format": "int64",
           "type": "integer"
         },
-        "cursor": {
+        "cursorState": {
           "anyOf": [
             {
               "$ref": "#/definitions/PollCursorState"
@@ -5604,7 +5604,7 @@
               "type": "null"
             }
           ],
-          "description": "Poll triggers: the advancing cursor."
+          "description": "Poll triggers: the advancing runtime cursor. Named apart from the\npoll spec's dedupe `cursor`, which the flattened document already\nserializes under that key."
         },
         "deliver": {
           "anyOf": [

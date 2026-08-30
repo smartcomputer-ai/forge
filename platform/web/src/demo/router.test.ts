@@ -39,6 +39,8 @@ const universeReads = [
   "api-keys",
   "members",
   "bots",
+  "channel-accounts",
+  "channel-pairings",
   "integrations/github",
   "integrations/subscriptions",
 ];
@@ -136,21 +138,19 @@ describe("demo router", () => {
     const [universe] = (await call("GET", "/api/v1/universes")).json as Universe[];
     const [bot] = ((await call("GET", `/api/v1/universes/${universe!.id}/bots`)).json as { bots: BotListItem[] }).bots;
     const before = (await call("GET", `/api/v1/universes/${universe!.id}/bots/${bot!.botId}/events`)).json as {
-      events: Array<{ seq: number | null }>;
+      events: Array<{ seq: number }>;
     };
     const admitted = await call("POST", `/api/v1/universes/${universe!.id}/bots/${bot!.botId}/events`, {
-      kind: "smoke.test",
-      source: "vitest",
-      summary: "smoke test event",
-      payload: { hello: "world" },
+      event: { kind: "smoke.test", summary: "smoke test event", data: { hello: "world" } },
     });
-    expect([200, 201, 202]).toContain(admitted.status);
+    expect(admitted.status).toBe(202);
+    expect((admitted.json as { duplicate: boolean }).duplicate).toBe(false);
     await new Promise((resolve) => setTimeout(resolve, 6_000));
     const after = (await call("GET", `/api/v1/universes/${universe!.id}/bots/${bot!.botId}/events`)).json as {
-      events: Array<{ seq: number | null; outcome: string | null }>;
+      events: Array<{ seq: number; outcome: string | null }>;
     };
     expect(after.events.length).toBe(before.events.length + 1);
-    const newest = after.events.reduce((a, b) => ((a.seq ?? 0) > (b.seq ?? 0) ? a : b));
+    const newest = after.events.reduce((a, b) => (a.seq > b.seq ? a : b));
     expect(newest.outcome).not.toBeNull();
   }, 20_000);
 

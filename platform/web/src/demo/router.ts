@@ -5,6 +5,7 @@ import type { DemoStore } from "./store";
 import { adminRoutes } from "./routes/admin";
 import { authRoutes } from "./routes/auth";
 import { botRoutes, hookRoutes } from "./routes/bots";
+import { channelRoutes } from "./routes/channels";
 import { environmentRoutes } from "./routes/environments";
 import { mcpRoutes } from "./routes/mcp";
 import { platformRoutes } from "./routes/platform";
@@ -17,7 +18,9 @@ export function createDemoRouter(store: DemoStore): Hono {
   const app = new Hono();
   app.get("/health", (c) => c.json({ ok: true, demo: true }));
   app.route("/api/auth", authRoutes(store));
-  app.route("/api/v1/hooks", hookRoutes(store));
+  // The public webhook ingress lives outside /api, exactly like the core's
+  // POST /hooks/bots/{universe}/{bot}/{trigger}/{token} route.
+  app.route("/hooks", hookRoutes(store));
 
   const api = new Hono();
   api.route("/", platformRoutes(store));
@@ -30,6 +33,7 @@ export function createDemoRouter(store: DemoStore): Hono {
     mcpRoutes,
     secretRoutes,
     botRoutes,
+    channelRoutes,
   ]) {
     api.route("/universes", routes(store));
   }

@@ -19,7 +19,6 @@ copy_workspace_manifests() {
   cp package.json package-lock.json tsconfig.json "$root/"
   for workspace in \
     clients/typescript \
-    platform/bots \
     platform/cli \
     platform/configurator-mcp \
     platform/connectors \
@@ -52,9 +51,9 @@ stage_runtime() {
     rm -rf "$root/platform/cli" "$root/platform/configurator-mcp" \
       "$root/platform/connectors"
   else
-    rm -rf "$root/platform/bots" "$root/platform/cli" \
-      "$root/platform/configurator-mcp" "$root/platform/db" \
-      "$root/platform/server" "$root/platform/shared" "$root/platform/web"
+    rm -rf "$root/platform/cli" "$root/platform/configurator-mcp" \
+      "$root/platform/db" "$root/platform/server" "$root/platform/shared" \
+      "$root/platform/web"
   fi
   "$tar_command" --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner \
     -C "$root" -czf "$dist_dir/runtime/$name.tar.gz" .
@@ -62,7 +61,6 @@ stage_runtime() {
 
 stage_runtime platform @lightspeed/platform-server \
   clients/typescript/dist \
-  platform/bots/src \
   platform/server/src \
   platform/db/src \
   platform/db/migrations \

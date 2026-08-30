@@ -18,8 +18,6 @@ run Node commands from there.
   API, with grant-leased provider tokens and one Temporal activity worker per
   account queue. It replaces the former `bots/`, `channels/`, and `workers/`
   packages; Bots and Channels core now live in the Rust runtime.
-- `bots/` — legacy bot helpers still imported by `server/` until the Platform
-  cut-over (P142 slice 4); nothing starts its workers any more.
 - `configurator-mcp/` — generated Streamable HTTP MCP facade over the
   universe-scoped Lightspeed API.
 - `scripts/` — product-identity check and the generated profile configuration

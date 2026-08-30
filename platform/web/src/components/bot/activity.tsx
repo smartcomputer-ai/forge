@@ -4,12 +4,14 @@ import { ChevronDown, ChevronRight, RotateCcw, Webhook } from "lucide-react";
 import { Link } from "react-router-dom";
 import {
   api,
-  type Bot,
-  type BotEventEnvelope,
+  type BotActiveDeliverySnapshot,
+  type BotControllerSnapshot,
+  type BotEventListResponse,
   type BotEventOutcome,
-  type BotEventPage,
-  type BotRecentEvent,
-  type BotState,
+  type BotEventView,
+  type BotRecentDeliverySnapshot,
+  type BotStateView,
+  type BotView,
 } from "@/api";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -36,12 +38,15 @@ const OUTCOME_FILTERS: Array<{ value: OutcomeFilter; label: string }> = [
   { value: "system", label: "Steered, appended, archived" },
 ];
 
-export function matchesOutcomeFilter(outcome: BotEventOutcome | null, filter: OutcomeFilter): boolean {
+export function matchesOutcomeFilter(
+  outcome: BotEventOutcome | null | undefined,
+  filter: OutcomeFilter,
+): boolean {
   switch (filter) {
     case "all":
       return true;
     case "pending":
-      return outcome === null || outcome === "unresolved";
+      return outcome == null || outcome === "unresolved";
     case "failed":
       return outcome === "run_failed" || outcome === "blocked";
     case "system":
@@ -58,15 +63,17 @@ export function matchesOutcomeFilter(outcome: BotEventOutcome | null, filter: Ou
  * add to.
  */
 export function BotActivity({
+  universeId,
   slug,
   bot,
   state,
   stateError,
   manage,
 }: {
+  universeId: string;
   slug: string;
-  bot: Bot;
-  state?: BotState;
+  bot: BotView;
+  state?: BotStateView;
   stateError?: string;
   manage: boolean;
 }) {
@@ -75,12 +82,13 @@ export function BotActivity({
   const [outcomeFilter, setOutcomeFilter] = useState<OutcomeFilter>("all");
   const [search, setSearch] = useState("");
   const base = `/u/${slug}/bots/${bot.botId}`;
+  const controller = state?.controller ?? undefined;
   const pages = useInfiniteQuery({
-    queryKey: ["bot-events", bot.universeId, bot.botId],
+    queryKey: ["bot-events", universeId, bot.botId],
     queryFn: ({ pageParam }) =>
-      api<BotEventPage>(
+      api<BotEventListResponse>(
         "GET",
-        `/api/v1/universes/${bot.universeId}/bots/${bot.botId}/events?limit=50${
+        `/api/v1/universes/${universeId}/bots/${bot.botId}/events?limit=50${
           pageParam ? `&cursor=${encodeURIComponent(pageParam)}` : ""
         }`,
       ),
@@ -90,16 +98,16 @@ export function BotActivity({
     refetchIntervalInBackground: false,
   });
   const replay = useMutation({
-    mutationFn: (eventId: string) =>
-      api("POST", `/api/v1/universes/${bot.universeId}/bots/${bot.botId}/events/replay`, { eventId }),
+    mutationFn: (seq: number) =>
+      api("POST", `/api/v1/universes/${universeId}/bots/${bot.botId}/events/replay`, { seq }),
     onSuccess: async () => {
       await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ["bot-state", bot.universeId, bot.botId] }),
-        queryClient.invalidateQueries({ queryKey: ["bot-events", bot.universeId, bot.botId] }),
+        queryClient.invalidateQueries({ queryKey: ["bot-state", universeId, bot.botId] }),
+        queryClient.invalidateQueries({ queryKey: ["bot-events", universeId, bot.botId] }),
       ]);
     },
   });
-  const events = pages.data?.pages.flatMap((page) => page.events) ?? [];
+  const events = pages.data?.pages.flatMap((page) => page.events ?? []) ?? [];
   const needle = search.trim().toLowerCase();
   const visible = useMemo(
     () =>
@@ -107,7 +115,7 @@ export function BotActivity({
         (event) =>
           matchesOutcomeFilter(event.outcome, outcomeFilter) &&
           (needle === "" ||
-            `${event.kind} ${event.source} ${event.outcomeDetail ?? ""} ${event.sender ?? ""} ${event.session?.label ?? ""}`
+            `${event.kind} ${event.triggerId ?? ""} ${event.outcomeDetail ?? ""} ${event.senderBotId ?? ""} ${event.session?.label ?? ""} ${event.summary}`
               .toLowerCase()
               .includes(needle)),
       ),
@@ -115,19 +123,21 @@ export function BotActivity({
   );
   // Live controller state fills in rows whose stored outcome is still null
   // (a delivery in flight); the stored outcome wins once written.
-  const decisions = new Map(state?.recentEvents.map((event) => [event.id, event]) ?? []);
-  const activeDeliveryIds = new Set(state?.activeDeliveries.map((delivery) => delivery.id) ?? []);
-  const batchSizes = new Map<string, number>();
-  for (const event of events) {
-    if (event.deliveryId) batchSizes.set(event.deliveryId, (batchSizes.get(event.deliveryId) ?? 0) + 1);
+  const activeBySeq = new Map<number, BotActiveDeliverySnapshot>();
+  for (const delivery of controller?.activeDeliveries ?? []) {
+    for (const seq of delivery.seqs) activeBySeq.set(seq, delivery);
+  }
+  const recentBySeq = new Map<number, BotRecentDeliverySnapshot>();
+  for (const delivery of controller?.recentDeliveries ?? []) {
+    for (const seq of delivery.seqs) recentBySeq.set(seq, delivery);
   }
   const sessionHref = (sessionId: string) =>
-    sessionId === state?.sessionId ? base : `${base}/chat/${encodeURIComponent(sessionId)}`;
+    sessionId === controller?.mainSessionId ? base : `${base}/chat/${encodeURIComponent(sessionId)}`;
 
   return (
     <div className="min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto">
       <div className="mx-auto grid w-full min-w-0 max-w-5xl gap-5 px-4 py-5 text-sm md:px-8">
-        <NowStrip bot={bot} state={state} stateError={stateError} sessionHref={sessionHref} />
+        <NowStrip bot={bot} controller={controller} stateError={stateError} sessionHref={sessionHref} />
         <div className="flex flex-wrap items-center gap-2">
           <Select value={outcomeFilter} onValueChange={(value) => value && setOutcomeFilter(value as OutcomeFilter)}>
             <SelectTrigger size="sm" className="w-48">
@@ -144,7 +154,7 @@ export function BotActivity({
           <Input
             value={search}
             onChange={(event) => setSearch(event.target.value)}
-            placeholder="Filter by kind, source, thread, or summary"
+            placeholder="Filter by kind, trigger, thread, or summary"
             className="h-8 w-64 text-xs"
           />
           <span className="text-xs text-muted-foreground">
@@ -152,7 +162,7 @@ export function BotActivity({
             {pages.hasNextPage ? "+" : ""} of {events.length}
             {pages.hasNextPage ? "+" : ""} loaded
           </span>
-          {manage && !bot.closedAt && (
+          {manage && bot.closedAtMs == null && (
             <Button variant="outline" size="xs" className="ml-auto" onClick={() => setEventOpen(true)}>
               <Webhook data-icon="inline-start" /> Send a test event
             </Button>
@@ -164,13 +174,12 @@ export function BotActivity({
           {replay.error && <p className="text-xs text-destructive">{replay.error.message}</p>}
           {visible.map((event) => (
             <EventRow
-              key={event.id}
+              key={event.seq}
               event={event}
-              decision={decisions.get(event.eventId)}
-              working={event.deliveryId !== null && activeDeliveryIds.has(event.deliveryId)}
-              batchSize={event.deliveryId ? (batchSizes.get(event.deliveryId) ?? 1) : 1}
+              active={activeBySeq.get(event.seq)}
+              recent={recentBySeq.get(event.seq)}
               sessionHref={sessionHref}
-              onReplay={manage && !bot.closedAt ? () => replay.mutate(event.eventId) : undefined}
+              onReplay={manage && bot.closedAtMs == null ? () => replay.mutate(event.seq) : undefined}
             />
           ))}
           {!pages.isLoading && !pages.error && events.length === 0 && (
@@ -196,7 +205,7 @@ export function BotActivity({
         </div>
       </div>
       {manage && (
-        <SendEventDialog universeId={bot.universeId} botId={bot.botId} open={eventOpen} onOpenChange={setEventOpen} />
+        <SendEventDialog universeId={universeId} botId={bot.botId} open={eventOpen} onOpenChange={setEventOpen} />
       )}
     </div>
   );
@@ -204,12 +213,12 @@ export function BotActivity({
 
 function NowStrip({
   bot,
-  state,
+  controller,
   stateError,
   sessionHref,
 }: {
-  bot: Bot;
-  state?: BotState;
+  bot: BotView;
+  controller?: BotControllerSnapshot;
   stateError?: string;
   sessionHref: (sessionId: string) => string;
 }) {
@@ -220,9 +229,11 @@ function NowStrip({
       </p>
     );
   }
-  if (!state) return <p className="text-xs text-muted-foreground">Waiting for the controller…</p>;
-  const quiet =
-    state.activeDeliveries.length === 0 && state.buffers.length === 0 && state.pendingDeliveryCount === 0;
+  if (!controller) return <p className="text-xs text-muted-foreground">Waiting for the controller…</p>;
+  const activeDeliveries = controller.activeDeliveries ?? [];
+  const buffers = controller.buffers ?? [];
+  const pendingDeliveries = controller.pendingDeliveries ?? 0;
+  const quiet = activeDeliveries.length === 0 && buffers.length === 0 && pendingDeliveries === 0;
   return (
     <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
       <Stat label="Now">
@@ -230,33 +241,33 @@ function NowStrip({
           <span className="text-muted-foreground">Nothing in flight</span>
         ) : (
           <span className="grid gap-0.5">
-            {state.activeDeliveries.map((delivery) => (
-              <span key={delivery.id} className="truncate">
-                Working on {delivery.eventCount > 1 ? `${delivery.eventCount} events` : "an event"}
+            {activeDeliveries.map((delivery) => (
+              <span key={delivery.deliveryId} className="truncate">
+                Working on {delivery.seqs.length > 1 ? `${delivery.seqs.length} events` : "an event"}
                 {" → "}
                 <Link to={sessionHref(delivery.sessionId)} className="underline-offset-2 hover:underline">
-                  {delivery.sessionId === state.sessionId
+                  {delivery.sessionId === controller.mainSessionId
                     ? "Main"
-                    : (state.sessions.find((session) => session.sessionId === delivery.sessionId)?.label ?? "thread")}
+                    : ((controller.sessions ?? []).find((session) => session.sessionId === delivery.sessionId)?.label ?? "thread")}
                 </Link>
               </span>
             ))}
-            {state.pendingDeliveryCount > 0 && (
+            {pendingDeliveries > 0 && (
               <span className="text-muted-foreground">
-                {state.pendingDeliveryCount} {state.pendingDeliveryCount === 1 ? "delivery" : "deliveries"} queued
+                {pendingDeliveries} {pendingDeliveries === 1 ? "delivery" : "deliveries"} queued
               </span>
             )}
           </span>
         )}
       </Stat>
       <Stat label="Coalescing">
-        {state.buffers.length === 0 ? (
+        {buffers.length === 0 ? (
           <span className="text-muted-foreground">No batches forming</span>
         ) : (
           <span className="grid gap-0.5">
-            {state.buffers.map((buffer) => (
+            {buffers.map((buffer) => (
               <span key={buffer.key} className="truncate">
-                {buffer.count} {buffer.count === 1 ? "event" : "events"} · flushes {flushLabel(buffer.flushAtMs)}
+                {buffer.seqs.length} {buffer.seqs.length === 1 ? "event" : "events"} · flushes {flushLabel(buffer.flushAtMs)}
               </span>
             ))}
           </span>
@@ -264,14 +275,14 @@ function NowStrip({
       </Stat>
       <Stat label="Today">
         <span>
-          {budgetLabel(bot.runsPerDay, state)}
-          <span className="block text-muted-foreground">{state.eventsProcessed} events processed in all</span>
+          {budgetLabel(bot.runsPerDay ?? null, controller)}
+          <span className="block text-muted-foreground">{controller.eventsProcessed ?? 0} events processed in all</span>
         </span>
       </Stat>
-      <Stat label="Errors" tone={state.lastError ? "destructive" : undefined}>
-        {state.lastError ? (
-          <span className="line-clamp-2 wrap-anywhere" title={state.lastError}>
-            {state.lastError}
+      <Stat label="Errors" tone={controller.lastError ? "destructive" : undefined}>
+        {controller.lastError ? (
+          <span className="line-clamp-2 wrap-anywhere" title={controller.lastError}>
+            {controller.lastError}
           </span>
         ) : (
           <span className="text-muted-foreground">None</span>
@@ -305,24 +316,27 @@ function Stat({
 
 function EventRow({
   event,
-  decision,
-  working,
-  batchSize,
+  active,
+  recent,
   sessionHref,
   onReplay,
 }: {
-  event: BotEventEnvelope;
-  decision?: BotRecentEvent;
-  working: boolean;
-  /** Visible events sharing this event's delivery; > 1 marks a coalesced batch. */
-  batchSize: number;
+  event: BotEventView;
+  /** The in-flight delivery carrying this event, from live controller state. */
+  active?: BotActiveDeliverySnapshot;
+  /** The finished delivery that carried it, while the stored outcome may lag. */
+  recent?: BotRecentDeliverySnapshot;
   sessionHref: (sessionId: string) => string;
   onReplay?: () => void;
 }) {
   const [open, setOpen] = useState(false);
-  const outcome = event.outcome ?? decision?.outcome ?? null;
-  const detail = event.outcomeDetail ?? decision?.summary ?? decision?.failure;
-  const runId = event.runId ?? decision?.runId;
+  const working = active !== undefined;
+  const outcome = event.outcome ?? recent?.outcome ?? null;
+  const detail = event.outcomeDetail ?? recent?.summary ?? event.summary;
+  const runId = event.runId ?? recent?.runId ?? active?.runId;
+  const batchSize = (active ?? recent)?.seqs.length ?? 1;
+  const usage = recent?.usage;
+  const hops = event.hops ?? 0;
   const chip = outcome ? outcome.replaceAll("_", " ") : working ? "working" : "pending";
   return (
     <div className={cn("rounded-md border text-xs", open && "bg-muted/30")}>
@@ -333,13 +347,13 @@ function EventRow({
         aria-expanded={open}
       >
         <code className="w-12 shrink-0 text-muted-foreground" title={event.eventId}>
-          {event.seq != null ? `#${event.seq}` : "—"}
+          #{event.seq}
         </code>
         <span className="min-w-0">
           <span className="block truncate">
             <span className="font-medium">{event.kind}</span>
-            <span className="text-muted-foreground"> · {event.source}</span>
-            {event.sender && <span className="text-muted-foreground"> · from {event.sender}</span>}
+            <span className="text-muted-foreground"> · {event.triggerId ?? "operator"}</span>
+            {event.senderBotId && <span className="text-muted-foreground"> · from {event.senderBotId}</span>}
             {event.session && (
               <span className="text-muted-foreground">
                 {" → "}
@@ -361,18 +375,18 @@ function EventRow({
         </span>
         <span className="flex shrink-0 items-center gap-1.5">
           {batchSize > 1 && (
-            <Badge variant="outline" title={event.deliveryId ?? undefined}>
+            <Badge variant="outline" title={(active ?? recent)?.deliveryId}>
               batch of {batchSize}
             </Badge>
           )}
-          {event.hops > 0 && <Badge variant="outline">{event.hops} hop{event.hops === 1 ? "" : "s"}</Badge>}
+          {hops > 0 && <Badge variant="outline">{hops} hop{hops === 1 ? "" : "s"}</Badge>}
           <Badge
             variant={outcomeVariant(outcome, working)}
-            title={event.resolvedAt ? `resolved ${timeLabel(event.resolvedAt)}` : undefined}
+            title={event.resolvedAtMs != null ? `resolved ${timeLabel(event.resolvedAtMs)}` : undefined}
           >
             {chip}
           </Badge>
-          <span className="w-16 text-right text-muted-foreground">{timeLabel(event.receivedAt)}</span>
+          <span className="w-16 text-right text-muted-foreground">{timeLabel(event.receivedAtMs)}</span>
           {open ? <ChevronDown className="size-3.5 text-muted-foreground" /> : <ChevronRight className="size-3.5 text-muted-foreground" />}
         </span>
       </button>
@@ -382,16 +396,11 @@ function EventRow({
             <span>
               Event id <code className="wrap-anywhere">{event.eventId}</code>
             </span>
-            <span>Received {new Date(event.receivedAt).toLocaleString()}</span>
-            {event.resolvedAt && <span>Resolved {new Date(event.resolvedAt).toLocaleString()}</span>}
+            <span>Received {new Date(event.receivedAtMs).toLocaleString()}</span>
+            {event.resolvedAtMs != null && <span>Resolved {new Date(event.resolvedAtMs).toLocaleString()}</span>}
             {runId && (
               <span>
                 Run <code>{runId}</code>
-              </span>
-            )}
-            {event.deliveryId && (
-              <span>
-                Delivery <code className="wrap-anywhere">{event.deliveryId}</code>
               </span>
             )}
             {event.inReplyTo && (
@@ -399,10 +408,10 @@ function EventRow({
                 Reply to #{event.inReplyTo.seq} at {event.inReplyTo.bot}
               </span>
             )}
-            {decision?.usage && decision.usage.inputTokens > 0 && (
+            {usage != null && (usage.inputTokens ?? 0) > 0 && (
               <span>
-                {Math.round((decision.usage.cachedInputTokens / decision.usage.inputTokens) * 100)}% of{" "}
-                {decision.usage.inputTokens.toLocaleString()} prompt tokens served from cache
+                {Math.round(((usage.cachedInputTokens ?? 0) / (usage.inputTokens ?? 1)) * 100)}% of{" "}
+                {(usage.inputTokens ?? 0).toLocaleString()} prompt tokens served from cache
               </span>
             )}
           </div>
@@ -438,9 +447,9 @@ function flushLabel(flushAtMs: number): string {
   return `in ${Math.round(deltaSeconds / 60)}m`;
 }
 
-function timeLabel(iso: string): string {
-  const date = new Date(iso);
-  if (Number.isNaN(date.getTime())) return iso;
+function timeLabel(ms: number): string {
+  const date = new Date(ms);
+  if (Number.isNaN(date.getTime())) return "";
   const today = new Date().toDateString() === date.toDateString();
   return today
     ? date.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" })
@@ -448,9 +457,12 @@ function timeLabel(iso: string): string {
 }
 
 /** `runsPerDay` is spent by bot runs and by the sub-agent sessions those runs delegate. */
-export function budgetLabel(runsPerDay: number | null, state: BotState | null | undefined): string {
-  const runs = state?.runsToday ?? 0;
-  const descendants = state?.descendantsToday ?? 0;
+export function budgetLabel(
+  runsPerDay: number | null,
+  controller: BotControllerSnapshot | null | undefined,
+): string {
+  const runs = controller?.runsToday ?? 0;
+  const descendants = controller?.descendantsToday ?? 0;
   const used = runs + descendants;
   const limit = runsPerDay === null ? `${used} runs, no daily limit` : `${used} / ${runsPerDay} runs`;
   return descendants > 0 ? `${limit} (${runs} runs, ${descendants} sub-agents)` : limit;

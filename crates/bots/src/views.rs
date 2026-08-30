@@ -1110,7 +1110,7 @@ mod tests {
         });
         let view = trigger_tool_view(
             &webhook,
-            Some("https://example.test/api/v1/hooks/bots/opaque/tok-1234".to_owned()),
+            Some("https://example.test/hooks/bots/u-1/triage/github/tok-1234".to_owned()),
             false,
         );
         assert_no_ids(&view);

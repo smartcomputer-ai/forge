@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "react";
 import { LoaderCircle } from "lucide-react";
 import { useLocation, useNavigate } from "react-router-dom";
-import { api, botLabel, type Bot, type BotState } from "@/api";
+import { api, botLabel, type BotControllerSnapshot, type BotStateView, type BotView } from "@/api";
 import { SessionDetail } from "@/pages/SessionsPage";
 
 /** The first thing a freshly created bot hears; its answer is the smoke test. */
@@ -17,25 +17,29 @@ const introduced = new Set<string>();
  * is the tab row's business.
  */
 export function BotChat({
+  universeId,
   slug,
   bot,
   state,
   stateError,
   sessionId,
 }: {
+  universeId: string;
   slug: string;
-  bot: Bot;
-  state?: BotState;
+  bot: BotView;
+  state?: BotStateView;
   stateError?: string;
   sessionId: string | undefined;
 }) {
   const base = `/u/${slug}/bots/${bot.botId}`;
-  const main = state?.sessionId;
+  const controller = state?.controller ?? undefined;
+  const main = controller?.mainSessionId;
   const selected = sessionId ?? main;
   const isMain = selected !== undefined && selected === main;
   const sessionHref = (id: string) => (id === main ? base : `${base}/chat/${encodeURIComponent(id)}`);
+  const ready = controller?.setupStatus === "ready";
 
-  useIntroduction(bot, state, isMain);
+  useIntroduction(universeId, bot, controller, isMain);
 
   if (selected === undefined) {
     return (
@@ -44,19 +48,19 @@ export function BotChat({
       </div>
     );
   }
-  if (isMain && !state?.sessionReady) {
+  if (isMain && !ready) {
     // Not ready is either "still starting" or "could not start": say which,
     // and say why — a degraded controller waits for the next Setup change.
-    const degraded = state?.controllerStatus === "degraded" || Boolean(state?.lastError);
+    const degraded = controller?.setupStatus === "degraded" || Boolean(controller?.lastError);
     return (
       <div className="flex flex-1 flex-col items-center justify-center gap-2 p-6 text-center text-sm text-muted-foreground">
-        {bot.closedAt || degraded ? null : <LoaderCircle className="size-4 animate-spin" />}
-        {bot.closedAt ? (
+        {bot.closedAtMs != null || degraded ? null : <LoaderCircle className="size-4 animate-spin" />}
+        {bot.closedAtMs != null ? (
           "This bot is closed; its conversations were released."
         ) : degraded ? (
           <>
             <span className="font-medium text-destructive">The main conversation could not be set up.</span>
-            <span className="max-w-xl wrap-anywhere">{state?.lastError ?? "The controller reported a problem."}</span>
+            <span className="max-w-xl wrap-anywhere">{controller?.lastError ?? "The controller reported a problem."}</span>
             <span>Fix the cause under Setup and save; the bot tries again on the next change.</span>
           </>
         ) : (
@@ -68,7 +72,7 @@ export function BotChat({
   return (
     <SessionDetail
       key={selected}
-      universeId={bot.universeId}
+      universeId={universeId}
       slug={slug}
       sessionId={selected}
       backTo={base}
@@ -80,19 +84,26 @@ export function BotChat({
 
 /// Right after creation the wizard lands here with `introduce` in the
 /// router state; once the main session is ready, say hello exactly once.
-function useIntroduction(bot: Bot, state: BotState | undefined, isMain: boolean) {
+function useIntroduction(
+  universeId: string,
+  bot: BotView,
+  controller: BotControllerSnapshot | undefined,
+  isMain: boolean,
+) {
   const location = useLocation();
   const navigate = useNavigate();
   const requested = (location.state as { introduce?: boolean } | null)?.introduce === true;
   const sent = useRef(false);
+  const ready = controller?.setupStatus === "ready";
+  const mainSessionId = controller?.mainSessionId;
   useEffect(() => {
-    if (!requested || !isMain || !state?.sessionReady || sent.current || introduced.has(bot.botId)) return;
+    if (!requested || !isMain || !ready || !mainSessionId || sent.current || introduced.has(bot.botId)) return;
     sent.current = true;
     introduced.add(bot.botId);
-    void api("POST", `/api/v1/universes/${bot.universeId}/sessions/${state.sessionId}/messages`, {
+    void api("POST", `/api/v1/universes/${universeId}/sessions/${mainSessionId}/messages`, {
       text: INTRODUCTION_PROMPT,
       submissionId: crypto.randomUUID(),
     }).catch(() => undefined);
     navigate(location.pathname, { replace: true, state: null });
-  }, [requested, isMain, state?.sessionReady, state?.sessionId, bot.botId, bot.universeId, navigate, location.pathname]);
+  }, [requested, isMain, ready, mainSessionId, bot.botId, universeId, navigate, location.pathname]);
 }

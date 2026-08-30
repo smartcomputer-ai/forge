@@ -4,7 +4,6 @@
   "type": "module",
   "workspaces": [
     "clients/typescript",
-    "platform/bots",
     "platform/cli",
     "platform/configurator-mcp",
     "platform/connectors",

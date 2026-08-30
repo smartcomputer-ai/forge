@@ -5,11 +5,14 @@ import { Link, useNavigate } from "react-router-dom";
 import {
   api,
   botLabel,
-  type Bot,
-  type BotInboxSpec,
+  type BotCloseResponse,
+  type BotDeleteResponse,
+  type BotInput,
   type BotListItem,
-  type BotState,
-  type BotTrigger,
+  type BotListResponse,
+  type BotStateView,
+  type BotTriggerView,
+  type BotView,
   type Environment,
   type ProfileDocument,
   type ProfileEnvironment,
@@ -51,6 +54,7 @@ import {
 import { cn } from "@/lib/utils";
 import { BotEnvironmentCard } from "./environment-card";
 import { BotAvatar } from "./face";
+import { botInputOf } from "./identity";
 import { briefSummary, capabilitySummary, environmentSummary, guardrailsSummary, otherBotsSummary } from "./setup-summary";
 import { triggerSummary } from "./trigger-summary";
 import {
@@ -58,6 +62,8 @@ import {
   EditTriggerDialog,
   TriggersSection,
   inboxSelectionSpec,
+  triggerInputOf,
+  useChannelAccounts,
   type BotEnvStatus,
 } from "./triggers";
 
@@ -67,31 +73,34 @@ import {
  * open only what you are editing. Each section saves on its own.
  */
 export function BotSetup({
+  universeId,
   slug,
   bot,
   state,
   manage,
 }: {
+  universeId: string;
   slug: string;
-  bot: Bot;
-  state?: BotState;
+  bot: BotView;
+  state?: BotStateView;
   manage: boolean;
 }) {
   const profile = useQuery({
-    queryKey: ["profile", bot.universeId, bot.profileId],
+    queryKey: ["profile", universeId, bot.profileId],
     queryFn: () =>
       api<ProfileDocument>(
         "GET",
-        `/api/v1/universes/${bot.universeId}/profiles/${encodeURIComponent(bot.profileId)}`,
+        `/api/v1/universes/${universeId}/profiles/${encodeURIComponent(bot.profileId)}`,
       ),
     staleTime: 0,
     retry: false,
   });
   const triggers = useQuery({
-    queryKey: ["bot-triggers", bot.universeId, bot.botId],
+    queryKey: ["bot-triggers", universeId, bot.botId],
     queryFn: () =>
-      api<{ triggers: BotTrigger[] }>("GET", `/api/v1/universes/${bot.universeId}/bots/${bot.botId}/triggers`),
+      api<{ triggers?: BotTriggerView[] }>("GET", `/api/v1/universes/${universeId}/bots/${bot.botId}/triggers`),
   });
+  const accounts = useChannelAccounts(universeId);
   const env: BotEnvStatus =
     profile.isLoading || profile.isError || profile.data === undefined
       ? { kind: "unknown" }
@@ -107,14 +116,14 @@ export function BotSetup({
       ? "Nothing wakes it yet — you can always message it"
       : `${wakeups.length} ${wakeups.length === 1 ? "trigger" : "triggers"} · ${wakeups
           .slice(0, 2)
-          .map((trigger) => `${trigger.name}: ${triggerSummary(trigger)}`)
+          .map((trigger) => `${trigger.triggerId}: ${triggerSummary(trigger, accounts.data?.accounts ?? [])}`)
           .join(" · ")}${wakeups.length > 2 ? " · …" : ""}`;
 
   return (
     <div className="min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto">
       <div className="mx-auto grid w-full min-w-0 max-w-4xl gap-3 px-4 py-5 text-sm md:px-8">
-        <IdentitySection bot={bot} manage={manage} />
-        <BriefSection bot={bot} manage={manage} />
+        <IdentitySection universeId={universeId} bot={bot} manage={manage} />
+        <BriefSection universeId={universeId} bot={bot} manage={manage} />
         <SetupSection
           id="triggers"
           title="Triggers"
@@ -123,7 +132,7 @@ export function BotSetup({
           defaultOpen
         >
           <TriggersSection
-            universeId={bot.universeId}
+            universeId={universeId}
             botId={bot.botId}
             manage={manage}
             env={env}
@@ -131,10 +140,22 @@ export function BotSetup({
             hideKinds={["bot"]}
           />
         </SetupSection>
-        <OtherBotsSection bot={bot} manage={manage} inbox={triggerList.find((trigger) => trigger.kind === "bot")} />
-        <ProfileSections slug={slug} bot={bot} manage={manage} profile={profile.data} profileError={profile.error?.message} />
-        <GuardrailsSection bot={bot} state={state} manage={manage} />
-        <DangerSection slug={slug} bot={bot} manage={manage} />
+        <OtherBotsSection
+          universeId={universeId}
+          bot={bot}
+          manage={manage}
+          inbox={triggerList.find((trigger) => trigger.kind === "bot")}
+        />
+        <ProfileSections
+          universeId={universeId}
+          slug={slug}
+          bot={bot}
+          manage={manage}
+          profile={profile.data}
+          profileError={profile.error?.message}
+        />
+        <GuardrailsSection universeId={universeId} bot={bot} state={state} manage={manage} />
+        <DangerSection universeId={universeId} slug={slug} bot={bot} manage={manage} />
       </div>
     </div>
   );
@@ -195,16 +216,21 @@ function SetupSection({
   );
 }
 
-function useBotPatch(bot: Bot) {
+/// The core replaces the bot document whole; each save merges its fields
+/// over the current record and puts with the record's revision.
+function useBotPut(universeId: string, bot: BotView) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (fields: Record<string, unknown>) =>
-      api<{ bot: Bot }>("PATCH", `/api/v1/universes/${bot.universeId}/bots/${bot.botId}`, fields),
+    mutationFn: (fields: Partial<BotInput>) =>
+      api<{ bot: BotView }>("PUT", `/api/v1/universes/${universeId}/bots/${bot.botId}`, {
+        bot: { ...botInputOf(bot), ...fields },
+        expectedRevision: bot.revision,
+      }),
     onSuccess: async ({ bot: updated }) => {
-      queryClient.setQueryData(["bot", bot.universeId, bot.botId], { bot: updated });
+      queryClient.setQueryData(["bot", universeId, bot.botId], { bot: updated });
       await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ["bots", bot.universeId] }),
-        queryClient.invalidateQueries({ queryKey: ["bot-state", bot.universeId, bot.botId] }),
+        queryClient.invalidateQueries({ queryKey: ["bots", universeId] }),
+        queryClient.invalidateQueries({ queryKey: ["bot-state", universeId, bot.botId] }),
       ]);
     },
   });
@@ -236,14 +262,14 @@ function SaveRow({
   );
 }
 
-function IdentitySection({ bot, manage }: { bot: Bot; manage: boolean }) {
+function IdentitySection({ universeId, bot, manage }: { universeId: string; bot: BotView; manage: boolean }) {
   const [displayName, setDisplayName] = useState(bot.displayName ?? "");
   const [description, setDescription] = useState(bot.description ?? "");
   useEffect(() => {
     setDisplayName(bot.displayName ?? "");
     setDescription(bot.description ?? "");
   }, [bot.displayName, bot.description]);
-  const save = useBotPatch(bot);
+  const save = useBotPut(universeId, bot);
   const dirty = displayName.trim() !== (bot.displayName ?? "") || description.trim() !== (bot.description ?? "");
   return (
     <SetupSection
@@ -301,12 +327,12 @@ function IdentitySection({ bot, manage }: { bot: Bot; manage: boolean }) {
   );
 }
 
-function BriefSection({ bot, manage }: { bot: Bot; manage: boolean }) {
+function BriefSection({ universeId, bot, manage }: { universeId: string; bot: BotView; manage: boolean }) {
   const [brief, setBrief] = useState(bot.brief ?? "");
   useEffect(() => setBrief(bot.brief ?? ""), [bot.brief]);
-  const save = useBotPatch(bot);
+  const save = useBotPut(universeId, bot);
   const dirty = brief.trim() !== (bot.brief ?? "");
-  const closed = bot.closedAt !== null;
+  const closed = bot.closedAtMs != null;
   return (
     <SetupSection
       id="brief"
@@ -350,23 +376,25 @@ type SaveableFields = {
 /**
  * Capabilities and Environment both live in the bot's profile, one
  * document with one revision. Each section saves only its own fields onto
- * the latest revision, so saving one never clobbers the other.
+ * the latest revision, so saving one never clobbers the other. The core
+ * reconciles bots onto the new profile revision on its own.
  */
 function ProfileSections({
+  universeId,
   slug,
   bot,
   manage,
   profile,
   profileError,
 }: {
+  universeId: string;
   slug: string;
-  bot: Bot;
+  bot: BotView;
   manage: boolean;
   profile: ProfileDocument | undefined;
   profileError: string | undefined;
 }) {
   const queryClient = useQueryClient();
-  const universeId = bot.universeId;
   const profileUrl = `/api/v1/universes/${universeId}/profiles/${encodeURIComponent(bot.profileId)}`;
   const options = useSessionConfigEditorOptions(universeId);
   const environments = useQuery({
@@ -376,10 +404,10 @@ function ProfileSections({
   const secrets = useSecretsInventory(universeId);
   const bots = useQuery({
     queryKey: ["bots", universeId],
-    queryFn: () => api<{ bots: BotListItem[] }>("GET", `/api/v1/universes/${universeId}/bots`),
+    queryFn: () => api<BotListResponse>("GET", `/api/v1/universes/${universeId}/bots`),
   });
   const sharedWith = (bots.data?.bots ?? []).filter(
-    (other) => other.botId !== bot.botId && other.profileId === bot.profileId && !other.closedAt,
+    (other) => other.botId !== bot.botId && other.profileId === bot.profileId && other.closedAtMs == null,
   );
 
   const [configDraft, setConfigDraft] = useState<Record<string, unknown> | undefined>();
@@ -418,9 +446,6 @@ function ProfileSections({
       const problem = setupResourceFeatureError(next);
       if (problem) throw new Error(problem);
       await api("PUT", profileUrl, next);
-      // The profile's revision moved; tell every bot on it to re-read it
-      // now rather than at the next unrelated config change.
-      await api("POST", `/api/v1/universes/${universeId}/bots/reconcile`, { profileId: bot.profileId });
     },
     onSuccess: async () => {
       await Promise.all([
@@ -434,7 +459,7 @@ function ProfileSections({
     () => ({ ...(profile ?? {}), config: configDraft, environment: environmentDraft }),
     [profile, configDraft, environmentDraft],
   );
-  const closed = bot.closedAt !== null;
+  const closed = bot.closedAtMs != null;
   const readOnly = !manage || closed;
   const capabilities = capabilitySummary(profile?.config as Record<string, unknown> | undefined);
   const textRef = (profile?.instructions as { type?: string } | undefined)?.type === "textRef";
@@ -451,7 +476,7 @@ function ProfileSections({
             : `${capabilities.length > 0 ? capabilities.join(" · ") : "Default model, no tools"} · profile ${bot.profileId}`
         }
       >
-        <ProfileSwitcher bot={bot} slug={slug} manage={manage && !closed} sharedWith={sharedWith} />
+        <ProfileSwitcher universeId={universeId} bot={bot} slug={slug} manage={manage && !closed} sharedWith={sharedWith} />
         {profileError && (
           <p className="rounded-md bg-destructive/10 p-2 text-xs text-destructive">
             Profile <code>{bot.profileId}</code> could not be read: {profileError}
@@ -550,23 +575,25 @@ function ProfileSections({
 }
 
 function ProfileSwitcher({
+  universeId,
   bot,
   slug,
   manage,
   sharedWith,
 }: {
-  bot: Bot;
+  universeId: string;
+  bot: BotView;
   slug: string;
   manage: boolean;
   sharedWith: BotListItem[];
 }) {
   const profiles = useQuery({
-    queryKey: ["profiles", bot.universeId],
-    queryFn: () => api<ProfileSummary[]>("GET", `/api/v1/universes/${bot.universeId}/profiles`),
+    queryKey: ["profiles", universeId],
+    queryFn: () => api<ProfileSummary[]>("GET", `/api/v1/universes/${universeId}/profiles`),
   });
   const [selected, setSelected] = useState(bot.profileId);
   useEffect(() => setSelected(bot.profileId), [bot.profileId]);
-  const patch = useBotPatch(bot);
+  const patch = useBotPut(universeId, bot);
   const known = profiles.data?.some((profile) => profile.profileId === bot.profileId) ?? true;
   return (
     <Field>
@@ -621,21 +648,29 @@ function ProfileSwitcher({
   );
 }
 
-function GuardrailsSection({ bot, state, manage }: { bot: Bot; state?: BotState; manage: boolean }) {
-  const queryClient = useQueryClient();
-  const universeId = bot.universeId;
-
+function GuardrailsSection({
+  universeId,
+  bot,
+  state,
+  manage,
+}: {
+  universeId: string;
+  bot: BotView;
+  state?: BotStateView;
+  manage: boolean;
+}) {
+  const controller = state?.controller ?? undefined;
   const [runsPerDay, setRunsPerDay] = useState(bot.runsPerDay?.toString() ?? "");
   const [breakerFires, setBreakerFires] = useState(bot.breaker?.fires.toString() ?? "");
   const [breakerWindow, setBreakerWindow] = useState(bot.breaker ? String(Math.round(bot.breaker.windowMs / 60_000)) : "");
   const [ttlDays, setTtlDays] = useState(bot.routedSessionTtlMs ? String(Math.round(bot.routedSessionTtlMs / 86_400_000)) : "");
-  const [selfConfig, setSelfConfig] = useState(bot.selfConfig);
+  const [selfConfig, setSelfConfig] = useState(bot.selfConfig ?? false);
   useEffect(() => {
     setRunsPerDay(bot.runsPerDay?.toString() ?? "");
     setBreakerFires(bot.breaker?.fires.toString() ?? "");
     setBreakerWindow(bot.breaker ? String(Math.round(bot.breaker.windowMs / 60_000)) : "");
     setTtlDays(bot.routedSessionTtlMs ? String(Math.round(bot.routedSessionTtlMs / 86_400_000)) : "");
-    setSelfConfig(bot.selfConfig);
+    setSelfConfig(bot.selfConfig ?? false);
   }, [bot.runsPerDay, bot.breaker, bot.routedSessionTtlMs, bot.selfConfig]);
 
   const fields = () => ({
@@ -649,27 +684,17 @@ function GuardrailsSection({ bot, state, manage }: { bot: Bot; state?: BotState;
   const botDirty =
     JSON.stringify(fields()) !==
     JSON.stringify({
-      runsPerDay: bot.runsPerDay,
-      breaker: bot.breaker,
-      routedSessionTtlMs: bot.routedSessionTtlMs,
-      selfConfig: bot.selfConfig,
+      runsPerDay: bot.runsPerDay ?? null,
+      breaker: bot.breaker ?? null,
+      routedSessionTtlMs: bot.routedSessionTtlMs ?? null,
+      selfConfig: bot.selfConfig ?? false,
     });
   const problem = ttlDays.trim() && !(Number(ttlDays) >= 1) ? "Thread retention is at least one day." : null;
 
-  const save = useMutation({
-    mutationFn: () =>
-      api<{ bot: Bot }>("PATCH", `/api/v1/universes/${universeId}/bots/${bot.botId}`, fields()),
-    onSuccess: async ({ bot: updated }) => {
-      queryClient.setQueryData(["bot", universeId, bot.botId], { bot: updated });
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ["bots", universeId] }),
-        queryClient.invalidateQueries({ queryKey: ["bot-state", universeId, bot.botId] }),
-      ]);
-    },
-  });
-  const closed = bot.closedAt !== null;
+  const save = useBotPut(universeId, bot);
+  const closed = bot.closedAtMs != null;
   const readOnly = !manage || closed;
-  const usedToday = (state?.runsToday ?? 0) + (state?.descendantsToday ?? 0);
+  const usedToday = (controller?.runsToday ?? 0) + (controller?.descendantsToday ?? 0);
 
   return (
     <SetupSection
@@ -691,7 +716,7 @@ function GuardrailsSection({ bot, state, manage }: { bot: Bot; state?: BotState;
             disabled={readOnly}
           />
           <FieldDescription>
-            {state ? `${usedToday} used today. ` : ""}Runs and sub-agents count; events beyond the limit wait for the
+            {controller ? `${usedToday} used today. ` : ""}Runs and sub-agents count; events beyond the limit wait for the
             next UTC day.
           </FieldDescription>
         </Field>
@@ -757,7 +782,7 @@ function GuardrailsSection({ bot, state, manage }: { bot: Bot; state?: BotState;
           pending={save.isPending}
           error={problem ?? save.error?.message}
           disabled={closed || problem !== null}
-          onSave={() => save.mutate()}
+          onSave={() => save.mutate(fields())}
           note="Grants change the bot's toolset; its sessions pick that up at their next idle moment."
         />
       )}
@@ -772,48 +797,74 @@ type InboxMode = "off" | "any" | "selected";
  * on this bot (`emit`); receiving is its inbox — a trigger under the hood,
  * with the routing and batching of one, shown here in the person's words.
  */
-function OtherBotsSection({ bot, manage, inbox }: { bot: Bot; manage: boolean; inbox: BotTrigger | undefined }) {
+function OtherBotsSection({
+  universeId,
+  bot,
+  manage,
+  inbox,
+}: {
+  universeId: string;
+  bot: BotView;
+  manage: boolean;
+  inbox: BotTriggerView | undefined;
+}) {
   const queryClient = useQueryClient();
-  const universeId = bot.universeId;
   const bots = useQuery({
     queryKey: ["bots", universeId],
-    queryFn: () => api<{ bots: BotListItem[] }>("GET", `/api/v1/universes/${universeId}/bots`),
+    queryFn: () => api<BotListResponse>("GET", `/api/v1/universes/${universeId}/bots`),
   });
-  const inboxSpec = inbox?.spec as BotInboxSpec | undefined;
+  const inboxFrom = inbox && inbox.kind === "bot" ? (inbox.from ?? null) : null;
   // A paused inbox reads as "Nobody" but keeps its sender list and routing,
   // so switching receiving back on restores them.
-  const paused = inbox !== undefined && !inbox.enabled;
-  const baseMode: InboxMode = !inbox || paused ? "off" : inboxSpec?.from === undefined ? "any" : "selected";
-  const baseIds = inboxSpec?.from ?? [];
-  const [emit, setEmit] = useState(bot.emit);
+  const paused = inbox !== undefined && inbox.enabled === false;
+  const baseMode: InboxMode = !inbox || paused ? "off" : inboxFrom == null ? "any" : "selected";
+  const baseIds = inboxFrom ?? [];
+  const botEmit = bot.emit ?? false;
+  const [emit, setEmit] = useState(botEmit);
   const [mode, setMode] = useState<InboxMode>(baseMode);
   const [ids, setIds] = useState<string[]>(baseIds);
   const [editingInbox, setEditingInbox] = useState(false);
-  useEffect(() => setEmit(bot.emit), [bot.emit]);
+  useEffect(() => setEmit(botEmit), [botEmit]);
   useEffect(() => {
     setMode(baseMode);
     setIds(baseIds);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [inbox?.name, baseMode, JSON.stringify(baseIds)]);
+  }, [inbox?.triggerId, baseMode, JSON.stringify(baseIds)]);
 
-  const emitDirty = emit !== bot.emit;
+  const emitDirty = emit !== botEmit;
   const inboxDirty =
     mode !== baseMode || (mode === "selected" && JSON.stringify([...ids].sort()) !== JSON.stringify([...baseIds].sort()));
   const problem = mode === "selected" && ids.length === 0 ? "Choose at least one bot, or allow any bot." : null;
   const save = useMutation({
     mutationFn: async () => {
       if (emitDirty) {
-        await api<{ bot: Bot }>("PATCH", `/api/v1/universes/${universeId}/bots/${bot.botId}`, { emit });
+        await api("PUT", `/api/v1/universes/${universeId}/bots/${bot.botId}`, {
+          bot: { ...botInputOf(bot), emit },
+          expectedRevision: bot.revision,
+        });
       }
       if (inboxDirty) {
         const url = `/api/v1/universes/${universeId}/bots/${bot.botId}/triggers`;
         if (mode === "off") {
           // Pause, never delete: the sender list and routing survive.
-          if (inbox && inbox.enabled) await api("PATCH", `${url}/${inbox.name}`, { enabled: false });
+          if (inbox && inbox.enabled !== false) {
+            await api("PUT", `${url}/${inbox.triggerId}`, {
+              trigger: { ...triggerInputOf(inbox), enabled: false },
+              expectedRevision: inbox.revision,
+            });
+          }
         } else {
-          const spec = inboxSelectionSpec(mode === "any" ? "any" : "selected", ids);
-          if (inbox) await api("PATCH", `${url}/${inbox.name}`, { spec, enabled: true });
-          else await api("POST", url, { name: "inbox", kind: "bot", spec });
+          const selection = inboxSelectionSpec(mode === "any" ? "any" : "selected", ids);
+          if (inbox) {
+            await api("PUT", `${url}/${inbox.triggerId}`, {
+              trigger: { ...triggerInputOf(inbox), ...selection, enabled: true },
+              expectedRevision: inbox.revision,
+            });
+          } else {
+            await api("PUT", `${url}/inbox`, {
+              trigger: { triggerId: "inbox", kind: "bot", ...selection },
+            });
+          }
         }
       }
     },
@@ -826,16 +877,16 @@ function OtherBotsSection({ bot, manage, inbox }: { bot: Bot; manage: boolean; i
       ]);
     },
   });
-  const closed = bot.closedAt !== null;
+  const closed = bot.closedAtMs != null;
   const readOnly = !manage || closed;
-  const others = (bots.data?.bots ?? []).filter((other) => other.botId !== bot.botId && !other.closedAt);
+  const others = (bots.data?.bots ?? []).filter((other) => other.botId !== bot.botId && other.closedAtMs == null);
 
   return (
     <SetupSection
       id="other-bots"
       title="Other bots"
       description="Bots in this universe can message each other; every message is an event, and each side decides for itself."
-      summary={otherBotsSummary(bot.emit, baseMode === "off" ? "off" : baseMode === "any" ? "any" : baseIds)}
+      summary={otherBotsSummary(botEmit, baseMode === "off" ? "off" : baseMode === "any" ? "any" : baseIds)}
     >
       <ToggleRow
         id="bot-emit"
@@ -954,14 +1005,23 @@ function ToggleRow({
   );
 }
 
-function DangerSection({ slug, bot, manage }: { slug: string; bot: Bot; manage: boolean }) {
+function DangerSection({
+  universeId,
+  slug,
+  bot,
+  manage,
+}: {
+  universeId: string;
+  slug: string;
+  bot: BotView;
+  manage: boolean;
+}) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
-  const universeId = bot.universeId;
-  const closed = bot.closedAt !== null;
+  const closed = bot.closedAtMs != null;
   const close = useMutation({
     mutationFn: () =>
-      api<{ bot: Bot; completed: boolean }>("POST", `/api/v1/universes/${universeId}/bots/${bot.botId}/close`),
+      api<BotCloseResponse>("POST", `/api/v1/universes/${universeId}/bots/${bot.botId}/close`),
     onSuccess: async ({ bot: updated }) => {
       queryClient.setQueryData(["bot", universeId, bot.botId], { bot: updated });
       await Promise.all([
@@ -971,7 +1031,7 @@ function DangerSection({ slug, bot, manage }: { slug: string; bot: Bot; manage: 
     },
   });
   const remove = useMutation({
-    mutationFn: () => api<{ deleted: boolean }>("DELETE", `/api/v1/universes/${universeId}/bots/${bot.botId}`),
+    mutationFn: () => api<BotDeleteResponse>("DELETE", `/api/v1/universes/${universeId}/bots/${bot.botId}`),
     onSuccess: async () => {
       queryClient.removeQueries({ queryKey: ["bot", universeId, bot.botId] });
       await queryClient.invalidateQueries({ queryKey: ["bots", universeId] });
@@ -984,12 +1044,12 @@ function DangerSection({ slug, bot, manage }: { slug: string; bot: Bot; manage: 
       id="danger"
       title="Danger zone"
       description="Pausing is reversible and lives in the header. These are not."
-      summary={closed ? `Closed ${new Date(bot.closedAt ?? "").toLocaleString()} · delete to free the id` : "Close or delete this bot"}
+      summary={closed ? `Closed ${new Date(bot.closedAtMs ?? 0).toLocaleString()} · delete to free the id` : "Close or delete this bot"}
       tone="danger"
     >
       {closed ? (
         <p className="text-xs text-muted-foreground">
-          Closed {new Date(bot.closedAt ?? "").toLocaleString()}: conversations and schedules were released and
+          Closed {new Date(bot.closedAtMs ?? 0).toLocaleString()}: conversations and schedules were released and
           events are refused. The record and its history stay until the bot is deleted.
         </p>
       ) : (

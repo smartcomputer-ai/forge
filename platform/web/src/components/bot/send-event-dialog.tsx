@@ -35,9 +35,11 @@ export function SendEventDialog({
       let parsed: unknown = undefined;
       if (data.trim()) parsed = JSON.parse(data);
       return api("POST", `/api/v1/universes/${universeId}/bots/${botId}/events`, {
-        kind: kind.trim(),
-        summary: summary.trim(),
-        ...(parsed === undefined ? {} : { data: parsed }),
+        event: {
+          kind: kind.trim(),
+          summary: summary.trim(),
+          ...(parsed === undefined ? {} : { data: parsed }),
+        },
       });
     },
     onSuccess: async () => {

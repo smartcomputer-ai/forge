@@ -1,10 +1,14 @@
 /// Deployment-scoped administration: operator environment providers and
-/// their per-universe bindings, channel accounts, and connector health.
+/// their per-universe bindings, the operator channel-account listing, and
+/// connector health.
 import { Hono } from "hono";
-import type { ChannelAccount, ChannelConnectorStatus, EnvironmentProviderBinding, EnvironmentTemplate } from "@/api";
-import type { OperatorEnvironmentProviderView } from "@lightspeed/agent-client";
+import type { EnvironmentProviderBinding, EnvironmentTemplate } from "@/api";
+import type {
+  OperatorChannelAccountView,
+  OperatorEnvironmentProviderView,
+} from "@lightspeed/agent-client";
 import type { DemoStore, UniverseState } from "../store";
-import { badRequest, conflict, notFound, nowIso, readBody } from "./common";
+import { badRequest, conflict, notFound, readBody } from "./common";
 
 type ControllerConnection = OperatorEnvironmentProviderView["controllerConnection"];
 
@@ -28,8 +32,6 @@ const DEFAULT_TEMPLATES: Array<Omit<EnvironmentTemplate, "providerId" | "binding
     metadata: { cpu: "8", memory: "16GiB", disk: "120GiB" },
   },
 ];
-
-const CONNECTOR_READY_DELAY_MS = 3_000;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -94,54 +96,6 @@ function seedTemplates(store: DemoStore, universe: UniverseState, binding: Envir
       providerId: binding.providerId,
       bindingId: binding.bindingId,
     });
-  }
-}
-
-function parseSettings(value: unknown): ChannelAccount["settings"] {
-  return isRecord(value) && typeof value.printQr === "boolean" ? { printQr: value.printQr } : {};
-}
-
-function connectorFor(store: DemoStore, account: ChannelAccount): ChannelConnectorStatus | undefined {
-  return store.channelsStatus.connectors.find(
-    (connector) =>
-      connector.health?.provider === account.provider && connector.health.accountId === account.accountId,
-  );
-}
-
-function setConnectorState(
-  store: DemoStore,
-  account: ChannelAccount,
-  state: NonNullable<ChannelConnectorStatus["health"]>["state"],
-): void {
-  const connector = connectorFor(store, account);
-  if (!connector?.health) return;
-  connector.health.state = state;
-  connector.health.ingressConnected = state === "ready";
-  connector.health.changedAtMs = Date.now();
-}
-
-/// A new account gets a connector that comes up after a beat, so the
-/// status column moves like a real deployment's.
-function addConnector(store: DemoStore, account: ChannelAccount): void {
-  store.channelsStatus.connectors.push({
-    url: `http://channels-${account.provider}-${store.channelsStatus.connectors.length + 1}.internal:9100/health`,
-    reachable: true,
-    httpStatus: 200,
-    health: {
-      version: 1,
-      provider: account.provider,
-      accountId: account.accountId,
-      state: account.enabled ? "starting" : "stopped",
-      ingressConnected: false,
-      activityWorkerReady: true,
-      reconnectAttempts: 0,
-      changedAtMs: Date.now(),
-    },
-  });
-  if (account.enabled) {
-    setTimeout(() => {
-      if (store.channelAccounts.get(account.id)?.enabled) setConnectorState(store, account, "ready");
-    }, CONNECTOR_READY_DELAY_MS);
   }
 }
 
@@ -254,62 +208,17 @@ export function adminRoutes(store: DemoStore): Hono {
     return c.json(binding);
   });
 
-  app.get("/channel-accounts", (c) => c.json([...store.channelAccounts.values()]));
-
-  app.post("/channel-accounts", async (c) => {
-    const body = await readBody<{
-      provider?: unknown;
-      accountId?: unknown;
-      displayName?: unknown;
-      settings?: unknown;
-      enabled?: unknown;
-    }>(c);
-    if (body.provider !== "telegram" && body.provider !== "whatsapp") {
-      return badRequest(c, "provider must be telegram or whatsapp");
+  /// Deployment-wide listing from the core's operator scope: every account
+  /// across universes, each row carrying its universe id. The demo uses the
+  /// platform universe id as the core `universeId`.
+  app.get("/channel-accounts", (c) => {
+    const accounts: OperatorChannelAccountView[] = [];
+    for (const state of store.universes.values()) {
+      for (const account of state.channelAccounts.values()) {
+        accounts.push({ ...account, universeId: state.universe.id });
+      }
     }
-    const accountId = optionalString(body.accountId);
-    const displayName = optionalString(body.displayName);
-    if (!accountId || !displayName) return badRequest(c, "accountId and displayName are required");
-    const at = nowIso();
-    const account: ChannelAccount = {
-      id: store.nextId("chan"),
-      provider: body.provider,
-      accountId,
-      displayName,
-      settings: parseSettings(body.settings),
-      enabled: body.enabled !== false,
-      createdAt: at,
-      updatedAt: at,
-    };
-    store.channelAccounts.set(account.id, account);
-    addConnector(store, account);
-    return c.json(account, 201);
-  });
-
-  app.patch("/channel-accounts/:id", async (c) => {
-    const account = store.channelAccounts.get(c.req.param("id"));
-    if (!account) return notFound(c);
-    const body = await readBody<{ displayName?: unknown; settings?: unknown; enabled?: unknown }>(c);
-    const displayName = optionalString(body.displayName);
-    if (displayName) account.displayName = displayName;
-    if (body.settings !== undefined) account.settings = parseSettings(body.settings);
-    if (typeof body.enabled === "boolean" && body.enabled !== account.enabled) {
-      account.enabled = body.enabled;
-      setConnectorState(store, account, body.enabled ? "ready" : "stopped");
-    }
-    account.updatedAt = nowIso();
-    return c.json(account);
-  });
-
-  app.delete("/channel-accounts/:id", (c) => {
-    const account = store.channelAccounts.get(c.req.param("id"));
-    if (!account) return notFound(c);
-    store.channelAccounts.delete(account.id);
-    const connector = connectorFor(store, account);
-    if (connector) {
-      store.channelsStatus.connectors.splice(store.channelsStatus.connectors.indexOf(connector), 1);
-    }
-    return c.json({ ok: true });
+    return c.json({ accounts });
   });
 
   app.get("/status/channels", (c) => c.json(store.channelsStatus));

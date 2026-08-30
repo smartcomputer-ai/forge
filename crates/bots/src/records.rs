@@ -167,7 +167,7 @@ impl BotTriggerRecord {
             disabled_at_ms: self.disabled_at_ms,
             last_filter_error: self.last_filter_error.clone(),
             last_filter_error_at_ms: self.last_filter_error_at_ms,
-            cursor: self.cursor.clone(),
+            cursor_state: self.cursor.clone(),
             ingest_path: if redact { None } else { ingest_path },
             pairing_code: if redact {
                 None

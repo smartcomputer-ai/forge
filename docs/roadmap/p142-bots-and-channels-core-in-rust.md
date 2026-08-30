@@ -2,10 +2,10 @@
 
 **Status**
 
-- **Slices 1–3 implemented 2026-08-30** (uncommitted on `p142-rust-bots`);
-  slice 4 (Platform cut-over: routes to passthroughs, web/demo on the
-  generated types, deleting `platform/db`'s bot/channel schemas) is open.
-  Implementation log at the end of this document.
+- **Slices 1–4 implemented 2026-08-30**: the Rust core (slices 1–3) and
+  the Platform cut-over (slice 4 — passthrough routes, web/demo on the
+  generated types, `platform/bots` and the platform's bot/channel schemas
+  deleted). Implementation log at the end of this document.
 - Proposed 2026-08-30 from a design conversation with Lukas, after a
   survey of `platform/bots`, `platform/channels`, `platform/workers`, the
   Platform server/db/web glue, and the Rust runtime crates.
@@ -581,8 +581,8 @@ and core-Channels variable groups in `docs/variables.md`.
    against the contract vector), one health/metrics listener.
    `platform/channels` and `platform/workers` are deleted; `dev.sh
    full` starts one `connectors` process behind
-   `LIGHTSPEED_CHANNELS_CONNECTORS`. `platform/bots` survives only
-   because `platform/server` still imports it (slice 4). The WhatsApp
+   `LIGHTSPEED_CHANNELS_CONNECTORS`. `platform/bots` survived only
+   because `platform/server` still imported it (deleted in slice 4). The WhatsApp
    group-join pairing announcement was dropped: the core has no
    "is pairing required" query, and the first message in the group
    yields `pairing_required` anyway.
@@ -591,6 +591,7 @@ and core-Channels variable groups in `docs/variables.md`.
    regenerate the Platform db baseline, `platform/workers` to connector
    roles only, `dev.sh` / `stack.mjs` profiles, `docs/variables.md`,
    `README.md`, `AGENTS.md`, `platform/README.md`.
+   *Done (2026-08-30) — see the implementation log.*
 5. **Follow-ups (separate decisions)** — `SessionOriginKind::Bot` as
    typed provenance so `session/list` finds a bot's sessions without the
    controller query; per-component task queue override; pure-HTTP
@@ -751,3 +752,32 @@ and core-Channels variable groups in `docs/variables.md`.
   token uses U+001F as separator (jsonb rejects U+0000); chat event
   documents carry `data.conversation` / `data.message` (CEL filters written
   against the TS layout need updating).
+- **Slice 4, Platform cut-over (2026-08-30).** `platform/bots` is deleted
+  and the Platform server is no longer a Temporal client
+  (`@temporalio/client` and `@lightspeed/bots` left its dependencies).
+  `routes/bots.ts` and `routes/channel-accounts.ts` are thin passthroughs
+  on the existing `engineClientFor` / `withGateway` seam at the same URL
+  paths with the core response shapes: reads keep member access, writes
+  keep owner/admin, and the platform still strips `ingestPath` /
+  `pairingCode` from trigger views for non-managing members (only the
+  platform knows org roles). PATCH became put-with-expected-revision end
+  to end; `POST /bots/reconcile` and the platform webhook mount are gone
+  (`profiles/put` reconciles in core; ingest URLs are the core gateway's
+  `/hooks/bots/...`). Channel accounts moved under
+  `/universes/{id}/channel-accounts` (+ pairing routes); the
+  platform-admin listing is the core's `operator/channels/accounts/list`;
+  the operator CLI grew `--universe` and read-modify-write
+  enable/disable. The platform database lost `schema/{bots,channels}.ts`
+  and migrations `0001_channels` / `0002_bots` — the ledger rebased to
+  the single `0000_platform_baseline`
+  (`LIGHTSPEED_PLATFORM_SCHEMA_REVISION=1`), and the migration gate now
+  asserts the moved tables never reappear (the `lightspeed_channels`
+  role machinery went with them). The web UI and the demo backend read
+  the generated `@lightspeed/agent-client` types (`platform/web/src/api.ts`
+  re-exports them; the demo emulates the new wire exactly, hooks at the
+  core-shaped path). Release staging no longer ships `platform/bots/src`.
+  Found while migrating: `BotTriggerView` serialized the poll spec's
+  dedupe `cursor` and the advancing `PollCursorState` under one JSON key —
+  the runtime field is now `cursorState`. The chat access UI moved to the
+  handle-allowlist `ChatAccess` shape (the org-role model died with
+  `channel_identities`).

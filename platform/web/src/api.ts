@@ -531,20 +531,91 @@ export interface BlobContent {
   bytesBase64: string;
 }
 
-export interface ChannelAccount {
-  id: string;
-  provider: "telegram" | "whatsapp";
-  accountId: string;
-  displayName: string;
-  settings: { printQr?: boolean };
-  enabled: boolean;
-  createdAt: string;
-  updatedAt: string;
+/// Bot and channel wire types come from the generated core API client
+/// (P142): the platform routes are passthroughs, so the browser reads the
+/// core response shapes verbatim. Only the connector health report — a
+/// platform-owned surface — keeps a local shape.
+export type {
+  BotActiveDeliverySnapshot,
+  BotBreaker,
+  BotBufferSnapshot,
+  BotCloseResponse,
+  BotCoalescePolicy,
+  BotControllerSnapshot,
+  BotControllerStatus,
+  BotCreateResponse,
+  BotDeleteResponse,
+  BotDeliverPolicy,
+  BotEventDocument,
+  BotEventInput,
+  BotEventListResponse,
+  BotEventMedia,
+  BotEventOutcome,
+  BotEventReadResponse,
+  BotEventReplyRef,
+  BotEventSender,
+  BotEventView,
+  BotFilterTestResponse,
+  BotId,
+  BotInput,
+  BotListItem,
+  BotListResponse,
+  BotReadResponse,
+  BotRecentDeliverySnapshot,
+  BotRoutedSessionView,
+  BotSessionKind,
+  BotSessionSnapshot,
+  BotSetupStatus,
+  BotStateReadResponse,
+  BotStateView,
+  BotTriggerDisabledReason,
+  BotTriggerId,
+  BotTriggerInput,
+  BotTriggerListResponse,
+  BotTriggerReadResponse,
+  BotTriggerRoute,
+  BotTriggerView,
+  BotView,
+  BotWhenBusy,
+  ChannelAccountInput,
+  ChannelAccountListResponse,
+  ChannelAccountReadResponse,
+  ChannelAccountSettings,
+  ChannelAccountView,
+  ChannelPairedVia,
+  ChannelPairingListResponse,
+  ChannelPairingView,
+  ChannelProvider,
+  ChatAccess,
+  ChatActivation,
+  ChatGroupActivation,
+  ChatPairing,
+  ChatScope,
+  ChatTurnAccess,
+  LlmUsageView,
+  OperatorChannelAccountListResponse,
+  OperatorChannelAccountView,
+  PollCursorSpec,
+  PollCursorState,
+  PollHttpAuth,
+  PollSource,
+  SessionSummaryView,
+  WebhookPreset,
+  WebhookVerification,
+} from "@lightspeed/agent-client";
+
+import type { BotView } from "@lightspeed/agent-client";
+
+export function botLabel(bot: Pick<BotView, "botId" | "displayName">): string {
+  return bot.displayName ?? bot.botId;
 }
 
+/// Connector host health, aggregated by the platform server from each
+/// connector's /healthz (`GET /api/v1/status/channels`). Platform-owned;
+/// unrelated to the core channel account records.
 export interface ChannelConnectorHealth {
   version: 1;
-  provider: "telegram" | "whatsapp";
+  provider: string;
   accountId: string;
   state: "starting" | "ready" | "disconnected" | "stopping" | "stopped";
   ingressConnected: boolean;
@@ -566,298 +637,4 @@ export interface ChannelConnectorStatus {
 
 export interface ChannelsStatus {
   connectors: ChannelConnectorStatus[];
-}
-
-/// Bots: durable event routers that own managed sessions.
-export interface Bot {
-  /** Authored, immutable, universe-unique id: what models say and URLs use. */
-  botId: string;
-  universeId: string;
-  /** Mutable label; falls back to the id. */
-  displayName: string | null;
-  /** One line other bots read about this bot. */
-  description: string | null;
-  profileId: string;
-  brief: string | null;
-  runsPerDay: number | null;
-  breaker: { fires: number; windowMs: number } | null;
-  routedSessionTtlMs: number | null;
-  /** Whether this bot's sessions get the mutating self-configuration tools. */
-  selfConfig: boolean;
-  /** Whether this bot's sessions get bot_emit: events to itself or to other bots' inboxes (rate-capped). */
-  emit: boolean;
-  enabled: boolean;
-  /** Terminal: set by close; sessions and schedules are released, history stays. */
-  closedAt: string | null;
-  /** The sessions the controller closed on the way out; erased by delete. */
-  closedSessions: string[] | null;
-  createdAt: string;
-  updatedAt: string;
-}
-
-export interface BotListItem extends Bot {
-  triggerCount: number;
-  /** Events admitted but not yet resolved: queued, buffered, or a run in flight. */
-  pendingCount: number;
-  /** The newest event, for the roster's one line of "what it is doing". */
-  lastEvent: BotLastEvent | null;
-}
-
-export interface BotLastEvent {
-  seq: number | null;
-  kind: string;
-  source: string;
-  outcome: BotEventOutcome | null;
-  outcomeDetail: string | null;
-  receivedAt: string;
-  resolvedAt: string | null;
-  session: { sessionId: string; label: string } | null;
-}
-
-export function botLabel(bot: Pick<Bot, "botId" | "displayName">): string {
-  return bot.displayName ?? bot.botId;
-}
-
-export interface BotScheduleSpec {
-  cron?: string | null;
-  at?: string | null;
-  timezone: string;
-  summary: string;
-}
-
-export type BotWebhookVerification =
-  | { scheme: "token" }
-  | { scheme: "hmac-sha256"; grantId: string; header: string; prefix?: string; audience?: string };
-
-export interface BotWebhookSpec {
-  token: string;
-  verification: BotWebhookVerification;
-  preset?: "github" | null;
-}
-
-export type BotPollSource =
-  | {
-      kind: "http";
-      url: string;
-      method?: "GET" | "POST";
-      headers?: Record<string, string>;
-      auth?: { grantId: string; header?: string; scheme?: string; audience?: string };
-      body?: string;
-    }
-  | {
-      kind: "exec";
-      /** Absent: the bot's own environment (the profile's `existing` one), resolved when the poll fires. */
-      environmentId?: string | null;
-      argv: string[];
-      cwd?: string | null;
-      timeoutMs?: number | null;
-    };
-
-export interface BotPollSpec {
-  source: BotPollSource;
-  intervalMs: number;
-  items: string | null;
-  cursor: { kind: "idSet"; id: string } | { kind: "watermark"; field: string };
-}
-
-export interface BotPollCursorState {
-  ids?: string[];
-  watermark?: string | number;
-  consecutiveFailures: number;
-  baselinedAt?: string;
-  lastPolledAt?: string;
-}
-
-export type BotRoute =
-  | { policy: "bot" }
-  | { policy: "perKey"; key?: string | null }
-  | { policy: "perEvent" };
-
-export interface BotCoalesce {
-  debounceMs: number;
-  maxWaitMs: number;
-  maxCount: number;
-}
-
-/** Inbox: which bots may address this one; absent = any bot in the universe. */
-export interface BotInboxSpec {
-  from?: string[];
-}
-
-/**
- * Chat: a messaging account whose conversations wake this bot, one session
- * per conversation. `pairingCode` is `""` for members who cannot manage the
- * bot (blanked by the server) and `null` for an open connection.
- */
-export interface BotChatSpec {
-  channelAccountId: string;
-  matchScope: "direct" | "group" | null;
-  activation: {
-    group?: "mention" | "always";
-    triggerPrefixes?: string[];
-    mentionNames?: string[];
-  } | null;
-  access: {
-    turn?: "conversation" | "members";
-    control?: "none" | "members" | "admins" | "owners";
-  } | null;
-  pairingCode: string | null;
-  /** Lower wins among matching chat triggers on one account. */
-  priority: number;
-}
-
-export interface BotTrigger {
-  /** Authored id; the API addresses triggers by it. */
-  name: string;
-  /** `bot` is the inbox for events other bots address here; at most one per bot. */
-  kind: "schedule" | "webhook" | "poll" | "bot" | "chat";
-  spec: BotScheduleSpec | BotWebhookSpec | BotPollSpec | BotInboxSpec | BotChatSpec;
-  filter: string | null;
-  route: BotRoute | null;
-  coalesce: BotCoalesce | null;
-  deliver: { whenBusy: "queue" | "steer" | "append" } | null;
-  /**
-   * Retention of the sessions this trigger routes to: null inherits the bot's
-   * `routedSessionTtlMs`, 0 keeps them open forever (the chat default).
-   */
-  sessionTtlMs: number | null;
-  /** Poll kind only: the advancing cursor; null until the baseline poll. */
-  cursor?: BotPollCursorState | null;
-  enabled: boolean;
-  /** Why the trigger is paused; null while enabled. */
-  disabledReason: "breaker" | "poll_failed" | "one_shot" | "operator" | "bot_closed" | null;
-  disabledAt: string | null;
-  /** The filter's last evaluation error; it refuses events until the filter is fixed. */
-  lastFilterError: string | null;
-  lastFilterErrorAt: string | null;
-  createdAt: string;
-  updatedAt: string;
-  /** Webhook kind: the ingest path (capability URL) senders post to. */
-  ingestPath?: string;
-  /** Chat kind: the account the spec names, or null when it no longer exists. */
-  channelAccount?: Pick<ChannelAccount, "id" | "provider" | "accountId" | "displayName"> | null;
-}
-
-export interface BotEventRef {
-  version: 1;
-  id: string;
-  ref: string;
-}
-
-/** What came of an event: the bot's decision, or the system's. */
-export type BotEventOutcome =
-  | "handled"
-  | "deferred"
-  | "ignored"
-  | "blocked"
-  | "unresolved"
-  | "run_failed"
-  | "steered"
-  | "appended"
-  | "archived";
-
-export interface BotRecentEvent {
-  id: string;
-  ref: string;
-  /** Event sequence numbers (#N) in this delivery, when known. */
-  seqs?: number[];
-  /** Prompt tokens the run consumed and how many the provider served from its cache. */
-  usage?: { inputTokens: number; cachedInputTokens: number };
-  outcome: BotEventOutcome;
-  eventCount?: number;
-  runId?: string;
-  summary?: string;
-  failure?: string;
-}
-
-export interface BotManagedSession {
-  sessionId: string;
-  label: string;
-  kind: "main" | "keyed" | "event";
-  lastActiveAtMs?: number;
-}
-
-/// Sub-agent descendants of one bot session (P134 lineage), read from core by
-/// the platform server beside the controller state.
-export interface BotSessionLineage {
-  open: number;
-  total: number;
-  children: Array<{
-    id: string;
-    displayName: string | null;
-    lifecycleStatus: "new" | "open" | "closed";
-    profileId: string | null;
-    depth: number;
-    updatedAtMs: number;
-  }>;
-}
-
-export type BotLineage = Record<string, BotSessionLineage>;
-
-export interface BotState {
-  botName: string;
-  displayName: string | null;
-  profileId: string;
-  sessionId: string;
-  sessions: BotManagedSession[];
-  controllerStatus:
-    | "initializing"
-    | "idle"
-    | "session_busy"
-    | "delivering_event"
-    | "budget_exhausted"
-    | "degraded"
-    | "closing"
-    | "closed";
-  activeDeliveries: { id: string; eventCount: number; sessionId: string; runId: string | null }[];
-  sessionReady: boolean;
-  pendingEventCount: number;
-  pendingDeliveryCount: number;
-  buffers: { key: string; count: number; flushAtMs: number }[];
-  recentEvents: BotRecentEvent[];
-  eventsProcessed: number;
-  duplicateEventCount: number;
-  duplicateEmissionCount: number;
-  appliedProfileRevision: number | null;
-  runsPerDay: number | null;
-  runsToday: number;
-  /** Sub-agent sessions delegated under the bot's sessions today; counted against `runsPerDay`. */
-  descendantsToday: number;
-  /** Present while an operator-requested reset waits for an idle boundary. */
-  rotatingSessionIds?: string[];
-  lastError: string | null;
-}
-
-export interface BotEventEnvelope {
-  id: string;
-  eventId: string;
-  /** Per-bot sequence number (#N); null only for pre-numbering rows. */
-  seq: number | null;
-  promptRef: string | null;
-  kind: string;
-  source: string;
-  occurredAt: string;
-  ref: string;
-  session: { sessionId: string; label: string } | null;
-  /** Sending bot id for bot-originated events; null for world events. */
-  sender: string | null;
-  /** Federation hop count; 0 for world events. */
-  hops: number;
-  /** Receipts: the asked event's #N at the answering bot. */
-  inReplyTo: { bot: string; seq: number } | null;
-  receivedAt: string;
-  /** Write-once; null while pending (queued, buffered, or a run in flight). */
-  outcome: BotEventOutcome | null;
-  /** One line: the model's summary, or the failure. */
-  outcomeDetail: string | null;
-  /** The delivery (single event or coalesced batch) it went out in; shared across a batch. */
-  deliveryId: string | null;
-  /** The session run that handled it; null for steered/appended/archived. */
-  runId: string | null;
-  resolvedAt: string | null;
-}
-
-export interface BotEventPage {
-  events: BotEventEnvelope[];
-  nextCursor: string | null;
 }

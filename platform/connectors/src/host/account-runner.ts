@@ -243,6 +243,12 @@ export function createProviderConnector(
         log: context.log,
       });
     }
+    default:
+      // Providers are open names in the core; this host only bridges the
+      // two it implements, and discovery filters on them already.
+      throw new TypeError(
+        `unsupported channel provider ${account.provider} (account ${account.accountId})`,
+      );
   }
 }
 

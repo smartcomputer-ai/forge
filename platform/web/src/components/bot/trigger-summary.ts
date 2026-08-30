@@ -1,11 +1,4 @@
-import type {
-  BotChatSpec,
-  BotInboxSpec,
-  BotPollSpec,
-  BotScheduleSpec,
-  BotTrigger,
-  BotWebhookSpec,
-} from "@/api";
+import type { BotTriggerView, ChannelAccountView } from "@/api";
 import { cronBuilderFromExpression, cronFromBuilder, type CronBuilderState } from "./cron-builder";
 
 const WEEKDAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
@@ -47,43 +40,44 @@ function hostOf(url: string): string {
   }
 }
 
-/** One line saying what wakes the bot, in the person's words. */
-export function triggerSummary(trigger: BotTrigger): string {
+/**
+ * One line saying what wakes the bot, in the person's words. Chat triggers
+ * carry only the account id; pass the universe's channel accounts to name
+ * the account (there is no server-side join on the trigger).
+ */
+export function triggerSummary(
+  trigger: BotTriggerView,
+  accounts?: Pick<ChannelAccountView, "accountId" | "provider" | "displayName">[],
+): string {
   switch (trigger.kind) {
     case "schedule": {
-      const spec = trigger.spec as BotScheduleSpec;
-      if (spec.at) return `Once, at ${new Date(spec.at).toLocaleString()}`;
-      return describeCron(spec.cron ?? "", spec.timezone);
+      if (trigger.atMs != null) return `Once, at ${new Date(trigger.atMs).toLocaleString()}`;
+      return describeCron(trigger.cron ?? "", trigger.timezone ?? null);
     }
     case "webhook": {
-      const spec = trigger.spec as BotWebhookSpec;
-      const source = spec.preset === "github" ? "GitHub webhook" : "Webhook";
-      const verified = spec.verification.scheme === "hmac-sha256" ? "signed" : "URL token";
+      const source = trigger.preset === "github" ? "GitHub webhook" : "Webhook";
+      const verified = trigger.verification?.scheme === "hmac-sha256" ? "signed" : "URL token";
       return `${source} · ${verified}`;
     }
     case "poll": {
-      const spec = trigger.spec as BotPollSpec;
-      const every = `every ${Math.max(1, Math.round(spec.intervalMs / 60_000))} min`;
-      return spec.source.kind === "http"
-        ? `Checks ${hostOf(spec.source.url)} ${every}`
-        : `Runs ${spec.source.argv[0] ?? "a command"} ${every}`;
+      const every = `every ${Math.max(1, Math.round(trigger.intervalMs / 60_000))} min`;
+      return trigger.source.kind === "http"
+        ? `Checks ${hostOf(trigger.source.url)} ${every}`
+        : `Runs ${trigger.source.argv[0] ?? "a command"} ${every}`;
     }
     case "chat": {
-      const spec = trigger.spec as BotChatSpec;
-      const account = trigger.channelAccount
-        ? `${trigger.channelAccount.provider} · ${trigger.channelAccount.displayName}`
-        : "a messaging account";
+      const account = accounts?.find((entry) => entry.accountId === trigger.accountId);
+      const name = account ? `${account.provider} · ${account.displayName}` : "a messaging account";
       const scope =
-        spec.matchScope === "direct" ? "direct messages" : spec.matchScope === "group" ? "groups" : "all chats";
-      return `${account} · ${scope}${spec.pairingCode === null ? "" : " · pairing required"}`;
+        trigger.matchScope === "direct" ? "direct messages" : trigger.matchScope === "group" ? "groups" : "all chats";
+      return `${name} · ${scope}${(trigger.pairing ?? "code") === "code" ? " · pairing required" : ""}`;
     }
     case "bot": {
-      const spec = trigger.spec as BotInboxSpec;
-      return spec.from === undefined
+      return trigger.from == null
         ? "Messages from any bot in this universe"
-        : spec.from.length === 0
+        : trigger.from.length === 0
           ? "Messages from no bot yet"
-          : `Messages from ${spec.from.join(", ")}`;
+          : `Messages from ${trigger.from.join(", ")}`;
     }
   }
 }
@@ -138,7 +132,7 @@ export function deliverySentence(shape: DeliveryShape, chat = false): string {
   return parts.join(" · ");
 }
 
-export function deliveryShapeOf(trigger: BotTrigger): DeliveryShape {
+export function deliveryShapeOf(trigger: BotTriggerView): DeliveryShape {
   return {
     routePolicy: trigger.route?.policy ?? (trigger.kind === "chat" ? "perKey" : "bot"),
     routeKey: trigger.route?.policy === "perKey" ? (trigger.route.key ?? "") : "",
@@ -146,7 +140,7 @@ export function deliveryShapeOf(trigger: BotTrigger): DeliveryShape {
     whenBusy: trigger.deliver?.whenBusy ?? "queue",
     debounceSeconds: trigger.coalesce ? String(trigger.coalesce.debounceMs / 1000) : "",
     maxWaitSeconds: trigger.coalesce ? String(trigger.coalesce.maxWaitMs / 1000) : "",
-    ttlMode: trigger.sessionTtlMs === null ? "inherit" : trigger.sessionTtlMs === 0 ? "forever" : "hours",
+    ttlMode: trigger.sessionTtlMs == null ? "inherit" : trigger.sessionTtlMs === 0 ? "forever" : "hours",
     ttlHours: trigger.sessionTtlMs ? String(Math.round(trigger.sessionTtlMs / 3_600_000)) : "",
   };
 }

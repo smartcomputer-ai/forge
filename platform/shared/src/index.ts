@@ -2,22 +2,6 @@ import { z } from "zod";
 
 /// Input shapes shared by the API (validation) and the CLI (request typing).
 
-export const channelEnum = z.enum(["telegram", "whatsapp"]);
-
-export const channelAccountCreateSchema = z.object({
-  provider: channelEnum,
-  accountId: z.string().trim().min(1).max(120),
-  displayName: z.string().trim().min(1).max(120),
-  credentialRef: z.string().trim().min(1).max(240).nullish(),
-  stateRef: z.string().trim().min(1).max(240).nullish(),
-  settings: z.object({ printQr: z.boolean().optional() }).default({}),
-  enabled: z.boolean().optional(),
-});
-export const channelAccountUpdateSchema = channelAccountCreateSchema.partial().omit({
-  provider: true,
-  accountId: true,
-});
-
 export const universeCreateSchema = z.object({
   name: z.string().min(1).max(100),
   /// URL-safe org slug; derived from name when omitted.

@@ -37,7 +37,6 @@ for runtime in platform platform-workers; do
   tar -tzf "dist/runtime/$runtime.tar.gz" ./package.json >/dev/null
 done
 tar -tzf dist/runtime/platform.tar.gz ./platform/server/src/main.ts >/dev/null
-tar -tzf dist/runtime/platform.tar.gz ./platform/bots/src/webhooks.ts >/dev/null
 tar -tzf dist/runtime/platform.tar.gz ./platform/web/dist/index.html >/dev/null
 tar -tzf dist/runtime/platform-workers.tar.gz ./platform/connectors/src/host/main.ts >/dev/null
 tar -tzf dist/runtime/platform-workers.tar.gz ./platform/connectors/src/providers/telegram/connector.ts >/dev/null

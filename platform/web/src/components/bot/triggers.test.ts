@@ -9,8 +9,8 @@ import {
 } from "./triggers";
 
 describe("bot inbox sender selection", () => {
-  it("encodes any bot by omitting the from allowlist", () => {
-    expect(inboxSelectionSpec("any", ["boss"])).toEqual({});
+  it("encodes any bot with an explicit null, clearing an earlier allowlist", () => {
+    expect(inboxSelectionSpec("any", ["boss"])).toEqual({ from: null });
   });
 
   it("encodes selected bots by immutable id", () => {
@@ -36,32 +36,39 @@ const chatForm = {
   groupActivation: "mention" as const,
   prefixesText: "/ask, /ask,\n/lightspeed",
   mentionNamesText: "",
-  accessTurn: "conversation" as const,
-  accessControl: "admins" as const,
+  accessTurn: "anyone" as const,
+  allowedText: "",
+  controllersText: "@lukas",
   requirePairing: true,
   priority: "",
 };
 
-describe("chat trigger spec payload", () => {
+describe("chat trigger payload", () => {
   it("lets the server mint the pairing code on create", () => {
     const spec = chatSpecPayload(chatForm, undefined);
     expect(spec).toEqual({
-      channelAccountId: "acct-1",
+      accountId: "acct-1",
       matchScope: null,
       activation: { group: "mention", triggerPrefixes: ["/ask", "/lightspeed"] },
-      access: { turn: "conversation", control: "admins" },
+      access: { turn: "anyone", controllers: ["@lukas"] },
+      pairing: "code",
     });
     expect("pairingCode" in spec).toBe(false);
   });
 
-  it("keeps an existing code by omitting it and opens the connection with null", () => {
-    expect("pairingCode" in chatSpecPayload(chatForm, "ExistingCode1")).toBe(false);
-    expect(chatSpecPayload({ ...chatForm, requirePairing: false }, "ExistingCode1").pairingCode).toBeNull();
+  it("keeps an existing code and opens the connection without one", () => {
+    expect(chatSpecPayload(chatForm, "ExistingCode1").pairingCode).toBe("ExistingCode1");
+    const open = chatSpecPayload({ ...chatForm, requirePairing: false }, "ExistingCode1");
+    expect(open.pairing).toBe("open");
+    expect("pairingCode" in open).toBe(false);
   });
 
-  it("mints a fresh code when pairing is switched on for an open connection", () => {
-    const spec = chatSpecPayload(chatForm, null);
-    expect(spec.pairingCode).toMatch(new RegExp(`^[${PAIRING_ALPHABET}]{12}$`));
+  it("lists allowed handles when turns are restricted", () => {
+    expect(chatSpecPayload({ ...chatForm, accessTurn: "listed", allowedText: "@a,@b" }, undefined).access).toEqual({
+      turn: "listed",
+      allowed: ["@a", "@b"],
+      controllers: ["@lukas"],
+    });
   });
 
   it("carries scope and priority when set", () => {
