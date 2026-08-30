@@ -16,7 +16,6 @@ use channels::{
         AdmittedInbound, ConversationStart, NormalizedInbound, conversation_label,
         normalize_inbound,
     },
-    pairing_key,
     policy::{authorize_sender, trigger_prefixes},
 };
 use temporal_workflow::channels::{CHAT_INBOUND_SIGNAL, CHAT_STATE_QUERY, ChannelConversationArgs};
@@ -76,8 +75,11 @@ impl ChatTriggerCandidate {
 /// The pure admission decision over the candidates of one account.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AdmissionPlan {
-    /// Route the message to this trigger's conversation.
+    /// Route the message to the chat's paired trigger.
     Bound { index: usize },
+    /// An open trigger claims the unpaired chat: record the pairing and
+    /// route the message.
+    Claim { index: usize },
     /// The message was this trigger's pairing code: record the pairing,
     /// consume the message.
     Pair { index: usize },
@@ -86,18 +88,34 @@ pub enum AdmissionPlan {
     PairingRequired { index: usize },
     /// Same, but ambient traffic: stay silent.
     PairingPending { index: usize },
-    /// No candidate serves this account and scope.
+    /// No candidate serves this account and scope — or the chat is paired
+    /// to a trigger that is currently inactive (disabled, its bot paused):
+    /// the pairing survives and the chat stays silent until the owner is
+    /// back or the pairing is deleted.
     Unbound,
 }
 
-/// First an open trigger, then the trigger the chat is already paired to,
-/// then a trigger whose code the message is; otherwise prompt when the
-/// message looks addressed to the bot. Candidates are ordered by priority.
+/// Pairing is the routing authority: a paired chat routes only to its
+/// paired trigger — whoever paired it first has the route, and no other
+/// trigger sees the chat while the pairing exists. An unpaired chat is
+/// claimed by the best open trigger, or by a trigger whose pairing code
+/// the message is; otherwise prompt when the message looks addressed to
+/// the bot. Candidates are ordered by priority.
 pub fn plan_admission(
     candidates: &[ChatTriggerCandidate],
     paired_trigger: Option<&api::BotTriggerId>,
     inbound: &NormalizedInbound,
 ) -> AdmissionPlan {
+    if let Some(paired) = paired_trigger {
+        return match candidates
+            .iter()
+            .position(|candidate| &candidate.trigger.trigger_id == paired)
+        {
+            Some(index) => AdmissionPlan::Bound { index },
+            // The owner is inactive: park the chat, never reroute it.
+            None => AdmissionPlan::Unbound,
+        };
+    }
     if candidates.is_empty() {
         return AdmissionPlan::Unbound;
     }
@@ -105,14 +123,7 @@ pub fn plan_admission(
         .iter()
         .position(|candidate| candidate.pairing() == ChatPairing::Open)
     {
-        return AdmissionPlan::Bound { index };
-    }
-    if let Some(paired) = paired_trigger
-        && let Some(index) = candidates
-            .iter()
-            .position(|candidate| &candidate.trigger.trigger_id == paired)
-    {
-        return AdmissionPlan::Bound { index };
+        return AdmissionPlan::Claim { index };
     }
     let text = inbound.inbound.text.trim();
     if !text.is_empty()
@@ -222,10 +233,9 @@ impl GatewayAgentApi {
         let candidates = self
             .chat_trigger_candidates(&account.account_id, scope)
             .await?;
-        let key = pairing_key(&account.account_id, &inbound.inbound.chat_id);
         let pairings: &dyn ChannelPairingStore = self.store().as_ref();
         let paired = pairings
-            .read_channel_pairing(&key)
+            .read_channel_pairing(&account.account_id, &inbound.inbound.chat_id)
             .await
             .map_err(map_channel_error)?;
         let plan = plan_admission(
@@ -236,15 +246,30 @@ impl GatewayAgentApi {
         let (decision, candidate) = match plan {
             AdmissionPlan::Unbound => return Ok(unbound),
             AdmissionPlan::Bound { index } => (ChannelInboundDecision::Bound, &candidates[index]),
+            AdmissionPlan::Claim { index } => {
+                let candidate = &candidates[index];
+                pairings
+                    .upsert_channel_pairing(ChannelPairingRecord {
+                        account_id: account.account_id.clone(),
+                        chat_id: inbound.inbound.chat_id.clone(),
+                        bot_id: candidate.bot.bot_id.clone(),
+                        trigger_id: candidate.trigger.trigger_id.clone(),
+                        paired_via: api::ChannelPairedVia::Open,
+                        paired_at_ms: crate::bots::now_ms(),
+                    })
+                    .await
+                    .map_err(map_channel_error)?;
+                (ChannelInboundDecision::Bound, candidate)
+            }
             AdmissionPlan::Pair { index } => {
                 let candidate = &candidates[index];
                 pairings
                     .upsert_channel_pairing(ChannelPairingRecord {
-                        pairing_key: key,
-                        bot_id: candidate.bot.bot_id.clone(),
-                        trigger_id: candidate.trigger.trigger_id.clone(),
                         account_id: account.account_id.clone(),
                         chat_id: inbound.inbound.chat_id.clone(),
+                        bot_id: candidate.bot.bot_id.clone(),
+                        trigger_id: candidate.trigger.trigger_id.clone(),
+                        paired_via: api::ChannelPairedVia::Code,
                         paired_at_ms: crate::bots::now_ms(),
                     })
                     .await
@@ -476,11 +501,36 @@ mod tests {
     }
 
     #[test]
-    fn open_trigger_binds_without_pairing() {
+    fn open_trigger_claims_unpaired_chat() {
         let candidates = vec![candidate("open", ChatPairing::Open, None, 100)];
         assert_eq!(
             plan_admission(&candidates, None, &inbound("hi", false)),
-            AdmissionPlan::Bound { index: 0 }
+            AdmissionPlan::Claim { index: 0 }
+        );
+    }
+
+    #[test]
+    fn paired_trigger_beats_open_candidates() {
+        let candidates = vec![
+            candidate("thief", ChatPairing::Open, None, 1),
+            candidate("owner", ChatPairing::Code, Some("ABCDEFGHJKLM"), 100),
+        ];
+        let owner = BotTriggerId::new("owner");
+        assert_eq!(
+            plan_admission(&candidates, Some(&owner), &inbound("hi", false)),
+            AdmissionPlan::Bound { index: 1 }
+        );
+    }
+
+    #[test]
+    fn paired_to_inactive_trigger_parks_the_chat() {
+        // The owner is disabled (not a candidate); an eager open trigger
+        // must not take the chat over.
+        let candidates = vec![candidate("thief", ChatPairing::Open, None, 1)];
+        let owner = BotTriggerId::new("owner");
+        assert_eq!(
+            plan_admission(&candidates, Some(&owner), &inbound("hi", false)),
+            AdmissionPlan::Unbound
         );
     }
 

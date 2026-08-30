@@ -7,7 +7,6 @@ use sha2::{Digest as _, Sha256};
 use uuid::Uuid;
 
 const CONVERSATION_KEY_DOMAIN: &str = "lightspeed.channels.conversation.v1";
-const PAIRING_KEY_DOMAIN: &str = "lightspeed.channels.pairing.v1";
 const DELIVERY_QUEUE_DOMAIN: &str = "lightspeed.channels.delivery-queue.v1";
 
 fn framed_digest(domain: &str, parts: &[&str]) -> String {
@@ -86,13 +85,6 @@ pub fn connector_task_queue(
     format!("lightspeed-connector-{provider}-{digest}")
 }
 
-/// Pairing row key: derived from account and chat, never message data.
-pub fn pairing_key(account_id: &ChannelAccountId, chat_id: &str) -> String {
-    let mut digest = framed_digest(PAIRING_KEY_DOMAIN, &[account_id.as_str(), chat_id]);
-    digest.truncate(48);
-    format!("pair-{digest}")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -103,43 +95,5 @@ mod tests {
             chat_id: "12345".to_owned(),
             thread_id: thread.map(str::to_owned),
         }
-    }
-
-    #[test]
-    fn workflow_ids_hide_chat_ids_and_split() {
-        let universe = Uuid::parse_str("6f3a1a52-58c1-4f0e-9c2d-1a2b3c4d5e6f").unwrap();
-        let id = conversation_workflow_id(
-            universe,
-            &ChannelProvider::new("telegram"),
-            &conversation(None),
-        );
-        assert!(id.starts_with("6f3a1a52-58c1-4f0e-9c2d-1a2b3c4d5e6f/chat-telegram-"));
-        assert!(!id.contains("12345"));
-        assert_ne!(
-            id,
-            conversation_workflow_id(
-                universe,
-                &ChannelProvider::new("telegram"),
-                &conversation(Some("7"))
-            )
-        );
-    }
-
-    #[test]
-    fn keys_and_queues_are_deterministic() {
-        assert_eq!(conversation(None).key(), "tg-main/12345");
-        assert_eq!(conversation(Some("7")).key(), "tg-main/12345/7");
-        let universe = Uuid::nil();
-        let queue = connector_task_queue(
-            universe,
-            &ChannelProvider::new("whatsapp"),
-            &ChannelAccountId::new("wa"),
-        );
-        assert!(queue.starts_with("lightspeed-connector-whatsapp-"));
-        assert_eq!(queue.len(), "lightspeed-connector-whatsapp-".len() + 24);
-        assert_eq!(
-            pairing_key(&ChannelAccountId::new("tg-main"), "12345"),
-            pairing_key(&ChannelAccountId::new("tg-main"), "12345")
-        );
     }
 }

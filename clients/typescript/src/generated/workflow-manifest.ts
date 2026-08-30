@@ -86,8 +86,7 @@ export const WORKFLOW_CONTRACT_MANIFEST =
         "provider": "telegram",
         "threadId": "7",
         "universeId": "6f3a1a52-58c1-4f0e-9c2d-1a2b3c4d5e6f"
-      },
-      "pairingKey": "pair-2d49e1a88cc74cc6766adbda79e85acc2c65b59d289a7338"
+      }
     },
     "emissionIds": {
       "invocationCancellation": "emission:sha256:6b88bd2ef714193fc9274b5f212cc415da4dd25733e1717fa89c7fdddc3eca4e",

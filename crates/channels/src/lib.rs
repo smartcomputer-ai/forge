@@ -35,7 +35,7 @@ use thiserror::Error;
 pub use api::{
     ChannelAccountDocument, ChannelAccountId, ChannelAccountInput, ChannelAccountSettings,
     ChannelAccountView, ChannelInbound, ChannelInboundDecision, ChannelInboundMedia,
-    ChannelMediaKind, ChannelPairingView, ChannelProvider,
+    ChannelMediaKind, ChannelPairedVia, ChannelPairingView, ChannelProvider,
 };
 pub use ids::*;
 pub use memory::InMemoryChannelStore;
@@ -58,8 +58,8 @@ pub enum ChannelError {
         actual: u64,
     },
 
-    #[error("channel pairing not found: {pairing_key}")]
-    PairingNotFound { pairing_key: String },
+    #[error("channel pairing not found: {account_id}/{chat_id}")]
+    PairingNotFound { account_id: String, chat_id: String },
 
     #[error("invalid channel input: {message}")]
     InvalidInput { message: String },

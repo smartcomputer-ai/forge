@@ -1123,6 +1123,14 @@ export type ChannelProvider = string;
 export type ChannelInboundDecision =
   "bound" | "paired" | "pairing_required" | "pairing_pending" | "unbound";
 /**
+ * How a chat got its route: claimed by an open trigger's first contact,
+ * or paired by code.
+ *
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "ChannelPairedVia".
+ */
+export type ChannelPairedVia = "open" | "code";
+/**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "InputAdmissionFailureKind".
  */
@@ -3628,6 +3636,9 @@ export interface ChannelPairingDeleteResponse {
   pairing: ChannelPairingView;
 }
 /**
+ * A conversation's route: the chat is identified by `(accountId, chatId)`
+ * and owned by the paired trigger.
+ *
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "ChannelPairingView".
  */
@@ -3636,10 +3647,7 @@ export interface ChannelPairingView {
   botId: BotId;
   chatId: string;
   pairedAtMs: number;
-  /**
-   * Opaque key derived from account and chat; never message data.
-   */
-  pairingKey: string;
+  pairedVia: ChannelPairedVia;
   triggerId: BotTriggerId;
 }
 /**
@@ -5951,7 +5959,8 @@ export interface ChannelInboundAdmitParams {
  * via the `definition` "ChannelPairingDeleteParams".
  */
 export interface ChannelPairingDeleteParams {
-  pairingKey: string;
+  accountId: ChannelAccountId;
+  chatId: string;
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema

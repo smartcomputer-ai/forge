@@ -167,7 +167,7 @@ impl GatewayAgentApi {
     ) -> Result<ChannelPairingDeleteResponse, AgentApiError> {
         let record = self
             .channel_pairings()
-            .delete_channel_pairing(&params.pairing_key)
+            .delete_channel_pairing(&params.account_id, &params.chat_id)
             .await
             .map_err(map_channel_error)?;
         Ok(ChannelPairingDeleteResponse {

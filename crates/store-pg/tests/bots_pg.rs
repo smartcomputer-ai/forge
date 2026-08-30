@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use api::{
     BotDocument, BotEventOutcome, BotId, BotTriggerDisabledReason, BotTriggerDocument,
     BotTriggerId, BotTriggerKind, BotTriggerSpec, ChannelAccountDocument, ChannelAccountId,
-    ChannelProvider, PollCursorSpec, PollCursorState, PollSource, ProfileId,
+    ChannelPairedVia, ChannelProvider, PollCursorSpec, PollCursorState, PollSource, ProfileId,
 };
 use bots::{
     BotError, BotEventCursor, BotEventOutcomeWrite, BotEventRateScope, BotEventRecord,
@@ -1078,11 +1078,11 @@ async fn pg_live_channel_accounts_and_pairings() {
         .expect("create second chat trigger");
 
     let pairing = ChannelPairingRecord {
-        pairing_key: "pk-chat-1".to_owned(),
-        bot_id: bot_id.clone(),
-        trigger_id: BotTriggerId::new("telegram"),
         account_id: account_id.clone(),
         chat_id: "chat-1".to_owned(),
+        bot_id: bot_id.clone(),
+        trigger_id: BotTriggerId::new("telegram"),
+        paired_via: ChannelPairedVia::Code,
         paired_at_ms: 40,
     };
     assert!(matches!(
@@ -1112,19 +1112,19 @@ async fn pg_live_channel_accounts_and_pairings() {
     );
     assert_eq!(
         store
-            .read_channel_pairing("pk-chat-1")
+            .read_channel_pairing(&account_id, "chat-1")
             .await
             .expect("read pairing"),
         Some(pairing.clone())
     );
     assert_eq!(
         store
-            .read_channel_pairing("pk-missing")
+            .read_channel_pairing(&account_id, "chat-missing")
             .await
             .expect("read missing pairing"),
         None
     );
-    // A re-pair moves the chat to another trigger under the same key.
+    // A re-pair moves the chat to another trigger for the same chat.
     let moved = ChannelPairingRecord {
         trigger_id: BotTriggerId::new("telegram-vip"),
         paired_at_ms: 41,
@@ -1138,7 +1138,6 @@ async fn pg_live_channel_accounts_and_pairings() {
         moved
     );
     let second = ChannelPairingRecord {
-        pairing_key: "pk-chat-2".to_owned(),
         chat_id: "chat-2".to_owned(),
         paired_at_ms: 50,
         ..pairing.clone()
@@ -1189,20 +1188,20 @@ async fn pg_live_channel_accounts_and_pairings() {
         .expect("delete vip trigger");
     assert_eq!(
         store
-            .read_channel_pairing("pk-chat-1")
+            .read_channel_pairing(&account_id, "chat-1")
             .await
             .expect("read moved pairing"),
         None
     );
     assert_eq!(
         store
-            .delete_channel_pairing("pk-chat-2")
+            .delete_channel_pairing(&account_id, "chat-2")
             .await
             .expect("delete pairing"),
         second
     );
     assert!(matches!(
-        store.delete_channel_pairing("pk-chat-2").await,
+        store.delete_channel_pairing(&account_id, "chat-2").await,
         Err(ChannelError::PairingNotFound { .. })
     ));
     store

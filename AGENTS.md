@@ -364,7 +364,10 @@ Release construction, snapshots, and tagged publication are documented in
   row — and `message_send { text, replyTo: 17 }` resolves numbers to
   provider ids inside the conversation workflow. Per-trigger
   `sessionTtlMs` (0 = never, the chat default) overrides
-  `routedSessionTtlMs`. Do not reintroduce bindings, a channel-owned
+  `routedSessionTtlMs`. Pairing is the routing authority: every bound
+  conversation has a pairing row (open triggers claim on first contact),
+  the paired trigger owns the chat while the row exists — a disabled
+  owner parks the chat, never reroutes it — and unpairing frees it. Do not reintroduce bindings, a channel-owned
   session, provider message ids in tool arguments, or a second lifecycle
   controller.
 - Bot decisions live in the controller's Temporal history; Postgres is the

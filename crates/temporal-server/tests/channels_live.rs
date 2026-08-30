@@ -513,7 +513,8 @@ async fn channels_live_pairing_gates_a_conversation() -> anyhow::Result<()> {
         // Unpairing gates the chat again.
         live.api
             .delete_channel_pairing(api::ChannelPairingDeleteParams {
-                pairing_key: pairings[0].pairing_key.clone(),
+                account_id: live.account_id.clone(),
+                chat_id: pairings[0].chat_id.clone(),
             })
             .await?;
         let decision = admit(

@@ -2,7 +2,7 @@
 
 use api::{
     BotId, BotTriggerId, ChannelAccountDocument, ChannelAccountId, ChannelAccountView,
-    ChannelPairingView, ChannelProvider,
+    ChannelPairedVia, ChannelPairingView, ChannelProvider,
 };
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -102,23 +102,23 @@ pub trait ChannelAccountStore: Send + Sync {
     ) -> Result<ChannelAccountRecord, ChannelError>;
 }
 
-/// A conversation authorized against a `chat` trigger by its pairing code
-/// (or implicitly, for open triggers). The key is derived from account and
-/// chat without retaining message data.
+/// A conversation's route, keyed by `(account_id, chat_id)`: claimed by an
+/// open trigger's first contact or paired by code, and owned by the paired
+/// trigger while the row exists.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ChannelPairingRecord {
-    pub pairing_key: String,
-    pub bot_id: BotId,
-    pub trigger_id: BotTriggerId,
     pub account_id: ChannelAccountId,
     pub chat_id: String,
+    pub bot_id: BotId,
+    pub trigger_id: BotTriggerId,
+    pub paired_via: ChannelPairedVia,
     pub paired_at_ms: i64,
 }
 
 impl ChannelPairingRecord {
     pub fn view(&self) -> ChannelPairingView {
         ChannelPairingView {
-            pairing_key: self.pairing_key.clone(),
+            paired_via: self.paired_via,
             bot_id: self.bot_id.clone(),
             trigger_id: self.trigger_id.clone(),
             account_id: self.account_id.clone(),
@@ -138,8 +138,8 @@ pub struct ChannelPairingFilter {
 
 #[async_trait]
 pub trait ChannelPairingStore: Send + Sync {
-    /// Insert or replace the pairing for `pairing_key` (a re-pair moves the
-    /// chat to another trigger).
+    /// Insert or replace the chat's pairing (a re-pair moves the chat to
+    /// another trigger).
     async fn upsert_channel_pairing(
         &self,
         record: ChannelPairingRecord,
@@ -147,7 +147,8 @@ pub trait ChannelPairingStore: Send + Sync {
 
     async fn read_channel_pairing(
         &self,
-        pairing_key: &str,
+        account_id: &ChannelAccountId,
+        chat_id: &str,
     ) -> Result<Option<ChannelPairingRecord>, ChannelError>;
 
     /// Ordered by paired-at time, newest first.
@@ -158,7 +159,8 @@ pub trait ChannelPairingStore: Send + Sync {
 
     async fn delete_channel_pairing(
         &self,
-        pairing_key: &str,
+        account_id: &ChannelAccountId,
+        chat_id: &str,
     ) -> Result<ChannelPairingRecord, ChannelError>;
 }
 

@@ -279,7 +279,7 @@ fn vectors() -> Value {
 /// the conversation workflow id it never constructs but may log, and the
 /// pairing key of a chat.
 fn channel_vectors(universe: Uuid) -> Value {
-    use channels::{ConversationRef, connector_task_queue, conversation_workflow_id, pairing_key};
+    use channels::{ConversationRef, connector_task_queue, conversation_workflow_id};
     let account_id = api::ChannelAccountId::new("tg-main");
     let conversation = ConversationRef {
         account_id: account_id.clone(),
@@ -297,7 +297,6 @@ fn channel_vectors(universe: Uuid) -> Value {
         "connectorTaskQueue": connector_task_queue(universe, &api::ChannelProvider::new("telegram"), &account_id),
         "conversationWorkflowId": conversation_workflow_id(universe, &api::ChannelProvider::new("telegram"), &conversation),
         "conversationKey": conversation.key(),
-        "pairingKey": pairing_key(&account_id, "12345"),
     })
 }
 

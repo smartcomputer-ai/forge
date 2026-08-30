@@ -25,7 +25,6 @@ use channels::{
     ChannelAccountRecord, ChannelAccountStore, ChannelError, ChannelPairingRecord,
     ChannelPairingStore, ConversationRef,
     media::{PreparedMediaItem, media_label},
-    pairing_key,
     policy::format_message_line,
     state::ChatHandle,
     tools::{CHANNEL_TOOL_DESCRIPTIONS, CHANNEL_TOOL_SCHEMAS, channel_workflow_tool_declarations},
@@ -726,8 +725,9 @@ fn scope_name(scope: ChatScope) -> &'static str {
 
 /// Why the trigger no longer serves the conversation, or `None` while it
 /// does: enabled chat trigger on this account and scope, open and enabled
-/// bot, enabled account, and (unless the trigger is open) a pairing of this
-/// chat to this trigger.
+/// bot, enabled account, and the chat's pairing pointing at this trigger —
+/// pairing is the routing authority, so an unpaired or re-paired chat ends
+/// the conversation.
 pub fn trigger_inactive_reason(
     bot: &BotRecord,
     trigger: &BotTriggerRecord,
@@ -746,7 +746,6 @@ pub fn trigger_inactive_reason(
     let BotTriggerSpec::Chat {
         account_id: served_account,
         match_scope,
-        pairing: pairing_mode,
         ..
     } = &trigger.document.spec
     else {
@@ -778,9 +777,7 @@ pub fn trigger_inactive_reason(
         }
         Some(_) => {}
     }
-    if *pairing_mode == ChatPairing::Code
-        && !pairing.is_some_and(|pairing| &pairing.trigger_id == trigger_id)
-    {
+    if !pairing.is_some_and(|pairing| &pairing.trigger_id == trigger_id) {
         return Some(format!(
             "the conversation is not paired to trigger {trigger_id}"
         ));
@@ -819,7 +816,7 @@ pub async fn assert_trigger_active(
     };
     let pairings: &dyn ChannelPairingStore = store.as_ref();
     let pairing = pairings
-        .read_channel_pairing(&pairing_key(&request.account_id, &request.chat_id))
+        .read_channel_pairing(&request.account_id, &request.chat_id)
         .await
         .map_err(|error| channel_error("read channel pairing", error))?;
     Ok(
@@ -988,11 +985,11 @@ mod tests {
 
     fn pairing(trigger_id: &str) -> ChannelPairingRecord {
         ChannelPairingRecord {
-            pairing_key: pairing_key(&ChannelAccountId::new("tg-main"), "chat-42"),
-            bot_id: BotId::new("triage"),
-            trigger_id: BotTriggerId::new(trigger_id),
             account_id: ChannelAccountId::new("tg-main"),
             chat_id: "chat-42".to_owned(),
+            bot_id: BotId::new("triage"),
+            trigger_id: BotTriggerId::new(trigger_id),
+            paired_via: api::ChannelPairedVia::Open,
             paired_at_ms: 0,
         }
     }
@@ -1350,15 +1347,40 @@ mod tests {
         };
         let open = trigger(true, ChatPairing::Open, None);
         let live_account = account(true);
+        let paired_here = pairing("tg");
         assert_eq!(
+            reason(
+                &bot(true, false),
+                &open,
+                Some(&live_account),
+                Some(&paired_here),
+                ChatScope::Direct
+            ),
+            None
+        );
+        // Pairing is the routing authority for every mode: an open
+        // conversation whose chat was unpaired or re-paired ends too.
+        assert!(
             reason(
                 &bot(true, false),
                 &open,
                 Some(&live_account),
                 None,
                 ChatScope::Direct
-            ),
-            None
+            )
+            .unwrap()
+            .contains("not paired")
+        );
+        assert!(
+            reason(
+                &bot(true, false),
+                &open,
+                Some(&live_account),
+                Some(&pairing("other")),
+                ChatScope::Direct
+            )
+            .unwrap()
+            .contains("not paired")
         );
         assert!(
             reason(
@@ -1426,7 +1448,7 @@ mod tests {
                 &bot(true, false),
                 &group_only,
                 Some(&live_account),
-                None,
+                Some(&paired_here),
                 ChatScope::Group
             ),
             None

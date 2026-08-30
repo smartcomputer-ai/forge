@@ -713,6 +713,29 @@ and core-Channels variable groups in `docs/variables.md`.
   provider account belongs to exactly one universe, refused at create with
   a typed error instead of failing later as two runners fighting over one
   token.
+- **Pairing-first routing (2026-08-30, after the channels review).**
+  Pairing is the routing authority: `plan_admission` checks the pairing
+  row first and a paired chat routes only to its paired trigger — a
+  disabled owner parks the chat (`unbound`, silence) instead of losing it
+  to an open trigger; an unpaired chat is claimed by the best open trigger
+  (`Claim` writes the pairing row, wire decision stays `bound`) or by
+  pairing code; the conversation active-check requires the pairing to
+  point at the serving trigger for every pairing mode, so unpairing or
+  re-pairing ends the old conversation workflow. Priority is now only the
+  tie-breaker among claimants at first contact. Decided with Lukas after
+  weighing deployment-scoped accounts (rejected for now: the inbound
+  wire→tenant demux would be the gateway's first data-derived tenancy
+  decision; revisit as an additive account scope if shared numbers become
+  real demand).
+- **Channels tables review (2026-08-30).** `channel_pairings` lost its
+  stored digest: `pairing_key` is gone, the primary key is the
+  conversation itself (`universe_id, account_id, chat_id`), the store and
+  `channels/pairings/delete` address pairings by `(accountId, chatId)`,
+  and the derivation left the workflow contract. A `paired_via` column
+  (`open` | `code`) records how the chat got its route now that open
+  triggers claim silently. `channel_accounts` gained the
+  matches-document CHECKs (`provider`, `provider_account_id`) that
+  `bot_triggers.kind` already had.
 - **Deviations recorded while porting:** the filter's `event.occurredAtMs`
   is an integer; poll cursors advance only over delivered items (the TS
   silently dropped items past the per-fire cap); `resolve_inbox` reports a

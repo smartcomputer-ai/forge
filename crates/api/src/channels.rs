@@ -370,15 +370,34 @@ pub struct ChannelInboundAdmitResponse {
 
 // ── Pairings ────────────────────────────────────────────────────────────────
 
+/// How a chat got its route: claimed by an open trigger's first contact,
+/// or paired by code.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ChannelPairedVia {
+    Open,
+    Code,
+}
+
+impl ChannelPairedVia {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Open => "open",
+            Self::Code => "code",
+        }
+    }
+}
+
+/// A conversation's route: the chat is identified by `(accountId, chatId)`
+/// and owned by the paired trigger.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ChannelPairingView {
-    /// Opaque key derived from account and chat; never message data.
-    pub pairing_key: String,
-    pub bot_id: BotId,
-    pub trigger_id: BotTriggerId,
     pub account_id: ChannelAccountId,
     pub chat_id: String,
+    pub bot_id: BotId,
+    pub trigger_id: BotTriggerId,
+    pub paired_via: ChannelPairedVia,
     pub paired_at_ms: i64,
 }
 
@@ -401,7 +420,8 @@ pub struct ChannelPairingListResponse {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ChannelPairingDeleteParams {
-    pub pairing_key: String,
+    pub account_id: ChannelAccountId,
+    pub chat_id: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

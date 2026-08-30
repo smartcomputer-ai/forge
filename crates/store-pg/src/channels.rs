@@ -18,7 +18,7 @@ const ACCOUNT_COLUMNS: &str = r#"
 "#;
 
 const PAIRING_COLUMNS: &str = r#"
-    pairing_key, bot_id, trigger_id, account_id, chat_id, paired_at_ms
+    account_id, chat_id, bot_id, trigger_id, paired_via, paired_at_ms
 "#;
 
 // ── Accounts ────────────────────────────────────────────────────────────────
@@ -242,34 +242,30 @@ impl ChannelPairingStore for PgStore {
         &self,
         record: ChannelPairingRecord,
     ) -> Result<ChannelPairingRecord, ChannelError> {
-        if record.pairing_key.is_empty() {
-            return Err(ChannelError::invalid("pairingKey must not be empty"));
-        }
         if record.chat_id.is_empty() {
             return Err(ChannelError::invalid("chatId must not be empty"));
         }
         let query = format!(
             r#"
             INSERT INTO channel_pairings (
-                universe_id, pairing_key, bot_id, trigger_id, account_id, chat_id, paired_at_ms
+                universe_id, account_id, chat_id, bot_id, trigger_id, paired_via, paired_at_ms
             )
             VALUES ($1, $2, $3, $4, $5, $6, $7)
-            ON CONFLICT (universe_id, pairing_key) DO UPDATE SET
+            ON CONFLICT (universe_id, account_id, chat_id) DO UPDATE SET
                 bot_id = EXCLUDED.bot_id,
                 trigger_id = EXCLUDED.trigger_id,
-                account_id = EXCLUDED.account_id,
-                chat_id = EXCLUDED.chat_id,
+                paired_via = EXCLUDED.paired_via,
                 paired_at_ms = EXCLUDED.paired_at_ms
             RETURNING {PAIRING_COLUMNS}
             "#
         );
         let row = sqlx::query(&query)
             .bind(self.config.universe_id)
-            .bind(record.pairing_key.as_str())
-            .bind(record.bot_id.as_str())
-            .bind(record.trigger_id.as_str())
             .bind(record.account_id.as_str())
             .bind(record.chat_id.as_str())
+            .bind(record.bot_id.as_str())
+            .bind(record.trigger_id.as_str())
+            .bind(record.paired_via.as_str())
             .bind(record.paired_at_ms)
             .fetch_one(&self.pool)
             .await
@@ -279,15 +275,17 @@ impl ChannelPairingStore for PgStore {
 
     async fn read_channel_pairing(
         &self,
-        pairing_key: &str,
+        account_id: &ChannelAccountId,
+        chat_id: &str,
     ) -> Result<Option<ChannelPairingRecord>, ChannelError> {
         let query = format!(
             "SELECT {PAIRING_COLUMNS} FROM channel_pairings \
-             WHERE universe_id = $1 AND pairing_key = $2"
+             WHERE universe_id = $1 AND account_id = $2 AND chat_id = $3"
         );
         let row = sqlx::query(&query)
             .bind(self.config.universe_id)
-            .bind(pairing_key)
+            .bind(account_id.as_str())
+            .bind(chat_id)
             .fetch_optional(&self.pool)
             .await
             .map_err(|error| channel_sql_error("read channel pairing", error))?;
@@ -305,7 +303,7 @@ impl ChannelPairingStore for PgStore {
                AND ($3::text IS NULL OR bot_id = $3) \
                AND ($4::text IS NULL OR trigger_id = $4) \
                AND ($5::text IS NULL OR chat_id = $5) \
-             ORDER BY paired_at_ms DESC, pairing_key"
+             ORDER BY paired_at_ms DESC, account_id, chat_id"
         );
         let rows = sqlx::query(&query)
             .bind(self.config.universe_id)
@@ -321,21 +319,25 @@ impl ChannelPairingStore for PgStore {
 
     async fn delete_channel_pairing(
         &self,
-        pairing_key: &str,
+        account_id: &ChannelAccountId,
+        chat_id: &str,
     ) -> Result<ChannelPairingRecord, ChannelError> {
         let query = format!(
-            "DELETE FROM channel_pairings WHERE universe_id = $1 AND pairing_key = $2 \
+            "DELETE FROM channel_pairings \
+             WHERE universe_id = $1 AND account_id = $2 AND chat_id = $3 \
              RETURNING {PAIRING_COLUMNS}"
         );
         let row = sqlx::query(&query)
             .bind(self.config.universe_id)
-            .bind(pairing_key)
+            .bind(account_id.as_str())
+            .bind(chat_id)
             .fetch_optional(&self.pool)
             .await
             .map_err(|error| channel_sql_error("delete channel pairing", error))?;
         let Some(row) = row else {
             return Err(ChannelError::PairingNotFound {
-                pairing_key: pairing_key.to_owned(),
+                account_id: account_id.to_string(),
+                chat_id: chat_id.to_owned(),
             });
         };
         pairing_from_row(&row)
@@ -393,15 +395,21 @@ fn pairing_from_row(row: &sqlx::postgres::PgRow) -> Result<ChannelPairingRecord,
     let bot_id: String = column(row, "bot_id")?;
     let trigger_id: String = column(row, "trigger_id")?;
     let account_id: String = column(row, "account_id")?;
+    let paired_via: String = column(row, "paired_via")?;
+    let paired_via = match paired_via.as_str() {
+        "open" => api::ChannelPairedVia::Open,
+        "code" => api::ChannelPairedVia::Code,
+        other => return Err(store_message(format!("unknown paired_via {other:?}"))),
+    };
     Ok(ChannelPairingRecord {
-        pairing_key: column(row, "pairing_key")?,
+        account_id: ChannelAccountId::try_new(account_id)
+            .map_err(|error| store_message(format!("decode channel account id: {error}")))?,
+        chat_id: column(row, "chat_id")?,
         bot_id: BotId::try_new(bot_id)
             .map_err(|error| store_message(format!("decode bot id: {error}")))?,
         trigger_id: BotTriggerId::try_new(trigger_id)
             .map_err(|error| store_message(format!("decode trigger id: {error}")))?,
-        account_id: ChannelAccountId::try_new(account_id)
-            .map_err(|error| store_message(format!("decode channel account id: {error}")))?,
-        chat_id: column(row, "chat_id")?,
+        paired_via,
         paired_at_ms: column(row, "paired_at_ms")?,
     })
 }

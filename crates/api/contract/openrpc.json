@@ -6401,14 +6401,26 @@
         ],
         "type": "string"
       },
+      "ChannelPairedVia": {
+        "description": "How a chat got its route: claimed by an open trigger's first contact,\nor paired by code.",
+        "enum": [
+          "open",
+          "code"
+        ],
+        "type": "string"
+      },
       "ChannelPairingDeleteParams": {
         "properties": {
-          "pairingKey": {
+          "accountId": {
+            "$ref": "#/components/schemas/ChannelAccountId"
+          },
+          "chatId": {
             "type": "string"
           }
         },
         "required": [
-          "pairingKey"
+          "accountId",
+          "chatId"
         ],
         "type": "object"
       },
@@ -6461,6 +6473,7 @@
         "type": "object"
       },
       "ChannelPairingView": {
+        "description": "A conversation's route: the chat is identified by `(accountId, chatId)`\nand owned by the paired trigger.",
         "properties": {
           "accountId": {
             "$ref": "#/components/schemas/ChannelAccountId"
@@ -6475,20 +6488,19 @@
             "format": "int64",
             "type": "integer"
           },
-          "pairingKey": {
-            "description": "Opaque key derived from account and chat; never message data.",
-            "type": "string"
+          "pairedVia": {
+            "$ref": "#/components/schemas/ChannelPairedVia"
           },
           "triggerId": {
             "$ref": "#/components/schemas/BotTriggerId"
           }
         },
         "required": [
-          "pairingKey",
-          "botId",
-          "triggerId",
           "accountId",
           "chatId",
+          "botId",
+          "triggerId",
+          "pairedVia",
           "pairedAtMs"
         ],
         "type": "object"

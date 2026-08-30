@@ -22,7 +22,7 @@ use crate::{
 #[derive(Default)]
 struct State {
     accounts: BTreeMap<ChannelAccountId, ChannelAccountRecord>,
-    pairings: BTreeMap<String, ChannelPairingRecord>,
+    pairings: BTreeMap<(ChannelAccountId, String), ChannelPairingRecord>,
 }
 
 pub struct InMemoryChannelStore {
@@ -179,17 +179,23 @@ impl ChannelPairingStore for InMemoryChannelStore {
         if !state.accounts.contains_key(&record.account_id) {
             return Err(account_not_found(&record.account_id));
         }
-        state
-            .pairings
-            .insert(record.pairing_key.clone(), record.clone());
+        state.pairings.insert(
+            (record.account_id.clone(), record.chat_id.clone()),
+            record.clone(),
+        );
         Ok(record)
     }
 
     async fn read_channel_pairing(
         &self,
-        pairing_key: &str,
+        account_id: &ChannelAccountId,
+        chat_id: &str,
     ) -> Result<Option<ChannelPairingRecord>, ChannelError> {
-        Ok(self.read_state()?.pairings.get(pairing_key).cloned())
+        Ok(self
+            .read_state()?
+            .pairings
+            .get(&(account_id.clone(), chat_id.to_owned()))
+            .cloned())
     }
 
     async fn list_channel_pairings(
@@ -219,24 +225,28 @@ impl ChannelPairingStore for InMemoryChannelStore {
                         .is_none_or(|chat_id| &record.chat_id == chat_id)
             })
             .collect();
-        // Newest first; the key breaks ties so a page is deterministic.
+        // Newest first; the chat identity breaks ties so a page is
+        // deterministic.
         pairings.sort_by(|a, b| {
-            b.paired_at_ms
-                .cmp(&a.paired_at_ms)
-                .then_with(|| a.pairing_key.cmp(&b.pairing_key))
+            b.paired_at_ms.cmp(&a.paired_at_ms).then_with(|| {
+                (a.account_id.as_str(), a.chat_id.as_str())
+                    .cmp(&(b.account_id.as_str(), b.chat_id.as_str()))
+            })
         });
         Ok(pairings.into_iter().cloned().collect())
     }
 
     async fn delete_channel_pairing(
         &self,
-        pairing_key: &str,
+        account_id: &ChannelAccountId,
+        chat_id: &str,
     ) -> Result<ChannelPairingRecord, ChannelError> {
         self.write_state()?
             .pairings
-            .remove(pairing_key)
+            .remove(&(account_id.clone(), chat_id.to_owned()))
             .ok_or_else(|| ChannelError::PairingNotFound {
-                pairing_key: pairing_key.to_owned(),
+                account_id: account_id.to_string(),
+                chat_id: chat_id.to_owned(),
             })
     }
 }
@@ -283,18 +293,17 @@ mod tests {
     }
 
     fn pairing(
-        key: &str,
         account_id: &str,
         trigger_id: &str,
         chat_id: &str,
         paired_at_ms: i64,
     ) -> ChannelPairingRecord {
         ChannelPairingRecord {
-            pairing_key: key.to_owned(),
-            bot_id: BotId::new("triage"),
-            trigger_id: BotTriggerId::new(trigger_id),
             account_id: account(account_id),
             chat_id: chat_id.to_owned(),
+            bot_id: BotId::new("triage"),
+            trigger_id: BotTriggerId::new(trigger_id),
+            paired_via: api::ChannelPairedVia::Code,
             paired_at_ms,
         }
     }
@@ -312,10 +321,10 @@ mod tests {
         store
     }
 
-    fn keys(records: &[ChannelPairingRecord]) -> Vec<&str> {
+    fn chats(records: &[ChannelPairingRecord]) -> Vec<&str> {
         records
             .iter()
-            .map(|record| record.pairing_key.as_str())
+            .map(|record| record.chat_id.as_str())
             .collect()
     }
 
@@ -468,12 +477,9 @@ mod tests {
             ("tg-main", ChannelProvider::new("telegram")),
             ("wa-shop", ChannelProvider::new("whatsapp")),
         ]);
-        block_on(store.upsert_channel_pairing(pairing("p-1", "tg-main", "chat", "c-1", T0)))
-            .unwrap();
-        block_on(store.upsert_channel_pairing(pairing("p-2", "tg-main", "chat", "c-2", T0)))
-            .unwrap();
-        block_on(store.upsert_channel_pairing(pairing("p-3", "wa-shop", "chat", "c-3", T0)))
-            .unwrap();
+        block_on(store.upsert_channel_pairing(pairing("tg-main", "chat", "c-1", T0))).unwrap();
+        block_on(store.upsert_channel_pairing(pairing("tg-main", "chat", "c-2", T0))).unwrap();
+        block_on(store.upsert_channel_pairing(pairing("wa-shop", "chat", "c-3", T0))).unwrap();
 
         let removed = block_on(store.delete_channel_account(&account("tg-main"))).unwrap();
         assert_eq!(removed.account_id, account("tg-main"));
@@ -481,16 +487,22 @@ mod tests {
             block_on(store.read_channel_account(&account("tg-main"))).unwrap_err(),
             ChannelError::AccountNotFound { .. }
         ));
-        assert_eq!(block_on(store.read_channel_pairing("p-1")).unwrap(), None);
-        assert_eq!(block_on(store.read_channel_pairing("p-2")).unwrap(), None);
+        assert_eq!(
+            block_on(store.read_channel_pairing(&account("tg-main"), "c-1")).unwrap(),
+            None
+        );
+        assert_eq!(
+            block_on(store.read_channel_pairing(&account("tg-main"), "c-2")).unwrap(),
+            None
+        );
         assert!(
-            block_on(store.read_channel_pairing("p-3"))
+            block_on(store.read_channel_pairing(&account("wa-shop"), "c-3"))
                 .unwrap()
                 .is_some()
         );
         assert_eq!(
-            keys(&block_on(store.list_channel_pairings(ChannelPairingFilter::default())).unwrap()),
-            vec!["p-3"]
+            chats(&block_on(store.list_channel_pairings(ChannelPairingFilter::default())).unwrap()),
+            vec!["c-3"]
         );
         assert_eq!(
             block_on(store.delete_channel_account(&account("tg-main"))).unwrap_err(),
@@ -505,22 +517,25 @@ mod tests {
     #[test]
     fn upsert_pairing_replaces_by_key_and_needs_the_account() {
         let store = store_with(&[("tg-main", ChannelProvider::new("telegram"))]);
-        let first = pairing("p-1", "tg-main", "support", "c-1", T0);
+        let first = pairing("tg-main", "support", "c-1", T0);
         assert_eq!(
             block_on(store.upsert_channel_pairing(first.clone())).unwrap(),
             first
         );
         assert_eq!(
-            block_on(store.read_channel_pairing("p-1")).unwrap(),
+            block_on(store.read_channel_pairing(&account("tg-main"), "c-1")).unwrap(),
             Some(first)
         );
-        assert_eq!(block_on(store.read_channel_pairing("p-9")).unwrap(), None);
+        assert_eq!(
+            block_on(store.read_channel_pairing(&account("tg-main"), "c-9")).unwrap(),
+            None
+        );
 
         // A re-pair moves the chat to another trigger under the same key.
-        let moved = pairing("p-1", "tg-main", "sales", "c-1", T0 + 5);
+        let moved = pairing("tg-main", "sales", "c-1", T0 + 5);
         block_on(store.upsert_channel_pairing(moved.clone())).unwrap();
         assert_eq!(
-            block_on(store.read_channel_pairing("p-1")).unwrap(),
+            block_on(store.read_channel_pairing(&account("tg-main"), "c-1")).unwrap(),
             Some(moved)
         );
         assert_eq!(
@@ -531,13 +546,16 @@ mod tests {
         );
 
         assert_eq!(
-            block_on(store.upsert_channel_pairing(pairing("p-2", "missing", "support", "c-2", T0)))
+            block_on(store.upsert_channel_pairing(pairing("missing", "support", "c-2", T0)))
                 .unwrap_err(),
             ChannelError::AccountNotFound {
                 account_id: account("missing")
             }
         );
-        assert_eq!(block_on(store.read_channel_pairing("p-2")).unwrap(), None);
+        assert_eq!(
+            block_on(store.read_channel_pairing(&account("tg-main"), "c-2")).unwrap(),
+            None
+        );
     }
 
     #[test]
@@ -546,57 +564,54 @@ mod tests {
             ("tg-main", ChannelProvider::new("telegram")),
             ("wa-shop", ChannelProvider::new("whatsapp")),
         ]);
-        let mut other_bot = pairing("p-4", "tg-main", "support", "c-1", T0 + 40);
+        let mut other_bot = pairing("tg-main", "support", "c-4", T0 + 40);
         other_bot.bot_id = BotId::new("other");
         for record in [
-            pairing("p-1", "tg-main", "support", "c-1", T0 + 10),
-            pairing("p-2", "tg-main", "sales", "c-2", T0 + 30),
-            pairing("p-3", "wa-shop", "support", "c-1", T0 + 20),
+            pairing("tg-main", "support", "c-1", T0 + 10),
+            pairing("tg-main", "sales", "c-2", T0 + 30),
+            pairing("wa-shop", "support", "c-1", T0 + 20),
             other_bot,
-            pairing("p-5", "tg-main", "support", "c-5", T0 + 30),
+            pairing("tg-main", "support", "c-5", T0 + 30),
         ] {
             block_on(store.upsert_channel_pairing(record)).unwrap();
         }
         let list = |filter| keys_owned(block_on(store.list_channel_pairings(filter)).unwrap());
         fn keys_owned(records: Vec<ChannelPairingRecord>) -> Vec<String> {
-            records
-                .into_iter()
-                .map(|record| record.pairing_key)
-                .collect()
+            records.into_iter().map(|record| record.chat_id).collect()
         }
 
         assert_eq!(
             list(ChannelPairingFilter::default()),
-            vec!["p-4", "p-2", "p-5", "p-3", "p-1"],
-            "newest first, key breaks the tie"
+            vec!["c-4", "c-2", "c-5", "c-1", "c-1"],
+            "newest first, the chat identity breaks the tie"
         );
         assert_eq!(
             list(ChannelPairingFilter {
                 account_id: Some(account("tg-main")),
                 ..Default::default()
             }),
-            vec!["p-4", "p-2", "p-5", "p-1"]
+            vec!["c-4", "c-2", "c-5", "c-1"]
         );
         assert_eq!(
             list(ChannelPairingFilter {
                 bot_id: Some(BotId::new("other")),
                 ..Default::default()
             }),
-            vec!["p-4"]
+            vec!["c-4"]
         );
         assert_eq!(
             list(ChannelPairingFilter {
                 trigger_id: Some(BotTriggerId::new("support")),
                 ..Default::default()
             }),
-            vec!["p-4", "p-5", "p-3", "p-1"]
+            vec!["c-4", "c-5", "c-1", "c-1"]
         );
         assert_eq!(
             list(ChannelPairingFilter {
                 chat_id: Some("c-1".to_owned()),
                 ..Default::default()
             }),
-            vec!["p-4", "p-3", "p-1"]
+            vec!["c-1", "c-1"]
         );
         assert_eq!(
             list(ChannelPairingFilter {
@@ -605,7 +620,7 @@ mod tests {
                 trigger_id: Some(BotTriggerId::new("support")),
                 chat_id: Some("c-1".to_owned()),
             }),
-            vec!["p-1"]
+            vec!["c-1"]
         );
         assert!(
             list(ChannelPairingFilter {
@@ -620,17 +635,21 @@ mod tests {
     #[test]
     fn delete_pairing_returns_the_row_then_not_found() {
         let store = store_with(&[("tg-main", ChannelProvider::new("telegram"))]);
-        let record = pairing("p-1", "tg-main", "support", "c-1", T0);
+        let record = pairing("tg-main", "support", "c-1", T0);
         block_on(store.upsert_channel_pairing(record.clone())).unwrap();
         assert_eq!(
-            block_on(store.delete_channel_pairing("p-1")).unwrap(),
+            block_on(store.delete_channel_pairing(&account("tg-main"), "c-1")).unwrap(),
             record
         );
-        assert_eq!(block_on(store.read_channel_pairing("p-1")).unwrap(), None);
         assert_eq!(
-            block_on(store.delete_channel_pairing("p-1")).unwrap_err(),
+            block_on(store.read_channel_pairing(&account("tg-main"), "c-1")).unwrap(),
+            None
+        );
+        assert_eq!(
+            block_on(store.delete_channel_pairing(&account("tg-main"), "c-1")).unwrap_err(),
             ChannelError::PairingNotFound {
-                pairing_key: "p-1".to_owned()
+                account_id: "tg-main".to_owned(),
+                chat_id: "c-1".to_owned()
             }
         );
         // The account is untouched.

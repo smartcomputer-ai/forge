@@ -11,9 +11,12 @@
 -- - `provider` is an open, authored name (`telegram`, `whatsapp`,
 --   `slack`, …): format-checked, never enumerated. Adding a channel type
 --   is a connector concern, not a core schema change.
--- - Channel pairings cascade from both the chat trigger (`bot_triggers`,
---   `008_bots.sql`) and the account; a re-pair replaces the row for the
---   same `pairing_key`.
+-- - Pairing is the routing authority: every bound conversation has a
+--   pairing row (claimed by an open trigger's first contact, or by
+--   pairing code), the paired trigger owns the chat while the row exists
+--   (a disabled owner parks the chat, it is never rerouted), and deleting
+--   the trigger or the pairing frees it. Rows cascade from both the chat
+--   trigger (`bot_triggers`, `008_bots.sql`) and the account.
 
 -- ═══════════════════════════════════════════════════════════════════════════
 -- channel_accounts
@@ -55,6 +58,10 @@ CREATE TABLE IF NOT EXISTS channel_accounts (
         CHECK (account_id ~ '^[a-z0-9][a-z0-9-]{0,63}$'),
     CONSTRAINT channel_accounts_provider_format
         CHECK (provider ~ '^[a-z0-9][a-z0-9-]{0,63}$'),
+    CONSTRAINT channel_accounts_provider_matches_document
+        CHECK (document_json->>'provider' = provider),
+    CONSTRAINT channel_accounts_provider_account_matches_document
+        CHECK (document_json->>'providerAccountId' = provider_account_id),
     CONSTRAINT channel_accounts_provider_account_id_not_empty
         CHECK (provider_account_id <> ''),
     CONSTRAINT channel_accounts_revision_positive
@@ -89,48 +96,47 @@ COMMENT ON COLUMN channel_accounts.updated_at_ms IS
 -- ═══════════════════════════════════════════════════════════════════════════
 
 CREATE TABLE IF NOT EXISTS channel_pairings (
-    -- ── Identity ───────────────────────────────────────────────────────────
+    -- ── Identity: the conversation itself ──────────────────────────────────
     universe_id uuid NOT NULL,
-    -- Opaque key derived from account and chat; never message data.
-    pairing_key text NOT NULL,
-
-    -- ── What paired with what ──────────────────────────────────────────────
-    -- The chat trigger the conversation paired with; a re-pair moves the
-    -- chat to another trigger.
-    bot_id text NOT NULL,
-    trigger_id text NOT NULL,
     -- Channel account the conversation arrived through.
     account_id text NOT NULL,
     -- Provider chat identifier of the conversation.
     chat_id text NOT NULL,
+
+    -- ── The route ──────────────────────────────────────────────────────────
+    -- The chat trigger that owns the conversation; a re-pair moves the
+    -- chat to another trigger.
+    bot_id text NOT NULL,
+    trigger_id text NOT NULL,
+    -- How the chat got its route: claimed by an open trigger's first
+    -- contact, or paired by code.
+    paired_via text NOT NULL,
     paired_at_ms bigint NOT NULL,
 
-    PRIMARY KEY (universe_id, pairing_key),
+    -- The inbound lookup is the primary key: is this chat paired on this
+    -- account, and to whom?
+    PRIMARY KEY (universe_id, account_id, chat_id),
     CONSTRAINT channel_pairings_trigger_fk FOREIGN KEY (universe_id, bot_id, trigger_id)
         REFERENCES bot_triggers (universe_id, bot_id, trigger_id) ON DELETE CASCADE,
     CONSTRAINT channel_pairings_account_fk FOREIGN KEY (universe_id, account_id)
         REFERENCES channel_accounts (universe_id, account_id) ON DELETE CASCADE,
 
-    CONSTRAINT channel_pairings_pairing_key_not_empty
-        CHECK (pairing_key <> ''),
     CONSTRAINT channel_pairings_chat_id_not_empty
         CHECK (chat_id <> ''),
+    CONSTRAINT channel_pairings_paired_via_known
+        CHECK (paired_via IN ('open', 'code')),
     CONSTRAINT channel_pairings_paired_nonnegative
         CHECK (paired_at_ms >= 0)
 );
-
--- Inbound lookup: is this chat paired on this account?
-CREATE INDEX IF NOT EXISTS channel_pairings_chat_idx
-    ON channel_pairings (universe_id, account_id, chat_id);
 
 -- The trigger's pairing list.
 CREATE INDEX IF NOT EXISTS channel_pairings_trigger_idx
     ON channel_pairings (universe_id, bot_id, trigger_id);
 
 COMMENT ON TABLE channel_pairings IS
-    'Conversations authorized against a chat trigger by pairing code (or implicitly for open triggers); cascades from the trigger and the account.';
-COMMENT ON COLUMN channel_pairings.pairing_key IS
-    'Opaque key derived from account and chat; never message data.';
+    'The chat routing authority: one row per bound conversation (claimed by an open trigger or by pairing code); the paired trigger owns the chat while the row exists. Cascades from the trigger and the account.';
+COMMENT ON COLUMN channel_pairings.paired_via IS
+    'How the chat got its route: open (claimed by an open trigger''s first contact) or code.';
 COMMENT ON COLUMN channel_pairings.bot_id IS
     'Bot whose chat trigger serves the conversation.';
 COMMENT ON COLUMN channel_pairings.trigger_id IS
