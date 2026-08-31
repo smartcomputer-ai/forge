@@ -71,9 +71,18 @@ function SetupCard({
   onInstall: () => void;
 }) {
   const ready = setup.status === "ready";
+  const upgradeAvailable = ready
+    && setup.installedVersion !== undefined
+    && setup.installedVersion < setup.version;
   const installing = setup.status === "installing" || pending;
   const unavailable = setup.status === "unavailable";
-  const action = ready ? "Repair" : setup.status === "failed" ? "Retry" : "Install";
+  const action = upgradeAvailable
+    ? "Upgrade"
+    : ready
+      ? "Repair"
+      : setup.status === "failed"
+        ? "Retry"
+        : "Install";
 
   return (
     <Card className="flex flex-col">
@@ -111,8 +120,15 @@ function SetupCard({
         )}
       </CardContent>
       <CardFooter className="justify-between gap-3">
-        <span className="text-xs text-muted-foreground">Setup version {setup.version}</span>
-        <Button onClick={onInstall} disabled={installing || unavailable} variant={ready ? "outline" : "default"}>
+        <span className="text-xs text-muted-foreground">
+          Setup version {setup.version}
+          {upgradeAvailable ? ` · installed ${setup.installedVersion}` : ""}
+        </span>
+        <Button
+          onClick={onInstall}
+          disabled={installing || unavailable}
+          variant={ready && !upgradeAvailable ? "outline" : "default"}
+        >
           {installing ? (
             <RefreshCw className="animate-spin" data-icon="inline-start" />
           ) : ready ? (

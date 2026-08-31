@@ -1544,10 +1544,10 @@ function seedIntegrations(universe: UniverseState): void {
     id: "configurator",
     name: "Configurator",
     description: "An MCP server that lets coding agents configure this universe: profiles, MCP servers, environments, and bots, with an API key scoped to it.",
-    version: 3,
+    version: 4,
     available: true,
     status: "ready",
-    installedVersion: 3,
+    installedVersion: 4,
     resources: { keyPrefix: "lsk_acme_cfg_9b21", serverId: "configurator" },
   };
   universe.setups.push(configurator);

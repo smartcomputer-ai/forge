@@ -24,7 +24,7 @@ const ENVIRONMENT_SECRET_PROVIDER_ID = "environment-secret";
 const DEFAULT_GITHUB_API_BASE_URL = "https://api.github.com";
 /// `claude setup-token` mints one-year tokens.
 const CLAUDE_CODE_TOKEN_TTL_MS = 365 * 24 * 60 * 60 * 1000;
-const CONFIGURATOR_VERSION = 3;
+const CONFIGURATOR_VERSION = 4;
 const CONFIGURATOR_SERVER_ID = "lightspeed-configurator";
 const CONFIGURATOR_PROFILE_ID = "lightspeed-configurator";
 const CONFIGURATOR_MCP_URL = "https://configurator.lightspeed.demo/mcp";
@@ -364,7 +364,7 @@ function finishConfiguratorInstall(store: DemoStore, universe: UniverseState, se
     exposure: "search",
     approvalDefault: "never",
     deferLoadingDefault: null,
-    allowPrivateNetwork: true,
+    allowPrivateNetwork: false,
     authPolicy: { type: "requiredBearer" },
     credential: { type: "authGrant", grantId: grant.grantId },
     status: "active",

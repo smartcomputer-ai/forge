@@ -13,9 +13,10 @@ import { engineClientFor, operatorClientFor } from "./gateway.js";
 import { universeForSession } from "./universes.js";
 
 const SETUP_ID = "configurator";
-const SETUP_VERSION = 3;
+const SETUP_VERSION = 4;
 const SERVER_ID = "lightspeed-configurator";
 const PROFILE_ID = "lightspeed-configurator";
+const KEY_DISPLAY_NAME = "Lightspeed Configurator service credential";
 const INSTALL_LEASE_MS = 5 * 60 * 1_000;
 
 type Installation = typeof schema.universeSetupInstallations.$inferSelect;
@@ -194,10 +195,16 @@ async function installConfigurator(
     client,
     operator,
     state,
-    userId,
     mcpUrl,
   );
-  state = await ensureMcpServer(ctx, installation.id, client, state, mcpUrl);
+  state = await ensureMcpServer(
+    ctx,
+    installation.id,
+    client,
+    state,
+    mcpUrl,
+    ctx.env.configuratorMcpAllowPrivateNetwork,
+  );
   state = await ensureProfile(ctx, installation.id, client, state);
 
   const [completed] = await ctx.db
@@ -224,7 +231,6 @@ async function ensureCredential(
   client: LightspeedClient,
   operator: LightspeedClient,
   state: UniverseSetupState,
-  userId: string,
   mcpUrl: string,
 ): Promise<UniverseSetupState> {
   const keys = await operator.call("operator/api-keys/list", {
@@ -239,6 +245,7 @@ async function ensureCredential(
   if (
     key &&
     key.revokedAtMs == null &&
+    key.displayName === KEY_DISPLAY_NAME &&
     grant?.status === "active" &&
     grant.audience === mcpUrl
   ) {
@@ -257,8 +264,8 @@ async function ensureCredential(
 
   const minted = await operator.call("operator/api-keys/create", {
     universeId: universe.lightspeedUniverseId,
-    displayName: "Lightspeed Configurator setup",
-    principal: { kind: "user", id: userId },
+    displayName: KEY_DISPLAY_NAME,
+    principal: { kind: "serviceAccount", id: SERVER_ID },
   });
   const grantId = `authgrant_lightspeed_configurator_${crypto.randomUUID().replaceAll("-", "")}`;
   try {
@@ -292,6 +299,7 @@ async function ensureMcpServer(
   client: LightspeedClient,
   state: UniverseSetupState,
   mcpUrl: string,
+  allowPrivateNetwork: boolean,
 ): Promise<UniverseSetupState> {
   if (!state.grantId) {
     throw new Error("Configurator auth grant was not created");
@@ -309,7 +317,7 @@ async function ensureMcpServer(
     execution: "native",
     exposure: "search",
     approvalDefault: "never",
-    allowPrivateNetwork: true,
+    allowPrivateNetwork,
     authPolicy: { type: "requiredBearer" },
     credential: { type: "authGrant", grantId: state.grantId },
     status: "active",

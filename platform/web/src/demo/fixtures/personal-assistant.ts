@@ -1151,10 +1151,10 @@ function seedIntegrations(universe: UniverseState): void {
     id: "configurator",
     name: "Configurator",
     description: "An MCP server that lets a coding agent configure this universe — profiles, MCP servers, environments, bots — with an API key scoped to it. Ada set the assistant up through it from her laptop.",
-    version: 3,
+    version: 4,
     available: true,
     status: "ready",
-    installedVersion: 3,
+    installedVersion: 4,
     resources: { keyPrefix: "lsk_pa_cfg_5a19", serverId: "configurator" },
   };
   universe.setups.push(configurator);
