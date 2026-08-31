@@ -20,7 +20,8 @@ use tokio::sync::Mutex;
 use url::Url;
 
 use crate::gateway::service::mcp_discovery::{
-    ConfiguratorTrustedHeaderPolicy, HttpMcpToolDiscoverer, McpToolDiscoverer,
+    ConfiguratorTrustedHeaderPolicy, DiscoveredMcpInventory, HttpMcpToolDiscoverer,
+    McpToolDiscoverer,
 };
 
 pub enum NativeMcpExecutionOutcome {
@@ -52,7 +53,10 @@ pub struct NativeMcpRuntime {
     universe_id: uuid::Uuid,
 }
 
+/// Demand-driven inventory TTL for servers without a tool-list change signal.
 pub const MCP_INVENTORY_CACHE_TTL: Duration = Duration::from_secs(300);
+/// Short fallback while Lightspeed does not maintain notification subscriptions.
+pub const MCP_LIST_CHANGED_CACHE_TTL: Duration = Duration::from_secs(60);
 
 #[derive(Clone, Debug, Default)]
 pub struct McpPrivateNetworkPolicy {
@@ -129,11 +133,13 @@ pub struct NativeMcpInventoryResolver {
     cache: Arc<Mutex<HashMap<(String, u64), CachedInventory>>>,
     locks: Arc<Mutex<HashMap<(String, u64), Arc<Mutex<()>>>>>,
     ttl: Duration,
+    list_changed_ttl: Duration,
 }
 
 #[derive(Clone)]
 struct CachedInventory {
     fetched_at: Instant,
+    ttl: Duration,
     tools: Vec<NativeMcpTool>,
 }
 
@@ -153,11 +159,16 @@ impl NativeMcpInventoryResolver {
             cache: Arc::new(Mutex::new(HashMap::new())),
             locks: Arc::new(Mutex::new(HashMap::new())),
             ttl: MCP_INVENTORY_CACHE_TTL,
+            list_changed_ttl: MCP_LIST_CHANGED_CACHE_TTL,
         }
     }
 
     #[cfg(test)]
-    fn for_test(discoverer: Arc<dyn McpToolDiscoverer>, ttl: Duration) -> Self {
+    fn for_test(
+        discoverer: Arc<dyn McpToolDiscoverer>,
+        ttl: Duration,
+        list_changed_ttl: Duration,
+    ) -> Self {
         Self {
             discoverer,
             secrets: Arc::new(llm_runtime::secrets::AbsentSecretResolver),
@@ -168,6 +179,7 @@ impl NativeMcpInventoryResolver {
             cache: Arc::new(Mutex::new(HashMap::new())),
             locks: Arc::new(Mutex::new(HashMap::new())),
             ttl,
+            list_changed_ttl,
         }
     }
 
@@ -194,7 +206,7 @@ impl NativeMcpInventoryResolver {
     async fn uncached(
         &self,
         spec: &RemoteMcpToolSpec,
-    ) -> Result<Vec<NativeMcpTool>, McpInventoryError> {
+    ) -> Result<(Vec<NativeMcpTool>, bool, Option<Duration>), McpInventoryError> {
         let trusted_universe = self
             .trusted_header
             .permits(&spec.server_id, &spec.server_url)
@@ -218,6 +230,11 @@ impl NativeMcpInventoryResolver {
             )
             .await
             .map_err(|error| McpInventoryError::new(error.to_string()))?;
+        let DiscoveredMcpInventory {
+            tools: discovered,
+            tools_list_changed,
+            ttl_ms,
+        } = discovered;
         let mut tools = discovered
             .into_iter()
             .filter(|tool| {
@@ -232,7 +249,7 @@ impl NativeMcpInventoryResolver {
             })
             .collect::<Vec<_>>();
         tools.sort_by(|left, right| left.remote_name.cmp(&right.remote_name));
-        Ok(tools)
+        Ok((tools, tools_list_changed, ttl_ms.map(Duration::from_millis)))
     }
 }
 
@@ -737,7 +754,7 @@ impl McpInventoryResolver for NativeMcpInventoryResolver {
     ) -> Result<Vec<NativeMcpTool>, McpInventoryError> {
         let key = (spec.server_id.clone(), spec.record_revision);
         if let Some(cached) = self.cache.lock().await.get(&key)
-            && cached.fetched_at.elapsed() < self.ttl
+            && cached.fetched_at.elapsed() < cached.ttl
         {
             return Ok(cached.tools.clone());
         }
@@ -750,11 +767,16 @@ impl McpInventoryResolver for NativeMcpInventoryResolver {
         };
         let _permit = lock.lock().await;
         if let Some(cached) = self.cache.lock().await.get(&key)
-            && cached.fetched_at.elapsed() < self.ttl
+            && cached.fetched_at.elapsed() < cached.ttl
         {
             return Ok(cached.tools.clone());
         }
-        let tools = self.uncached(spec).await?;
+        let (tools, tools_list_changed, advertised_ttl) = self.uncached(spec).await?;
+        let ttl = advertised_ttl.unwrap_or(if tools_list_changed {
+            self.list_changed_ttl
+        } else {
+            self.ttl
+        });
         let mut cache = self.cache.lock().await;
         cache.retain(|(server_id, revision), _| {
             server_id != &spec.server_id || *revision == spec.record_revision
@@ -763,6 +785,7 @@ impl McpInventoryResolver for NativeMcpInventoryResolver {
             key,
             CachedInventory {
                 fetched_at: Instant::now(),
+                ttl,
                 tools: tools.clone(),
             },
         );
@@ -778,6 +801,8 @@ mod tests {
 
     struct CountingDiscoverer {
         calls: AtomicUsize,
+        tools_list_changed: bool,
+        ttl_ms: Option<u64>,
     }
 
     #[async_trait]
@@ -789,16 +814,20 @@ mod tests {
             _trusted_universe: Option<uuid::Uuid>,
             _allow_private_network: bool,
             _limits: mcp::McpToolDiscoveryLimits,
-        ) -> Result<Vec<mcp::DiscoveredMcpTool>, mcp::McpToolDiscoveryFailure> {
+        ) -> Result<DiscoveredMcpInventory, mcp::McpToolDiscoveryFailure> {
             let call = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
             tokio::time::sleep(Duration::from_millis(10)).await;
-            Ok(vec![mcp::DiscoveredMcpTool {
-                name: format!("tool_{call}"),
-                title: None,
-                description: Some("test tool".to_owned()),
-                input_schema: serde_json::json!({"type": "object"}),
-                annotations: None,
-            }])
+            Ok(DiscoveredMcpInventory {
+                tools: vec![mcp::DiscoveredMcpTool {
+                    name: format!("tool_{call}"),
+                    title: None,
+                    description: Some("test tool".to_owned()),
+                    input_schema: serde_json::json!({"type": "object"}),
+                    annotations: None,
+                }],
+                tools_list_changed: self.tools_list_changed,
+                ttl_ms: self.ttl_ms,
+            })
         }
     }
 
@@ -834,9 +863,12 @@ mod tests {
     async fn inventory_cache_singleflights_and_invalidates_on_revision() {
         let discoverer = Arc::new(CountingDiscoverer {
             calls: AtomicUsize::new(0),
+            tools_list_changed: false,
+            ttl_ms: None,
         });
         let resolver = Arc::new(NativeMcpInventoryResolver::for_test(
             discoverer.clone(),
+            Duration::from_secs(60),
             Duration::from_secs(60),
         ));
         let mut tasks = Vec::new();
@@ -863,13 +895,60 @@ mod tests {
     async fn inventory_cache_refreshes_after_ttl() {
         let discoverer = Arc::new(CountingDiscoverer {
             calls: AtomicUsize::new(0),
+            tools_list_changed: false,
+            ttl_ms: None,
         });
-        let resolver =
-            NativeMcpInventoryResolver::for_test(discoverer.clone(), Duration::from_millis(1));
+        let resolver = NativeMcpInventoryResolver::for_test(
+            discoverer.clone(),
+            Duration::from_millis(1),
+            Duration::from_secs(60),
+        );
         resolver.list_tools(&spec(1)).await.expect("first");
         tokio::time::sleep(Duration::from_millis(5)).await;
         resolver.list_tools(&spec(1)).await.expect("refreshed");
         assert_eq!(discoverer.calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn inventory_cache_uses_shorter_ttl_when_list_changes_are_advertised() {
+        let discoverer = Arc::new(CountingDiscoverer {
+            calls: AtomicUsize::new(0),
+            tools_list_changed: true,
+            ttl_ms: None,
+        });
+        let resolver = NativeMcpInventoryResolver::for_test(
+            discoverer.clone(),
+            Duration::from_secs(60),
+            Duration::from_millis(1),
+        );
+        resolver.list_tools(&spec(1)).await.expect("first");
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        resolver
+            .list_tools(&spec(1))
+            .await
+            .expect("short TTL refresh");
+        assert_eq!(discoverer.calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn inventory_cache_honors_advertised_ttl_before_fallbacks() {
+        let discoverer = Arc::new(CountingDiscoverer {
+            calls: AtomicUsize::new(0),
+            tools_list_changed: true,
+            ttl_ms: Some(60_000),
+        });
+        let resolver = NativeMcpInventoryResolver::for_test(
+            discoverer.clone(),
+            Duration::from_millis(1),
+            Duration::from_millis(1),
+        );
+        resolver.list_tools(&spec(1)).await.expect("first");
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        resolver
+            .list_tools(&spec(1))
+            .await
+            .expect("server TTL cache hit");
+        assert_eq!(discoverer.calls.load(Ordering::SeqCst), 1);
     }
 
     #[test]

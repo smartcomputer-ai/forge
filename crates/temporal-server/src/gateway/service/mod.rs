@@ -4057,15 +4057,15 @@ impl AgentApiService for GatewayAgentApi {
             )
             .await
         {
-            Ok(tools) => {
+            Ok(inventory) => {
                 tracing::info!(
                     server_id = %server_id,
                     outcome = "success",
-                    tool_count = tools.len(),
+                    tool_count = inventory.tools.len(),
                     duration_ms = discovery_started.elapsed().as_millis(),
                     "completed live MCP tool discovery"
                 );
-                mcp_api::mcp_tool_discovery_success(tools)
+                mcp_api::mcp_tool_discovery_success(inventory.tools)
             }
             Err(failure) => {
                 tracing::info!(

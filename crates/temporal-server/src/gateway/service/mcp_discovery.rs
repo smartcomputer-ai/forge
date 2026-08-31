@@ -101,7 +101,14 @@ pub(crate) trait McpToolDiscoverer: Send + Sync {
         trusted_universe: Option<uuid::Uuid>,
         allow_private_network: bool,
         limits: McpToolDiscoveryLimits,
-    ) -> Result<Vec<DiscoveredMcpTool>, McpToolDiscoveryFailure>;
+    ) -> Result<DiscoveredMcpInventory, McpToolDiscoveryFailure>;
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct DiscoveredMcpInventory {
+    pub tools: Vec<DiscoveredMcpTool>,
+    pub tools_list_changed: bool,
+    pub ttl_ms: Option<u64>,
 }
 
 #[derive(Clone, Debug)]
@@ -636,7 +643,7 @@ impl McpToolDiscoverer for HttpMcpToolDiscoverer {
         trusted_universe: Option<uuid::Uuid>,
         allow_private_network: bool,
         limits: McpToolDiscoveryLimits,
-    ) -> Result<Vec<DiscoveredMcpTool>, McpToolDiscoveryFailure> {
+    ) -> Result<DiscoveredMcpInventory, McpToolDiscoveryFailure> {
         let endpoint = Url::parse(server_url)
             .map_err(|_| failure(FailureKind::InvalidResponse, "MCP endpoint URL is invalid"))?;
         if endpoint.username() != ""
@@ -670,7 +677,20 @@ impl McpToolDiscoverer for HttpMcpToolDiscoverer {
                     .unwrap_or_else(|| map_initialize_error(error))
             })?;
 
-            let result = discover_pages(&service, limits, &diagnostics).await;
+            let tools_list_changed = service.peer_info().is_some_and(|info| {
+                info.capabilities
+                    .tools
+                    .as_ref()
+                    .is_some_and(|tools| tools.list_changed == Some(true))
+            });
+            let result =
+                discover_pages(&service, limits, &diagnostics)
+                    .await
+                    .map(|(tools, ttl_ms)| DiscoveredMcpInventory {
+                        tools,
+                        tools_list_changed,
+                        ttl_ms,
+                    });
             let _ = service.cancel().await;
             result
         })
@@ -715,11 +735,14 @@ async fn discover_pages(
     service: &rmcp::service::RunningService<rmcp::RoleClient, ClientInfo>,
     limits: McpToolDiscoveryLimits,
     diagnostics: &TransportDiagnostics,
-) -> Result<Vec<DiscoveredMcpTool>, McpToolDiscoveryFailure> {
+) -> Result<(Vec<DiscoveredMcpTool>, Option<u64>), McpToolDiscoveryFailure> {
     let mut tools = Vec::new();
     let mut seen_tools = BTreeSet::new();
     let mut seen_cursors = BTreeSet::new();
     let mut cursor = None;
+    // The assembled inventory is fresh only as long as its least-fresh page.
+    // If any legacy page omits ttlMs, use the resolver's capability fallback.
+    let mut ttl_ms = Some(u64::MAX);
     for _ in 0..limits.max_pages {
         let response = service
             .list_tools(Some(
@@ -731,10 +754,14 @@ async fn discover_pages(
                     .current()
                     .unwrap_or_else(|| map_service_error(error))
             })?;
+        ttl_ms = match (ttl_ms, response.ttl_ms) {
+            (Some(current), Some(page)) => Some(current.min(page)),
+            _ => None,
+        };
         append_tools(response.tools, &mut tools, &mut seen_tools, limits)?;
 
         let Some(next_cursor) = response.next_cursor else {
-            return Ok(tools);
+            return Ok((tools, ttl_ms));
         };
         if next_cursor.is_empty() || next_cursor.len() > limits.max_text_bytes {
             return Err(failure(
@@ -1033,6 +1060,7 @@ mod tests {
         oversized_inventory: bool,
         list_delay: Option<Duration>,
         oauth_challenge: Option<String>,
+        tools_list_changed: bool,
     }
 
     async fn streamable_handler(
@@ -1071,7 +1099,9 @@ mod tests {
                     "id": id,
                     "result": {
                         "protocolVersion": "2025-11-25",
-                        "capabilities": {"tools": {}},
+                        "capabilities": {
+                            "tools": {"listChanged": state.tools_list_changed}
+                        },
                         "serverInfo": {"name": "search-fixture", "version": "1"}
                     }
                 }))
@@ -1115,7 +1145,8 @@ mod tests {
                             "inputSchema": {"type": "object"},
                             "annotations": {"readOnlyHint": true}
                         }],
-                        "nextCursor": "second"
+                        "nextCursor": "second",
+                        "ttlMs": 120_000
                     })
                 } else {
                     json!({
@@ -1123,7 +1154,8 @@ mod tests {
                             "name": "update",
                             "inputSchema": {"type": "object"},
                             "annotations": {"destructiveHint": true}
-                        }]
+                        }],
+                        "ttlMs": 60_000
                     })
                 };
                 Json(json!({"jsonrpc": "2.0", "id": id, "result": result})).into_response()
@@ -1270,7 +1302,10 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn streamable_discovery_is_live_paginated_and_bearer_authenticated() {
-        let state = Arc::new(Mutex::new(TestMcpState::default()));
+        let state = Arc::new(Mutex::new(TestMcpState {
+            tools_list_changed: true,
+            ..TestMcpState::default()
+        }));
         let app = Router::new()
             .route("/mcp", post(streamable_handler).delete(shutdown_handler))
             .with_state(state.clone());
@@ -1286,7 +1321,7 @@ mod tests {
         let endpoint = format!("http://{address}/mcp");
 
         for _ in 0..2 {
-            let tools = discoverer
+            let inventory = discoverer
                 .discover_tools(
                     &endpoint,
                     Some(&token),
@@ -1296,15 +1331,22 @@ mod tests {
                 )
                 .await
                 .expect("discover fixture tools");
+            assert!(inventory.tools_list_changed);
+            assert_eq!(inventory.ttl_ms, Some(60_000));
             assert_eq!(
-                tools
+                inventory
+                    .tools
                     .iter()
                     .map(|tool| tool.name.as_str())
                     .collect::<Vec<_>>(),
                 vec!["search", "update"]
             );
             assert_eq!(
-                tools[0].annotations.as_ref().unwrap().read_only_hint,
+                inventory.tools[0]
+                    .annotations
+                    .as_ref()
+                    .unwrap()
+                    .read_only_hint,
                 Some(true)
             );
         }
