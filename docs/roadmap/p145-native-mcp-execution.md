@@ -511,5 +511,3 @@ hosting. Sessions are per-activity; Streamable HTTP only.
   placeholders.
 - `notifications/tools/list_changed`-driven cache invalidation.
 - MCP session affinity for stateful servers if demand appears.
-- Migrating `crates/auth/src/mcp_oauth.rs` onto `rmcp`'s auth machinery (the
-  separate refactor P143 already scoped).
