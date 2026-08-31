@@ -111,8 +111,11 @@ describe("MCP OAuth completion", () => {
       defaultServerLabel: "github",
       description: "Current description",
       allowedTools: ["search"],
+      execution: "provider",
+      exposure: "inject",
       approvalDefault: "never",
       deferLoadingDefault: true,
+      allowPrivateNetwork: false,
       authPolicy: {
         type: "requiredOAuth",
         resource: "https://api.githubcopilot.com/mcp",

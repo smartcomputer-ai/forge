@@ -20,8 +20,11 @@ pub(super) fn put_mcp_server_record(
         default_server_label: server.default_server_label,
         description: server.description,
         allowed_tools: server.allowed_tools,
+        execution: registry_execution(server.execution),
+        exposure: registry_exposure(server.exposure),
         approval_default: registry_approval(server.approval_default),
         defer_loading_default: server.defer_loading_default,
+        allow_private_network: server.allow_private_network,
         auth_policy: registry_auth_policy(server.auth_policy),
         auth_grant_id,
         status: registry_status(server.status),
@@ -37,8 +40,11 @@ pub(super) fn mcp_server_view(record: mcp::McpServerRecord) -> api::McpServerVie
         default_server_label: record.default_server_label,
         description: record.description,
         allowed_tools: record.allowed_tools,
+        execution: api_execution(record.execution),
+        exposure: api_exposure(record.exposure),
         approval_default: api_approval(record.approval_default),
         defer_loading_default: record.defer_loading_default,
+        allow_private_network: record.allow_private_network,
         auth_policy: api_auth_policy(record.auth_policy),
         credential: record
             .auth_grant_id
@@ -159,10 +165,13 @@ pub(super) fn mcp_tool_from_config_link(
         execution: engine::ToolExecutionSpec::default(),
         kind: engine::ToolKind::RemoteMcp(engine::RemoteMcpToolSpec {
             server_id: record.server_id.as_str().to_owned(),
+            record_revision: record.revision,
             server_label: record.default_server_label.clone(),
             server_url: record.server_url.clone(),
             description_ref: None,
             allowed_tools: record.allowed_tools.clone(),
+            execution: engine_execution(record.execution),
+            exposure: engine_exposure(record.exposure),
             approval: engine_approval(api_approval(record.approval_default)),
             defer_loading: record.defer_loading_default,
             auth_ref,
@@ -171,6 +180,7 @@ pub(super) fn mcp_tool_from_config_link(
                 mcp::McpServerAuthPolicy::RequiredBearer
                     | mcp::McpServerAuthPolicy::RequiredOAuth { .. }
             ),
+            allow_private_network: record.allow_private_network,
         }),
         parallelism: engine::ToolParallelism::ParallelSafe,
     })
@@ -188,6 +198,7 @@ impl GatewayAgentApi {
             return Ok(BTreeMap::new());
         };
         let mut tools = BTreeMap::new();
+        let mut search_descriptions = Vec::new();
         for link in &mcp.servers {
             let server_id = parse_mcp_server_id(link.server_id.clone())?;
             let record = self
@@ -205,16 +216,158 @@ impl GatewayAgentApi {
                 None => None,
             };
             let tool = mcp_tool_from_config_link(link, &record, grant.as_ref())?;
-            tools.insert(tool.name.clone(), tool);
+            if record.execution == mcp::McpExecution::Native
+                && record.exposure == mcp::McpExposure::Search
+            {
+                search_descriptions.push(format!(
+                    "{}: {}",
+                    record.server_id,
+                    record.description.as_deref().unwrap_or("MCP tools")
+                ));
+            }
+            if tools.insert(tool.name.clone(), tool).is_some() {
+                return Err(AgentApiError::invalid_request(format!(
+                    "MCP server tool names collide after normalization: {}",
+                    record.server_id
+                )));
+            }
+        }
+        if !search_descriptions.is_empty() {
+            search_descriptions.sort();
+            let index = search_descriptions.join("; ");
+            let find = search_meta_tool(
+                self.store.as_ref(),
+                "mcp_find_tools",
+                format!(
+                    "Browse or search live MCP tools by partial or fuzzy name/description terms. Available servers: {index}"
+                ),
+                serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "server": {"type": "string"},
+                        "query": {"type": "string"},
+                        "cursor": {"type": "integer", "minimum": 0}
+                    },
+                    "additionalProperties": false
+                }),
+                true,
+            )
+            .await?;
+            let call = search_meta_tool(
+                self.store.as_ref(),
+                "mcp_call",
+                format!("Call a tool found on a live MCP server. Available servers: {index}"),
+                serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "server": {"type": "string"},
+                        "tool": {"type": "string"},
+                        "arguments": {"type": "object"}
+                    },
+                    "required": ["server", "tool", "arguments"],
+                    "additionalProperties": false
+                }),
+                false,
+            )
+            .await?;
+            for tool in [find, call] {
+                if tools.insert(tool.name.clone(), tool).is_some() {
+                    return Err(AgentApiError::invalid_request(
+                        "an MCP server id collides with a reserved native MCP search tool name",
+                    ));
+                }
+            }
         }
         Ok(tools)
     }
+}
+
+async fn search_meta_tool(
+    blobs: &dyn engine::storage::BlobStore,
+    name: &str,
+    description: String,
+    schema: serde_json::Value,
+    retry_safe: bool,
+) -> Result<engine::ToolSpec, AgentApiError> {
+    let description_ref = blobs
+        .put_bytes(description.into_bytes())
+        .await
+        .map_err(|error| {
+            AgentApiError::internal(format!("store MCP search description: {error}"))
+        })?;
+    let input_schema_ref = blobs
+        .put_bytes(serde_json::to_vec(&schema).map_err(|error| {
+            AgentApiError::internal(format!("encode MCP search schema: {error}"))
+        })?)
+        .await
+        .map_err(|error| AgentApiError::internal(format!("store MCP search schema: {error}")))?;
+    Ok(engine::ToolSpec {
+        name: engine::ToolName::try_new(name).expect("static MCP meta-tool name"),
+        kind: engine::ToolKind::Function(engine::FunctionToolSpec {
+            description_ref: Some(description_ref),
+            input_schema_ref,
+            output_schema_ref: None,
+            strict: Some(true),
+            provider_options_ref: None,
+        }),
+        parallelism: if retry_safe {
+            engine::ToolParallelism::ParallelSafe
+        } else {
+            engine::ToolParallelism::Exclusive
+        },
+        execution: engine::ToolExecutionSpec::new(
+            engine::ToolExecutionClass::RemoteInteractive,
+            retry_safe,
+        ),
+    })
 }
 
 fn registry_approval(value: api::RemoteMcpApprovalPolicy) -> mcp::McpApprovalPolicy {
     match value {
         api::RemoteMcpApprovalPolicy::Always => mcp::McpApprovalPolicy::Always,
         api::RemoteMcpApprovalPolicy::Never => mcp::McpApprovalPolicy::Never,
+    }
+}
+
+fn registry_execution(value: api::RemoteMcpExecution) -> mcp::McpExecution {
+    match value {
+        api::RemoteMcpExecution::Provider => mcp::McpExecution::Provider,
+        api::RemoteMcpExecution::Native => mcp::McpExecution::Native,
+    }
+}
+
+fn api_execution(value: mcp::McpExecution) -> api::RemoteMcpExecution {
+    match value {
+        mcp::McpExecution::Provider => api::RemoteMcpExecution::Provider,
+        mcp::McpExecution::Native => api::RemoteMcpExecution::Native,
+    }
+}
+
+fn engine_execution(value: mcp::McpExecution) -> engine::RemoteMcpExecution {
+    match value {
+        mcp::McpExecution::Provider => engine::RemoteMcpExecution::Provider,
+        mcp::McpExecution::Native => engine::RemoteMcpExecution::Native,
+    }
+}
+
+fn registry_exposure(value: api::RemoteMcpExposure) -> mcp::McpExposure {
+    match value {
+        api::RemoteMcpExposure::Inject => mcp::McpExposure::Inject,
+        api::RemoteMcpExposure::Search => mcp::McpExposure::Search,
+    }
+}
+
+fn api_exposure(value: mcp::McpExposure) -> api::RemoteMcpExposure {
+    match value {
+        mcp::McpExposure::Inject => api::RemoteMcpExposure::Inject,
+        mcp::McpExposure::Search => api::RemoteMcpExposure::Search,
+    }
+}
+
+fn engine_exposure(value: mcp::McpExposure) -> engine::RemoteMcpExposure {
+    match value {
+        mcp::McpExposure::Inject => engine::RemoteMcpExposure::Inject,
+        mcp::McpExposure::Search => engine::RemoteMcpExposure::Search,
     }
 }
 

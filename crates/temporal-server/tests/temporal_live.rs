@@ -96,6 +96,30 @@ async fn temporal_live_mcp_approval_approve_and_reject_continue_runs() -> anyhow
 }
 
 #[tokio::test(flavor = "current_thread")]
+#[ignore = "requires ./dev.sh infra, npm install, and LIGHTSPEED_MCP_PRIVATE_NETWORKS allowing loopback"]
+async fn temporal_live_native_mcp_search_call_and_approval() -> anyhow::Result<()> {
+    let _lock = LIVE_TEST_LOCK.lock().await;
+    let _ = dotenvy::dotenv();
+    require_storage_live_env()?;
+    let server_id = format!("native_configurator_{}", uuid::Uuid::new_v4().simple());
+    let store = pg_store_from_env().await?;
+    let blobs: Arc<dyn BlobStore> = store.clone();
+    let llm = Arc::new(NativeMcpScriptedLlm {
+        blobs: blobs.clone(),
+        server_id: server_id.clone(),
+        selected_tool: "lightspeed_models_list".to_owned(),
+    }) as Arc<dyn CoreAgentLlm>;
+    let tools = Arc::new(FakeTools::new(blobs)) as Arc<dyn CoreAgentTools>;
+    let state = ActivityState::from_pg_store(store.clone(), llm, tools)
+        .with_native_mcp_from_pg_store(store)?;
+    let activities = WorkerActivities::for_universe(support::live::live_universe_id()?, state);
+    run_with_live_worker(activities, move |client, task_queue, session_id| {
+        run_native_mcp_live_client(client, task_queue, session_id, server_id)
+    })
+    .await
+}
+
+#[tokio::test(flavor = "current_thread")]
 #[ignore = "requires ./dev.sh infra or compatible Temporal + Postgres env"]
 async fn temporal_live_session_lifecycle_list_and_closed_only_delete() -> anyhow::Result<()> {
     let _lock = LIVE_TEST_LOCK.lock().await;
@@ -451,6 +475,172 @@ async fn temporal_live_openai_completions_tool_call_round_trip() -> anyhow::Resu
 #[derive(Clone)]
 struct ApprovalScriptedLlm {
     blobs: Arc<dyn BlobStore>,
+}
+
+#[derive(Clone)]
+struct NativeMcpScriptedLlm {
+    blobs: Arc<dyn BlobStore>,
+    server_id: String,
+    selected_tool: String,
+}
+
+#[async_trait]
+impl CoreAgentLlm for NativeMcpScriptedLlm {
+    async fn generate(
+        &self,
+        request: LlmGenerationRequest,
+    ) -> Result<LlmGenerationResult, CoreAgentIoError> {
+        let latest_result = request
+            .request
+            .context
+            .entries
+            .iter()
+            .rev()
+            .find_map(|entry| {
+                let ContextEntryKind::ToolResult { call_id, .. } = &entry.kind else {
+                    return None;
+                };
+                Some((call_id.clone(), entry.content_ref.clone()))
+            });
+        match latest_result {
+            None => {
+                self.tool_call(
+                    &request,
+                    "mcp_find_tools",
+                    "native_find",
+                    serde_json::json!({"server": self.server_id, "query": "models"}),
+                )
+                .await
+            }
+            Some((call_id, result_ref)) if call_id.as_str() == "native_find" => {
+                let result = self.blobs.read_text(&result_ref).await.map_err(io_error)?;
+                if !result.contains(&self.selected_tool) {
+                    return Err(CoreAgentIoError::Failed {
+                        message: format!(
+                            "native MCP search did not return {}: {result}",
+                            self.selected_tool
+                        ),
+                    });
+                }
+                self.tool_call(
+                    &request,
+                    "mcp_call",
+                    "native_call",
+                    serde_json::json!({
+                        "server": self.server_id,
+                        "tool": self.selected_tool,
+                        "arguments": {}
+                    }),
+                )
+                .await
+            }
+            Some((_call_id, result_ref)) => {
+                let result = self.blobs.read_text(&result_ref).await.map_err(io_error)?;
+                self.final_result(&request, format!("native MCP completed: {result}"))
+                    .await
+            }
+        }
+    }
+}
+
+impl NativeMcpScriptedLlm {
+    async fn tool_call(
+        &self,
+        request: &LlmGenerationRequest,
+        tool: &str,
+        call_id: &str,
+        arguments: serde_json::Value,
+    ) -> Result<LlmGenerationResult, CoreAgentIoError> {
+        if !request
+            .request
+            .tools
+            .iter()
+            .any(|candidate| candidate.name.as_str() == tool)
+        {
+            return Err(CoreAgentIoError::Failed {
+                message: format!("native MCP scripted model expected {tool}"),
+            });
+        }
+        let arguments_ref = self
+            .blobs
+            .put_bytes(serde_json::to_vec(&arguments).map_err(io_error)?)
+            .await
+            .map_err(io_error)?;
+        let call_id = ToolCallId::new(call_id);
+        let tool_name = ToolName::new(tool);
+        Ok(LlmGenerationResult {
+            run_id: request.run_id,
+            turn_id: request.turn_id,
+            status: LlmGenerationStatus::Succeeded,
+            failure_ref: None,
+            context_entries: vec![ContextEntryInput {
+                kind: ContextEntryKind::ToolCall {
+                    call_id: call_id.clone(),
+                    name: tool_name.clone(),
+                },
+                content_ref: arguments_ref.clone(),
+                media_type: Some("application/json".to_owned()),
+                preview: None,
+                provider_kind: Some("native-mcp-script".to_owned()),
+                provider_item_id: Some(call_id.as_str().to_owned()),
+                token_estimate: None,
+            }],
+            facts: LlmGenerationFacts {
+                provider_response_id: Some(format!("native-mcp-{}", request.turn_id.as_u64())),
+                finish: LlmFinish::ToolCalls,
+                usage: None,
+                tool_calls: vec![ObservedToolCall {
+                    call_id,
+                    tool_name,
+                    provider_kind: Some("native-mcp-script".to_owned()),
+                    arguments_ref,
+                    native_call_ref: None,
+                }],
+                approval_requests: Vec::new(),
+                context_token_estimate: None,
+            },
+        })
+    }
+
+    async fn final_result(
+        &self,
+        request: &LlmGenerationRequest,
+        text: String,
+    ) -> Result<LlmGenerationResult, CoreAgentIoError> {
+        let content_ref = self
+            .blobs
+            .put_bytes(text.into_bytes())
+            .await
+            .map_err(io_error)?;
+        Ok(LlmGenerationResult {
+            run_id: request.run_id,
+            turn_id: request.turn_id,
+            status: LlmGenerationStatus::Succeeded,
+            failure_ref: None,
+            context_entries: vec![ContextEntryInput {
+                kind: ContextEntryKind::Message {
+                    role: ContextMessageRole::Assistant,
+                },
+                content_ref,
+                media_type: Some("text/plain".to_owned()),
+                preview: None,
+                provider_kind: Some("native-mcp-script".to_owned()),
+                provider_item_id: None,
+                token_estimate: None,
+            }],
+            facts: LlmGenerationFacts {
+                provider_response_id: Some(format!(
+                    "native-mcp-final-{}",
+                    request.turn_id.as_u64()
+                )),
+                finish: LlmFinish::Stop,
+                usage: None,
+                tool_calls: Vec::new(),
+                approval_requests: Vec::new(),
+                context_token_estimate: None,
+            },
+        })
+    }
 }
 
 #[async_trait]
@@ -2025,6 +2215,19 @@ async fn wait_for_pending_approval(
             {
                 return Ok(approval.clone());
             }
+            if let Some(run) = session.runs.iter().find(|run| run.id == run_id)
+                && matches!(
+                    run.status,
+                    api::RunStatus::Completed | api::RunStatus::Failed | api::RunStatus::Cancelled
+                )
+            {
+                anyhow::bail!(
+                    "run became terminal before approval: status={:?}, output={:?}, batches={:?}",
+                    run.status,
+                    final_assistant_text(run),
+                    run.tool_batches
+                );
+            }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
     })
@@ -3422,6 +3625,114 @@ async fn run_admission_failure_live_client(
     Ok(())
 }
 
+async fn run_native_mcp_live_client(
+    client: Client,
+    task_queue: String,
+    session_id: SessionId,
+    server_id: String,
+) -> anyhow::Result<()> {
+    let store = pg_store_from_env().await?;
+    let model = default_model_from_env();
+    let api = Arc::new(
+        GatewayAgentApi::builder(client.clone(), store)
+            .with_task_queue(task_queue)
+            .with_default_model(model.clone())
+            .build(),
+    );
+    let configurator = LiveConfigurator::start(api.clone()).await?;
+    let selected_tool = "lightspeed_models_list";
+    assert!(expected_configurator_tool_names()?.contains(selected_tool));
+    api.put_mcp_server(McpServerPutParams {
+        server: McpServerInput {
+            server_id: server_id.clone(),
+            display_name: Some("Native Configurator".to_owned()),
+            server_url: configurator.mcp_url.clone(),
+            default_server_label: "native_configurator".to_owned(),
+            description: Some("Read and configure this Lightspeed universe".to_owned()),
+            allowed_tools: None,
+            execution: api::RemoteMcpExecution::Native,
+            exposure: api::RemoteMcpExposure::Search,
+            approval_default: RemoteMcpApprovalPolicy::Always,
+            defer_loading_default: None,
+            allow_private_network: true,
+            auth_policy: api::McpServerAuthPolicy::None,
+            credential: None,
+            status: McpServerStatus::Active,
+        },
+        expected_revision: None,
+    })
+    .await?;
+
+    api.start_session(SessionStartParams {
+        session_id: Some(session_id.as_str().to_owned()),
+        display_name: None,
+        config: Some(SessionConfig {
+            model: Some(model_to_api(&model)),
+            features: Some(FeaturesConfig {
+                mcp: Some(api::McpFeature {
+                    version: api::CURRENT_FEATURE_VERSION,
+                    servers: vec![api::McpServerLink {
+                        server_id: server_id.clone(),
+                    }],
+                }),
+                ..FeaturesConfig::default()
+            }),
+            ..SessionConfig::default()
+        }),
+        profile: None,
+    })
+    .await?;
+    let started = api
+        .start_run(RunStartParams {
+            session_id: session_id.as_str().to_owned(),
+            source: RunStartSource::Input {
+                items: vec![InputItem::Text {
+                    text: "List the configured models through the Configurator MCP".to_owned(),
+                }],
+            },
+            submission_id: None,
+            config: None,
+            notify_on_terminal: None,
+        })
+        .await?;
+    let pending = wait_for_pending_approval(&api, &session_id, &started.result.run.id).await?;
+    match &pending.subject {
+        api::ApprovalSubjectView::McpToolCall {
+            server_id: actual_server,
+            tool_name,
+            ..
+        } => {
+            assert_eq!(actual_server, &server_id);
+            assert_eq!(tool_name, selected_tool);
+        }
+    }
+    api.decide_run_approvals(RunApprovalsDecideParams {
+        session_id: session_id.as_str().to_owned(),
+        run_id: started.result.run.id.clone(),
+        decisions: vec![ApprovalDecisionInput {
+            approval_id: pending.approval_id,
+            decision: ApprovalDecisionKind::Approve,
+            note: None,
+        }],
+    })
+    .await?;
+    let terminal = wait_for_terminal_run(&api, &session_id, &started.result.run.id).await?;
+    let output = final_assistant_text(&terminal).expect("native MCP final output");
+    assert!(output.contains("native MCP completed"));
+
+    api.delete_mcp_server(McpServerDeleteParams { server_id })
+        .await?;
+    let handle = live_workflow_handle(&client, &session_id)?;
+    let _ = handle
+        .terminate(
+            WorkflowTerminateOptions::builder()
+                .reason("native MCP live test cleanup")
+                .build(),
+        )
+        .await;
+    Ok(())
+}
+
 async fn run_mcp_live_client(
     client: Client,
     task_queue: String,
@@ -3448,8 +3759,11 @@ async fn run_mcp_live_client(
                 default_server_label: "crm".to_owned(),
                 description: Some("CRM MCP server".to_owned()),
                 allowed_tools: Some(vec![selected_tool.clone()]),
+                execution: api::RemoteMcpExecution::Provider,
+                exposure: api::RemoteMcpExposure::Inject,
                 approval_default: RemoteMcpApprovalPolicy::Never,
                 defer_loading_default: Some(true),
+                allow_private_network: true,
                 auth_policy: api::McpServerAuthPolicy::None,
                 credential: None,
                 status: McpServerStatus::Active,
@@ -4535,8 +4849,11 @@ async fn run_profiles_live_client(
             default_server_label: "profile_crm".to_owned(),
             description: Some("Profile live MCP server".to_owned()),
             allowed_tools: Some(vec!["lookup_customer".to_owned()]),
+            execution: api::RemoteMcpExecution::Provider,
+            exposure: api::RemoteMcpExposure::Inject,
             approval_default: RemoteMcpApprovalPolicy::Never,
             defer_loading_default: Some(true),
+            allow_private_network: false,
             auth_policy: api::McpServerAuthPolicy::None,
             credential: None,
             status: McpServerStatus::Active,

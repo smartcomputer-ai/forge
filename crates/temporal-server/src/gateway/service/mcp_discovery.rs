@@ -13,8 +13,8 @@ use mcp::{
     McpToolDiscoveryFailureKind as FailureKind, McpToolDiscoveryLimits,
 };
 use rmcp::model::{
-    ClientInfo, ClientJsonRpcMessage, Implementation, PaginatedRequestParams, ServerJsonRpcMessage,
-    Tool,
+    CallToolRequestParams, CallToolResult, ClientInfo, ClientJsonRpcMessage, Implementation,
+    PaginatedRequestParams, ServerJsonRpcMessage, Tool,
 };
 use rmcp::transport::{
     StreamableHttpClientTransport,
@@ -92,18 +92,20 @@ impl Drop for McpDiscoveryPermit {
 }
 
 #[async_trait]
-pub(super) trait McpToolDiscoverer: Send + Sync {
+pub(crate) trait McpToolDiscoverer: Send + Sync {
     async fn discover_tools(
         &self,
         server_url: &str,
         bearer: Option<&SecretValue>,
+        allow_private_network: bool,
         limits: McpToolDiscoveryLimits,
     ) -> Result<Vec<DiscoveredMcpTool>, McpToolDiscoveryFailure>;
 }
 
 #[derive(Clone, Debug)]
-pub(super) struct HttpMcpToolDiscoverer {
-    http_policy: PinnedHttpPolicy,
+pub(crate) struct HttpMcpToolDiscoverer {
+    public_http_policy: PinnedHttpPolicy,
+    private_http_policy: PinnedHttpPolicy,
     timeout: Duration,
 }
 
@@ -480,15 +482,12 @@ impl StreamableHttpClient for BoundedReqwestClient {
 }
 
 impl HttpMcpToolDiscoverer {
-    pub(super) fn new(allow_private_networks: bool) -> Self {
+    pub(crate) fn new() -> Self {
         let timeout = Duration::from_secs(10);
         Self {
-            http_policy: if allow_private_networks {
-                PinnedHttpPolicy::allowing_private_networks()
-            } else {
-                PinnedHttpPolicy::public_only()
-            }
-            .with_timeout(timeout),
+            public_http_policy: PinnedHttpPolicy::public_only().with_timeout(timeout),
+            private_http_policy: PinnedHttpPolicy::allowing_private_networks()
+                .with_timeout(timeout),
             timeout,
         }
     }
@@ -496,16 +495,76 @@ impl HttpMcpToolDiscoverer {
     async fn pinned_client(
         &self,
         endpoint: &Url,
+        allow_private_network: bool,
     ) -> Result<reqwest::Client, McpToolDiscoveryFailure> {
-        self.http_policy
-            .client_for_url(endpoint)
+        let policy = if allow_private_network {
+            &self.private_http_policy
+        } else {
+            &self.public_http_policy
+        };
+        policy.client_for_url(endpoint).await.map_err(|error| {
+            failure(
+                FailureKind::Unreachable,
+                format!("MCP endpoint rejected by outbound network policy: {error}"),
+            )
+        })
+    }
+
+    pub(crate) async fn call_tool(
+        &self,
+        server_url: &str,
+        bearer: Option<&SecretValue>,
+        allow_private_network: bool,
+        limits: McpToolDiscoveryLimits,
+        tool_name: String,
+        arguments: serde_json::Map<String, Value>,
+    ) -> Result<CallToolResult, McpToolDiscoveryFailure> {
+        let endpoint = Url::parse(server_url)
+            .map_err(|_| failure(FailureKind::InvalidResponse, "MCP endpoint URL is invalid"))?;
+        if endpoint.username() != ""
+            || endpoint.password().is_some()
+            || endpoint.fragment().is_some()
+        {
+            return Err(failure(
+                FailureKind::InvalidResponse,
+                "MCP endpoint URL must not contain credentials or a fragment",
+            ));
+        }
+        tokio::time::timeout(self.timeout, async {
+            let client = self.pinned_client(&endpoint, allow_private_network).await?;
+            let mut config = StreamableHttpClientTransportConfig::with_uri(endpoint.as_str())
+                .max_sse_event_size(limits.max_response_bytes)
+                .reinit_on_expired_session(false);
+            if let Some(token) = bearer {
+                config = config.auth_header(token.expose());
+            }
+            let client = BoundedReqwestClient::new(client, limits.max_response_bytes);
+            let diagnostics = client.diagnostics.clone();
+            let transport = StreamableHttpClientTransport::with_client(client, config);
+            let service = ClientInfo::new(
+                Default::default(),
+                Implementation::new("lightspeed", env!("CARGO_PKG_VERSION")),
+            )
+            .serve(transport)
             .await
             .map_err(|error| {
-                failure(
-                    FailureKind::Unreachable,
-                    format!("MCP endpoint rejected by outbound network policy: {error}"),
-                )
-            })
+                diagnostics
+                    .current()
+                    .unwrap_or_else(|| map_initialize_error(error))
+            })?;
+            let result = service
+                .call_tool(CallToolRequestParams::new(tool_name).with_arguments(arguments))
+                .await
+                .map_err(|error| {
+                    diagnostics
+                        .current()
+                        .unwrap_or_else(|| map_service_error(error))
+                });
+            let _ = service.cancel().await;
+            result
+        })
+        .await
+        .map_err(|_| failure(FailureKind::Unreachable, "MCP tool call timed out"))?
     }
 }
 
@@ -515,6 +574,7 @@ impl McpToolDiscoverer for HttpMcpToolDiscoverer {
         &self,
         server_url: &str,
         bearer: Option<&SecretValue>,
+        allow_private_network: bool,
         limits: McpToolDiscoveryLimits,
     ) -> Result<Vec<DiscoveredMcpTool>, McpToolDiscoveryFailure> {
         let endpoint = Url::parse(server_url)
@@ -530,7 +590,7 @@ impl McpToolDiscoverer for HttpMcpToolDiscoverer {
         }
 
         tokio::time::timeout(self.timeout, async {
-            let client = self.pinned_client(&endpoint).await?;
+            let client = self.pinned_client(&endpoint, allow_private_network).await?;
             let mut config = StreamableHttpClientTransportConfig::with_uri(endpoint.as_str())
                 .max_sse_event_size(limits.max_response_bytes)
                 .reinit_on_expired_session(false);
@@ -689,6 +749,7 @@ fn project_tool(
         name,
         title: direct_title.or(annotation_title),
         description,
+        input_schema: schema,
         annotations,
     })
 }
@@ -1086,13 +1147,18 @@ mod tests {
         let server = tokio::spawn(async move {
             axum::serve(listener, app).await.expect("serve fixture");
         });
-        let discoverer = HttpMcpToolDiscoverer::new(true);
+        let discoverer = HttpMcpToolDiscoverer::new();
         let token = SecretValue::new("test-token-never-log");
         let endpoint = format!("http://{address}/mcp");
 
         for _ in 0..2 {
             let tools = discoverer
-                .discover_tools(&endpoint, Some(&token), McpToolDiscoveryLimits::default())
+                .discover_tools(
+                    &endpoint,
+                    Some(&token),
+                    true,
+                    McpToolDiscoveryLimits::default(),
+                )
                 .await
                 .expect("discover fixture tools");
             assert_eq!(
@@ -1140,10 +1206,11 @@ mod tests {
             axum::serve(listener, app).await.expect("serve fixture");
         });
 
-        let error = HttpMcpToolDiscoverer::new(true)
+        let error = HttpMcpToolDiscoverer::new()
             .discover_tools(
                 &format!("http://{address}/mcp"),
                 None,
+                true,
                 McpToolDiscoveryLimits {
                     max_response_bytes: 1024,
                     ..McpToolDiscoveryLimits::default()
@@ -1174,10 +1241,11 @@ mod tests {
             axum::serve(listener, app).await.expect("serve fixture");
         });
 
-        let error = HttpMcpToolDiscoverer::new(true)
+        let error = HttpMcpToolDiscoverer::new()
             .discover_tools(
                 &format!("http://{address}/mcp"),
                 Some(&SecretValue::new("expired-token")),
+                true,
                 McpToolDiscoveryLimits::default(),
             )
             .await
@@ -1205,13 +1273,16 @@ mod tests {
         });
 
         let error = HttpMcpToolDiscoverer {
-            http_policy: PinnedHttpPolicy::allowing_private_networks()
+            public_http_policy: PinnedHttpPolicy::public_only()
+                .with_timeout(Duration::from_millis(10)),
+            private_http_policy: PinnedHttpPolicy::allowing_private_networks()
                 .with_timeout(Duration::from_millis(10)),
             timeout: Duration::from_millis(10),
         }
         .discover_tools(
             &format!("http://{address}/mcp"),
             None,
+            true,
             McpToolDiscoveryLimits::default(),
         )
         .await

@@ -540,59 +540,65 @@ pub fn admit_command(
                     "approval decision does not target the accepting active run",
                 );
             }
-            let (expected_provider_id, expected_approve) = match &record.request.continuation {
+            let provider_expectation = match &record.request.continuation {
                 ApprovalContinuation::OpenAiMcp {
                     provider_request_id,
-                } => (
+                } => Some((
                     provider_request_id.as_str(),
                     command.decision == crate::ApprovalDecision::Approved,
-                ),
-                ApprovalContinuation::NativeMcp { .. } => {
-                    return reject(
-                        CommandRejectionKind::InvalidConfiguration,
-                        "native MCP approval continuations land with P145",
-                    );
-                }
+                )),
+                ApprovalContinuation::NativeMcp { .. } => None,
             };
-            match &command.response.kind {
-                crate::ContextEntryKind::McpApprovalResponse {
-                    approval_request_id,
-                    approve,
-                } if approval_request_id == expected_provider_id
-                    && *approve == expected_approve => {}
-                _ => {
-                    return reject(
-                        CommandRejectionKind::InvariantViolation,
-                        "approval response context does not match the pending continuation",
-                    );
+            if let Some((expected_provider_id, expected_approve)) = provider_expectation {
+                match command.response.as_ref().map(|response| &response.kind) {
+                    Some(crate::ContextEntryKind::McpApprovalResponse {
+                        approval_request_id,
+                        approve,
+                    }) if approval_request_id == expected_provider_id
+                        && *approve == expected_approve => {}
+                    _ => {
+                        return reject(
+                            CommandRejectionKind::InvariantViolation,
+                            "approval response context does not match the pending continuation",
+                        );
+                    }
                 }
+            } else if command.response.is_some() {
+                return reject(
+                    CommandRejectionKind::InvariantViolation,
+                    "native MCP approval decisions must not add provider response context",
+                );
             }
-            let entries = crate::core::components::context::context_entries_from_inputs(
-                state,
-                vec![(
-                    None,
-                    ContextEntrySource::ApprovalDecision {
-                        run_id: command.run_id,
-                        approval_id: command.approval_id.clone(),
-                    },
-                    command.response,
-                )],
-            )?;
-            Ok(vec![
-                CoreAgentEventProposal::new(
-                    CoreAgentJoins {
-                        run_id: Some(command.run_id),
-                        ..CoreAgentJoins::default()
-                    },
-                    CoreAgentEvent::Approval(ApprovalEvent::Decided {
-                        approval_id: command.approval_id,
-                        run_id: command.run_id,
-                        decision: command.decision,
-                        note: command.note,
-                        decided_by: command.decided_by,
-                    }),
-                ),
-                CoreAgentEventProposal::new(
+            let entries = if let Some(response) = command.response {
+                crate::core::components::context::context_entries_from_inputs(
+                    state,
+                    vec![(
+                        None,
+                        ContextEntrySource::ApprovalDecision {
+                            run_id: command.run_id,
+                            approval_id: command.approval_id.clone(),
+                        },
+                        response,
+                    )],
+                )?
+            } else {
+                Vec::new()
+            };
+            let mut proposals = vec![CoreAgentEventProposal::new(
+                CoreAgentJoins {
+                    run_id: Some(command.run_id),
+                    ..CoreAgentJoins::default()
+                },
+                CoreAgentEvent::Approval(ApprovalEvent::Decided {
+                    approval_id: command.approval_id,
+                    run_id: command.run_id,
+                    decision: command.decision,
+                    note: command.note,
+                    decided_by: command.decided_by,
+                }),
+            )];
+            if !entries.is_empty() {
+                proposals.push(CoreAgentEventProposal::new(
                     CoreAgentJoins {
                         run_id: Some(command.run_id),
                         ..CoreAgentJoins::default()
@@ -601,8 +607,9 @@ pub fn admit_command(
                         base_revision: state.context.revision,
                         entries,
                     }),
-                ),
-            ])
+                ));
+            }
+            Ok(proposals)
         }
         CoreAgentCommand::ResolvePromise {
             promise_id,

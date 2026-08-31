@@ -68,12 +68,15 @@ function materialize(
       defaultServerLabel,
       description: stringOrNull(input.description),
       allowedTools: allowedTools.length > 0 ? allowedTools : null,
+      execution: input.execution === "native" ? "native" : "provider",
+      exposure: input.execution === "native" && input.exposure === "search" ? "search" : "inject",
       approvalDefault: typeof input.approvalDefault === "string" && APPROVALS.has(input.approvalDefault)
         ? (input.approvalDefault as McpServer["approvalDefault"])
         : "never",
       deferLoadingDefault: typeof input.deferLoadingDefault === "boolean"
         ? input.deferLoadingDefault
         : null,
+      allowPrivateNetwork: input.allowPrivateNetwork === true,
       authPolicy,
       credential,
       status,

@@ -2227,6 +2227,27 @@ fn tool_call_display(tool_name: &str, arguments: &str) -> Option<ToolCallDisplay
             target: json.as_ref().and_then(|json| first_string(json, &["url"])),
             detail: None,
         },
+        "mcp_find_tools" => ToolCallDisplayView {
+            group: ToolCallDisplayGroup::Explore,
+            verb: "Search MCP tools".to_owned(),
+            target: json
+                .as_ref()
+                .and_then(|json| first_string(json, &["server"])),
+            detail: json
+                .as_ref()
+                .and_then(|json| first_string(json, &["query"])),
+        },
+        "mcp_call" => ToolCallDisplayView {
+            group: ToolCallDisplayGroup::Other,
+            verb: json
+                .as_ref()
+                .and_then(|json| first_string(json, &["tool"]))
+                .unwrap_or_else(|| "MCP tool".to_owned()),
+            target: json
+                .as_ref()
+                .and_then(|json| first_string(json, &["server"])),
+            detail: Some("MCP tool".to_owned()),
+        },
         "write_file" | "write" => ToolCallDisplayView {
             group: ToolCallDisplayGroup::Edit,
             verb: "Write".to_owned(),
@@ -2414,6 +2435,18 @@ mod tests {
             effects: Vec::new(),
             display: None,
         }
+    }
+
+    #[test]
+    fn native_mcp_search_call_displays_the_resolved_server_and_tool() {
+        let display = tool_call_display(
+            "mcp_call",
+            r#"{"server":"configurator","tool":"lightspeed_models_list","arguments":{}}"#,
+        )
+        .expect("display");
+        assert_eq!(display.verb, "lightspeed_models_list");
+        assert_eq!(display.target.as_deref(), Some("configurator"));
+        assert_ne!(display.verb, "mcp_call");
     }
 
     #[test]

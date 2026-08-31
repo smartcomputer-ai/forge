@@ -123,6 +123,12 @@ struct McpServerPutArgs {
     /// Optional provider-side MCP tool allowlist entry. Repeat to allow multiple.
     #[arg(long = "allowed-tool")]
     allowed_tools: Vec<String>,
+    /// Who connects to and executes this MCP server's tools.
+    #[arg(long, default_value_t = RemoteMcpExecutionArg::Provider)]
+    execution: RemoteMcpExecutionArg,
+    /// How native tools are exposed to the model.
+    #[arg(long, default_value_t = RemoteMcpExposureArg::Inject)]
+    exposure: RemoteMcpExposureArg,
     /// Default remote MCP approval behavior.
     #[arg(long, default_value_t = RemoteMcpApprovalArg::Never)]
     approval: RemoteMcpApprovalArg,
@@ -132,6 +138,9 @@ struct McpServerPutArgs {
     /// Disable provider-side deferred MCP tool loading by default.
     #[arg(long = "no-defer-loading", conflicts_with = "defer_loading")]
     no_defer_loading: bool,
+    /// Permit this record to use the deployment's private MCP egress allowlist.
+    #[arg(long)]
+    allow_private_network: bool,
     /// Server status to record.
     #[arg(long, default_value_t = McpServerStatusArg::Active)]
     status: McpServerStatusArg,
@@ -319,6 +328,56 @@ enum RemoteMcpApprovalArg {
     Never,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+enum RemoteMcpExecutionArg {
+    #[default]
+    Provider,
+    Native,
+}
+
+impl std::fmt::Display for RemoteMcpExecutionArg {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Provider => "provider",
+            Self::Native => "native",
+        })
+    }
+}
+
+impl From<RemoteMcpExecutionArg> for api::RemoteMcpExecution {
+    fn from(value: RemoteMcpExecutionArg) -> Self {
+        match value {
+            RemoteMcpExecutionArg::Provider => Self::Provider,
+            RemoteMcpExecutionArg::Native => Self::Native,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+enum RemoteMcpExposureArg {
+    #[default]
+    Inject,
+    Search,
+}
+
+impl std::fmt::Display for RemoteMcpExposureArg {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Inject => "inject",
+            Self::Search => "search",
+        })
+    }
+}
+
+impl From<RemoteMcpExposureArg> for api::RemoteMcpExposure {
+    fn from(value: RemoteMcpExposureArg) -> Self {
+        match value {
+            RemoteMcpExposureArg::Inject => Self::Inject,
+            RemoteMcpExposureArg::Search => Self::Search,
+        }
+    }
+}
+
 impl std::fmt::Display for RemoteMcpApprovalArg {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
@@ -458,8 +517,11 @@ fn server_input_from_view(server: &api::McpServerView) -> api::McpServerInput {
         default_server_label: server.default_server_label.clone(),
         description: server.description.clone(),
         allowed_tools: server.allowed_tools.clone(),
+        execution: server.execution,
+        exposure: server.exposure,
         approval_default: server.approval_default,
         defer_loading_default: server.defer_loading_default,
+        allow_private_network: server.allow_private_network,
         auth_policy: server.auth_policy.clone(),
         credential: server.credential.clone(),
         status: server.status,
@@ -546,8 +608,11 @@ async fn server_put(args: McpServerPutArgs) -> Result<()> {
                 default_server_label: args.default_server_label,
                 description: args.description,
                 allowed_tools: nonempty_vec(args.allowed_tools),
+                execution: args.execution.into(),
+                exposure: args.exposure.into(),
                 approval_default: args.approval.into(),
                 defer_loading_default: defer_loading_arg(args.defer_loading, args.no_defer_loading),
+                allow_private_network: args.allow_private_network,
                 auth_policy,
                 credential: args
                     .auth_grant_id

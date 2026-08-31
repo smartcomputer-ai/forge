@@ -113,9 +113,14 @@ pub const MIGRATIONS: &[EmbeddedMigration] = &[
         name: "mcp_approvals",
         sql: include_str!("../migrations/012_mcp_approvals.sql"),
     },
+    EmbeddedMigration {
+        version: 13,
+        name: "native_mcp_execution",
+        sql: include_str!("../migrations/013_native_mcp_execution.sql"),
+    },
 ];
 
-pub const REQUIRED_SCHEMA_REVISION: i64 = 12;
+pub const REQUIRED_SCHEMA_REVISION: i64 = 13;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SchemaStatus {

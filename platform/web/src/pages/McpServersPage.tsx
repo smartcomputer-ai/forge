@@ -372,6 +372,15 @@ function ServerDialog({
   const [serverId, setServerId] = useState(server?.serverId ?? "");
   const [idTouched, setIdTouched] = useState(false);
   const [serverUrl, setServerUrl] = useState(server?.serverUrl ?? "");
+  const [execution, setExecution] = useState<McpServer["execution"]>(
+    server?.execution ?? "provider",
+  );
+  const [exposure, setExposure] = useState<McpServer["exposure"]>(
+    server?.exposure ?? "inject",
+  );
+  const [allowPrivateNetwork, setAllowPrivateNetwork] = useState(
+    server?.allowPrivateNetwork ?? false,
+  );
   const [approval, setApproval] = useState<string>(
     server?.approvalDefault ?? "never",
   );
@@ -523,7 +532,10 @@ function ServerDialog({
           serverId,
           serverUrl,
           defaultServerLabel: serverId,
+          execution,
+          exposure: execution === "native" ? exposure : "inject",
           approvalDefault: approval,
+          allowPrivateNetwork,
           authPolicy: policy,
           credential,
           status: nextStatus,
@@ -539,6 +551,8 @@ function ServerDialog({
           serverId: server.serverId,
           serverUrl,
           defaultServerLabel: server.defaultServerLabel,
+          execution,
+          exposure: execution === "native" ? exposure : "inject",
           revision: server.revision,
           approvalDefault: approval,
           authPolicy: policy,
@@ -548,6 +562,7 @@ function ServerDialog({
           description: description.trim() || null,
           allowedTools: allToolsAllowed ? null : parsedTools,
           deferLoadingDefault: server.deferLoadingDefault ?? null,
+          allowPrivateNetwork,
         },
       );
     },
@@ -724,6 +739,53 @@ function ServerDialog({
               )}
 
               <Field>
+                <FieldLabel>Execution</FieldLabel>
+                <Select
+                  value={execution}
+                  onValueChange={(value) => {
+                    setExecution(value as McpServer["execution"]);
+                    if (value === "provider") setExposure("inject");
+                  }}
+                >
+                  <SelectTrigger className="w-full" aria-label="MCP execution">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="provider">Model provider connects directly</SelectItem>
+                    <SelectItem value="native">Lightspeed connects</SelectItem>
+                  </SelectContent>
+                </Select>
+                <FieldDescription>
+                  {execution === "native"
+                    ? "Use this for private servers and models without provider-hosted MCP. Credentials and tool traffic stay between Lightspeed and the server."
+                    : "The model provider lists and calls the server directly. The endpoint must be publicly reachable."}
+                </FieldDescription>
+              </Field>
+
+              {execution === "native" && (
+                <Field>
+                  <FieldLabel>Tool exposure</FieldLabel>
+                  <Select
+                    value={exposure}
+                    onValueChange={(value) => setExposure(value as McpServer["exposure"])}
+                  >
+                    <SelectTrigger className="w-full" aria-label="MCP tool exposure">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="inject">Show tools to the model up front</SelectItem>
+                      <SelectItem value="search">Let the model search on demand</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  <FieldDescription>
+                    {exposure === "search"
+                      ? "Recommended for large or frequently changing servers. Only two stable search and call tools are shown up front."
+                      : "Best for a small, stable inventory or a selected allowlist. The live tools are injected as ordinary function tools."}
+                  </FieldDescription>
+                </Field>
+              )}
+
+              <Field>
                 <FieldLabel>Authentication</FieldLabel>
                 {detectedOAuth && (
                   <div className="mb-2 flex items-center gap-2 rounded-md border border-emerald-500/30 bg-emerald-500/5 px-3 py-2 text-sm text-emerald-700 dark:text-emerald-300">
@@ -773,6 +835,7 @@ function ServerDialog({
                       {[
                         ...(!editing ? [`id ${serverId || "…"}`] : []),
                         approvalLabel(approval).toLowerCase(),
+                        execution === "native" ? `native ${exposure}` : "provider execution",
                         allToolsAllowed ? "all tools" : `${parsedTools.length} selected tool${parsedTools.length === 1 ? "" : "s"}`,
                       ].join(" · ")}
                     </span>
@@ -817,6 +880,18 @@ function ServerDialog({
                       </SelectContent>
                     </Select>
                   </Field>
+                  <Label className="flex items-start gap-3 rounded-md border p-3 font-normal">
+                    <Checkbox
+                      checked={allowPrivateNetwork}
+                      onCheckedChange={(checked) => setAllowPrivateNetwork(checked === true)}
+                    />
+                    <span>
+                      <span className="block text-sm font-medium">Allow private-network egress</span>
+                      <span className="block text-xs text-muted-foreground">
+                        Enables live discovery and native execution only for hosts or CIDRs in the deployment-level MCP private-network allowlist.
+                      </span>
+                    </span>
+                  </Label>
                   <Field>
                     <div className="flex items-end justify-between gap-3">
                       <div>

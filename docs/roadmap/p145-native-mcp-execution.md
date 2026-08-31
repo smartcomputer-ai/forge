@@ -2,7 +2,7 @@
 
 **Status**
 
-- Proposed 2026-08-31. Lightspeed becomes an MCP client at model time: for
+- Implemented 2026-08-31. Lightspeed becomes an MCP client at model time: for
   servers configured with native execution, the runtime presents the server's
   tools to the model — injected as ordinary function tools, or discoverable
   through search meta-tools for large inventories — and executes the model's
@@ -23,6 +23,13 @@
   model provider at all.
 - Provider-hosted execution (P67) remains supported and remains the default;
   execution mode is authored per MCP server record.
+- Delivered end to end: revision-keyed worker-local inventory caching,
+  injection in all three adapters, search meta-tools, `rmcp` `tools/call`,
+  dispatch-time P144 approvals, CAS-backed rich-result placeholders, the
+  deployment plus record private-egress gate, Platform/CLI/generated clients,
+  an ignored Temporal live acceptance against the Configurator MCP, and a
+  standalone `temporal-server/tests/mcp_live.rs` matrix over local Stateless
+  Streamable HTTP servers.
 
 ## Why
 
@@ -173,9 +180,12 @@ mcp_call       { server, tool, arguments }
   the same worker-local cached resolver that injection uses. Results are
   ordinary tool results: the matching tools' names, descriptions, and full
   input schemas for a bounded top-K; browse (no query) returns names and
-  one-line descriptions, paginated. Matching is simple and deterministic
-  (name/description substring ranking — no embeddings). Only allowlisted
-  tools are ever returned; search never widens Selected policy.
+  one-line descriptions, paginated. Matching is simple and deterministic:
+  separators and camelCase become token boundaries; exact names, token
+  coverage, name matches, conservative prefix/plural matches, and
+  Jaro-Winkler typo similarity determine rank in that order. Partial
+  multi-token matches remain eligible, and no embeddings are involved. Only
+  allowlisted tools are ever returned; search never widens Selected policy.
 - `mcp_call` executes one tool through the same pinned per-call path as an
   injected call: audience check, broker resolution, `tools/call`, result
   mapping, bounds. The runtime validates that `server` names an active
@@ -423,17 +433,22 @@ hosting. Sessions are per-activity; Streamable HTTP only.
 
 ### Slice 6 — Live acceptance
 
-- **Configurator MCP native, search exposure (flagship)**: a session on
-  Anthropic *and* on an OpenAI-compatible completions model (the Deepseek
-  shape) carries only the two meta-tools, finds a generated tool through
-  `mcp_find_tools`, and executes a read-only one through `mcp_call` — with
-  the bearer present only on the Configurator wire and expectations pinned
-  to the generated registry rather than hard-coded counts.
-- **Configurator MCP native, inject exposure**: a second Selected-allowlist
-  record against the same endpoint injects a handful of
-  `mcp_configurator__*` tools — proving inject, the dual-registration
-  hybrid, and shared-credential registration in one fixture.
-- Approval-gated native call once P144 slice 5 lands.
+- **Standalone native matrix**: `temporal-server/tests/mcp_live.rs` runs
+  through the real registry/API, Postgres, Temporal worker, approval
+  continuation, `rmcp` client, and local Stateless Streamable HTTP servers.
+  It covers a small Selected/injected server; a paginated 45-tool All/search
+  server; a second Selected/search registration for that large server;
+  search-result pagination; text, structured, and binary results; and an
+  approval-gated call.
+- **Live inventory, not snapshot**: the matrix discovers 45 tools, changes
+  only the server to 46 tools, then discovers 46 after the admission
+  cooldown, without updating the registry record.
+- **Configurator MCP native search smoke**: the generated Configurator
+  registry is discovered and a read-only generated tool is found and called
+  through the two meta-tools.
+- **Provider-hosted MCP**: the separate OpenAI Responses and Anthropic
+  Messages `*_mcp_live.rs` suites call a public playground MCP server end to
+  end.
 
 ## Tests
 

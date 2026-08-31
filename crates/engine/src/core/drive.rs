@@ -221,6 +221,69 @@ impl CoreAgentDrive {
         self.resume_tool_batch(result, observed_at_ms)
     }
 
+    pub fn request_native_mcp_approval(
+        &mut self,
+        batch_id: ToolBatchId,
+        call_id: ToolCallId,
+        subject: crate::ApprovalSubject,
+        observed_at_ms: u64,
+    ) -> Result<CoreAgentAction, CoreAgentDriveError> {
+        let active_run = self.state.runs.active.as_ref().ok_or_else(|| {
+            DomainError::InvariantViolation("native MCP approval requires an active run".into())
+        })?;
+        let batch = active_run.tool_batches.get(&batch_id).ok_or_else(|| {
+            DomainError::InvariantViolation(format!("tool batch {batch_id} is missing"))
+        })?;
+        if active_run.active_tool_batch_id != Some(batch_id)
+            || !batch.calls.iter().any(|call| {
+                call.call.call_id == call_id && call.status == crate::ToolCallStatus::Pending
+            })
+        {
+            return Err(DomainError::InvariantViolation(
+                "native MCP approval does not match a pending active call".into(),
+            )
+            .into());
+        }
+        let next = self
+            .state
+            .id_cursors
+            .last_approval_id
+            .checked_add(1)
+            .ok_or_else(|| {
+                DomainError::InvariantViolation("approval id cursor exhausted".into())
+            })?;
+        let approval_id = crate::ApprovalId::new(format!("approval_{next}"));
+        let joins = CoreAgentJoins {
+            run_id: Some(batch.run_id),
+            turn_id: Some(batch.turn_id),
+            tool_batch_id: Some(batch.batch_id),
+            tool_call_id: Some(call_id.clone()),
+            ..CoreAgentJoins::default()
+        };
+        self.append_action(
+            vec![
+                CoreAgentEventProposal::new(
+                    joins.clone(),
+                    CoreAgentEvent::Approval(crate::ApprovalEvent::Requested {
+                        approval: crate::ApprovalRequested {
+                            approval_id,
+                            run_id: batch.run_id,
+                            subject,
+                            continuation: crate::ApprovalContinuation::NativeMcp { call_id },
+                        },
+                    }),
+                ),
+                CoreAgentEventProposal::new(
+                    joins,
+                    CoreAgentEvent::Approval(crate::ApprovalEvent::RunParked {
+                        run_id: batch.run_id,
+                    }),
+                ),
+            ],
+            observed_at_ms,
+        )
+    }
+
     pub fn resume_tool_batch_outcome(
         &mut self,
         outcome: ToolBatchOutcome,

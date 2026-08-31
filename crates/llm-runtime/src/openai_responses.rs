@@ -9,9 +9,9 @@ use engine::{
     OPENAI_RESPONSES_COMPACTION_PROVIDER_KIND, OPENAI_RESPONSES_MCP_APPROVAL_REQUEST_PROVIDER_KIND,
     OPENAI_RESPONSES_MCP_CALL_PROVIDER_KIND, OPENAI_RESPONSES_MCP_LIST_TOOLS_PROVIDER_KIND,
     OPENAI_RESPONSES_WEB_SEARCH_CALL_PROVIDER_KIND, ObservedApprovalRequest, ObservedToolCall,
-    ProviderApiKind, ProviderNativeToolExecution, RemoteMcpApprovalPolicy, RemoteMcpToolSpec,
-    TokenEstimate, TokenEstimateQuality, ToolCallId, ToolChoice, ToolKind, ToolName, ToolSpec,
-    storage::BlobStore,
+    ProviderApiKind, ProviderNativeToolExecution, RemoteMcpApprovalPolicy, RemoteMcpExecution,
+    RemoteMcpExposure, RemoteMcpToolSpec, TokenEstimate, TokenEstimateQuality, ToolCallId,
+    ToolChoice, ToolKind, ToolName, ToolSpec, storage::BlobStore,
 };
 use llm_clients::{ApiResponse, openai::responses as oai};
 use serde_json::{Value, json};
@@ -20,6 +20,9 @@ use crate::{
     blob_io::{put_json, put_text, read_json, read_text},
     error::{LlmAdapterError, LlmAdapterResult},
     executor::{LlmCompactionAdapter, LlmGenerationAdapter},
+    mcp::{
+        MAX_NATIVE_MCP_TOOLS_PER_REQUEST, McpInventoryResolver, UnconfiguredMcpInventoryResolver,
+    },
     params::{openai_reasoning_from_effort, openai_responses_params},
     provider_keys::{ModelProviderResolver, NoStoredModelProviders, resolve_model_provider},
     result::{LlmGenerationExecution, partial_output_entries, truncation_failure_text},
@@ -81,6 +84,7 @@ pub struct OpenAiResponsesLlmAdapter {
     blobs: Arc<dyn BlobStore>,
     secrets: Arc<dyn SecretResolver>,
     provider_keys: Arc<dyn ModelProviderResolver>,
+    inventory: Arc<dyn McpInventoryResolver>,
 }
 
 impl OpenAiResponsesLlmAdapter {
@@ -90,6 +94,7 @@ impl OpenAiResponsesLlmAdapter {
             blobs,
             secrets: Arc::new(UnconfiguredSecretResolver),
             provider_keys: Arc::new(NoStoredModelProviders),
+            inventory: Arc::new(UnconfiguredMcpInventoryResolver),
         }
     }
 
@@ -106,11 +111,21 @@ impl OpenAiResponsesLlmAdapter {
         self
     }
 
+    pub fn with_mcp_inventory_resolver(mut self, inventory: Arc<dyn McpInventoryResolver>) -> Self {
+        self.inventory = inventory;
+        self
+    }
+
     pub async fn materialize_create_request(
         &self,
         request: &LlmRequest,
     ) -> LlmAdapterResult<oai::CreateResponseRequest> {
-        materialize_create_request(self.blobs.as_ref(), request).await
+        materialize_create_request_with_inventory(
+            self.blobs.as_ref(),
+            self.inventory.as_ref(),
+            request,
+        )
+        .await
     }
 
     pub async fn materialize_compact_request(
@@ -206,6 +221,15 @@ pub async fn materialize_create_request(
     blobs: &dyn BlobStore,
     request: &LlmRequest,
 ) -> LlmAdapterResult<oai::CreateResponseRequest> {
+    materialize_create_request_with_inventory(blobs, &UnconfiguredMcpInventoryResolver, request)
+        .await
+}
+
+async fn materialize_create_request_with_inventory(
+    blobs: &dyn BlobStore,
+    inventory: &dyn McpInventoryResolver,
+    request: &LlmRequest,
+) -> LlmAdapterResult<oai::CreateResponseRequest> {
     let mut params = openai_responses_params(request.params.as_ref())?;
     // Materialize intent fields into provider params. Explicit per-run
     // provider params win: derived values never overwrite fields the params
@@ -228,7 +252,7 @@ pub async fn materialize_create_request(
         .cloned()
         .collect::<Vec<_>>();
     let input_items = materialize_input_items(blobs, &input_entries).await?;
-    let tools = materialize_tools(blobs, &request.tools).await?;
+    let tools = materialize_tools(blobs, inventory, &request.tools).await?;
 
     let mut extra = params.extra.clone();
     let service_tier = crate::params::take_openai_service_tier(&mut extra, params.service_tier)?
@@ -508,11 +532,60 @@ fn is_openai_raw_item(item: &ContextEntry) -> bool {
 
 async fn materialize_tools(
     blobs: &dyn BlobStore,
+    inventory: &dyn McpInventoryResolver,
     tools: &[ToolSpec],
 ) -> LlmAdapterResult<Vec<oai::Tool>> {
     let mut materialized = Vec::with_capacity(tools.len());
+    let mut native_mcp_tool_count = 0usize;
     for tool in tools {
-        materialized.push(materialize_tool(blobs, tool).await?);
+        let ToolKind::RemoteMcp(spec) = &tool.kind else {
+            materialized.push(materialize_tool(blobs, tool).await?);
+            continue;
+        };
+        match (spec.execution, spec.exposure) {
+            (RemoteMcpExecution::Provider, _) => {
+                materialized.push(materialize_tool(blobs, tool).await?);
+            }
+            (RemoteMcpExecution::Native, RemoteMcpExposure::Search) => {}
+            (RemoteMcpExecution::Native, RemoteMcpExposure::Inject) => {
+                let mut native = inventory.list_tools(spec).await.map_err(|error| {
+                    LlmAdapterError::McpInventory {
+                        server: spec.server_id.clone(),
+                        message: error.to_string(),
+                    }
+                })?;
+                native.sort_by(|left, right| left.remote_name.cmp(&right.remote_name));
+                let advertised_count = native.len();
+                native.retain(|native_tool| {
+                    let name = format!("{}__{}", tool.name, native_tool.remote_name);
+                    name.len() <= 64 && ToolName::try_new(name).is_ok()
+                });
+                let omitted_count = advertised_count - native.len();
+                if omitted_count != 0 {
+                    tracing::warn!(
+                        server_id = %spec.server_id,
+                        omitted_tool_count = omitted_count,
+                        "omitted native MCP tools with provider-incompatible names"
+                    );
+                }
+                if native_mcp_tool_count.saturating_add(native.len())
+                    > MAX_NATIVE_MCP_TOOLS_PER_REQUEST
+                {
+                    return Err(LlmAdapterError::McpInventory {
+                        server: spec.server_id.clone(),
+                        message: "native MCP inventory exceeds the per-request tool cap; author a Selected allowlist or switch the record to search exposure".to_owned(),
+                    });
+                }
+                native_mcp_tool_count += native.len();
+                for native_tool in native {
+                    let name = format!("{}__{}", tool.name, native_tool.remote_name);
+                    let mut function = oai::FunctionTool::new(name, native_tool.input_schema);
+                    function.description = native_tool.description;
+                    function.strict = Some(true);
+                    materialized.push(oai::Tool::Function(function));
+                }
+            }
+        }
     }
     Ok(materialized)
 }
@@ -620,7 +693,10 @@ async fn inject_remote_mcp_auth(
         .tools
         .iter()
         .filter_map(|tool| match &tool.kind {
-            ToolKind::RemoteMcp(remote_mcp) if remote_mcp.auth_ref.is_some() => {
+            ToolKind::RemoteMcp(remote_mcp)
+                if remote_mcp.execution == RemoteMcpExecution::Provider
+                    && remote_mcp.auth_ref.is_some() =>
+            {
                 Some((tool, remote_mcp))
             }
             _ => None,
@@ -1356,6 +1432,64 @@ mod tests {
     use crate::executor::{LlmAdapterRegistry, LlmRuntime};
     use crate::params::{OpenAiReasoningConfig, OpenAiResponsesParams};
 
+    struct StaticMcpInventory;
+
+    #[async_trait]
+    impl McpInventoryResolver for StaticMcpInventory {
+        async fn list_tools(
+            &self,
+            _spec: &RemoteMcpToolSpec,
+        ) -> Result<Vec<crate::NativeMcpTool>, crate::McpInventoryError> {
+            Ok(vec![crate::NativeMcpTool {
+                remote_name: "search_issues".to_owned(),
+                description: Some("Search issues".to_owned()),
+                input_schema: json!({"type": "object", "properties": {"q": {"type": "string"}}}),
+            }])
+        }
+    }
+
+    fn native_mcp_tool(exposure: RemoteMcpExposure) -> ToolSpec {
+        ToolSpec {
+            name: ToolName::try_new("mcp_github").expect("name"),
+            kind: ToolKind::RemoteMcp(RemoteMcpToolSpec {
+                server_id: "github".to_owned(),
+                record_revision: 1,
+                server_label: "github".to_owned(),
+                server_url: "https://example.com/mcp".to_owned(),
+                description_ref: None,
+                allowed_tools: None,
+                execution: RemoteMcpExecution::Native,
+                exposure,
+                approval: RemoteMcpApprovalPolicy::Never,
+                defer_loading: None,
+                auth_ref: None,
+                auth_required: false,
+                allow_private_network: false,
+            }),
+            execution: Default::default(),
+            parallelism: ToolParallelism::ParallelSafe,
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn native_mcp_injects_functions_and_search_omits_server_entry() {
+        let blobs = InMemoryBlobStore::new();
+        let tools = materialize_tools(
+            &blobs,
+            &StaticMcpInventory,
+            &[
+                native_mcp_tool(RemoteMcpExposure::Inject),
+                native_mcp_tool(RemoteMcpExposure::Search),
+            ],
+        )
+        .await
+        .expect("materialize native MCP");
+        let value = serde_json::to_value(tools).expect("tools json");
+        assert_eq!(value.as_array().expect("array").len(), 1);
+        assert_eq!(value[0]["name"], "mcp_github__search_issues");
+        assert_eq!(value[0]["strict"], true);
+    }
+
     struct FakeOpenAiResponsesApi {
         response: ApiResponse<oai::Response>,
         compact_response: ApiResponse<oai::CompactResponse>,
@@ -1742,14 +1876,18 @@ mod tests {
             execution: Default::default(),
             kind: ToolKind::RemoteMcp(RemoteMcpToolSpec {
                 server_id: "echo".to_string(),
+                record_revision: 1,
                 server_label: "echo".to_string(),
                 server_url: "https://echo.example.com/mcp".to_string(),
                 description_ref: Some(description_ref),
                 allowed_tools: Some(vec!["echo".to_string()]),
+                execution: RemoteMcpExecution::Provider,
+                exposure: RemoteMcpExposure::Inject,
                 approval: RemoteMcpApprovalPolicy::Never,
                 defer_loading: Some(true),
                 auth_ref: None,
                 auth_required: false,
+                allow_private_network: false,
             }),
             parallelism: ToolParallelism::ParallelSafe,
         }];
@@ -1838,10 +1976,13 @@ mod tests {
             execution: Default::default(),
             kind: ToolKind::RemoteMcp(RemoteMcpToolSpec {
                 server_id: "echo".to_string(),
+                record_revision: 1,
                 server_label: "echo".to_string(),
                 server_url: "https://echo.example.com/mcp".to_string(),
                 description_ref: None,
                 allowed_tools: None,
+                execution: RemoteMcpExecution::Provider,
+                exposure: RemoteMcpExposure::Inject,
                 approval: RemoteMcpApprovalPolicy::Never,
                 defer_loading: None,
                 auth_ref: Some(engine::SecretRef {
@@ -1849,6 +1990,7 @@ mod tests {
                     id: "echo".to_string(),
                 }),
                 auth_required: true,
+                allow_private_network: false,
             }),
             parallelism: ToolParallelism::ParallelSafe,
         }

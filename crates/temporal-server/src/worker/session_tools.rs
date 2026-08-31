@@ -1483,6 +1483,9 @@ impl CoreAgentTools for SessionTools {
                 )
                 .await
             }
+            ToolCallExecution::NeedsApproval { .. } => Err(CoreAgentIoError::Failed {
+                message: "native MCP approval cannot originate from SessionTools".to_owned(),
+            }),
         }
     }
 }
@@ -1498,6 +1501,9 @@ pub enum ToolCallExecution {
         call_id: engine::ToolCallId,
         environment_id: String,
         status: environments::EnvironmentStatus,
+    },
+    NeedsApproval {
+        subject: engine::ApprovalSubject,
     },
 }
 
@@ -1927,6 +1933,7 @@ mod tests {
                     arguments_ref: BlobRef::from_bytes(arguments),
                 })
                 .collect(),
+            remote_mcp: None,
             execution: engine::ToolExecutionSpec::default(),
         }
     }
@@ -3012,6 +3019,7 @@ mod tests {
             },
             sibling_calls: Vec::new(),
             execution: engine::ToolExecutionSpec::default(),
+            remote_mcp: None,
         };
 
         let result = tools.invoke_call(request).await.expect("invoke call");
@@ -3080,6 +3088,7 @@ mod tests {
             },
             sibling_calls: Vec::new(),
             execution: engine::ToolExecutionSpec::default(),
+            remote_mcp: None,
         };
 
         // Hosted per-call path: the call does not run and reports not-ready.
@@ -3196,6 +3205,7 @@ mod tests {
             },
             sibling_calls: Vec::new(),
             execution: engine::ToolExecutionSpec::default(),
+            remote_mcp: None,
         };
 
         let result = tools.invoke_call(request).await.expect("invoke call");

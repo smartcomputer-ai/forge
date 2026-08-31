@@ -2,10 +2,9 @@
 
 **Status**
 
-- Implemented 2026-08-31 for the shared engine/API/client surface and the
-  OpenAI Responses provider-hosted backend. The native dispatch gate remains
-  part of [P145](p145-native-mcp-execution.md); P144's envelope and UX are
-  ready for it without another client contract.
+- Implemented 2026-08-31 for the shared engine/API/client surface, the OpenAI
+  Responses provider-hosted backend, and the native dispatch gate delivered
+  by [P145](p145-native-mcp-execution.md).
 - Supersedes the sketch in
   `later/pNNN-mcp-approval-flow.md` (production incident 2026-07-10: an OpenAI
   `mcp_approval_request` became a run's terminal output).

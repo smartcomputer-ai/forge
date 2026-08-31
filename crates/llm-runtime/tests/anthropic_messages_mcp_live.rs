@@ -21,8 +21,8 @@ mod support;
 
 use support::retrying_anthropic_messages_client;
 
-const MCP_ECHO_SERVER_URL: &str = "https://mcpplaygroundonline.com/mcp-echo-server";
-const MCP_ECHO_MARKER: &str = "LIGHTSPEED-ANTHROPIC-MCP-ECHO-LIVE-4217";
+const MCP_TEST_SERVER_URL: &str = "https://mcpplaygroundonline.com/mcp-stateless-server";
+const MCP_TEST_TOOL: &str = "which_protocol_era";
 const MCP_CLIENT_BETA_HEADER: &str = "mcp-client-2025-04-04";
 
 fn live_model() -> String {
@@ -92,10 +92,10 @@ fn unquote_dotenv_value(value: &str) -> String {
 
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "requires ANTHROPIC_API_KEY and public MCP server access (costs real money)"]
-async fn anthropic_messages_live_core_session_uses_no_auth_remote_mcp_echo() {
+async fn anthropic_messages_live_core_session_uses_public_remote_mcp() {
     let sessions = Arc::new(InMemorySessionStore::new());
     let blobs = Arc::new(InMemoryBlobStore::new());
-    let session_id = SessionId::new("session-live-anthropic-mcp-echo");
+    let session_id = SessionId::new("session-live-anthropic-mcp-playground");
     sessions
         .create_session(CreateSession {
             session_id: session_id.clone(),
@@ -140,7 +140,7 @@ async fn anthropic_messages_live_core_session_uses_no_auth_remote_mcp_echo() {
             observed_at_ms: 11,
             command: CoreAgentCommand::ReplaceTools {
                 expected_revision: Some(0),
-                tools: remote_mcp_echo_tools(),
+                tools: remote_mcp_tools(),
             },
             max_steps: None,
         })
@@ -150,9 +150,9 @@ async fn anthropic_messages_live_core_session_uses_no_auth_remote_mcp_echo() {
     let input_ref = blobs
         .put_bytes(
             format!(
-                "Use the remote MCP server named echo. It exposes an MCP tool named echo. \
-                 Call that MCP tool with JSON arguments exactly {{\"data\":\"{MCP_ECHO_MARKER}\"}}. \
-                 After the tool returns, reply exactly ECHO={MCP_ECHO_MARKER}."
+                "Use the remote MCP server named playground. Call its {MCP_TEST_TOOL} tool \
+                 with an empty JSON object. After the tool returns, reply exactly \
+                 PROTOCOL_ERA=<the era returned by the tool>, substituting the value."
             )
             .into_bytes(),
         )
@@ -205,33 +205,39 @@ async fn anthropic_messages_live_core_session_uses_no_auth_remote_mcp_echo() {
         !mcp_items.is_empty(),
         "expected Anthropic MCP connector context items"
     );
-    assert!(
-        mcp_items
-            .iter()
-            .any(|item| item.to_string().contains(MCP_ECHO_MARKER)),
-        "expected Anthropic MCP output containing marker; items={mcp_items:?}"
-    );
+    let era = protocol_era(&mcp_items)
+        .unwrap_or_else(|| panic!("expected Anthropic MCP protocol era; items={mcp_items:?}"));
     let assistant = assistant_text(blobs.as_ref(), &outcome.emitted_entries).await;
     assert!(
-        assistant.contains(&format!("ECHO={MCP_ECHO_MARKER}")),
-        "assistant did not echo marker; assistant={assistant:?}"
+        assistant.contains(&format!("PROTOCOL_ERA={era}")),
+        "assistant did not report protocol era; assistant={assistant:?}"
     );
 }
 
-fn remote_mcp_echo_tools() -> BTreeMap<ToolName, ToolSpec> {
+fn protocol_era(items: &[Value]) -> Option<&'static str> {
+    ["modern", "legacy"]
+        .into_iter()
+        .find(|era| items.iter().any(|item| item.to_string().contains(era)))
+}
+
+fn remote_mcp_tools() -> BTreeMap<ToolName, ToolSpec> {
     let tool = ToolSpec {
-        name: ToolName::new("mcp_echo"),
+        name: ToolName::new("mcp_playground"),
         execution: Default::default(),
         kind: ToolKind::RemoteMcp(RemoteMcpToolSpec {
-            server_id: "echo".to_string(),
-            server_label: "echo".to_string(),
-            server_url: MCP_ECHO_SERVER_URL.to_string(),
+            server_id: "playground".to_string(),
+            record_revision: 1,
+            server_label: "playground".to_string(),
+            server_url: MCP_TEST_SERVER_URL.to_string(),
             description_ref: None,
-            allowed_tools: Some(vec!["echo".to_string()]),
+            allowed_tools: Some(vec![MCP_TEST_TOOL.to_string()]),
+            execution: engine::RemoteMcpExecution::Provider,
+            exposure: engine::RemoteMcpExposure::Inject,
             approval: RemoteMcpApprovalPolicy::Never,
             defer_loading: None,
             auth_ref: None,
             auth_required: false,
+            allow_private_network: false,
         }),
         parallelism: ToolParallelism::ParallelSafe,
     };

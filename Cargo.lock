@@ -2431,6 +2431,7 @@ dependencies = [
  "thiserror 1.0.69",
  "tokio",
  "tools",
+ "tracing",
  "vfs",
 ]
 
@@ -2503,6 +2504,7 @@ dependencies = [
  "engine",
  "serde",
  "serde_json",
+ "strsim",
  "thiserror 1.0.69",
  "tokio",
 ]
@@ -4704,6 +4706,7 @@ dependencies = [
  "futures",
  "futures-util",
  "http",
+ "ipnet",
  "jsonschema",
  "llm-clients",
  "llm-runtime",

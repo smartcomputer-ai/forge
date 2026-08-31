@@ -9638,6 +9638,10 @@
       "additionalProperties": false,
       "description": "Full MCP server document as submitted by clients.",
       "properties": {
+        "allowPrivateNetwork": {
+          "default": false,
+          "type": "boolean"
+        },
         "allowedTools": {
           "items": {
             "type": "string"
@@ -9695,6 +9699,22 @@
             "string",
             "null"
           ]
+        },
+        "execution": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/RemoteMcpExecution"
+            }
+          ],
+          "default": "provider"
+        },
+        "exposure": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/RemoteMcpExposure"
+            }
+          ],
+          "default": "inject"
         },
         "serverId": {
           "type": "string"
@@ -9885,6 +9905,9 @@
     },
     "McpServerView": {
       "properties": {
+        "allowPrivateNetwork": {
+          "type": "boolean"
+        },
         "allowedTools": {
           "items": {
             "type": "string"
@@ -9935,6 +9958,12 @@
             "null"
           ]
         },
+        "execution": {
+          "$ref": "#/definitions/RemoteMcpExecution"
+        },
+        "exposure": {
+          "$ref": "#/definitions/RemoteMcpExposure"
+        },
         "revision": {
           "format": "uint64",
           "minimum": 0,
@@ -9958,7 +9987,10 @@
         "serverId",
         "serverUrl",
         "defaultServerLabel",
+        "execution",
+        "exposure",
         "approvalDefault",
+        "allowPrivateNetwork",
         "authPolicy",
         "status",
         "revision",
@@ -11808,6 +11840,20 @@
       "enum": [
         "never",
         "always"
+      ],
+      "type": "string"
+    },
+    "RemoteMcpExecution": {
+      "enum": [
+        "provider",
+        "native"
+      ],
+      "type": "string"
+    },
+    "RemoteMcpExposure": {
+      "enum": [
+        "inject",
+        "search"
       ],
       "type": "string"
     },

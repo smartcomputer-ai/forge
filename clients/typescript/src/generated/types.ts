@@ -1331,6 +1331,16 @@ export type McpServerCredential = {
 };
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "RemoteMcpExecution".
+ */
+export type RemoteMcpExecution = "provider" | "native";
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "RemoteMcpExposure".
+ */
+export type RemoteMcpExposure = "inject" | "search";
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "McpServerStatus".
  */
 export type McpServerStatus = "active" | "needsAuthConfig" | "unverified" | "disabled";
@@ -4421,6 +4431,7 @@ export interface McpServerDeleteResponse {
  * via the `definition` "McpServerView".
  */
 export interface McpServerView {
+  allowPrivateNetwork: boolean;
   allowedTools?: string[] | null;
   approvalDefault: RemoteMcpApprovalPolicy;
   authPolicy: McpServerAuthPolicy;
@@ -4430,6 +4441,8 @@ export interface McpServerView {
   deferLoadingDefault?: boolean | null;
   description?: string | null;
   displayName?: string | null;
+  execution: RemoteMcpExecution;
+  exposure: RemoteMcpExposure;
   revision: number;
   serverId: string;
   serverUrl: string;
@@ -6505,6 +6518,7 @@ export interface McpServerDeleteParams {
  * via the `definition` "McpServerInput".
  */
 export interface McpServerInput {
+  allowPrivateNetwork?: boolean;
   allowedTools?: string[] | null;
   approvalDefault?: RemoteMcpApprovalPolicy & string;
   authPolicy?: McpServerAuthPolicy;
@@ -6513,6 +6527,8 @@ export interface McpServerInput {
   deferLoadingDefault?: boolean | null;
   description?: string | null;
   displayName?: string | null;
+  execution?: RemoteMcpExecution & string;
+  exposure?: RemoteMcpExposure & string;
   serverId: string;
   serverUrl: string;
   status?: McpServerStatus & string;

@@ -1,6 +1,7 @@
 use ::mcp::{
-    ListMcpServers, McpApprovalPolicy, McpRegistryError, McpRegistryStore, McpServerAuthPolicy,
-    McpServerId, McpServerRecord, McpServerStatus, PutMcpServerRecord, RemoteMcpTransport,
+    ListMcpServers, McpApprovalPolicy, McpExecution, McpExposure, McpRegistryError,
+    McpRegistryStore, McpServerAuthPolicy, McpServerId, McpServerRecord, McpServerStatus,
+    PutMcpServerRecord, RemoteMcpTransport,
 };
 use async_trait::async_trait;
 use sqlx::Row;
@@ -76,8 +77,11 @@ impl McpRegistryStore for PgStore {
                 default_server_label,
                 description,
                 allowed_tools,
+                execution,
+                exposure,
                 approval_default,
                 defer_loading_default,
+                allow_private_network,
                 auth_policy,
                 auth_metadata_json,
                 auth_grant_id,
@@ -119,8 +123,11 @@ impl McpRegistryStore for PgStore {
                         default_server_label,
                         description,
                         allowed_tools,
+                        execution,
+                        exposure,
                         approval_default,
                         defer_loading_default,
+                        allow_private_network,
                         auth_policy,
                         auth_metadata_json,
                         auth_grant_id,
@@ -149,8 +156,11 @@ impl McpRegistryStore for PgStore {
                         default_server_label,
                         description,
                         allowed_tools,
+                        execution,
+                        exposure,
                         approval_default,
                         defer_loading_default,
+                        allow_private_network,
                         auth_policy,
                         auth_metadata_json,
                         auth_grant_id,
@@ -192,8 +202,11 @@ impl McpRegistryStore for PgStore {
                 default_server_label,
                 description,
                 allowed_tools,
+                execution,
+                exposure,
                 approval_default,
                 defer_loading_default,
+                allow_private_network,
                 auth_policy,
                 auth_metadata_json,
                 auth_grant_id,
@@ -239,8 +252,11 @@ impl PgStore {
                 default_server_label,
                 description,
                 allowed_tools,
+                execution,
+                exposure,
                 approval_default,
                 defer_loading_default,
+                allow_private_network,
                 auth_policy,
                 auth_metadata_json,
                 auth_grant_id,
@@ -249,7 +265,7 @@ impl PgStore {
                 created_at_ms,
                 updated_at_ms
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
             ON CONFLICT (universe_id, server_id) DO NOTHING
             RETURNING
                 server_id,
@@ -259,8 +275,11 @@ impl PgStore {
                 default_server_label,
                 description,
                 allowed_tools,
+                execution,
+                exposure,
                 approval_default,
                 defer_loading_default,
+                allow_private_network,
                 auth_policy,
                 auth_metadata_json,
                 auth_grant_id,
@@ -278,8 +297,11 @@ impl PgStore {
         .bind(&record.default_server_label)
         .bind(record.description.as_deref())
         .bind(record.allowed_tools.as_deref())
+        .bind(execution_to_str(record.execution))
+        .bind(exposure_to_str(record.exposure))
         .bind(approval_policy_to_str(record.approval_default))
         .bind(record.defer_loading_default)
+        .bind(record.allow_private_network)
         .bind(auth_policy)
         .bind(auth_metadata_json)
         .bind(
@@ -321,15 +343,18 @@ impl PgStore {
                 default_server_label = $6,
                 description = $7,
                 allowed_tools = $8,
-                approval_default = $9,
-                defer_loading_default = $10,
-                auth_policy = $11,
-                auth_metadata_json = $12,
-                auth_grant_id = $13,
-                status = $14,
-                revision = $15,
-                updated_at_ms = $16
-            WHERE universe_id = $1 AND server_id = $2 AND revision = $17
+                execution = $9,
+                exposure = $10,
+                approval_default = $11,
+                defer_loading_default = $12,
+                allow_private_network = $13,
+                auth_policy = $14,
+                auth_metadata_json = $15,
+                auth_grant_id = $16,
+                status = $17,
+                revision = $18,
+                updated_at_ms = $19
+            WHERE universe_id = $1 AND server_id = $2 AND revision = $20
             RETURNING
                 server_id,
                 display_name,
@@ -338,8 +363,11 @@ impl PgStore {
                 default_server_label,
                 description,
                 allowed_tools,
+                execution,
+                exposure,
                 approval_default,
                 defer_loading_default,
+                allow_private_network,
                 auth_policy,
                 auth_metadata_json,
                 auth_grant_id,
@@ -357,8 +385,11 @@ impl PgStore {
         .bind(&replaced.default_server_label)
         .bind(replaced.description.as_deref())
         .bind(replaced.allowed_tools.as_deref())
+        .bind(execution_to_str(replaced.execution))
+        .bind(exposure_to_str(replaced.exposure))
         .bind(approval_policy_to_str(replaced.approval_default))
         .bind(replaced.defer_loading_default)
+        .bind(replaced.allow_private_network)
         .bind(auth_policy)
         .bind(auth_metadata_json)
         .bind(
@@ -390,6 +421,12 @@ fn server_record_from_row(
     let approval_default: String = row
         .try_get("approval_default")
         .map_err(|error| mcp_sql_error("decode mcp approval default", error))?;
+    let execution: String = row
+        .try_get("execution")
+        .map_err(|error| mcp_sql_error("decode mcp execution", error))?;
+    let exposure: String = row
+        .try_get("exposure")
+        .map_err(|error| mcp_sql_error("decode mcp exposure", error))?;
     let auth_policy: String = row
         .try_get("auth_policy")
         .map_err(|error| mcp_sql_error("decode mcp auth policy", error))?;
@@ -426,10 +463,15 @@ fn server_record_from_row(
         allowed_tools: row
             .try_get("allowed_tools")
             .map_err(|error| mcp_sql_error("decode mcp allowed tools", error))?,
+        execution: execution_from_str(&execution)?,
+        exposure: exposure_from_str(&exposure)?,
         approval_default: approval_policy_from_str(&approval_default)?,
         defer_loading_default: row
             .try_get("defer_loading_default")
             .map_err(|error| mcp_sql_error("decode mcp defer loading default", error))?,
+        allow_private_network: row
+            .try_get("allow_private_network")
+            .map_err(|error| mcp_sql_error("decode mcp private-network flag", error))?,
         auth_policy: auth_policy_from_columns(&auth_policy, auth_metadata_json)?,
         auth_grant_id: auth_grant_id
             .map(auth::AuthGrantId::try_new)
@@ -562,6 +604,40 @@ fn approval_policy_to_str(value: McpApprovalPolicy) -> &'static str {
     match value {
         McpApprovalPolicy::Always => "always",
         McpApprovalPolicy::Never => "never",
+    }
+}
+
+fn execution_to_str(value: McpExecution) -> &'static str {
+    match value {
+        McpExecution::Provider => "provider",
+        McpExecution::Native => "native",
+    }
+}
+
+fn execution_from_str(value: &str) -> Result<McpExecution, McpRegistryError> {
+    match value {
+        "provider" => Ok(McpExecution::Provider),
+        "native" => Ok(McpExecution::Native),
+        other => Err(McpRegistryError::Store {
+            message: format!("unsupported MCP execution mode '{other}'"),
+        }),
+    }
+}
+
+fn exposure_to_str(value: McpExposure) -> &'static str {
+    match value {
+        McpExposure::Inject => "inject",
+        McpExposure::Search => "search",
+    }
+}
+
+fn exposure_from_str(value: &str) -> Result<McpExposure, McpRegistryError> {
+    match value {
+        "inject" => Ok(McpExposure::Inject),
+        "search" => Ok(McpExposure::Search),
+        other => Err(McpRegistryError::Store {
+            message: format!("unsupported MCP exposure mode '{other}'"),
+        }),
     }
 }
 

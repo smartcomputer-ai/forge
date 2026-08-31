@@ -92,7 +92,7 @@ impl DeploymentClients {
             am::Client::new(am::Config::from_env_allow_missing_key())
                 .map_err(|error| anyhow::anyhow!("construct Anthropic client: {error}"))?,
         );
-        let allow_private_mcp = std::env::var("LIGHTSPEED_MCP_DISCOVERY_ALLOW_PRIVATE_NETWORKS")
+        let allow_private_mcp = std::env::var("LIGHTSPEED_MCP_OAUTH_ALLOW_PRIVATE_NETWORKS")
             .is_ok_and(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "on"));
         let oauth_metadata: Arc<dyn auth::OAuthMetadataClient> = Arc::new(
             auth::HttpOAuthMetadataClient::with_private_networks(allow_private_mcp),

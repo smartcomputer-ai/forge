@@ -183,28 +183,18 @@ async fn auto_reject_pending_approvals(
         return Ok(false);
     }
     for approval in pending {
-        let engine::ApprovalContinuation::OpenAiMcp {
-            provider_request_id,
-        } = &approval.continuation
-        else {
-            anyhow::bail!("native MCP approval continuation arrived before P145")
-        };
-        let response = serde_json::json!({
-            "type": "mcp_approval_response",
-            "approval_request_id": provider_request_id,
-            "approve": false,
-        });
-        let content_ref = put_detached_followup_blob(ctx, serde_json::to_vec(&response)?).await?;
-        match admit_and_append_command(
-            ctx,
-            drive,
-            CoreAgentCommand::DecideApproval(engine::ApprovalDecisionCommand {
-                approval_id: approval.approval_id,
-                run_id,
-                decision: engine::ApprovalDecision::Rejected,
-                note: Some(NOTE.to_owned()),
-                decided_by: None,
-                response: ContextEntryInput {
+        let response = match &approval.continuation {
+            engine::ApprovalContinuation::OpenAiMcp {
+                provider_request_id,
+            } => {
+                let response = serde_json::json!({
+                    "type": "mcp_approval_response",
+                    "approval_request_id": provider_request_id,
+                    "approve": false,
+                });
+                let content_ref =
+                    put_detached_followup_blob(ctx, serde_json::to_vec(&response)?).await?;
+                Some(ContextEntryInput {
                     kind: ContextEntryKind::McpApprovalResponse {
                         approval_request_id: provider_request_id.clone(),
                         approve: false,
@@ -215,7 +205,20 @@ async fn auto_reject_pending_approvals(
                     provider_kind: Some("openai.responses.mcp_approval_response".to_owned()),
                     provider_item_id: None,
                     token_estimate: None,
-                },
+                })
+            }
+            engine::ApprovalContinuation::NativeMcp { .. } => None,
+        };
+        match admit_and_append_command(
+            ctx,
+            drive,
+            CoreAgentCommand::DecideApproval(engine::ApprovalDecisionCommand {
+                approval_id: approval.approval_id,
+                run_id,
+                decision: engine::ApprovalDecision::Rejected,
+                note: Some(NOTE.to_owned()),
+                decided_by: None,
+                response,
             }),
             None,
         )

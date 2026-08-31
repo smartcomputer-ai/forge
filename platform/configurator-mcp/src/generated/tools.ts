@@ -7594,6 +7594,10 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
           },
           "description": "Full MCP server document as submitted by clients.",
           "properties": {
+            "allowPrivateNetwork": {
+              "default": false,
+              "type": "boolean"
+            },
             "allowedTools": {
               "items": {
                 "type": "string"
@@ -7652,6 +7656,22 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                 "null"
               ]
             },
+            "execution": {
+              "allOf": [
+                {
+                  "$ref": "#/definitions/RemoteMcpExecution"
+                }
+              ],
+              "default": "provider"
+            },
+            "exposure": {
+              "allOf": [
+                {
+                  "$ref": "#/definitions/RemoteMcpExposure"
+                }
+              ],
+              "default": "inject"
+            },
             "serverId": {
               "type": "string"
             },
@@ -7687,6 +7707,20 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
           "enum": [
             "never",
             "always"
+          ],
+          "type": "string"
+        },
+        "RemoteMcpExecution": {
+          "enum": [
+            "provider",
+            "native"
+          ],
+          "type": "string"
+        },
+        "RemoteMcpExposure": {
+          "enum": [
+            "inject",
+            "search"
           ],
           "type": "string"
         }

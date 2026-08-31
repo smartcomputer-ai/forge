@@ -321,8 +321,11 @@ export interface McpServer {
   defaultServerLabel: string;
   description?: string | null;
   allowedTools?: string[] | null;
+  execution: "provider" | "native";
+  exposure: "inject" | "search";
   approvalDefault: "always" | "never";
   deferLoadingDefault?: boolean | null;
+  allowPrivateNetwork: boolean;
   authPolicy: { type: string } & Record<string, unknown>;
   credential?: { type: "authGrant"; grantId: string } | null;
   status: "active" | "needsAuthConfig" | "unverified" | "disabled";

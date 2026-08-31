@@ -91,6 +91,7 @@ cargo test -p temporal-server --test bots_live -- --ignored --test-threads=1
 cargo test -p temporal-server --test channels_live -- --ignored --test-threads=1
 cargo test -p temporal-server --test preprocess_live -- --ignored --test-threads=1
 cargo test -p temporal-server --test mcp_oauth_live -- --ignored --test-threads=1
+cargo test -p temporal-server --test mcp_live -- --ignored --test-threads=1
 cargo test -p temporal-server --test environment_provider_live temporal_live_environment_daemon_jobs_round_trip -- --ignored --test-threads=1 --nocapture
 ```
 
@@ -212,7 +213,7 @@ Release construction, snapshots, and tagged publication are documented in
   catalog, agent profile catalog, environment registry, and AEAD-encrypted auth
   grant/secret storage.
 - `crates/mcp/` — provider-independent remote MCP server catalog DTOs,
-  validation, and store traits.
+  validation, store traits, and deterministic live-inventory tool search.
 - `crates/profiles/` — agent profile registry validation helpers,
   errors, and the substrate-neutral `ProfileStore` trait over `api` profile
   DTOs.
@@ -447,6 +448,14 @@ Release construction, snapshots, and tagged publication are documented in
   to Streamable HTTP and is not public configuration while it is the only
   supported value. See
   `docs/roadmap/p110-universe-owned-mcp-auth.md` and P143.
+- MCP execution and exposure belong to the universe server record. Provider
+  execution remains the default; native `inject` inventories are resolved at
+  request materialization and native `search` contributes only
+  `mcp_find_tools`/`mcp_call`. Model-time inventories are live observations
+  held only in a revision-keyed worker cache, never session or registry state.
+  Private discovery and execution require both
+  `LIGHTSPEED_MCP_PRIVATE_NETWORKS` and the record opt-in. See
+  `docs/roadmap/p145-native-mcp-execution.md`.
 - MCP approval is per concrete call, never sticky. `approvalDefault` is only
   `always | never`; `always` creates a single-use approval owned by the active
   run, while only the monotonic `approval_n` cursor is session-scoped. A run

@@ -29,6 +29,9 @@ pub enum LlmAdapterError {
     #[error("failed to resolve auth secret for tool {tool}: {message}")]
     SecretResolution { tool: String, message: String },
 
+    #[error("failed to resolve native MCP inventory for {server}: {message}")]
+    McpInventory { server: String, message: String },
+
     #[error("failed to resolve provider API key: {message}")]
     ProviderKeyResolution { message: String },
 

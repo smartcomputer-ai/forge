@@ -4,6 +4,7 @@ mod activities;
 mod bots;
 mod channels;
 mod fake;
+pub(crate) mod mcp;
 mod reaper;
 mod secrets;
 mod session_tools;

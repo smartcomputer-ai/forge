@@ -80,7 +80,8 @@ pub struct ApprovalDecisionCommand {
     pub note: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub decided_by: Option<ApprovalPrincipal>,
-    pub response: ContextEntryInput,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response: Option<ContextEntryInput>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -213,9 +214,16 @@ pub(crate) fn apply_approval_event(
                     "run cannot park without pending approvals".into(),
                 ));
             }
+            let native_batch_approval = run.active_tool_batch_id.is_some()
+                && run.pending_approvals().all(|record| {
+                    matches!(
+                        record.request.continuation,
+                        ApprovalContinuation::NativeMcp { .. }
+                    )
+                });
             if run.status != RunStatus::Active
                 || run.active_turn_id.is_some()
-                || run.active_tool_batch_id.is_some()
+                || (run.active_tool_batch_id.is_some() && !native_batch_approval)
             {
                 return Err(DomainError::InvariantViolation(
                     "approval parking requires an idle active run".into(),

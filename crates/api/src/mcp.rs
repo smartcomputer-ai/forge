@@ -12,9 +12,12 @@ pub struct McpServerView {
     pub description: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub allowed_tools: Option<Vec<String>>,
+    pub execution: RemoteMcpExecution,
+    pub exposure: RemoteMcpExposure,
     pub approval_default: RemoteMcpApprovalPolicy,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub defer_loading_default: Option<bool>,
+    pub allow_private_network: bool,
     pub auth_policy: McpServerAuthPolicy,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub credential: Option<McpServerCredential>,
@@ -130,6 +133,22 @@ pub enum RemoteMcpApprovalPolicy {
     Always,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum RemoteMcpExecution {
+    #[default]
+    Provider,
+    Native,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum RemoteMcpExposure {
+    #[default]
+    Inject,
+    Search,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "camelCase")]
 pub enum McpServerAuthPolicy {
@@ -193,9 +212,15 @@ pub struct McpServerInput {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub allowed_tools: Option<Vec<String>>,
     #[serde(default)]
+    pub execution: RemoteMcpExecution,
+    #[serde(default)]
+    pub exposure: RemoteMcpExposure,
+    #[serde(default)]
     pub approval_default: RemoteMcpApprovalPolicy,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub defer_loading_default: Option<bool>,
+    #[serde(default)]
+    pub allow_private_network: bool,
     #[serde(default)]
     pub auth_policy: McpServerAuthPolicy,
     #[serde(default, skip_serializing_if = "Option::is_none")]

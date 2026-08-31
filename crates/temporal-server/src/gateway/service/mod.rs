@@ -17,7 +17,7 @@ mod github_api;
 mod input;
 mod instructions;
 mod mcp_api;
-mod mcp_discovery;
+pub(crate) mod mcp_discovery;
 mod models_api;
 mod oauth_api;
 mod parse;
@@ -622,7 +622,9 @@ impl GatewayAgentApiBuilder {
     }
 
     pub fn build(self) -> GatewayAgentApi {
-        let allow_private_mcp = env_flag("LIGHTSPEED_MCP_DISCOVERY_ALLOW_PRIVATE_NETWORKS");
+        let allow_private_mcp = env_flag("LIGHTSPEED_MCP_OAUTH_ALLOW_PRIVATE_NETWORKS");
+        let mcp_private_networks = crate::worker::mcp::McpPrivateNetworkPolicy::from_env()
+            .expect("parse LIGHTSPEED_MCP_PRIVATE_NETWORKS");
         let metadata_client = self.oauth_metadata_client.unwrap_or_else(|| {
             Arc::new(HttpOAuthMetadataClient::with_private_networks(
                 allow_private_mcp,
@@ -647,7 +649,7 @@ impl GatewayAgentApiBuilder {
             metadata_client,
         );
         let mcp_tool_discoverer: Arc<dyn McpToolDiscoverer> =
-            Arc::new(HttpMcpToolDiscoverer::new(allow_private_mcp));
+            Arc::new(HttpMcpToolDiscoverer::new());
         let mcp_discovery_gate = Arc::new(McpDiscoveryGate::new(Duration::from_secs(2)));
         let github_api = self.github_api_client.unwrap_or_else(|| {
             Arc::new(HttpGitHubApiClient::new().expect("construct GitHub REST HTTP client"))
@@ -713,6 +715,7 @@ impl GatewayAgentApiBuilder {
             auth_token_broker,
             mcp_oauth,
             mcp_tool_discoverer,
+            mcp_private_networks,
             mcp_discovery_gate,
             github_api,
             model_discovery,
@@ -738,6 +741,7 @@ pub struct GatewayAgentApi {
     auth_token_broker: Arc<dyn AuthTokenBroker>,
     mcp_oauth: McpOAuthDriver,
     mcp_tool_discoverer: Arc<dyn McpToolDiscoverer>,
+    mcp_private_networks: crate::worker::mcp::McpPrivateNetworkPolicy,
     mcp_discovery_gate: Arc<McpDiscoveryGate>,
     github_api: Arc<dyn GitHubApiClient>,
     model_discovery: ModelDiscoveryService,
@@ -3221,30 +3225,47 @@ impl AgentApiService for GatewayAgentApi {
                 ApprovalDecisionKind::Approve => engine::ApprovalDecision::Approved,
                 ApprovalDecisionKind::Reject => engine::ApprovalDecision::Rejected,
             };
-            let engine::ApprovalContinuation::OpenAiMcp {
-                provider_request_id,
-            } = &record.request.continuation
-            else {
-                results.push(approval_decision_failure(
-                    input.approval_id,
-                    ApprovalDecisionFailureKind::Rejected,
-                    "native MCP approvals land with P145",
-                ));
-                continue;
-            };
             let approve = engine_decision == engine::ApprovalDecision::Approved;
-            let response_json = serde_json::json!({
-                "type": "mcp_approval_response",
-                "approval_request_id": provider_request_id,
-                "approve": approve,
-            });
-            let response_ref = self
-                .store
-                .put_bytes(serde_json::to_vec(&response_json).map_err(|error| {
-                    AgentApiError::internal(format!("encode MCP approval response: {error}"))
-                })?)
-                .await
-                .map_err(|error| AgentApiError::internal(error.to_string()))?;
+            let response = match &record.request.continuation {
+                engine::ApprovalContinuation::OpenAiMcp {
+                    provider_request_id,
+                } => {
+                    let response_json = serde_json::json!({
+                        "type": "mcp_approval_response",
+                        "approval_request_id": provider_request_id,
+                        "approve": approve,
+                    });
+                    let response_ref = self
+                        .store
+                        .put_bytes(serde_json::to_vec(&response_json).map_err(|error| {
+                            AgentApiError::internal(format!(
+                                "encode MCP approval response: {error}"
+                            ))
+                        })?)
+                        .await
+                        .map_err(|error| AgentApiError::internal(error.to_string()))?;
+                    Some(ContextEntryInput {
+                        kind: ContextEntryKind::McpApprovalResponse {
+                            approval_request_id: provider_request_id.clone(),
+                            approve,
+                        },
+                        content_ref: response_ref,
+                        media_type: Some("application/json".to_owned()),
+                        preview: Some(
+                            if approve {
+                                "MCP tool call approved"
+                            } else {
+                                "MCP tool call rejected"
+                            }
+                            .to_owned(),
+                        ),
+                        provider_kind: Some("openai.responses.mcp_approval_response".to_owned()),
+                        provider_item_id: None,
+                        token_estimate: None,
+                    })
+                }
+                engine::ApprovalContinuation::NativeMcp { .. } => None,
+            };
             let correlation = format!("approval_{}", uuid::Uuid::new_v4().simple());
             self.signal_submit_admissions(
                 &session_id,
@@ -3255,27 +3276,7 @@ impl AgentApiService for GatewayAgentApi {
                         decision: engine_decision,
                         note: input.note,
                         decided_by: Some(decided_by.clone()),
-                        response: ContextEntryInput {
-                            kind: ContextEntryKind::McpApprovalResponse {
-                                approval_request_id: provider_request_id.clone(),
-                                approve,
-                            },
-                            content_ref: response_ref,
-                            media_type: Some("application/json".to_owned()),
-                            preview: Some(
-                                if approve {
-                                    "MCP tool call approved"
-                                } else {
-                                    "MCP tool call rejected"
-                                }
-                                .to_owned(),
-                            ),
-                            provider_kind: Some(
-                                "openai.responses.mcp_approval_response".to_owned(),
-                            ),
-                            provider_item_id: None,
-                            token_estimate: None,
-                        },
+                        response,
                     }),
                     correlation_token: Some(correlation.clone()),
                 }],
@@ -4015,6 +4016,8 @@ impl AgentApiService for GatewayAgentApi {
             .discover_tools(
                 &record.server_url,
                 bearer.as_ref(),
+                self.mcp_private_networks
+                    .permits(&record.server_url, record.allow_private_network),
                 mcp::McpToolDiscoveryLimits::default(),
             )
             .await

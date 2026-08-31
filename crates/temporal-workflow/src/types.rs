@@ -770,6 +770,9 @@ pub enum ToolInvokeCallActivityResult {
     /// provisioning or booting. The workflow waits for readiness with
     /// `await_environment_ready` and re-dispatches the same call.
     EnvironmentNotReady { environment_id: String },
+    /// The native MCP call must receive a single-use run-owned decision
+    /// before the worker performs any MCP wire I/O.
+    NeedsApproval { subject: engine::ApprovalSubject },
 }
 
 /// Wait for the session's active environment to become reachable (P125).
