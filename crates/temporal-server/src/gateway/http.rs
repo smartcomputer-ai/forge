@@ -983,6 +983,8 @@ struct OAuthCallbackQuery {
     #[serde(default)]
     code: Option<String>,
     #[serde(default)]
+    iss: Option<String>,
+    #[serde(default)]
     error: Option<String>,
     #[serde(default)]
     error_description: Option<String>,
@@ -995,6 +997,7 @@ async fn oauth_callback(
     let callback = auth::AuthCallback {
         state: query.state.unwrap_or_default(),
         code: query.code.map(auth::SecretValue::new),
+        issuer: query.iss,
         error: query.error,
         error_description: query.error_description,
     };

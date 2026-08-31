@@ -338,9 +338,10 @@ exposures**: the runtime resolves the spec's policy and reports
 needs-approval instead of executing; the engine records the fact and parks.
 An injected call's server is knowable statically from its namespaced name,
 but an `mcp_call`'s is not without parsing arguments — one gate location
-keeps the two exposures identical. `providerDefault` resolves to `always` in
-native mode; rejection produces a model-visible tool error. Nothing about
-approval policy moves — the record owns it (P143).
+keeps the two exposures identical. Approval policy is the record's
+`always | never` (P144 removes `providerDefault`); rejection produces a
+model-visible tool error. Nothing about approval policy moves — the record
+owns it (P143).
 
 ## Private Network Egress
 

@@ -1,12 +1,11 @@
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
-use auth::SecretValue;
+use auth::{PinnedHttpPolicy, SecretValue};
 use futures_util::{StreamExt, stream::BoxStream};
 use http::{HeaderName, HeaderValue};
 use mcp::{
@@ -104,7 +103,7 @@ pub(super) trait McpToolDiscoverer: Send + Sync {
 
 #[derive(Clone, Debug)]
 pub(super) struct HttpMcpToolDiscoverer {
-    allow_private_networks: bool,
+    http_policy: PinnedHttpPolicy,
     timeout: Duration,
 }
 
@@ -277,13 +276,32 @@ impl BoundedReqwestClient {
         request
     }
 
-    fn auth_failure(response: &reqwest::Response) -> Option<StreamableHttpError<reqwest::Error>> {
+    fn auth_failure(
+        &self,
+        response: &reqwest::Response,
+    ) -> Option<StreamableHttpError<reqwest::Error>> {
         let challenge = response
             .headers()
             .get(reqwest::header::WWW_AUTHENTICATE)
             .and_then(|value| value.to_str().ok())
             .unwrap_or_default()
             .to_owned();
+        if let Ok(parsed) = auth::parse_mcp_oauth_challenge(&challenge, response.url().as_str()) {
+            if parsed.insufficient_scope && !parsed.required_scopes.is_empty() {
+                self.diagnostics.record(
+                    failure(
+                        FailureKind::AdditionalConsentRequired,
+                        "MCP endpoint requires additional OAuth consent",
+                    )
+                    .with_required_scopes(parsed.required_scopes),
+                );
+            } else if parsed.invalid_token {
+                self.diagnostics.record(failure(
+                    FailureKind::GrantNeedsReauth,
+                    "MCP endpoint rejected the OAuth token; reconnect this server",
+                ));
+            }
+        }
         match response.status() {
             reqwest::StatusCode::UNAUTHORIZED => Some(StreamableHttpError::AuthRequired(
                 AuthRequiredError::new(challenge),
@@ -325,7 +343,7 @@ impl StreamableHttpClient for BoundedReqwestClient {
             self.diagnostics.record(request_failure(&error));
             StreamableHttpError::Client(error)
         })?;
-        if let Some(error) = Self::auth_failure(&response) {
+        if let Some(error) = self.auth_failure(&response) {
             self.diagnostics.record(status_failure(response.status()));
             return Err(error);
         }
@@ -441,7 +459,7 @@ impl StreamableHttpClient for BoundedReqwestClient {
         if response.status() == reqwest::StatusCode::METHOD_NOT_ALLOWED {
             return Err(StreamableHttpError::ServerDoesNotSupportSse);
         }
-        if let Some(error) = Self::auth_failure(&response) {
+        if let Some(error) = self.auth_failure(&response) {
             return Err(error);
         }
         let response = response
@@ -463,9 +481,15 @@ impl StreamableHttpClient for BoundedReqwestClient {
 
 impl HttpMcpToolDiscoverer {
     pub(super) fn new(allow_private_networks: bool) -> Self {
+        let timeout = Duration::from_secs(10);
         Self {
-            allow_private_networks,
-            timeout: Duration::from_secs(10),
+            http_policy: if allow_private_networks {
+                PinnedHttpPolicy::allowing_private_networks()
+            } else {
+                PinnedHttpPolicy::public_only()
+            }
+            .with_timeout(timeout),
+            timeout,
         }
     }
 
@@ -473,48 +497,15 @@ impl HttpMcpToolDiscoverer {
         &self,
         endpoint: &Url,
     ) -> Result<reqwest::Client, McpToolDiscoveryFailure> {
-        let host = endpoint
-            .host_str()
-            .ok_or_else(|| failure(FailureKind::InvalidResponse, "MCP endpoint has no host"))?;
-        if endpoint.scheme() != "https" && !self.allow_private_networks {
-            return Err(failure(
-                FailureKind::Unreachable,
-                "MCP discovery requires HTTPS",
-            ));
-        }
-        let port = endpoint.port_or_known_default().ok_or_else(|| {
-            failure(
-                FailureKind::InvalidResponse,
-                "MCP endpoint has no usable port",
-            )
-        })?;
-        let resolved = tokio::net::lookup_host((host, port))
+        self.http_policy
+            .client_for_url(endpoint)
             .await
-            .map_err(|_| failure(FailureKind::Unreachable, "MCP endpoint DNS lookup failed"))?;
-        let mut addresses = BTreeSet::new();
-        for address in resolved {
-            if !self.allow_private_networks && !is_public_ip(address.ip()) {
-                return Err(failure(
+            .map_err(|error| {
+                failure(
                     FailureKind::Unreachable,
-                    "MCP endpoint resolved to a non-public address",
-                ));
-            }
-            addresses.insert(address);
-        }
-        if addresses.is_empty() {
-            return Err(failure(
-                FailureKind::Unreachable,
-                "MCP endpoint DNS lookup returned no addresses",
-            ));
-        }
-        let addresses: Vec<SocketAddr> = addresses.into_iter().collect();
-        reqwest::Client::builder()
-            .pool_max_idle_per_host(0)
-            .redirect(reqwest::redirect::Policy::none())
-            .timeout(self.timeout)
-            .resolve_to_addrs(host, &addresses)
-            .build()
-            .map_err(|_| failure(FailureKind::Unreachable, "build MCP HTTP client"))
+                    format!("MCP endpoint rejected by outbound network policy: {error}"),
+                )
+            })
     }
 }
 
@@ -867,53 +858,16 @@ fn failure(kind: FailureKind, message: impl Into<String>) -> McpToolDiscoveryFai
     McpToolDiscoveryFailure::new(kind, message)
 }
 
-fn is_public_ip(ip: IpAddr) -> bool {
-    match ip {
-        IpAddr::V4(ip) => is_public_ipv4(ip),
-        IpAddr::V6(ip) => is_public_ipv6(ip),
-    }
-}
-
-fn is_public_ipv4(ip: Ipv4Addr) -> bool {
-    let octets = ip.octets();
-    !(ip.is_private()
-        || ip.is_loopback()
-        || ip.is_link_local()
-        || ip.is_broadcast()
-        || ip.is_documentation()
-        || ip.is_unspecified()
-        || ip.is_multicast()
-        || octets[0] == 0
-        || (octets[0] == 100 && (64..=127).contains(&octets[1]))
-        || (octets[0] == 192 && octets[1] == 0 && octets[2] == 0)
-        || (octets[0] == 192 && octets[1] == 88 && octets[2] == 99)
-        || (octets[0] == 198 && (18..=19).contains(&octets[1]))
-        || octets[0] >= 240)
-}
-
-fn is_public_ipv6(ip: Ipv6Addr) -> bool {
-    if let Some(ipv4) = ip.to_ipv4_mapped() {
-        return is_public_ipv4(ipv4);
-    }
-    let segments = ip.segments();
-    !(ip.is_loopback()
-        || ip.is_unspecified()
-        || ip.is_multicast()
-        || (segments[0] & 0xfe00) == 0xfc00
-        || (segments[0] & 0xffc0) == 0xfe80
-        || (segments[0] == 0x0064 && segments[1] == 0xff9b && segments[2] == 0x0001)
-        || (segments[0] == 0x0100 && segments[1] == 0 && segments[2] == 0 && segments[3] == 0)
-        || (segments[0] == 0x2001 && segments[1] <= 0x01ff)
-        || segments[0] == 0x2002)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use axum::{
         Json, Router,
         extract::State,
-        http::{HeaderMap, HeaderValue, StatusCode, header::AUTHORIZATION},
+        http::{
+            HeaderMap, HeaderValue, StatusCode,
+            header::{AUTHORIZATION, WWW_AUTHENTICATE},
+        },
         response::{IntoResponse, Response},
         routing::post,
     };
@@ -927,6 +881,7 @@ mod tests {
         authorizations: Vec<String>,
         oversized_inventory: bool,
         list_delay: Option<Duration>,
+        oauth_challenge: Option<String>,
     }
 
     async fn streamable_handler(
@@ -942,6 +897,14 @@ mod tests {
                 .unwrap_or_default()
                 .to_owned(),
         );
+        if let Some(challenge) = state.oauth_challenge.clone() {
+            let mut response = StatusCode::UNAUTHORIZED.into_response();
+            response.headers_mut().insert(
+                WWW_AUTHENTICATE,
+                HeaderValue::from_str(&challenge).expect("valid OAuth challenge fixture"),
+            );
+            return response;
+        }
         let id = request.get("id").cloned().unwrap_or(Value::Null);
         match request.get("method").and_then(Value::as_str) {
             Some("initialize") => {
@@ -1022,14 +985,18 @@ mod tests {
 
     #[test]
     fn public_ip_filter_rejects_private_and_special_ranges() {
-        assert!(!is_public_ip("127.0.0.1".parse().unwrap()));
-        assert!(!is_public_ip("10.0.0.1".parse().unwrap()));
-        assert!(!is_public_ip("169.254.1.1".parse().unwrap()));
-        assert!(!is_public_ip("::1".parse().unwrap()));
-        assert!(!is_public_ip("fe80::1".parse().unwrap()));
-        assert!(!is_public_ip("::ffff:127.0.0.1".parse().unwrap()));
-        assert!(is_public_ip("1.1.1.1".parse().unwrap()));
-        assert!(is_public_ip("2606:4700:4700::1111".parse().unwrap()));
+        assert!(!auth::is_public_network_ip("127.0.0.1".parse().unwrap()));
+        assert!(!auth::is_public_network_ip("10.0.0.1".parse().unwrap()));
+        assert!(!auth::is_public_network_ip("169.254.1.1".parse().unwrap()));
+        assert!(!auth::is_public_network_ip("::1".parse().unwrap()));
+        assert!(!auth::is_public_network_ip("fe80::1".parse().unwrap()));
+        assert!(!auth::is_public_network_ip(
+            "::ffff:127.0.0.1".parse().unwrap()
+        ));
+        assert!(auth::is_public_network_ip("1.1.1.1".parse().unwrap()));
+        assert!(auth::is_public_network_ip(
+            "2606:4700:4700::1111".parse().unwrap()
+        ));
     }
 
     #[test]
@@ -1189,6 +1156,38 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn streamable_discovery_reports_scope_upgrade_challenges() {
+        let state = Arc::new(Mutex::new(TestMcpState {
+            oauth_challenge: Some(
+                r#"Bearer error="insufficient_scope", scope="tools.read tools.write""#.to_owned(),
+            ),
+            ..TestMcpState::default()
+        }));
+        let app = Router::new()
+            .route("/mcp", post(streamable_handler).delete(shutdown_handler))
+            .with_state(state);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind fixture");
+        let address = listener.local_addr().expect("fixture address");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.expect("serve fixture");
+        });
+
+        let error = HttpMcpToolDiscoverer::new(true)
+            .discover_tools(
+                &format!("http://{address}/mcp"),
+                Some(&SecretValue::new("expired-token")),
+                McpToolDiscoveryLimits::default(),
+            )
+            .await
+            .expect_err("scope challenge must require explicit consent");
+        assert_eq!(error.kind, FailureKind::AdditionalConsentRequired);
+        assert_eq!(error.required_scopes, ["tools.read", "tools.write"]);
+        server.abort();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn streamable_discovery_applies_one_end_to_end_deadline() {
         let state = Arc::new(Mutex::new(TestMcpState {
             list_delay: Some(Duration::from_millis(50)),
@@ -1206,7 +1205,8 @@ mod tests {
         });
 
         let error = HttpMcpToolDiscoverer {
-            allow_private_networks: true,
+            http_policy: PinnedHttpPolicy::allowing_private_networks()
+                .with_timeout(Duration::from_millis(10)),
             timeout: Duration::from_millis(10),
         }
         .discover_tools(

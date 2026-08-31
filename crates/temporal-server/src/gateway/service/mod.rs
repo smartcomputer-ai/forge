@@ -606,9 +606,16 @@ impl GatewayAgentApiBuilder {
     }
 
     pub fn build(self) -> GatewayAgentApi {
+        let allow_private_mcp = env_flag("LIGHTSPEED_MCP_DISCOVERY_ALLOW_PRIVATE_NETWORKS");
+        let metadata_client = self.oauth_metadata_client.unwrap_or_else(|| {
+            Arc::new(HttpOAuthMetadataClient::with_private_networks(
+                allow_private_mcp,
+            ))
+        });
         let token_client = self.oauth_token_client.unwrap_or_else(|| {
             Arc::new(
-                HttpOAuthTokenClient::new().expect("construct OAuth token endpoint HTTP client"),
+                HttpOAuthTokenClient::new_with_mcp_http(metadata_client.clone())
+                    .expect("construct OAuth token endpoint HTTP client"),
             )
         });
         let oauth_flows = OAuthFlowService::new(
@@ -618,17 +625,13 @@ impl GatewayAgentApiBuilder {
             self.store.clone() as Arc<dyn SecretStore>,
             token_client.clone(),
         );
-        let metadata_client = self.oauth_metadata_client.unwrap_or_else(|| {
-            Arc::new(HttpOAuthMetadataClient::new().expect("construct OAuth metadata HTTP client"))
-        });
         let mcp_oauth = McpOAuthDriver::new(
             self.store.clone() as Arc<dyn OAuthClientStore>,
             self.store.clone() as Arc<dyn SecretStore>,
             metadata_client,
         );
-        let mcp_tool_discoverer: Arc<dyn McpToolDiscoverer> = Arc::new(HttpMcpToolDiscoverer::new(
-            env_flag("LIGHTSPEED_MCP_DISCOVERY_ALLOW_PRIVATE_NETWORKS"),
-        ));
+        let mcp_tool_discoverer: Arc<dyn McpToolDiscoverer> =
+            Arc::new(HttpMcpToolDiscoverer::new(allow_private_mcp));
         let mcp_discovery_gate = Arc::new(McpDiscoveryGate::new(Duration::from_secs(2)));
         let github_api = self.github_api_client.unwrap_or_else(|| {
             Arc::new(HttpGitHubApiClient::new().expect("construct GitHub REST HTTP client"))
@@ -3698,6 +3701,7 @@ impl AgentApiService for GatewayAgentApi {
             Ok(Ok(metadata)) => Some(McpOAuthDiscoveryView {
                 resource: metadata.resource,
                 authorization_servers: metadata.authorization_servers,
+                scopes_supported: metadata.scopes_supported,
             }),
             Ok(Err(auth::McpOAuthError::ProtectedResourceMetadataUnavailable { .. })) | Err(_) => {
                 None

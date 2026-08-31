@@ -2361,6 +2361,8 @@ fn auth_flow_views_carry_derived_status() {
         redirect_uri: "http://127.0.0.1:18080/auth/callback".to_owned(),
         scopes: Vec::new(),
         audience: Some("https://crm.example.com/mcp".to_owned()),
+        expected_issuer: None,
+        require_issuer: false,
         expires_at_ms: 100,
         created_at_ms: 10,
     }

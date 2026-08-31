@@ -7932,6 +7932,22 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
         "authorizationEndpoint": {
           "type": "string"
         },
+        "authorizationResponseIssParameterSupported": {
+          "default": false,
+          "type": "boolean"
+        },
+        "authorizationServerIssuer": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "authorizationServerScopesSupported": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "clientId": {
           "type": [
             "string",

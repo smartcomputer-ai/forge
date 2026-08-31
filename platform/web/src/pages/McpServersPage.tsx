@@ -867,7 +867,12 @@ function ServerDialog({
                     {toolDiscovery?.status === "failure" && (
                       <div className="grid gap-1">
                         <p className="text-sm text-destructive">{toolDiscovery.message}</p>
-                        <FieldDescription>{mcpDiscoveryFailureAction(toolDiscovery.code)}</FieldDescription>
+                        <FieldDescription>
+                          {mcpDiscoveryFailureAction(toolDiscovery.code)}
+                          {toolDiscovery.requiredScopes?.length
+                            ? ` Required scopes: ${toolDiscovery.requiredScopes.join(", ")}.`
+                            : ""}
+                        </FieldDescription>
                       </div>
                     )}
                     {!allToolsAllowed && toolDiscovery?.status !== "success" && parsedTools.length > 0 && (
@@ -967,6 +972,12 @@ function ServerDialog({
                           onChange={(event) => setOAuthScopes(event.target.value)}
                           placeholder="Use server defaults"
                         />
+                        {discovery?.oauth?.scopesSupported.length ? (
+                          <FieldDescription>
+                            Server advertises: {discovery.oauth.scopesSupported.join(", ")}. Add
+                            scopes deliberately; discovery never expands consent.
+                          </FieldDescription>
+                        ) : null}
                       </Field>
                       <div className="grid gap-4 sm:grid-cols-2">
                         <Field>
@@ -1402,6 +1413,8 @@ export function mcpDiscoveryFailureAction(
       return "Use a credential issued for this exact server address.";
     case "forbidden":
       return "Check the account's scopes and workspace or administrator policy.";
+    case "additionalConsentRequired":
+      return "Reconnect this server and explicitly approve the additional scopes.";
     case "remoteRateLimited":
       return "Wait briefly before refreshing again.";
     case "unreachable":

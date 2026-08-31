@@ -47,7 +47,7 @@ They do not configure the TypeScript Platform server.
 | `LIGHTSPEED_GATEWAY_BIND` | `127.0.0.1:18080` | JSON-RPC and environment-gateway listener address. |
 | `LIGHTSPEED_GATEWAY_MAX_REQUEST_BODY_BYTES` | `67108864` | Maximum gateway request body size in bytes. |
 | `LIGHTSPEED_PUBLIC_BASE_URL` | `http://{LIGHTSPEED_GATEWAY_BIND}` | Externally reachable gateway base URL used for OAuth callbacks, bot webhook ingest URLs (`/hooks/bots/…`), and as the environment route base when the process runs the `gateway` role. Hosted deployments should set it explicitly. |
-| `LIGHTSPEED_MCP_DISCOVERY_ALLOW_PRIVATE_NETWORKS` | `false` (`true` in `dev.sh` profiles) | Allows live MCP tool discovery to connect to HTTP endpoints and private, loopback, link-local, or otherwise non-public addresses. Leave disabled in hosted deployments to enforce HTTPS and SSRF-safe public-address resolution. |
+| `LIGHTSPEED_MCP_DISCOVERY_ALLOW_PRIVATE_NETWORKS` | `false` (`true` in `dev.sh` profiles) | Allows MCP tool discovery and MCP OAuth metadata, registration, exchange, and refresh to connect to HTTP endpoints and private, loopback, link-local, or otherwise non-public addresses. Leave disabled in hosted deployments to enforce HTTPS and SSRF-safe public-address resolution. |
 | `LIGHTSPEED_AUTH_MODE` | `single` | Tenant/auth resolution: `single`, `trusted-header`, or `api-key`. Configurator MCP must use the same mode. |
 | `LIGHTSPEED_SECRETS_MASTER_KEY` | Unset | Base64-encoded 32-byte AES key for encrypted grants and secrets. Required before encrypted secret material can be persisted or resolved. Keep stable across restarts. |
 | `LIGHTSPEED_BLOB_CACHE_BYTES` | `268435456` | Per-process CAS blob-cache budget. `0` disables the cache. |

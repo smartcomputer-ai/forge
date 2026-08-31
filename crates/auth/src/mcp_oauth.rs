@@ -1,121 +1,123 @@
-//! MCP OAuth driver (P69 G4): protected resource metadata discovery
-//! (RFC 9728), authorization server metadata discovery (RFC 8414 / OIDC),
-//! and client identification via Client ID Metadata Documents or dynamic
-//! client registration (RFC 7591), with manual client records as the
-//! fallback.
+//! MCP OAuth protocol adapter (P143b).
 //!
-//! The driver lazily upserts an [`OAuthClientRecord`] under the
-//! `mcp:<server_id>` id convention; MCP catalog registration (P68) never
-//! creates auth records. This crate stays MCP-catalog-agnostic: callers
-//! describe the server with [`McpOAuthTarget`].
+//! `rmcp` owns MCP discovery, registration, PKCE, issuer/resource binding,
+//! challenges, token exchange, and refresh wire behavior. Lightspeed keeps
+//! durable clients, one-time flows, encrypted secrets, grants, and broker
+//! authority.
+
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
+use oauth2::{CsrfToken, PkceCodeVerifier};
+use rmcp::transport::auth::{
+    AuthError as RmcpAuthError, AuthorizationManager, AuthorizationMetadata,
+    AuthorizationMetadataResolution, AuthorizationMetadataSource, AuthorizationRequest,
+    AuthorizationSession, CredentialStore, InMemoryCredentialStore, OAuthClientConfig,
+    OAuthHttpClient, OAuthHttpClientError, OAuthHttpClientFuture, OAuthHttpRequest, StateStore,
+    StoredAuthorizationState, StoredCredentials, WWWAuthenticateParams,
+};
 use thiserror::Error;
 
 use crate::{
     AuthProviderKind, AuthRegistryError, CreateOAuthClientRecord, OAuthClientId, OAuthClientRecord,
-    OAuthClientStore, PutSecretRecord, SECRET_KIND_OAUTH_CLIENT_SECRET, SecretId, SecretStore,
+    OAuthClientStore, OAuthTokenError, OAuthTokenGrant, OAuthTokenRequest, OAuthTokenResponse,
+    PinnedHttpPolicy, PutSecretRecord, SECRET_KIND_OAUTH_CLIENT_SECRET, SecretId, SecretStore,
     SecretValue, TokenEndpointAuthMethod, random_auth_id,
 };
 
+pub use rmcp::transport::auth::OAuthHttpClient as OAuthMetadataClient;
+
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum McpOAuthError {
-    #[error("metadata request to {url} failed{}: {message}", .status.map(|status| format!(" with status {status}")).unwrap_or_default())]
-    Http {
-        url: String,
-        status: Option<u16>,
-        message: String,
-    },
-
-    #[error("invalid metadata from {url}: {message}")]
-    InvalidMetadata { url: String, message: String },
+    #[error("MCP OAuth metadata discovery failed for {resource}: {message}")]
+    Discovery { resource: String, message: String },
 
     #[error("no protected resource metadata found for {resource}: {detail}")]
     ProtectedResourceMetadataUnavailable { resource: String, detail: String },
-
-    #[error("no authorization server metadata found for {issuer}: {detail}")]
-    AuthorizationServerMetadataUnavailable { issuer: String, detail: String },
-
-    #[error("protected resource metadata for {resource} lists no authorization servers")]
-    NoAuthorizationServers { resource: String },
 
     #[error("authorization server {issuer} does not support PKCE S256")]
     PkceUnsupported { issuer: String },
 
     #[error(
-        "authorization server {issuer} offers no usable client identification \
-         (no CIMD support, no registration endpoint); register a client manually \
-         with `lightspeed auth client add --id {client_id}`"
+        "authorization server {issuer} offers no usable client identification; register a client manually with id {client_id}"
     )]
     NoClientIdentification { issuer: String, client_id: String },
 
-    #[error("dynamic client registration at {url} was rejected: {message}")]
-    RegistrationRejected { url: String, message: String },
+    #[error("MCP OAuth client registration failed: {message}")]
+    RegistrationRejected { message: String },
+
+    #[error("MCP OAuth callback issuer is invalid: {message}")]
+    InvalidIssuer { message: String },
+
+    #[error("MCP OAuth protocol operation failed: {message}")]
+    Protocol { message: String },
 
     #[error(transparent)]
     Registry(AuthRegistryError),
 }
 
-/// Transport for well-known metadata documents and dynamic client
-/// registration. Mocked in tests; the real implementation is
-/// [`HttpOAuthMetadataClient`].
-#[async_trait]
-pub trait OAuthMetadataClient: Send + Sync {
-    async fn get_json(&self, url: &str) -> Result<serde_json::Value, McpOAuthError>;
-
-    async fn post_json(
-        &self,
-        url: &str,
-        body: &serde_json::Value,
-    ) -> Result<serde_json::Value, McpOAuthError>;
-}
-
-/// Protected resource metadata (RFC 9728), reduced to the fields the driver
-/// needs.
+/// Public protected-resource facts used by the management discovery API.
+/// `rmcp` selects one usable authorization server, so this view contains that
+/// issuer rather than snapshotting an OAuth-server inventory.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProtectedResourceMetadata {
-    /// Canonical resource identifier; becomes the grant audience.
     pub resource: String,
     pub authorization_servers: Vec<String>,
+    pub scopes_supported: Vec<String>,
 }
 
-/// Authorization server metadata (RFC 8414 / OIDC discovery), reduced to the
-/// fields the driver needs.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct AuthorizationServerMetadata {
-    pub issuer: String,
-    pub authorization_endpoint: String,
-    pub token_endpoint: String,
-    pub registration_endpoint: Option<String>,
-    pub code_challenge_methods_supported: Option<Vec<String>>,
-    /// 2025-11-25 MCP auth revision: the AS accepts HTTPS client-metadata
-    /// URLs as client ids (draft-ietf-oauth-client-id-metadata-document).
-    pub client_id_metadata_document_supported: bool,
-}
-
-/// What the caller knows about an OAuth-protected MCP server (from the P68
-/// catalog record); the driver discovers the rest.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct McpOAuthTarget {
     pub server_id: String,
     pub server_url: String,
     pub scopes_default: Vec<String>,
-    /// Explicit PRM URL from the catalog, tried before derived locations.
+    /// Explicit same-origin PRM URL. It is supplied to `rmcp` as the
+    /// challenge's `resource_metadata` pointer.
     pub protected_resource_metadata_url: Option<String>,
-    /// Preferred authorization server when the PRM lists several.
+    /// Optional expected issuer. The SDK selects the server from published
+    /// metadata; this hint constrains that result rather than overriding it.
     pub authorization_server_hint: Option<String>,
 }
 
-/// Client ID Metadata Document configuration: the public HTTPS URL where
-/// this deployment serves its client metadata. The URL itself is the OAuth
-/// client id.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CimdConfig {
     pub client_id_url: String,
 }
 
-/// `mcp:<server_id>` — the id convention for lazily upserted MCP OAuth
-/// clients and their grants' provider id.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct McpOAuthChallenge {
+    pub resource_metadata_url: Option<String>,
+    pub required_scopes: Vec<String>,
+    pub insufficient_scope: bool,
+    pub invalid_token: bool,
+}
+
+pub fn parse_mcp_oauth_challenge(
+    header: &str,
+    server_url: &str,
+) -> Result<McpOAuthChallenge, McpOAuthError> {
+    let base = reqwest::Url::parse(server_url).map_err(|_| McpOAuthError::Protocol {
+        message: "MCP server URL is invalid".to_owned(),
+    })?;
+    let parsed = WWWAuthenticateParams::parse(header, &base);
+    Ok(McpOAuthChallenge {
+        resource_metadata_url: parsed
+            .resource_metadata_url
+            .as_ref()
+            .map(|url| url.to_string()),
+        required_scopes: parsed
+            .scope
+            .as_deref()
+            .unwrap_or_default()
+            .split_whitespace()
+            .map(str::to_owned)
+            .collect(),
+        insufficient_scope: parsed.is_insufficient_scope(),
+        invalid_token: parsed.is_invalid_token(),
+    })
+}
+
 pub fn mcp_oauth_client_id(server_id: &str) -> Result<OAuthClientId, AuthRegistryError> {
     OAuthClientId::try_new(format!("mcp:{server_id}")).map_err(|error| {
         AuthRegistryError::InvalidInput {
@@ -124,206 +126,64 @@ pub fn mcp_oauth_client_id(server_id: &str) -> Result<OAuthClientId, AuthRegistr
     })
 }
 
-fn split_http_url(url: &str) -> Result<(String, String), McpOAuthError> {
-    let Some((scheme, rest)) = url.split_once("://") else {
-        return Err(McpOAuthError::InvalidMetadata {
-            url: url.to_owned(),
-            message: "URL has no scheme".to_owned(),
-        });
-    };
-    let rest = rest.split(['?', '#']).next().unwrap_or(rest);
-    let (authority, path) = match rest.find('/') {
-        Some(index) => (&rest[..index], rest[index..].trim_end_matches('/')),
-        None => (rest, ""),
-    };
-    if authority.is_empty() {
-        return Err(McpOAuthError::InvalidMetadata {
-            url: url.to_owned(),
-            message: "URL has no host".to_owned(),
-        });
-    }
-    Ok((
-        format!("{}://{authority}", scheme.to_ascii_lowercase()),
-        path.to_owned(),
-    ))
+pub struct HttpOAuthMetadataClient {
+    policy: PinnedHttpPolicy,
 }
 
-/// Candidate protected-resource-metadata URLs for a resource (RFC 9728 §3.1
-/// path insertion, with a root fallback for servers that only serve the
-/// host-wide document).
-pub fn protected_resource_metadata_urls(resource: &str) -> Result<Vec<String>, McpOAuthError> {
-    let (origin, path) = split_http_url(resource)?;
-    let mut urls = vec![format!(
-        "{origin}/.well-known/oauth-protected-resource{path}"
-    )];
-    if !path.is_empty() {
-        urls.push(format!("{origin}/.well-known/oauth-protected-resource"));
-    }
-    Ok(urls)
-}
-
-/// Candidate authorization-server-metadata URLs for an issuer: RFC 8414 path
-/// insertion for OAuth and OIDC documents, plus the OIDC path-appended form.
-pub fn authorization_server_metadata_urls(issuer: &str) -> Result<Vec<String>, McpOAuthError> {
-    let (origin, path) = split_http_url(issuer)?;
-    let mut urls = vec![
-        format!("{origin}/.well-known/oauth-authorization-server{path}"),
-        format!("{origin}/.well-known/openid-configuration{path}"),
-    ];
-    if !path.is_empty() {
-        urls.push(format!("{origin}{path}/.well-known/openid-configuration"));
-    }
-    urls.dedup();
-    Ok(urls)
-}
-
-fn normalized(url: &str) -> &str {
-    url.trim_end_matches('/')
-}
-
-fn parse_protected_resource_metadata(
-    url: &str,
-    value: &serde_json::Value,
-    expected_resource: &str,
-) -> Result<ProtectedResourceMetadata, McpOAuthError> {
-    let invalid = |message: String| McpOAuthError::InvalidMetadata {
-        url: url.to_owned(),
-        message,
-    };
-    let Some(resource) = value.get("resource").and_then(|value| value.as_str()) else {
-        return Err(invalid("missing resource".to_owned()));
-    };
-    if normalized(resource) != normalized(expected_resource) {
-        return Err(invalid(format!(
-            "metadata resource {resource} does not match {expected_resource}"
-        )));
-    }
-    let authorization_servers: Vec<String> = value
-        .get("authorization_servers")
-        .and_then(|value| value.as_array())
-        .map(|entries| {
-            entries
-                .iter()
-                .filter_map(|entry| entry.as_str())
-                .filter(|entry| !entry.is_empty())
-                .map(str::to_owned)
-                .collect()
+impl HttpOAuthMetadataClient {
+    pub fn new() -> Result<Self, McpOAuthError> {
+        Ok(Self {
+            policy: PinnedHttpPolicy::public_only(),
         })
-        .unwrap_or_default();
-    if authorization_servers.is_empty() {
-        return Err(McpOAuthError::NoAuthorizationServers {
-            resource: expected_resource.to_owned(),
-        });
     }
-    Ok(ProtectedResourceMetadata {
-        resource: resource.to_owned(),
-        authorization_servers,
-    })
-}
 
-fn parse_authorization_server_metadata(
-    url: &str,
-    value: &serde_json::Value,
-    expected_issuer: &str,
-) -> Result<AuthorizationServerMetadata, McpOAuthError> {
-    let invalid = |message: String| McpOAuthError::InvalidMetadata {
-        url: url.to_owned(),
-        message,
-    };
-    let require_str = |field: &str| {
-        value
-            .get(field)
-            .and_then(|value| value.as_str())
-            .filter(|value| !value.is_empty())
-            .map(str::to_owned)
-            .ok_or_else(|| invalid(format!("missing {field}")))
-    };
-    let issuer = require_str("issuer")?;
-    if normalized(&issuer) != normalized(expected_issuer) {
-        return Err(invalid(format!(
-            "metadata issuer {issuer} does not match {expected_issuer}"
-        )));
+    pub fn with_private_networks(allow_private_networks: bool) -> Self {
+        Self {
+            policy: if allow_private_networks {
+                PinnedHttpPolicy::allowing_private_networks()
+            } else {
+                PinnedHttpPolicy::public_only()
+            },
+        }
     }
-    Ok(AuthorizationServerMetadata {
-        issuer,
-        authorization_endpoint: require_str("authorization_endpoint")?,
-        token_endpoint: require_str("token_endpoint")?,
-        registration_endpoint: value
-            .get("registration_endpoint")
-            .and_then(|value| value.as_str())
-            .filter(|value| !value.is_empty())
-            .map(str::to_owned),
-        code_challenge_methods_supported: value
-            .get("code_challenge_methods_supported")
-            .and_then(|value| value.as_array())
-            .map(|entries| {
-                entries
-                    .iter()
-                    .filter_map(|entry| entry.as_str())
-                    .map(str::to_owned)
-                    .collect()
-            }),
-        client_id_metadata_document_supported: value
-            .get("client_id_metadata_document_supported")
-            .and_then(|value| value.as_bool())
-            .unwrap_or(false),
-    })
-}
 
-/// Pick the authorization server to use: the catalog hint when the PRM lists
-/// it, otherwise the first listed server.
-pub fn select_authorization_server(
-    metadata: &ProtectedResourceMetadata,
-    hint: Option<&str>,
-) -> String {
-    if let Some(hint) = hint
-        && let Some(matched) = metadata
-            .authorization_servers
-            .iter()
-            .find(|issuer| normalized(issuer) == normalized(hint))
-    {
-        return matched.clone();
+    pub fn policy(&self) -> &PinnedHttpPolicy {
+        &self.policy
     }
-    metadata.authorization_servers[0].clone()
 }
 
-struct ClientIdentification {
-    remote_client_id: String,
-    client_secret: Option<SecretValue>,
-    auth_method: TokenEndpointAuthMethod,
+impl OAuthHttpClient for HttpOAuthMetadataClient {
+    fn execute(&self, request: OAuthHttpRequest) -> OAuthHttpClientFuture<'_> {
+        self.policy.execute(request)
+    }
 }
 
-/// Lazily discovers and registers OAuth clients for MCP servers.
 pub struct McpOAuthDriver {
-    clients: std::sync::Arc<dyn OAuthClientStore>,
-    secrets: std::sync::Arc<dyn SecretStore>,
-    metadata: std::sync::Arc<dyn OAuthMetadataClient>,
-    now_ms: std::sync::Arc<dyn Fn() -> i64 + Send + Sync>,
+    clients: Arc<dyn OAuthClientStore>,
+    secrets: Arc<dyn SecretStore>,
+    http: Arc<dyn OAuthMetadataClient>,
+    now_ms: Arc<dyn Fn() -> i64 + Send + Sync>,
 }
 
 impl McpOAuthDriver {
     pub fn new(
-        clients: std::sync::Arc<dyn OAuthClientStore>,
-        secrets: std::sync::Arc<dyn SecretStore>,
-        metadata: std::sync::Arc<dyn OAuthMetadataClient>,
+        clients: Arc<dyn OAuthClientStore>,
+        secrets: Arc<dyn SecretStore>,
+        http: Arc<dyn OAuthMetadataClient>,
     ) -> Self {
         Self {
             clients,
             secrets,
-            metadata,
-            now_ms: std::sync::Arc::new(crate::broker::system_now_ms),
+            http,
+            now_ms: Arc::new(crate::broker::system_now_ms),
         }
     }
 
-    pub fn with_now_fn(mut self, now_ms: std::sync::Arc<dyn Fn() -> i64 + Send + Sync>) -> Self {
+    pub fn with_now_fn(mut self, now_ms: Arc<dyn Fn() -> i64 + Send + Sync>) -> Self {
         self.now_ms = now_ms;
         self
     }
 
-    /// Return the `mcp:<server_id>` client record, discovering and creating
-    /// it on first use. Existing records are reused without any network
-    /// traffic; delete the client (`lightspeed auth client remove`) to force
-    /// re-discovery.
     pub async fn ensure_client(
         &self,
         target: &McpOAuthTarget,
@@ -337,49 +197,38 @@ impl McpOAuthDriver {
             Err(error) => return Err(McpOAuthError::Registry(error)),
         }
 
-        let prm = self.discover_protected_resource(target).await?;
-        let issuer = select_authorization_server(&prm, target.authorization_server_hint.as_deref());
-        let as_metadata = self.discover_authorization_server(&issuer).await?;
-        if let Some(methods) = &as_metadata.code_challenge_methods_supported
-            && !methods.iter().any(|method| method == "S256")
-        {
-            return Err(McpOAuthError::PkceUnsupported {
-                issuer: as_metadata.issuer,
-            });
-        }
+        let (mut manager, resolution) = self.resolve(target).await?;
+        let metadata = resolution.metadata;
+        validate_pkce(&metadata)?;
+        manager.set_metadata(metadata.clone());
+        let discovered_scopes = manager.select_scopes(None, &[]);
 
-        let identification = match (cimd, as_metadata.client_id_metadata_document_supported) {
-            (Some(cimd), true) => ClientIdentification {
-                remote_client_id: cimd.client_id_url.clone(),
-                client_secret: None,
-                auth_method: TokenEndpointAuthMethod::None,
-            },
-            _ => match &as_metadata.registration_endpoint {
-                Some(registration_endpoint) => {
-                    self.register_client(
-                        registration_endpoint,
-                        redirect_uri,
-                        &target.scopes_default,
-                    )
-                    .await?
-                }
+        let supports_cimd = metadata
+            .additional_fields
+            .get("client_id_metadata_document_supported")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        let (remote_client_id, client_secret, auth_method) = if supports_cimd {
+            match cimd {
+                Some(cimd) => (
+                    cimd.client_id_url.clone(),
+                    None,
+                    TokenEndpointAuthMethod::None,
+                ),
                 None => {
-                    return Err(McpOAuthError::NoClientIdentification {
-                        issuer: as_metadata.issuer,
-                        client_id: client_id.as_str().to_owned(),
-                    });
+                    self.register_client(&mut manager, &metadata, redirect_uri, target)
+                        .await?
                 }
-            },
+            }
+        } else {
+            self.register_client(&mut manager, &metadata, redirect_uri, target)
+                .await?
         };
 
         let now_ms = (self.now_ms)();
-        let client_secret_id = match identification.client_secret {
+        let client_secret_id = match client_secret {
             Some(client_secret) => {
-                let secret_id = SecretId::try_new(random_auth_id("authsec_")).map_err(|error| {
-                    McpOAuthError::Registry(AuthRegistryError::Store {
-                        message: format!("generate secret id: {error}"),
-                    })
-                })?;
+                let secret_id = random_secret_id()?;
                 self.secrets
                     .put_secret(PutSecretRecord {
                         secret_id: secret_id.clone(),
@@ -394,25 +243,29 @@ impl McpOAuthDriver {
             None => None,
         };
 
+        let issuer = metadata.issuer.clone();
+        let require_issuer =
+            metadata_bool(&metadata, "authorization_response_iss_parameter_supported");
         let create = CreateOAuthClientRecord {
             client_id: client_id.clone(),
             provider_id: client_id.as_str().to_owned(),
             provider_kind: AuthProviderKind::McpOAuth,
             display_name: None,
-            authorization_endpoint: as_metadata.authorization_endpoint,
-            token_endpoint: as_metadata.token_endpoint,
-            remote_client_id: identification.remote_client_id,
+            authorization_endpoint: metadata.authorization_endpoint,
+            token_endpoint: metadata.token_endpoint,
+            remote_client_id,
             client_secret: client_secret_id.clone(),
-            token_endpoint_auth_method: identification.auth_method,
+            token_endpoint_auth_method: auth_method,
             scopes_default: target.scopes_default.clone(),
-            audience: Some(prm.resource),
+            audience: Some(target.server_url.clone()),
+            authorization_server_issuer: issuer,
+            authorization_response_iss_parameter_supported: require_issuer,
+            authorization_server_scopes_supported: discovered_scopes,
             created_at_ms: now_ms,
         };
         match self.clients.create_oauth_client(create).await {
             Ok(record) => Ok(record),
             Err(AuthRegistryError::ClientAlreadyExists { .. }) => {
-                // A concurrent login won the upsert race; discard our secret
-                // and use the stored record.
                 if let Some(secret_id) = &client_secret_id {
                     let _ = self.secrets.delete_secret(secret_id).await;
                 }
@@ -430,724 +283,937 @@ impl McpOAuthDriver {
         }
     }
 
-    /// Read and validate RFC 9728 metadata for an MCP resource without
-    /// registering a client or mutating auth state. Management surfaces use
-    /// this as an advisory OAuth probe before a server is catalogued.
     pub async fn discover_protected_resource(
         &self,
         target: &McpOAuthTarget,
     ) -> Result<ProtectedResourceMetadata, McpOAuthError> {
-        let mut candidates = Vec::new();
-        if let Some(explicit) = &target.protected_resource_metadata_url {
-            candidates.push(explicit.clone());
-        }
-        candidates.extend(protected_resource_metadata_urls(&target.server_url)?);
-        candidates.dedup();
-
-        let mut last_error = String::new();
-        for url in &candidates {
-            match self.metadata.get_json(url).await {
-                Ok(value) => {
-                    match parse_protected_resource_metadata(url, &value, &target.server_url) {
-                        Ok(metadata) => return Ok(metadata),
-                        Err(error @ McpOAuthError::NoAuthorizationServers { .. }) => {
-                            return Err(error);
-                        }
-                        Err(error) => last_error = error.to_string(),
-                    }
-                }
-                Err(error) => last_error = error.to_string(),
+        let (mut manager, resolution) = self.resolve(target).await?;
+        manager.set_metadata(resolution.metadata.clone());
+        let scopes_supported = manager.select_scopes(None, &[]);
+        let issuer = resolution.metadata.issuer.clone().ok_or_else(|| {
+            McpOAuthError::ProtectedResourceMetadataUnavailable {
+                resource: target.server_url.clone(),
+                detail: "selected authorization server metadata has no issuer".to_owned(),
             }
-        }
-        Err(McpOAuthError::ProtectedResourceMetadataUnavailable {
+        })?;
+        Ok(ProtectedResourceMetadata {
             resource: target.server_url.clone(),
-            detail: last_error,
+            authorization_servers: vec![issuer],
+            scopes_supported,
         })
     }
 
-    async fn discover_authorization_server(
+    async fn resolve(
         &self,
-        issuer: &str,
-    ) -> Result<AuthorizationServerMetadata, McpOAuthError> {
-        let candidates = authorization_server_metadata_urls(issuer)?;
-        let mut last_error = String::new();
-        for url in &candidates {
-            match self.metadata.get_json(url).await {
-                Ok(value) => match parse_authorization_server_metadata(url, &value, issuer) {
-                    Ok(metadata) => return Ok(metadata),
-                    Err(error) => last_error = error.to_string(),
+        target: &McpOAuthTarget,
+    ) -> Result<(AuthorizationManager, AuthorizationMetadataResolution), McpOAuthError> {
+        let manager =
+            AuthorizationManager::new_with_oauth_http_client(&target.server_url, self.http.clone())
+                .await
+                .map_err(|error| discovery_error(target, error))?;
+        let resolution = if let Some(explicit) = &target.protected_resource_metadata_url {
+            let challenge = format!("Bearer resource_metadata=\"{}\"", explicit);
+            manager
+                .resolve_metadata_from_challenge(Some(&challenge))
+                .await
+        } else {
+            manager.resolve_metadata().await
+        }
+        .map_err(|error| discovery_error(target, error))?;
+
+        if resolution.source != AuthorizationMetadataSource::ProtectedResourceMetadata {
+            return Err(McpOAuthError::ProtectedResourceMetadataUnavailable {
+                resource: target.server_url.clone(),
+                detail: match resolution.source {
+                    AuthorizationMetadataSource::LegacyEndpointFallback => {
+                        "the endpoint published no current MCP OAuth metadata".to_owned()
+                    }
+                    _ => "the endpoint exposed authorization-server metadata but no protected-resource metadata".to_owned(),
                 },
-                Err(error) => last_error = error.to_string(),
+            });
+        }
+        if let Some(hint) = &target.authorization_server_hint {
+            let selected = resolution.metadata.issuer.as_deref().unwrap_or_default();
+            if normalize_url(selected) != normalize_url(hint) {
+                return Err(McpOAuthError::Discovery {
+                    resource: target.server_url.clone(),
+                    message: format!(
+                        "published metadata selected authorization server {selected}, not configured issuer {hint}"
+                    ),
+                });
             }
         }
-        Err(McpOAuthError::AuthorizationServerMetadataUnavailable {
-            issuer: issuer.to_owned(),
-            detail: last_error,
-        })
+        Ok((manager, resolution))
     }
 
     async fn register_client(
         &self,
-        registration_endpoint: &str,
+        manager: &mut AuthorizationManager,
+        metadata: &AuthorizationMetadata,
         redirect_uri: &str,
-        scopes: &[String],
-    ) -> Result<ClientIdentification, McpOAuthError> {
-        let mut body = serde_json::json!({
-            "client_name": "Lightspeed",
-            "redirect_uris": [redirect_uri],
-            "grant_types": ["authorization_code", "refresh_token"],
-            "response_types": ["code"],
-            "token_endpoint_auth_method": "none",
-        });
-        if !scopes.is_empty() {
-            body["scope"] = serde_json::Value::String(scopes.join(" "));
+        target: &McpOAuthTarget,
+    ) -> Result<(String, Option<SecretValue>, TokenEndpointAuthMethod), McpOAuthError> {
+        if metadata.registration_endpoint.is_none() {
+            return Err(McpOAuthError::NoClientIdentification {
+                issuer: metadata.issuer.clone().unwrap_or_default(),
+                client_id: mcp_oauth_client_id(&target.server_id)
+                    .map_err(McpOAuthError::Registry)?
+                    .to_string(),
+            });
         }
-        let response = self
-            .metadata
-            .post_json(registration_endpoint, &body)
-            .await?;
-        let invalid = |message: String| McpOAuthError::InvalidMetadata {
-            url: registration_endpoint.to_owned(),
-            message,
-        };
-        let Some(remote_client_id) = response
-            .get("client_id")
-            .and_then(|value| value.as_str())
-            .filter(|value| !value.is_empty())
-        else {
-            return Err(invalid(
-                "registration response is missing client_id".to_owned(),
-            ));
-        };
-        let client_secret = response
-            .get("client_secret")
-            .and_then(|value| value.as_str())
-            .filter(|value| !value.is_empty())
-            .map(SecretValue::new);
-        let auth_method = match response
-            .get("token_endpoint_auth_method")
-            .and_then(|value| value.as_str())
-        {
-            Some("client_secret_basic") => TokenEndpointAuthMethod::ClientSecretBasic,
-            Some("client_secret_post") => TokenEndpointAuthMethod::ClientSecretPost,
-            Some("none") => TokenEndpointAuthMethod::None,
-            _ => {
-                if client_secret.is_some() {
-                    TokenEndpointAuthMethod::ClientSecretBasic
-                } else {
-                    TokenEndpointAuthMethod::None
-                }
-            }
-        };
-        match (auth_method, client_secret) {
-            (TokenEndpointAuthMethod::None, _) => Ok(ClientIdentification {
-                remote_client_id: remote_client_id.to_owned(),
-                // A secret issued alongside method "none" is unusable.
-                client_secret: None,
-                auth_method: TokenEndpointAuthMethod::None,
-            }),
-            (method, Some(client_secret)) => Ok(ClientIdentification {
-                remote_client_id: remote_client_id.to_owned(),
-                client_secret: Some(client_secret),
-                auth_method: method,
-            }),
-            (_, None) => Err(invalid(
-                "registration requires a client secret auth method but issued no client_secret"
-                    .to_owned(),
-            )),
-        }
+
+        // `register_client` uses the manager's application type. Configure a
+        // throwaway web client solely to select `application_type: web`; the
+        // returned DCR config immediately replaces it.
+        manager
+            .configure_client(
+                OAuthClientConfig::new("lightspeed-registration", redirect_uri)
+                    .with_application_type("web"),
+            )
+            .map_err(protocol_error)?;
+        let scopes: Vec<&str> = target.scopes_default.iter().map(String::as_str).collect();
+        let config = manager
+            .register_client("Lightspeed", redirect_uri, &scopes)
+            .await
+            .map_err(|error| McpOAuthError::RegistrationRejected {
+                message: sanitize_rmcp_error(error),
+            })?;
+        let auth_method = token_auth_method(metadata, config.client_secret.is_some());
+        Ok((
+            config.client_id,
+            config.client_secret.map(SecretValue::new),
+            auth_method,
+        ))
     }
 }
 
-/// Real metadata transport over HTTPS: bounded redirects, JSON-only, and
-/// RFC 7591 error bodies surfaced as [`McpOAuthError::RegistrationRejected`].
-pub struct HttpOAuthMetadataClient {
-    http: reqwest::Client,
+fn validate_pkce(metadata: &AuthorizationMetadata) -> Result<(), McpOAuthError> {
+    if metadata
+        .code_challenge_methods_supported
+        .as_ref()
+        .is_some_and(|methods| !methods.iter().any(|method| method == "S256"))
+    {
+        return Err(McpOAuthError::PkceUnsupported {
+            issuer: metadata.issuer.clone().unwrap_or_default(),
+        });
+    }
+    Ok(())
 }
 
-impl HttpOAuthMetadataClient {
-    pub fn new() -> Result<Self, McpOAuthError> {
-        let http = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::limited(5))
-            .timeout(std::time::Duration::from_secs(15))
-            .build()
-            .map_err(|error| McpOAuthError::Http {
-                url: String::new(),
-                status: None,
-                message: format!("build http client: {error}"),
+fn token_auth_method(
+    metadata: &AuthorizationMetadata,
+    has_secret: bool,
+) -> TokenEndpointAuthMethod {
+    if !has_secret {
+        return TokenEndpointAuthMethod::None;
+    }
+    let methods = metadata
+        .additional_fields
+        .get("token_endpoint_auth_methods_supported")
+        .and_then(serde_json::Value::as_array);
+    if methods.is_some_and(|methods| {
+        let basic = methods
+            .iter()
+            .any(|method| method.as_str() == Some("client_secret_basic"));
+        let post = methods
+            .iter()
+            .any(|method| method.as_str() == Some("client_secret_post"));
+        post && !basic
+    }) {
+        TokenEndpointAuthMethod::ClientSecretPost
+    } else {
+        TokenEndpointAuthMethod::ClientSecretBasic
+    }
+}
+
+fn metadata_bool(metadata: &AuthorizationMetadata, field: &str) -> bool {
+    metadata
+        .additional_fields
+        .get(field)
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(false)
+}
+
+fn normalize_url(value: &str) -> &str {
+    value.trim_end_matches('/')
+}
+
+fn discovery_error(target: &McpOAuthTarget, error: RmcpAuthError) -> McpOAuthError {
+    match error {
+        RmcpAuthError::PkceUnsupported => McpOAuthError::PkceUnsupported {
+            issuer: target.authorization_server_hint.clone().unwrap_or_default(),
+        },
+        RmcpAuthError::AuthorizationServerMismatch { .. }
+        | RmcpAuthError::AuthorizationServerMissingIssuer { .. } => McpOAuthError::InvalidIssuer {
+            message: sanitize_rmcp_error(error),
+        },
+        other => McpOAuthError::ProtectedResourceMetadataUnavailable {
+            resource: target.server_url.clone(),
+            detail: sanitize_rmcp_error(other),
+        },
+    }
+}
+
+fn protocol_error(error: RmcpAuthError) -> McpOAuthError {
+    match error {
+        RmcpAuthError::AuthorizationServerMismatch { .. }
+        | RmcpAuthError::AuthorizationServerMissingIssuer { .. } => McpOAuthError::InvalidIssuer {
+            message: sanitize_rmcp_error(error),
+        },
+        other => McpOAuthError::Protocol {
+            message: sanitize_rmcp_error(other),
+        },
+    }
+}
+
+fn sanitize_rmcp_error(error: RmcpAuthError) -> String {
+    match error {
+        RmcpAuthError::AuthorizationServerMismatch {
+            expected_issuer,
+            received_issuer,
+        } => format!(
+            "authorization server issuer mismatch: expected {expected_issuer}, received {received_issuer}"
+        ),
+        RmcpAuthError::AuthorizationServerMissingIssuer { expected_issuer } => {
+            format!("authorization response is missing required issuer {expected_issuer}")
+        }
+        RmcpAuthError::PkceUnsupported => {
+            "authorization server does not support PKCE S256".to_owned()
+        }
+        RmcpAuthError::NoAuthorizationSupport => {
+            "server published no supported OAuth metadata".to_owned()
+        }
+        RmcpAuthError::RegistrationFailed(_) => "client registration was rejected".to_owned(),
+        RmcpAuthError::TokenRefreshRejected(_) => "refresh token was rejected".to_owned(),
+        RmcpAuthError::InsufficientScope { required_scope, .. } => {
+            format!("additional consent is required for scope {required_scope}")
+        }
+        _ => "remote OAuth operation failed".to_owned(),
+    }
+}
+
+fn random_secret_id() -> Result<SecretId, McpOAuthError> {
+    SecretId::try_new(random_auth_id("authsec_")).map_err(|error| {
+        McpOAuthError::Registry(AuthRegistryError::Store {
+            message: format!("generate secret id: {error}"),
+        })
+    })
+}
+
+#[derive(Clone, Debug)]
+pub struct McpOAuthTokenContext {
+    pub authorization_endpoint: String,
+    pub issuer: Option<String>,
+    pub require_issuer: bool,
+    pub scopes_supported: Vec<String>,
+    pub requested_scopes: Vec<String>,
+    pub callback_state: Option<SecretValue>,
+    pub callback_issuer: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct RmcpAuthorizationStart {
+    pub authorize_url: String,
+    pub state: String,
+    pub pkce_verifier: SecretValue,
+    pub expected_issuer: Option<String>,
+    pub require_issuer: bool,
+}
+
+pub(crate) async fn begin_rmcp_authorization(
+    client: &OAuthClientRecord,
+    client_secret: Option<&SecretValue>,
+    redirect_uri: &str,
+    scopes: &[String],
+    audience: &str,
+) -> Result<RmcpAuthorizationStart, McpOAuthError> {
+    let capture = CapturingStateStore::default();
+    let mut manager =
+        AuthorizationManager::new_with_oauth_http_client(audience, Arc::new(NoNetworkOAuthClient))
+            .await
+            .map_err(protocol_error)?;
+    manager.set_metadata(metadata_for_client(client));
+    manager.set_state_store(capture.clone());
+
+    let mut request = AuthorizationRequest::new(redirect_uri)
+        .with_scopes(scopes.iter().cloned())
+        .with_preregistered_client(client.remote_client_id.clone())
+        .with_application_type("web");
+    if let Some(secret) = client_secret {
+        request = request.with_client_secret(secret.expose());
+    }
+    let session = AuthorizationSession::new(manager, request)
+        .await
+        .map_err(|(_, error)| protocol_error(error))?;
+    let (state, stored) = capture.take().ok_or_else(|| McpOAuthError::Protocol {
+        message: "rmcp did not produce durable authorization state".to_owned(),
+    })?;
+    Ok(RmcpAuthorizationStart {
+        authorize_url: session.get_authorization_url().to_owned(),
+        state,
+        pkce_verifier: SecretValue::new(stored.pkce_verifier),
+        expected_issuer: stored.expected_issuer,
+        require_issuer: stored.require_issuer,
+    })
+}
+
+pub(crate) async fn request_rmcp_token(
+    http: Arc<dyn OAuthMetadataClient>,
+    request: &OAuthTokenRequest,
+    context: &McpOAuthTokenContext,
+) -> Result<OAuthTokenResponse, OAuthTokenError> {
+    let resource = request
+        .resource
+        .as_deref()
+        .ok_or_else(|| OAuthTokenError::InvalidResponse {
+            message: "MCP OAuth token request has no resource audience".to_owned(),
+        })?;
+    let mut manager = AuthorizationManager::new_with_oauth_http_client(resource, http)
+        .await
+        .map_err(map_rmcp_token_error)?;
+    manager.set_metadata(metadata_for_token_request(request, context));
+    let mut client_config = OAuthClientConfig::new(
+        request.remote_client_id.clone(),
+        match &request.grant {
+            OAuthTokenGrant::AuthorizationCode { redirect_uri, .. } => redirect_uri.clone(),
+            OAuthTokenGrant::RefreshToken { .. } => resource.to_owned(),
+        },
+    )
+    .with_scopes(context.requested_scopes.clone())
+    .with_application_type("web");
+    if let Some(secret) = &request.client_secret {
+        client_config = client_config.with_client_secret(secret.expose());
+    }
+    manager
+        .configure_client(client_config)
+        .map_err(map_rmcp_token_error)?;
+
+    let response = match &request.grant {
+        OAuthTokenGrant::AuthorizationCode {
+            code,
+            code_verifier,
+            ..
+        } => {
+            let state = context.callback_state.as_ref().ok_or_else(|| {
+                OAuthTokenError::InvalidResponse {
+                    message: "MCP OAuth callback state is unavailable".to_owned(),
+                }
             })?;
-        Ok(Self { http })
+            let state_store = CapturingStateStore::with_state(
+                state.expose(),
+                StoredAuthorizationState::new_with_expected_issuer(
+                    &PkceCodeVerifier::new(code_verifier.expose().to_owned()),
+                    &CsrfToken::new(state.expose().to_owned()),
+                    context.issuer.clone(),
+                    context.require_issuer,
+                )
+                .with_requested_scopes(context.requested_scopes.clone()),
+            );
+            manager.set_state_store(state_store);
+            manager
+                .exchange_code_for_token_with_issuer(
+                    code.expose(),
+                    state.expose(),
+                    context.callback_issuer.as_deref(),
+                )
+                .await
+                .map_err(map_rmcp_token_error)?
+        }
+        OAuthTokenGrant::RefreshToken { refresh_token } => {
+            let token_response = serde_json::from_value(serde_json::json!({
+                "access_token": "lightspeed-refresh-placeholder",
+                "token_type": "bearer",
+                "refresh_token": refresh_token.expose(),
+                "scope": context.requested_scopes.join(" "),
+            }))
+            .map_err(|_| OAuthTokenError::InvalidResponse {
+                message: "construct MCP refresh state".to_owned(),
+            })?;
+            let credentials = InMemoryCredentialStore::new();
+            credentials
+                .save(
+                    StoredCredentials::new(
+                        request.remote_client_id.clone(),
+                        Some(token_response),
+                        context.requested_scopes.clone(),
+                        None,
+                    )
+                    .with_issuer(context.issuer.clone()),
+                )
+                .await
+                .map_err(map_rmcp_token_error)?;
+            manager.set_credential_store(credentials);
+            manager
+                .refresh_token()
+                .await
+                .map_err(map_rmcp_token_error)?
+        }
+    };
+
+    let json = serde_json::to_string(&response).map_err(|_| OAuthTokenError::InvalidResponse {
+        message: "decode MCP token response".to_owned(),
+    })?;
+    crate::oauth::parse_token_response_body(&json)
+}
+
+fn metadata_for_client(client: &OAuthClientRecord) -> AuthorizationMetadata {
+    let mut additional_fields = HashMap::new();
+    additional_fields.insert(
+        "authorization_response_iss_parameter_supported".to_owned(),
+        serde_json::Value::Bool(client.authorization_response_iss_parameter_supported),
+    );
+    additional_fields.insert(
+        "token_endpoint_auth_methods_supported".to_owned(),
+        serde_json::json!([match client.token_endpoint_auth_method {
+            TokenEndpointAuthMethod::ClientSecretBasic => "client_secret_basic",
+            TokenEndpointAuthMethod::ClientSecretPost => "client_secret_post",
+            TokenEndpointAuthMethod::None => "none",
+        }]),
+    );
+    let mut metadata = AuthorizationMetadata::default();
+    metadata.authorization_endpoint = client.authorization_endpoint.clone();
+    metadata.token_endpoint = client.token_endpoint.clone();
+    metadata.issuer = client.authorization_server_issuer.clone();
+    metadata.scopes_supported = Some(client.authorization_server_scopes_supported.clone());
+    metadata.code_challenge_methods_supported = Some(vec!["S256".to_owned()]);
+    metadata.response_types_supported = Some(vec!["code".to_owned()]);
+    metadata.additional_fields = additional_fields;
+    metadata
+}
+
+fn metadata_for_token_request(
+    request: &OAuthTokenRequest,
+    context: &McpOAuthTokenContext,
+) -> AuthorizationMetadata {
+    let mut additional_fields = HashMap::new();
+    additional_fields.insert(
+        "authorization_response_iss_parameter_supported".to_owned(),
+        serde_json::Value::Bool(context.require_issuer),
+    );
+    additional_fields.insert(
+        "token_endpoint_auth_methods_supported".to_owned(),
+        serde_json::json!([match request.auth_method {
+            TokenEndpointAuthMethod::ClientSecretBasic => "client_secret_basic",
+            TokenEndpointAuthMethod::ClientSecretPost => "client_secret_post",
+            TokenEndpointAuthMethod::None => "none",
+        }]),
+    );
+    let mut metadata = AuthorizationMetadata::default();
+    metadata.authorization_endpoint = context.authorization_endpoint.clone();
+    metadata.token_endpoint = request.token_endpoint.clone();
+    metadata.issuer = context.issuer.clone();
+    metadata.scopes_supported = Some(context.scopes_supported.clone());
+    metadata.code_challenge_methods_supported = Some(vec!["S256".to_owned()]);
+    metadata.response_types_supported = Some(vec!["code".to_owned()]);
+    metadata.additional_fields = additional_fields;
+    metadata
+}
+
+fn map_rmcp_token_error(error: RmcpAuthError) -> OAuthTokenError {
+    match error {
+        RmcpAuthError::TokenRefreshRejected(_) => OAuthTokenError::InvalidGrant {
+            description: Some("refresh token was rejected".to_owned()),
+        },
+        RmcpAuthError::AuthorizationServerMismatch { .. }
+        | RmcpAuthError::AuthorizationServerMissingIssuer { .. } => OAuthTokenError::Protocol {
+            error: "invalid_authorization_response_issuer".to_owned(),
+            description: Some(sanitize_rmcp_error(error)),
+        },
+        RmcpAuthError::InsufficientScope { required_scope, .. } => OAuthTokenError::Protocol {
+            error: "insufficient_scope".to_owned(),
+            description: Some(format!(
+                "additional consent is required for {required_scope}"
+            )),
+        },
+        RmcpAuthError::TokenExchangeFailed(_)
+        | RmcpAuthError::TokenRefreshFailed(_)
+        | RmcpAuthError::HttpError(_) => OAuthTokenError::Http {
+            status: None,
+            message: "MCP OAuth token endpoint request failed".to_owned(),
+        },
+        other => OAuthTokenError::InvalidResponse {
+            message: sanitize_rmcp_error(other),
+        },
+    }
+}
+
+#[derive(Clone, Default)]
+struct CapturingStateStore {
+    state: Arc<Mutex<Option<(String, StoredAuthorizationState)>>>,
+}
+
+impl CapturingStateStore {
+    fn with_state(key: &str, state: StoredAuthorizationState) -> Self {
+        Self {
+            state: Arc::new(Mutex::new(Some((key.to_owned(), state)))),
+        }
+    }
+
+    fn take(&self) -> Option<(String, StoredAuthorizationState)> {
+        self.state.lock().ok()?.take()
     }
 }
 
 #[async_trait]
-impl OAuthMetadataClient for HttpOAuthMetadataClient {
-    async fn get_json(&self, url: &str) -> Result<serde_json::Value, McpOAuthError> {
-        let response = self
-            .http
-            .get(url)
-            .header(reqwest::header::ACCEPT, "application/json")
-            .send()
-            .await
-            .map_err(|error| McpOAuthError::Http {
-                url: url.to_owned(),
-                status: error.status().map(|status| status.as_u16()),
-                message: format!("metadata request failed: {error}"),
-            })?;
-        let status = response.status();
-        if !status.is_success() {
-            return Err(McpOAuthError::Http {
-                url: url.to_owned(),
-                status: Some(status.as_u16()),
-                message: "metadata request returned a non-success status".to_owned(),
-            });
-        }
-        response
-            .json()
-            .await
-            .map_err(|_| McpOAuthError::InvalidMetadata {
-                url: url.to_owned(),
-                message: "metadata response is not valid JSON".to_owned(),
-            })
+impl StateStore for CapturingStateStore {
+    async fn save(
+        &self,
+        csrf_token: &str,
+        state: StoredAuthorizationState,
+    ) -> Result<(), RmcpAuthError> {
+        *self.state.lock().map_err(|_| {
+            RmcpAuthError::InternalError("authorization state unavailable".to_owned())
+        })? = Some((csrf_token.to_owned(), state));
+        Ok(())
     }
 
-    async fn post_json(
+    async fn load(
         &self,
-        url: &str,
-        body: &serde_json::Value,
-    ) -> Result<serde_json::Value, McpOAuthError> {
-        let response = self
-            .http
-            .post(url)
-            .header(reqwest::header::ACCEPT, "application/json")
-            .json(body)
-            .send()
-            .await
-            .map_err(|error| McpOAuthError::Http {
-                url: url.to_owned(),
-                status: error.status().map(|status| status.as_u16()),
-                message: format!("registration request failed: {error}"),
-            })?;
-        let status = response.status();
-        let text = response.text().await.map_err(|error| McpOAuthError::Http {
-            url: url.to_owned(),
-            status: Some(status.as_u16()),
-            message: format!("read registration response: {error}"),
+        csrf_token: &str,
+    ) -> Result<Option<StoredAuthorizationState>, RmcpAuthError> {
+        Ok(self
+            .state
+            .lock()
+            .map_err(|_| {
+                RmcpAuthError::InternalError("authorization state unavailable".to_owned())
+            })?
+            .as_ref()
+            .filter(|(key, _)| key == csrf_token)
+            .map(|(_, state)| state.clone()))
+    }
+
+    async fn delete(&self, csrf_token: &str) -> Result<(), RmcpAuthError> {
+        let mut state = self.state.lock().map_err(|_| {
+            RmcpAuthError::InternalError("authorization state unavailable".to_owned())
         })?;
-        if !status.is_success() {
-            // RFC 7591 §3.2.2 error response; never echo unparsed bodies.
-            if let Ok(value) = serde_json::from_str::<serde_json::Value>(&text)
-                && let Some(error) = value.get("error").and_then(|error| error.as_str())
-            {
-                let description = value
-                    .get("error_description")
-                    .and_then(|description| description.as_str())
-                    .unwrap_or_default();
-                return Err(McpOAuthError::RegistrationRejected {
-                    url: url.to_owned(),
-                    message: if description.is_empty() {
-                        error.to_owned()
-                    } else {
-                        format!("{error}: {description}")
-                    },
-                });
-            }
-            return Err(McpOAuthError::Http {
-                url: url.to_owned(),
-                status: Some(status.as_u16()),
-                message: "registration request returned a non-success status".to_owned(),
-            });
+        if state.as_ref().is_some_and(|(key, _)| key == csrf_token) {
+            *state = None;
         }
-        serde_json::from_str(&text).map_err(|_| McpOAuthError::InvalidMetadata {
-            url: url.to_owned(),
-            message: "registration response is not valid JSON".to_owned(),
-        })
+        Ok(())
     }
 }
 
+struct NoNetworkOAuthClient;
+
+impl OAuthHttpClient for NoNetworkOAuthClient {
+    fn execute(&self, _request: OAuthHttpRequest) -> OAuthHttpClientFuture<'_> {
+        Box::pin(async { Err(Box::new(NoNetworkError) as OAuthHttpClientError) })
+    }
+}
+
+#[derive(Debug, Error)]
+#[error("unexpected network request while reconstructing durable OAuth state")]
+struct NoNetworkError;
+
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
-    use std::sync::{Arc, Mutex};
-
     use super::*;
     use crate::{InMemoryOAuthClientStore, InMemorySecretStore};
 
-    #[test]
-    fn protected_resource_metadata_urls_insert_path_with_root_fallback() {
-        assert_eq!(
-            protected_resource_metadata_urls("https://host.example.com/mcp-auth-server")
-                .expect("urls"),
-            vec![
-                "https://host.example.com/.well-known/oauth-protected-resource/mcp-auth-server"
-                    .to_owned(),
-                "https://host.example.com/.well-known/oauth-protected-resource".to_owned(),
-            ]
-        );
-        assert_eq!(
-            protected_resource_metadata_urls("https://host.example.com").expect("urls"),
-            vec!["https://host.example.com/.well-known/oauth-protected-resource".to_owned()]
-        );
+    #[derive(Clone, Debug)]
+    struct CapturedRequest {
+        method: String,
+        url: String,
+        body: String,
     }
 
-    #[test]
-    fn authorization_server_metadata_urls_cover_oauth_and_oidc_forms() {
-        assert_eq!(
-            authorization_server_metadata_urls("https://as.example.com").expect("urls"),
-            vec![
-                "https://as.example.com/.well-known/oauth-authorization-server".to_owned(),
-                "https://as.example.com/.well-known/openid-configuration".to_owned(),
-            ]
-        );
-        assert_eq!(
-            authorization_server_metadata_urls("https://as.example.com/tenant1").expect("urls"),
-            vec![
-                "https://as.example.com/.well-known/oauth-authorization-server/tenant1".to_owned(),
-                "https://as.example.com/.well-known/openid-configuration/tenant1".to_owned(),
-                "https://as.example.com/tenant1/.well-known/openid-configuration".to_owned(),
-            ]
-        );
+    #[derive(Default)]
+    struct OAuthFixture {
+        requests: Mutex<Vec<CapturedRequest>>,
+        issuer_mismatch: bool,
+        no_metadata: bool,
     }
 
-    #[test]
-    fn authorization_server_selection_prefers_a_listed_hint() {
-        let metadata = ProtectedResourceMetadata {
-            resource: "https://crm.example.com/mcp".to_owned(),
-            authorization_servers: vec![
-                "https://as-one.example.com".to_owned(),
-                "https://as-two.example.com".to_owned(),
-            ],
-        };
-
-        assert_eq!(
-            select_authorization_server(&metadata, Some("https://as-two.example.com/")),
-            "https://as-two.example.com"
-        );
-        assert_eq!(
-            select_authorization_server(&metadata, Some("https://unlisted.example.com")),
-            "https://as-one.example.com"
-        );
-        assert_eq!(
-            select_authorization_server(&metadata, None),
-            "https://as-one.example.com"
-        );
-    }
-
-    struct MockMetadataClient {
-        gets: BTreeMap<String, serde_json::Value>,
-        post_response: Option<Result<serde_json::Value, McpOAuthError>>,
-        posts: Mutex<Vec<(String, serde_json::Value)>>,
-        get_calls: Mutex<Vec<String>>,
-    }
-
-    impl MockMetadataClient {
-        fn new(gets: Vec<(&str, serde_json::Value)>) -> Self {
-            Self {
-                gets: gets
-                    .into_iter()
-                    .map(|(url, value)| (url.to_owned(), value))
-                    .collect(),
-                post_response: None,
-                posts: Mutex::new(Vec::new()),
-                get_calls: Mutex::new(Vec::new()),
+    impl OAuthFixture {
+        fn response(
+            status: u16,
+            content_type: Option<&str>,
+            body: serde_json::Value,
+        ) -> oauth2::HttpResponse {
+            let mut response = oauth2::http::Response::builder().status(status);
+            if let Some(content_type) = content_type {
+                response = response.header("content-type", content_type);
             }
-        }
-
-        fn with_post_response(
-            mut self,
-            response: Result<serde_json::Value, McpOAuthError>,
-        ) -> Self {
-            self.post_response = Some(response);
-            self
+            response
+                .body(if body.is_null() {
+                    Vec::new()
+                } else {
+                    serde_json::to_vec(&body).unwrap()
+                })
+                .unwrap()
         }
     }
 
-    #[async_trait]
-    impl OAuthMetadataClient for MockMetadataClient {
-        async fn get_json(&self, url: &str) -> Result<serde_json::Value, McpOAuthError> {
-            self.get_calls.lock().expect("lock").push(url.to_owned());
-            self.gets
-                .get(url)
-                .cloned()
-                .ok_or_else(|| McpOAuthError::Http {
-                    url: url.to_owned(),
-                    status: Some(404),
-                    message: "not found".to_owned(),
-                })
-        }
-
-        async fn post_json(
-            &self,
-            url: &str,
-            body: &serde_json::Value,
-        ) -> Result<serde_json::Value, McpOAuthError> {
-            self.posts
-                .lock()
-                .expect("lock")
-                .push((url.to_owned(), body.clone()));
-            self.post_response.clone().unwrap_or_else(|| {
-                Err(McpOAuthError::Http {
-                    url: url.to_owned(),
-                    status: Some(404),
-                    message: "no post response scripted".to_owned(),
-                })
+    impl OAuthHttpClient for OAuthFixture {
+        fn execute(&self, request: OAuthHttpRequest) -> OAuthHttpClientFuture<'_> {
+            Box::pin(async move {
+                let method = request.request.method().to_string();
+                let url = request.request.uri().to_string();
+                let body = String::from_utf8_lossy(request.request.body()).to_string();
+                self.requests.lock().unwrap().push(CapturedRequest {
+                    method: method.clone(),
+                    url: url.clone(),
+                    body,
+                });
+                if self.no_metadata {
+                    return Ok(Self::response(404, None, serde_json::Value::Null));
+                }
+                let response = match (method.as_str(), url.as_str()) {
+                    ("GET", "https://mcp.example/mcp") => oauth2::http::Response::builder()
+                        .status(401)
+                        .header(
+                            "www-authenticate",
+                            r#"Bearer resource_metadata="https://mcp.example/oauth-resource""#,
+                        )
+                        .body(Vec::new())
+                        .unwrap(),
+                    ("GET", "https://mcp.example/oauth-resource") => Self::response(
+                        200,
+                        Some("application/json"),
+                        serde_json::json!({
+                            "resource": "https://mcp.example/mcp",
+                            "authorization_servers": ["https://login.example"],
+                            "scopes_supported": ["tools.read"]
+                        }),
+                    ),
+                    ("GET", "https://login.example/.well-known/oauth-authorization-server") => {
+                        Self::response(
+                            200,
+                            Some("application/json"),
+                            serde_json::json!({
+                                "issuer": if self.issuer_mismatch {
+                                    "https://evil.example"
+                                } else {
+                                    "https://login.example"
+                                },
+                                "authorization_endpoint": "https://login.example/authorize",
+                                "token_endpoint": "https://login.example/token",
+                                "registration_endpoint": "https://login.example/register",
+                                "code_challenge_methods_supported": ["S256"],
+                                "response_types_supported": ["code"],
+                                "scopes_supported": ["tools.read", "offline_access"],
+                                "token_endpoint_auth_methods_supported": ["client_secret_post"],
+                                "client_id_metadata_document_supported": true,
+                                "authorization_response_iss_parameter_supported": true
+                            }),
+                        )
+                    }
+                    ("POST", "https://login.example/register") => Self::response(
+                        201,
+                        Some("application/json"),
+                        serde_json::json!({
+                            "client_id": "registered-client",
+                            "client_secret": "registered-secret",
+                            "redirect_uris": ["https://lightspeed.example/auth/callback"]
+                        }),
+                    ),
+                    ("POST", "https://login.example/token") => Self::response(
+                        200,
+                        Some("application/json"),
+                        serde_json::json!({
+                            "access_token": "access-token",
+                            "token_type": "bearer",
+                            "expires_in": 3600,
+                            "refresh_token": "refresh-token",
+                            "scope": "tools.read offline_access"
+                        }),
+                    ),
+                    _ => Self::response(404, None, serde_json::Value::Null),
+                };
+                Ok(response)
             })
         }
-    }
-
-    const RESOURCE: &str = "https://crm.example.com/mcp";
-    const PRM_URL: &str = "https://crm.example.com/.well-known/oauth-protected-resource/mcp";
-    const AS_URL: &str = "https://as.example.com/.well-known/oauth-authorization-server";
-
-    fn prm_doc() -> serde_json::Value {
-        serde_json::json!({
-            "resource": RESOURCE,
-            "authorization_servers": ["https://as.example.com"],
-        })
-    }
-
-    fn as_doc(extra: serde_json::Value) -> serde_json::Value {
-        let mut doc = serde_json::json!({
-            "issuer": "https://as.example.com",
-            "authorization_endpoint": "https://as.example.com/authorize",
-            "token_endpoint": "https://as.example.com/token",
-            "code_challenge_methods_supported": ["S256"],
-        });
-        if let (Some(doc), Some(extra)) = (doc.as_object_mut(), extra.as_object()) {
-            for (key, value) in extra {
-                doc.insert(key.clone(), value.clone());
-            }
-        }
-        doc
     }
 
     fn target() -> McpOAuthTarget {
         McpOAuthTarget {
-            server_id: "playground".to_owned(),
-            server_url: RESOURCE.to_owned(),
-            scopes_default: vec!["contacts.read".to_owned()],
+            server_id: "crm".to_owned(),
+            server_url: "https://mcp.example/mcp".to_owned(),
+            scopes_default: vec!["tools.read".to_owned()],
             protected_resource_metadata_url: None,
             authorization_server_hint: None,
         }
     }
 
-    struct Harness {
-        driver: McpOAuthDriver,
-        clients: Arc<InMemoryOAuthClientStore>,
-        secrets: Arc<InMemorySecretStore>,
-        metadata: Arc<MockMetadataClient>,
+    #[test]
+    fn challenges_are_parsed_by_rmcp() {
+        let challenge = parse_mcp_oauth_challenge(
+            r#"Bearer resource_metadata="https://mcp.example/.well-known/oauth-protected-resource", error="insufficient_scope", scope="tools.read tools.write""#,
+            "https://mcp.example/mcp",
+        )
+        .unwrap();
+        assert!(challenge.insufficient_scope);
+        assert!(!challenge.invalid_token);
+        assert_eq!(challenge.required_scopes, ["tools.read", "tools.write"]);
+        assert_eq!(
+            challenge.resource_metadata_url.as_deref(),
+            Some("https://mcp.example/.well-known/oauth-protected-resource")
+        );
     }
 
-    fn harness(metadata: MockMetadataClient) -> Harness {
+    #[tokio::test(flavor = "current_thread")]
+    async fn rmcp_authorization_start_captures_state_without_persisting_it() {
+        let client = OAuthClientRecord {
+            client_id: OAuthClientId::new("mcp:test"),
+            provider_id: "mcp:test".to_owned(),
+            provider_kind: AuthProviderKind::McpOAuth,
+            display_name: None,
+            authorization_endpoint: "https://login.example/authorize".to_owned(),
+            token_endpoint: "https://login.example/token".to_owned(),
+            remote_client_id: "lightspeed".to_owned(),
+            client_secret: None,
+            token_endpoint_auth_method: TokenEndpointAuthMethod::None,
+            scopes_default: vec!["tools.read".to_owned()],
+            audience: Some("https://mcp.example/mcp".to_owned()),
+            authorization_server_issuer: Some("https://login.example".to_owned()),
+            authorization_response_iss_parameter_supported: true,
+            authorization_server_scopes_supported: vec!["tools.read".to_owned()],
+            created_at_ms: 1,
+            updated_at_ms: 1,
+        };
+        let started = begin_rmcp_authorization(
+            &client,
+            None,
+            "https://lightspeed.example/auth/callback",
+            &client.scopes_default,
+            client.audience.as_deref().unwrap(),
+        )
+        .await
+        .unwrap();
+        assert!(started.authorize_url.contains("code_challenge="));
+        assert!(started.authorize_url.contains("resource="));
+        assert!(started.authorize_url.contains("state="));
+        assert_eq!(
+            started.expected_issuer.as_deref(),
+            Some("https://login.example")
+        );
+        assert!(started.require_issuer);
+        assert!(!started.state.is_empty());
+        assert!(!started.pkce_verifier.expose().is_empty());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn rmcp_discovery_and_dcr_persist_only_durable_public_facts() {
         let clients = Arc::new(InMemoryOAuthClientStore::new());
         let secrets = Arc::new(InMemorySecretStore::new());
-        let metadata = Arc::new(metadata);
-        let driver = McpOAuthDriver::new(clients.clone(), secrets.clone(), metadata.clone())
-            .with_now_fn(Arc::new(|| 1_000));
-        Harness {
-            driver,
-            clients,
-            secrets,
-            metadata,
+        let fixture = Arc::new(OAuthFixture::default());
+        let driver = McpOAuthDriver::new(clients, secrets.clone(), fixture.clone())
+            .with_now_fn(Arc::new(|| 100));
+
+        let client = driver
+            .ensure_client(&target(), "https://lightspeed.example/auth/callback", None)
+            .await
+            .unwrap();
+        assert_eq!(client.remote_client_id, "registered-client");
+        assert_eq!(
+            client.token_endpoint_auth_method,
+            TokenEndpointAuthMethod::ClientSecretPost
+        );
+        assert_eq!(
+            client.authorization_server_issuer.as_deref(),
+            Some("https://login.example")
+        );
+        assert!(client.authorization_response_iss_parameter_supported);
+        assert_eq!(
+            client.authorization_server_scopes_supported,
+            ["tools.read", "offline_access"]
+        );
+        let (_, secret) = secrets
+            .read_secret(client.client_secret.as_ref().unwrap())
+            .await
+            .unwrap();
+        assert_eq!(secret.expose(), "registered-secret");
+
+        let requests = fixture.requests.lock().unwrap();
+        let registration = requests
+            .iter()
+            .find(|request| request.url == "https://login.example/register")
+            .unwrap();
+        assert_eq!(registration.method, "POST");
+        assert!(registration.body.contains(r#""application_type":"web""#));
+        assert!(
+            registration
+                .body
+                .contains(r#""token_endpoint_auth_method":"none""#)
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn rmcp_client_selection_prefers_cimd_without_registration() {
+        let clients = Arc::new(InMemoryOAuthClientStore::new());
+        let secrets = Arc::new(InMemorySecretStore::new());
+        let fixture = Arc::new(OAuthFixture::default());
+        let driver = McpOAuthDriver::new(clients, secrets, fixture.clone());
+        let client = driver
+            .ensure_client(
+                &target(),
+                "https://lightspeed.example/auth/callback",
+                Some(&CimdConfig {
+                    client_id_url: "https://lightspeed.example/auth/client-metadata.json"
+                        .to_owned(),
+                }),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            client.remote_client_id,
+            "https://lightspeed.example/auth/client-metadata.json"
+        );
+        assert!(client.client_secret.is_none());
+        assert!(
+            fixture
+                .requests
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|request| request.url != "https://login.example/register")
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn rmcp_rejects_legacy_endpoint_fallback_and_issuer_mismatch() {
+        let driver = McpOAuthDriver::new(
+            Arc::new(InMemoryOAuthClientStore::new()),
+            Arc::new(InMemorySecretStore::new()),
+            Arc::new(OAuthFixture {
+                no_metadata: true,
+                ..Default::default()
+            }),
+        );
+        assert!(matches!(
+            driver.discover_protected_resource(&target()).await,
+            Err(McpOAuthError::ProtectedResourceMetadataUnavailable { .. })
+        ));
+
+        let driver = McpOAuthDriver::new(
+            Arc::new(InMemoryOAuthClientStore::new()),
+            Arc::new(InMemorySecretStore::new()),
+            Arc::new(OAuthFixture {
+                issuer_mismatch: true,
+                ..Default::default()
+            }),
+        );
+        assert!(matches!(
+            driver.discover_protected_resource(&target()).await,
+            Err(McpOAuthError::InvalidIssuer { .. })
+        ));
+    }
+
+    fn token_request() -> OAuthTokenRequest {
+        OAuthTokenRequest {
+            token_endpoint: "https://login.example/token".to_owned(),
+            remote_client_id: "registered-client".to_owned(),
+            client_secret: Some(SecretValue::new("registered-secret")),
+            auth_method: TokenEndpointAuthMethod::ClientSecretPost,
+            grant: OAuthTokenGrant::AuthorizationCode {
+                code: SecretValue::new("authorization-code"),
+                redirect_uri: "https://lightspeed.example/auth/callback".to_owned(),
+                code_verifier: SecretValue::new("pkce-verifier"),
+            },
+            resource: Some("https://mcp.example/mcp".to_owned()),
+            mcp: None,
         }
     }
 
-    const REDIRECT: &str = "https://lightspeed.example.com/auth/callback";
-
-    #[tokio::test]
-    async fn ensure_client_discovers_and_registers_via_dcr() {
-        let harness = harness(
-            MockMetadataClient::new(vec![
-                (PRM_URL, prm_doc()),
-                (
-                    AS_URL,
-                    as_doc(serde_json::json!({
-                        "registration_endpoint": "https://as.example.com/register",
-                    })),
-                ),
-            ])
-            .with_post_response(Ok(serde_json::json!({
-                "client_id": "dcr-client-1",
-                "token_endpoint_auth_method": "none",
-            }))),
-        );
-
-        let record = harness
-            .driver
-            .ensure_client(&target(), REDIRECT, None)
-            .await
-            .expect("ensure client");
-
-        assert_eq!(record.client_id, OAuthClientId::new("mcp:playground"));
-        assert_eq!(record.provider_id, "mcp:playground");
-        assert_eq!(record.provider_kind, AuthProviderKind::McpOAuth);
-        assert_eq!(record.remote_client_id, "dcr-client-1");
-        assert_eq!(
-            record.token_endpoint_auth_method,
-            TokenEndpointAuthMethod::None
-        );
-        assert_eq!(record.audience.as_deref(), Some(RESOURCE));
-        assert_eq!(
-            record.authorization_endpoint,
-            "https://as.example.com/authorize"
-        );
-        assert!(record.client_secret.is_none());
-
-        // The DCR request asked for a public PKCE client with our redirect.
-        let posts = harness.metadata.posts.lock().expect("lock");
-        assert_eq!(posts.len(), 1);
-        assert_eq!(posts[0].0, "https://as.example.com/register");
-        assert_eq!(posts[0].1["redirect_uris"][0], REDIRECT);
-        assert_eq!(posts[0].1["token_endpoint_auth_method"], "none");
-        assert_eq!(posts[0].1["scope"], "contacts.read");
+    fn token_context(callback_issuer: Option<&str>) -> McpOAuthTokenContext {
+        McpOAuthTokenContext {
+            authorization_endpoint: "https://login.example/authorize".to_owned(),
+            issuer: Some("https://login.example".to_owned()),
+            require_issuer: true,
+            scopes_supported: vec!["tools.read".to_owned(), "offline_access".to_owned()],
+            requested_scopes: vec!["tools.read".to_owned()],
+            callback_state: Some(SecretValue::new("callback-state")),
+            callback_issuer: callback_issuer.map(str::to_owned),
+        }
     }
 
-    #[tokio::test]
-    async fn ensure_client_stores_dcr_issued_secrets_encrypted() {
-        let harness = harness(
-            MockMetadataClient::new(vec![
-                (PRM_URL, prm_doc()),
-                (
-                    AS_URL,
-                    as_doc(serde_json::json!({
-                        "registration_endpoint": "https://as.example.com/register",
-                    })),
-                ),
-            ])
-            .with_post_response(Ok(serde_json::json!({
-                "client_id": "dcr-client-2",
-                "client_secret": "dcr-secret",
-                "token_endpoint_auth_method": "client_secret_basic",
-            }))),
+    #[tokio::test(flavor = "current_thread")]
+    async fn rmcp_token_exchange_validates_issuer_and_binds_resource() {
+        let fixture = Arc::new(OAuthFixture::default());
+        let error = request_rmcp_token(
+            fixture.clone(),
+            &token_request(),
+            &token_context(Some("https://evil.example")),
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(
+            error,
+            OAuthTokenError::Protocol { ref error, .. }
+                if error == "invalid_authorization_response_issuer"
+        ));
+        assert!(
+            fixture
+                .requests
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|request| request.url != "https://login.example/token")
         );
 
-        let record = harness
-            .driver
-            .ensure_client(&target(), REDIRECT, None)
-            .await
-            .expect("ensure client");
-
-        assert_eq!(
-            record.token_endpoint_auth_method,
-            TokenEndpointAuthMethod::ClientSecretBasic
+        let response = request_rmcp_token(
+            fixture.clone(),
+            &token_request(),
+            &token_context(Some("https://login.example")),
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.access_token.expose(), "access-token");
+        let requests = fixture.requests.lock().unwrap();
+        let token = requests
+            .iter()
+            .find(|request| request.url == "https://login.example/token")
+            .unwrap();
+        assert!(
+            token
+                .body
+                .contains("resource=https%3A%2F%2Fmcp.example%2Fmcp")
         );
-        let secret_id = record.client_secret.expect("client secret stored");
-        let (meta, value) = harness
-            .secrets
-            .read_secret(&secret_id)
-            .await
-            .expect("read client secret");
-        assert_eq!(meta.secret_kind, SECRET_KIND_OAUTH_CLIENT_SECRET);
-        assert_eq!(value.expose(), "dcr-secret");
+        assert!(token.body.contains("code_verifier=pkce-verifier"));
+        assert!(token.body.contains("client_secret=registered-secret"));
     }
 
-    #[tokio::test]
-    async fn ensure_client_prefers_cimd_when_the_as_supports_it() {
-        let harness = harness(MockMetadataClient::new(vec![
-            (PRM_URL, prm_doc()),
-            (
-                AS_URL,
-                as_doc(serde_json::json!({
-                    "registration_endpoint": "https://as.example.com/register",
-                    "client_id_metadata_document_supported": true,
-                })),
-            ),
-        ]));
-        let cimd = CimdConfig {
-            client_id_url: "https://lightspeed.example.com/auth/client-metadata.json".to_owned(),
+    #[tokio::test(flavor = "current_thread")]
+    async fn rmcp_requires_advertised_callback_issuer_and_refreshes_with_resource() {
+        let fixture = Arc::new(OAuthFixture::default());
+        let error = request_rmcp_token(fixture.clone(), &token_request(), &token_context(None))
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            OAuthTokenError::Protocol { ref error, .. }
+                if error == "invalid_authorization_response_issuer"
+        ));
+
+        let refresh = OAuthTokenRequest {
+            token_endpoint: "https://login.example/token".to_owned(),
+            remote_client_id: "registered-client".to_owned(),
+            client_secret: Some(SecretValue::new("registered-secret")),
+            auth_method: TokenEndpointAuthMethod::ClientSecretPost,
+            grant: OAuthTokenGrant::RefreshToken {
+                refresh_token: SecretValue::new("old-refresh-token"),
+            },
+            resource: Some("https://mcp.example/mcp".to_owned()),
+            mcp: None,
         };
-
-        let record = harness
-            .driver
-            .ensure_client(&target(), REDIRECT, Some(&cimd))
+        let mut context = token_context(None);
+        context.callback_state = None;
+        let response = request_rmcp_token(fixture.clone(), &refresh, &context)
             .await
-            .expect("ensure client");
-
-        assert_eq!(record.remote_client_id, cimd.client_id_url);
-        assert_eq!(
-            record.token_endpoint_auth_method,
-            TokenEndpointAuthMethod::None
+            .unwrap();
+        assert_eq!(response.refresh_token.unwrap().expose(), "refresh-token");
+        let requests = fixture.requests.lock().unwrap();
+        let token = requests
+            .iter()
+            .rev()
+            .find(|request| request.url == "https://login.example/token")
+            .unwrap();
+        assert!(token.body.contains("refresh_token=old-refresh-token"));
+        assert!(
+            token
+                .body
+                .contains("resource=https%3A%2F%2Fmcp.example%2Fmcp")
         );
-        // No registration request was made.
-        assert!(harness.metadata.posts.lock().expect("lock").is_empty());
-    }
-
-    #[tokio::test]
-    async fn ensure_client_falls_back_to_dcr_when_cimd_is_unsupported() {
-        let harness = harness(
-            MockMetadataClient::new(vec![
-                (PRM_URL, prm_doc()),
-                (
-                    AS_URL,
-                    as_doc(serde_json::json!({
-                        "registration_endpoint": "https://as.example.com/register",
-                    })),
-                ),
-            ])
-            .with_post_response(Ok(serde_json::json!({"client_id": "dcr-client-3"}))),
-        );
-        let cimd = CimdConfig {
-            client_id_url: "https://lightspeed.example.com/auth/client-metadata.json".to_owned(),
-        };
-
-        let record = harness
-            .driver
-            .ensure_client(&target(), REDIRECT, Some(&cimd))
-            .await
-            .expect("ensure client");
-
-        assert_eq!(record.remote_client_id, "dcr-client-3");
-    }
-
-    #[tokio::test]
-    async fn ensure_client_reuses_existing_records_without_network() {
-        let harness = harness(MockMetadataClient::new(Vec::new()));
-        harness
-            .clients
-            .create_oauth_client(CreateOAuthClientRecord {
-                client_id: OAuthClientId::new("mcp:playground"),
-                provider_id: "mcp:playground".to_owned(),
-                provider_kind: AuthProviderKind::McpOAuth,
-                display_name: None,
-                authorization_endpoint: "https://as.example.com/authorize".to_owned(),
-                token_endpoint: "https://as.example.com/token".to_owned(),
-                remote_client_id: "manual-client".to_owned(),
-                client_secret: None,
-                token_endpoint_auth_method: TokenEndpointAuthMethod::None,
-                scopes_default: Vec::new(),
-                audience: Some(RESOURCE.to_owned()),
-                created_at_ms: 10,
-            })
-            .await
-            .expect("create existing client");
-
-        let record = harness
-            .driver
-            .ensure_client(&target(), REDIRECT, None)
-            .await
-            .expect("ensure client");
-
-        assert_eq!(record.remote_client_id, "manual-client");
-        assert!(harness.metadata.get_calls.lock().expect("lock").is_empty());
-    }
-
-    #[tokio::test]
-    async fn ensure_client_uses_the_root_prm_fallback() {
-        let harness = harness(
-            MockMetadataClient::new(vec![
-                (
-                    "https://crm.example.com/.well-known/oauth-protected-resource",
-                    prm_doc(),
-                ),
-                (
-                    AS_URL,
-                    as_doc(serde_json::json!({
-                        "registration_endpoint": "https://as.example.com/register",
-                    })),
-                ),
-            ])
-            .with_post_response(Ok(serde_json::json!({"client_id": "dcr-client-4"}))),
-        );
-
-        harness
-            .driver
-            .ensure_client(&target(), REDIRECT, None)
-            .await
-            .expect("ensure client via root PRM");
-
-        let calls = harness.metadata.get_calls.lock().expect("lock");
-        assert!(calls.contains(&PRM_URL.to_owned()), "path form tried first");
-    }
-
-    #[tokio::test]
-    async fn ensure_client_rejects_prm_resource_mismatch() {
-        let harness = harness(MockMetadataClient::new(vec![(
-            PRM_URL,
-            serde_json::json!({
-                "resource": "https://evil.example.com/mcp",
-                "authorization_servers": ["https://as.example.com"],
-            }),
-        )]));
-
-        let error = harness
-            .driver
-            .ensure_client(&target(), REDIRECT, None)
-            .await
-            .expect_err("resource mismatch must fail");
-
-        assert!(matches!(
-            error,
-            McpOAuthError::ProtectedResourceMetadataUnavailable { .. }
-        ));
-    }
-
-    #[tokio::test]
-    async fn ensure_client_rejects_as_without_s256() {
-        let harness = harness(MockMetadataClient::new(vec![
-            (PRM_URL, prm_doc()),
-            (
-                AS_URL,
-                serde_json::json!({
-                    "issuer": "https://as.example.com",
-                    "authorization_endpoint": "https://as.example.com/authorize",
-                    "token_endpoint": "https://as.example.com/token",
-                    "code_challenge_methods_supported": ["plain"],
-                    "registration_endpoint": "https://as.example.com/register",
-                }),
-            ),
-        ]));
-
-        let error = harness
-            .driver
-            .ensure_client(&target(), REDIRECT, None)
-            .await
-            .expect_err("missing S256 must fail");
-
-        assert!(matches!(error, McpOAuthError::PkceUnsupported { .. }));
-    }
-
-    #[tokio::test]
-    async fn ensure_client_requires_some_client_identification() {
-        let harness = harness(MockMetadataClient::new(vec![
-            (PRM_URL, prm_doc()),
-            (AS_URL, as_doc(serde_json::json!({}))),
-        ]));
-
-        let error = harness
-            .driver
-            .ensure_client(&target(), REDIRECT, None)
-            .await
-            .expect_err("no CIMD and no DCR must fail");
-
-        assert!(matches!(
-            error,
-            McpOAuthError::NoClientIdentification { .. }
-        ));
-    }
-
-    #[tokio::test]
-    async fn ensure_client_rejects_issuer_mismatch() {
-        let harness = harness(MockMetadataClient::new(vec![
-            (PRM_URL, prm_doc()),
-            (
-                AS_URL,
-                serde_json::json!({
-                    "issuer": "https://other-as.example.com",
-                    "authorization_endpoint": "https://as.example.com/authorize",
-                    "token_endpoint": "https://as.example.com/token",
-                }),
-            ),
-        ]));
-
-        let error = harness
-            .driver
-            .ensure_client(&target(), REDIRECT, None)
-            .await
-            .expect_err("issuer mismatch must fail");
-
-        assert!(matches!(
-            error,
-            McpOAuthError::AuthorizationServerMetadataUnavailable { .. }
-        ));
+        assert!(token.body.contains("scope=tools.read"));
     }
 }

@@ -3201,7 +3201,7 @@ async fn run_mcp_live_client(
         .await?;
     let tools = match discovered.result {
         McpServerToolsDiscoverResponse::Success { tools } => tools,
-        McpServerToolsDiscoverResponse::Failure { code, message } => {
+        McpServerToolsDiscoverResponse::Failure { code, message, .. } => {
             anyhow::bail!("Configurator discovery failed with {code:?}: {message}")
         }
     };

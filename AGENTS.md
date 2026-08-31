@@ -90,6 +90,7 @@ cargo test -p temporal-server --test environment_provider_live -- --ignored --te
 cargo test -p temporal-server --test bots_live -- --ignored --test-threads=1
 cargo test -p temporal-server --test channels_live -- --ignored --test-threads=1
 cargo test -p temporal-server --test preprocess_live -- --ignored --test-threads=1
+cargo test -p temporal-server --test mcp_oauth_live -- --ignored --test-threads=1
 cargo test -p temporal-server --test environment_provider_live temporal_live_environment_daemon_jobs_round_trip -- --ignored --test-threads=1 --nocapture
 ```
 

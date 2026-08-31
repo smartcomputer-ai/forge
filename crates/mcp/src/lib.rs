@@ -146,6 +146,7 @@ pub enum McpToolDiscoveryFailureKind {
     GrantAudienceMismatch,
     Unauthorized,
     Forbidden,
+    AdditionalConsentRequired,
     RemoteRateLimited,
     RemoteFailure,
     Unreachable,
@@ -160,6 +161,7 @@ pub enum McpToolDiscoveryFailureKind {
 pub struct McpToolDiscoveryFailure {
     pub kind: McpToolDiscoveryFailureKind,
     pub message: String,
+    pub required_scopes: Vec<String>,
 }
 
 impl McpToolDiscoveryFailure {
@@ -167,7 +169,13 @@ impl McpToolDiscoveryFailure {
         Self {
             kind,
             message: message.into(),
+            required_scopes: Vec::new(),
         }
+    }
+
+    pub fn with_required_scopes(mut self, scopes: Vec<String>) -> Self {
+        self.required_scopes = scopes;
+        self
     }
 }
 

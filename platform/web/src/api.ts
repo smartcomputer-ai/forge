@@ -353,6 +353,7 @@ export type McpToolDiscovery =
         | "grantAudienceMismatch"
         | "unauthorized"
         | "forbidden"
+        | "additionalConsentRequired"
         | "remoteRateLimited"
         | "remoteFailure"
         | "unreachable"
@@ -361,6 +362,7 @@ export type McpToolDiscovery =
         | "paginationLimit"
         | "responseTooLarge";
       message: string;
+      requiredScopes?: string[];
     };
 
 export interface McpOAuthFlowStart {
@@ -386,6 +388,7 @@ export interface McpServerAuthDiscovery {
   oauth?: {
     resource: string;
     authorizationServers: string[];
+    scopesSupported: string[];
   } | null;
 }
 

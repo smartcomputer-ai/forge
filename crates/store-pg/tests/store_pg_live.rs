@@ -1618,6 +1618,8 @@ async fn pg_live_auth_flows_are_one_time_use() {
             redirect_uri: "https://lightspeed.example.com/auth/callback".to_owned(),
             scopes: vec!["contacts.read".to_owned()],
             audience: Some("https://crm.example.com/mcp".to_owned()),
+            expected_issuer: Some("https://as.example.com".to_owned()),
+            require_issuer: true,
             expires_at_ms: 10_000,
             created_at_ms: 10,
         })
@@ -1690,6 +1692,8 @@ async fn pg_live_auth_flows_are_one_time_use() {
             redirect_uri: "https://lightspeed.example.com/auth/callback".to_owned(),
             scopes: Vec::new(),
             audience: Some("https://crm.example.com/mcp".to_owned()),
+            expected_issuer: None,
+            require_issuer: false,
             expires_at_ms: 50,
             created_at_ms: 10,
         })
@@ -1928,6 +1932,9 @@ fn create_oauth_client_record(client_id: &OAuthClientId) -> CreateOAuthClientRec
         token_endpoint_auth_method: TokenEndpointAuthMethod::None,
         scopes_default: vec!["contacts.read".to_owned()],
         audience: Some("https://crm.example.com/mcp".to_owned()),
+        authorization_server_issuer: Some("https://as.example.com".to_owned()),
+        authorization_response_iss_parameter_supported: true,
+        authorization_server_scopes_supported: vec!["contacts.read".to_owned()],
         created_at_ms: 10,
     }
 }

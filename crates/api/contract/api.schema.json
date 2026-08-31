@@ -2442,6 +2442,22 @@
         "authorizationEndpoint": {
           "type": "string"
         },
+        "authorizationResponseIssParameterSupported": {
+          "default": false,
+          "type": "boolean"
+        },
+        "authorizationServerIssuer": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "authorizationServerScopesSupported": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "clientId": {
           "type": [
             "string",
@@ -9246,6 +9262,14 @@
         },
         "resource": {
           "type": "string"
+        },
+        "scopesSupported": {
+          "default": [],
+          "description": "Scopes advertised by current protected-resource/authorization-server\nmetadata. Advisory only; clients must not silently expand consent.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
         }
       },
       "required": [
@@ -9662,6 +9686,12 @@
             "message": {
               "type": "string"
             },
+            "required_scopes": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
             "status": {
               "const": "failure",
               "type": "string"
@@ -9797,6 +9827,7 @@
         "grantAudienceMismatch",
         "unauthorized",
         "forbidden",
+        "additionalConsentRequired",
         "remoteRateLimited",
         "remoteFailure",
         "unreachable",
@@ -10096,6 +10127,22 @@
         },
         "authorizationEndpoint": {
           "type": "string"
+        },
+        "authorizationResponseIssParameterSupported": {
+          "default": false,
+          "type": "boolean"
+        },
+        "authorizationServerIssuer": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "authorizationServerScopesSupported": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
         },
         "clientId": {
           "type": "string"

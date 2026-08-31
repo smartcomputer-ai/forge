@@ -2379,6 +2379,7 @@ impl AgentApiService for TestService {
             oauth: Some(McpOAuthDiscoveryView {
                 resource: params.server_url,
                 authorization_servers: vec!["https://auth.example.com".to_owned()],
+                scopes_supported: vec!["mcp:tools".to_owned()],
             }),
         }))
     }
@@ -2877,6 +2878,9 @@ fn test_auth_client(client_id: String) -> OAuthClientView {
         token_endpoint_auth_method: TokenEndpointAuthMethod::None,
         scopes_default: Vec::new(),
         audience: Some("https://crm.example.com/mcp".to_owned()),
+        authorization_server_issuer: Some("https://as.example.com".to_owned()),
+        authorization_response_iss_parameter_supported: true,
+        authorization_server_scopes_supported: Vec::new(),
         created_at_ms: 1,
         updated_at_ms: 2,
     }

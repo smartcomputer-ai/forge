@@ -191,7 +191,13 @@ export function mcpRoutes(store: DemoStore): Hono {
     const protectedLooking = url.protocol === "https:" && /oauth|mcp/i.test(url.href);
     return c.json(
       protectedLooking
-        ? { oauth: { resource: url.href, authorizationServers: [url.origin] } }
+        ? {
+            oauth: {
+              resource: url.href,
+              authorizationServers: [url.origin],
+              scopesSupported: ["mcp:tools"],
+            },
+          }
         : { oauth: null },
     );
   });

@@ -1300,6 +1300,7 @@ export type McpServerToolsDiscoverResponse =
   | {
       code: McpToolDiscoveryFailureCode;
       message: string;
+      required_scopes?: string[];
       status: "failure";
     };
 /**
@@ -1312,6 +1313,7 @@ export type McpToolDiscoveryFailureCode =
   | "grantAudienceMismatch"
   | "unauthorized"
   | "forbidden"
+  | "additionalConsentRequired"
   | "remoteRateLimited"
   | "remoteFailure"
   | "unreachable"
@@ -2289,6 +2291,9 @@ export interface AuthClientCreateResponse {
 export interface OAuthClientView {
   audience?: string | null;
   authorizationEndpoint: string;
+  authorizationResponseIssParameterSupported?: boolean;
+  authorizationServerIssuer?: string | null;
+  authorizationServerScopesSupported?: string[];
   clientId: string;
   createdAtMs: number;
   displayName?: string | null;
@@ -4312,6 +4317,11 @@ export interface McpServerAuthDiscoverResponse {
 export interface McpOAuthDiscoveryView {
   authorizationServers?: string[];
   resource: string;
+  /**
+   * Scopes advertised by current protected-resource/authorization-server
+   * metadata. Advisory only; clients must not silently expand consent.
+   */
+  scopesSupported?: string[];
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
@@ -5463,6 +5473,9 @@ export interface AgentProfileInput {
 export interface AuthClientCreateParams {
   audience?: string | null;
   authorizationEndpoint: string;
+  authorizationResponseIssParameterSupported?: boolean;
+  authorizationServerIssuer?: string | null;
+  authorizationServerScopesSupported?: string[];
   clientId?: string | null;
   clientSecret?: string | null;
   displayName?: string | null;

@@ -92,13 +92,14 @@ impl DeploymentClients {
             am::Client::new(am::Config::from_env_allow_missing_key())
                 .map_err(|error| anyhow::anyhow!("construct Anthropic client: {error}"))?,
         );
-        let oauth_token: Arc<dyn OAuthTokenClient> = Arc::new(
-            HttpOAuthTokenClient::new()
-                .map_err(|error| anyhow::anyhow!("construct oauth token client: {error}"))?,
-        );
+        let allow_private_mcp = std::env::var("LIGHTSPEED_MCP_DISCOVERY_ALLOW_PRIVATE_NETWORKS")
+            .is_ok_and(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "on"));
         let oauth_metadata: Arc<dyn auth::OAuthMetadataClient> = Arc::new(
-            auth::HttpOAuthMetadataClient::new()
-                .map_err(|error| anyhow::anyhow!("construct oauth metadata client: {error}"))?,
+            auth::HttpOAuthMetadataClient::with_private_networks(allow_private_mcp),
+        );
+        let oauth_token: Arc<dyn OAuthTokenClient> = Arc::new(
+            HttpOAuthTokenClient::new_with_mcp_http(oauth_metadata.clone())
+                .map_err(|error| anyhow::anyhow!("construct oauth token client: {error}"))?,
         );
         let github: Arc<dyn GitHubApiClient> = Arc::new(
             HttpGitHubApiClient::new()

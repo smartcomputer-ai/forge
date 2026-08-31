@@ -2,7 +2,10 @@
 
 **Status**
 
-- Proposed 2026-08-31.
+- Implemented 2026-08-31. The protocol, persistence, contract, UI, broker, and
+  database-backed live acceptance suites pass. A public third-party OAuth MCP
+  remains an optional compatibility smoke test rather than a correctness
+  dependency.
 - Builds on P69 (the generic auth broker), P110 (universe-owned MCP
   credentials), and [P143](p143-mcp-tool-discovery.md) (the bounded `rmcp`
   Streamable HTTP client and live inventory UX).
@@ -10,6 +13,52 @@
   client will need the same challenge, scope-upgrade, refresh, and
   reauthorization behavior. It is independent of
   [P144](p144-mcp-approvals.md).
+
+## Implementation Record
+
+The implementation landed as the greenfield breaking refactor described here:
+
+- `crates/auth/src/safe_http.rs` is the shared DNS-pinned, redirect-validating,
+  bounded HTTP seam used by both MCP inventory and MCP OAuth. The existing
+  private-network development switch applies consistently to both paths.
+- `crates/auth/src/mcp_oauth.rs` now uses `rmcp` 3.1.4 for protected-resource
+  and authorization-server metadata, challenge parsing, CIMD/DCR, PKCE and
+  authorization state, code exchange, and refresh. Legacy endpoint fallback
+  and the replaced MCP wire parsers are gone.
+- Lightspeed still owns durable clients, one-time flows, encrypted secrets,
+  grants, audience checks, refresh single-flight, rotation, and status. The SDK
+  receives transient credentials only for the operation the broker admits.
+- Migration 011 retains authorization-server issuer, RFC 9207 support, and
+  advertised scopes on clients, plus the expected issuer requirement on each
+  in-flight flow. Raw state remains hashed and PKCE verifier/client/token
+  secrets remain in `SecretStore`.
+- MCP discovery maps SDK-parsed `invalid_token` and `insufficient_scope`
+  challenges to `grantNeedsReauth` and `additionalConsentRequired`; suggested
+  scopes are diagnostics and never mutate authored consent.
+- The generated API/TypeScript contracts and the Platform server editor expose
+  current advertised scopes and typed additional-consent diagnostics. Manual
+  preregistration remains available through the API and CLI.
+
+Verification completed locally:
+
+- `cargo test -p auth` (85 passed);
+- `cargo test -p api` (82 passed, including generated-contract freshness);
+- `cargo test -p store-pg` (unit suite passed; database tests remain opt-in);
+- `cargo test -p temporal-server --lib` (249 passed, one unrelated ffmpeg
+  smoke test ignored), plus the scope-upgrade transport fixture;
+- `cargo test -p temporal-server --test mcp_oauth_live -- --ignored
+  --test-threads=1` (database-backed OAuth/MCP round trip passed);
+- `cargo check --workspace --tests`;
+- TypeScript generation, typechecking, 206 tests, and live/demo production
+  builds.
+
+The self-contained live suite uses real Postgres persistence and a local
+standards-shaped OAuth/MCP server. It covers migration 011, SDK discovery and
+DCR, PKCE and resource binding, cross-instance callback completion, RFC 9207
+issuer refusal, callback replay refusal, audience refusal, concurrent broker
+refresh with refresh-token rotation, authenticated tool discovery,
+`insufficient_scope`, and terminal refresh rejection transitioning the grant
+to `needs_reauth`.
 
 ## Decision
 

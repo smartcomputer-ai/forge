@@ -85,6 +85,9 @@ pub(super) fn mcp_tool_discovery_failure(
         Source::GrantAudienceMismatch => api::McpToolDiscoveryFailureCode::GrantAudienceMismatch,
         Source::Unauthorized => api::McpToolDiscoveryFailureCode::Unauthorized,
         Source::Forbidden => api::McpToolDiscoveryFailureCode::Forbidden,
+        Source::AdditionalConsentRequired => {
+            api::McpToolDiscoveryFailureCode::AdditionalConsentRequired
+        }
         Source::RemoteRateLimited => api::McpToolDiscoveryFailureCode::RemoteRateLimited,
         Source::RemoteFailure => api::McpToolDiscoveryFailureCode::RemoteFailure,
         Source::Unreachable => api::McpToolDiscoveryFailureCode::Unreachable,
@@ -96,6 +99,7 @@ pub(super) fn mcp_tool_discovery_failure(
     api::McpServerToolsDiscoverResponse::Failure {
         code,
         message: failure.message,
+        required_scopes: failure.required_scopes,
     }
 }
 

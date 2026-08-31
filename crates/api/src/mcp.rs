@@ -40,6 +40,10 @@ pub struct McpOAuthDiscoveryView {
     pub resource: String,
     #[serde(default)]
     pub authorization_servers: Vec<String>,
+    /// Scopes advertised by current protected-resource/authorization-server
+    /// metadata. Advisory only; clients must not silently expand consent.
+    #[serde(default)]
+    pub scopes_supported: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -68,6 +72,8 @@ pub enum McpServerToolsDiscoverResponse {
     Failure {
         code: McpToolDiscoveryFailureCode,
         message: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        required_scopes: Vec<String>,
     },
 }
 
@@ -106,6 +112,7 @@ pub enum McpToolDiscoveryFailureCode {
     GrantAudienceMismatch,
     Unauthorized,
     Forbidden,
+    AdditionalConsentRequired,
     RemoteRateLimited,
     RemoteFailure,
     Unreachable,
