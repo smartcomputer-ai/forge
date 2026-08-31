@@ -26,7 +26,10 @@ can answer an approval:
 1. **Provider mode, OpenAI Responses.** `require_approval: "always"` is lowered
    into the request, and the returned `mcp_approval_request` item is preserved
    only as a `ProviderOpaque` context entry. Nothing ever constructs an
-   `mcp_approval_response`, so the call can never proceed.
+   `mcp_approval_response`, so the call can never proceed. The blast radius is
+   wider than explicit `always`: `providerDefault` omits the key, and OpenAI's
+   documented default is to require approval for every MCP call — so a
+   `providerDefault` server on OpenAI stalls the same way.
 2. **Terminal-output corruption.** When the provider reports `finish: stop`
    with no assistant message, the engine's `final_output_ref` fallback selects
    the last context entry — which in this situation is the approval-request
@@ -63,6 +66,15 @@ this state in v1, regardless of which side executes the call:
   (P143). Sessions, profiles, tool annotations, and models cannot grant,
   narrow, or bypass approval. `readOnlyHint`/`destructiveHint` may inform UI
   badges, never the decision to gate.
+- `providerDefault` is removed from the policy enum (greenfield breaking,
+  under P143's no-alias rules). Its meaning varied by executor — OpenAI's
+  omitted key inherits OpenAI's require-approval default, Anthropic has no
+  approval concept at all, and native would need a resolution rule — which
+  contradicts "one configured connection, one policy". `approvalDefault`
+  becomes `always | never` (default `never`, unchanged from the current API
+  default), and the OpenAI lowering always writes `require_approval`
+  explicitly, so Lightspeed policy never depends on a provider's current
+  default.
 
 The common approval layer records and resolves a gate; it does not decide when
 one is required. That policy stays with the subject producer — the MCP server
@@ -147,6 +159,20 @@ Human rejection and run cancellation are distinct terminal approval facts. A
 rejection continues the run with a refusal visible to the model; cancellation
 does not manufacture a human decision or provider continuation.
 
+### Unattended sessions: sub-agent children
+
+A P134 child session has no approval surface: nobody watches its `RunView`,
+so a parked child would hang until the parent's joined deadline kills it — a
+silent stall converted into an opaque deadline failure. Children therefore
+never park on approval: a session created by `SubagentExecutionWorkflow`
+auto-rejects every approval request with a typed reason ("approval required,
+but no approval surface reaches this session") — a deterministic rejection
+result at the native gate, an explicit reject continuation in provider mode.
+The refusal is model-visible, so the child reports the blocked step to its
+parent instead of burning wall-clock. This is an explicit typed refusal, not
+a silent auto-decision. Surfacing a child's approval request to the parent
+session is a follow-up.
+
 ### Terminal-output correctness (independent fix)
 
 Regardless of the rest of P144, fix the fallback now:
@@ -210,10 +236,10 @@ Native execution puts the gate exactly where it belongs — before dispatch:
 4. Calls not requiring approval in the same batch execute without waiting;
    the batch completes when every call has a result.
 
-Effective policy in native mode: `always` and `never` mean what they say;
-`providerDefault` resolves to **`always`** — there is no provider default to
-defer to, matching OpenAI's own safe default. Unattended automation opts into
-`never` explicitly on the server record.
+Effective policy in native mode is the record's `approvalDefault`, read from
+the spec: `always` gates, `never` does not. With `providerDefault` removed
+there is nothing to resolve, and the authored value means the same thing
+under every executor.
 
 ## API
 
@@ -263,19 +289,32 @@ pub enum ApprovalSubjectView {
   from deciding a later run's approval. Deciding an unknown, already-decided,
   cancelled, or other-run approval is a typed API error; valid decisions in
   the same request still apply (per-decision outcome in the response).
+- Deciding requires exactly the authority every other run-control admission
+  on the session requires (a deployment API key or universe authority, as
+  with steer/cancel). There is no separate approver role or permission in v1.
 - A notification/event on `session/events/read` announces newly pending
   approvals so clients do not poll `session/read`.
 
 ### Clients
 
-- Web session view: an approval card per pending approval (server, tool,
-  arguments, annotation badges as hints) with Approve/Reject; the run header
-  shows the parked-awaiting-approval state.
+Approval cards are pure frontend rendering: the web session view draws one
+card per `pendingApprovals` entry (server, tool, arguments, annotation badges
+as hints) with Approve/Reject buttons calling the decide API, and the run
+header shows the parked state; the notification keeps the view live. No new
+transport exists — any client that renders a session transcript already has
+everything it needs. Arguments are model-authored text: render them as data,
+never as markup or executable content.
+
 - CLI chat: print pending approvals and accept an approve/reject input.
-- Bot sessions: a parked run simply holds its lane; the bot event `outcome`
-  stays pending until the run resolves. Surfacing approvals in the bot
-  console/chat is a follow-up; v1 makes the state visible through the
-  ordinary session API the console already reads.
+- Bot sessions: bot sessions are ordinary sessions, so the P141 bot page's
+  session views render the same cards with no extra work; a parked run holds
+  its lane and the bot event `outcome` stays pending until the run resolves.
+- Channels: the chat peer sees nothing and cannot decide — a paired
+  conversation's human is often not the operator, and chat access must not
+  imply approval authority. The operator decides in the console. Delivering
+  approval prompts into the chat itself (the personal-assistant case: "may I
+  send this email?") requires an explicit per-trigger or per-pairing grant
+  naming the peer as approver, and is a follow-up.
 
 ## Timeouts
 
@@ -300,6 +339,9 @@ auto-approve under any name.
 - `ApprovalId` counter, generic request/decision/cancellation events, the
   `McpToolCall` subject and MCP continuation variants, reducer state,
   single-funnel parked-run behavior, and cancel-terminates-pending.
+- Remove `providerDefault` across `mcp`, `engine`, `api`, generated clients,
+  the Platform editor, CLI, and demo fixtures; the OpenAI lowering emits
+  `require_approval` explicitly for both remaining values.
 - OpenAI Responses parsing of `mcp_approval_request` into facts alongside the
   opaque entry.
 
@@ -310,6 +352,8 @@ auto-approve under any name.
 - Typed decision context entry and OpenAI `mcp_approval_response` lowering;
   live test: `always` server → park → approve → executed call; reject →
   provider rejection surfaced.
+- Sub-agent child auto-reject on the provider path (explicit reject
+  continuation with the typed reason).
 
 ### Slice 4 — Clients
 
@@ -318,7 +362,7 @@ auto-approve under any name.
 ### Slice 5 — Native gate (with P145)
 
 - `awaiting_approval` call state, gated dispatch, deterministic rejection
-  results, `providerDefault`→`always` resolution in native mode.
+  results, and sub-agent child auto-reject at the native gate.
 
 ## Tests
 
@@ -332,6 +376,10 @@ auto-approve under any name.
   notification emission.
 - Native (with P145): mixed batch of gated and ungated calls; reject produces
   a model-visible tool error, not a run failure.
+- Policy enum: `providerDefault` is rejected everywhere it was accepted, and
+  OpenAI requests always carry an explicit `require_approval` value.
+- Sub-agent children: an approval-gated call in a child session produces the
+  typed auto-rejection, never a parked child run.
 - Regression: the 2026-07-10 incident shape end to end.
 
 ## Acceptance
@@ -354,6 +402,9 @@ auto-approve under any name.
 - Per-session or per-profile approval overrides (P143 removed them).
 - Emulating an approval protocol on providers that lack one.
 - Approval deadlines/expiry policies in v1.
+- Chat peers deciding approvals through channels; v1 approval authority is
+  the session's run-control authority only.
+- Editing or amending a call's arguments as part of approving it.
 - A standing approvals inbox across sessions; v1 is per-run state.
 - A model-authored `request_approval` tool or a generic ask-user interaction.
   The former can reuse this approval surface later; free-form or structured
@@ -361,7 +412,9 @@ auto-approve under any name.
 
 ## Follow-ups
 
-- Bot console surfacing and channel notification of pending approvals.
+- Surfacing a child session's pending approval to its parent session.
+- Channel-delivered approval prompts behind an explicit peer-as-approver
+  grant on the trigger or pairing.
 - Per-server `approvalTimeout` with auto-reject.
 - Per-tool approval policy on the server record if All/Selected-style
   granularity proves insufficient.
