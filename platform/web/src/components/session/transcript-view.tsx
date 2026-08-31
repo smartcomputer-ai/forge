@@ -1,4 +1,5 @@
-import { Loader2, TriangleAlert, X } from "lucide-react";
+import { Check, Loader2, ShieldQuestion, TriangleAlert, X } from "lucide-react";
+import type { PendingApprovalView } from "@lightspeed/agent-client";
 import { Bubble, BubbleContent } from "@/components/ui/bubble";
 import { Button } from "@/components/ui/button";
 import { Marker, MarkerContent, MarkerIcon } from "@/components/ui/marker";
@@ -169,5 +170,80 @@ export function ActiveRunMarker({ run }: { run: ActiveRun }) {
       </MarkerIcon>
       <MarkerContent>{run.label}…</MarkerContent>
     </Marker>
+  );
+}
+
+export function ApprovalCards({
+  approvals,
+  deciding,
+  error,
+  onDecide,
+}: {
+  approvals: PendingApprovalView[];
+  deciding: { approvalId: string; decision: "approve" | "reject" } | null;
+  error: { approvalId: string; message: string } | null;
+  onDecide: (approvalId: string, decision: "approve" | "reject") => void;
+}) {
+  if (approvals.length === 0) return null;
+  return (
+    <div className="flex flex-col gap-3" aria-label="Pending approvals">
+      {approvals.map((approval) => {
+        const subject = approval.subject;
+        const busy = deciding?.approvalId === approval.approvalId;
+        return (
+          <section
+            key={approval.approvalId}
+            className="rounded-lg border border-amber-500/35 bg-amber-500/5 p-4"
+          >
+            <div className="flex items-start gap-3">
+              <ShieldQuestion className="mt-0.5 size-4 shrink-0 text-amber-600" />
+              <div className="min-w-0 flex-1">
+                <p className="text-sm font-medium">Approve MCP tool call?</p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  <span className="font-medium text-foreground">{subject.toolName}</span>
+                  {` on ${subject.serverLabel}`}
+                </p>
+                <pre className="mt-3 max-h-48 overflow-auto whitespace-pre-wrap break-all rounded-md bg-muted/70 p-3 font-mono text-xs">
+                  {subject.argumentsPreview}
+                </pre>
+                <div className="mt-3 flex items-center gap-2">
+                  <Button
+                    size="sm"
+                    disabled={deciding !== null}
+                    onClick={() => onDecide(approval.approvalId, "approve")}
+                  >
+                    {busy && deciding?.decision === "approve" ? (
+                      <Loader2 className="animate-spin" />
+                    ) : (
+                      <Check />
+                    )}
+                    Approve
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={deciding !== null}
+                    onClick={() => onDecide(approval.approvalId, "reject")}
+                  >
+                    {busy && deciding?.decision === "reject" ? (
+                      <Loader2 className="animate-spin" />
+                    ) : (
+                      <X />
+                    )}
+                    Reject
+                  </Button>
+                  <span className="ml-auto font-mono text-[10px] text-muted-foreground">
+                    {approval.approvalId}
+                  </span>
+                </div>
+                {error?.approvalId === approval.approvalId && (
+                  <p className="mt-2 text-xs text-destructive">{error.message}</p>
+                )}
+              </div>
+            </div>
+          </section>
+        );
+      })}
+    </div>
   );
 }

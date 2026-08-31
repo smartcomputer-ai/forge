@@ -20,6 +20,7 @@ fn notification_serializes_as_json_rpc_lite_shape() {
             entries: Vec::new(),
             tool_batches: Vec::new(),
             usage: None,
+            pending_approvals: Vec::new(),
         },
     };
 
@@ -722,6 +723,31 @@ async fn dispatch_json_rpc_routes_run_cancel() {
         response.result.expect("result")["result"]["run"]["status"],
         json!("cancelled")
     );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn dispatch_json_rpc_routes_run_approvals_decide() {
+    let response = dispatch_json_rpc(
+        &TestService,
+        JsonRpcRequest {
+            id: RequestId::Number(1),
+            method: METHOD_SESSION_RUNS_APPROVALS_DECIDE.to_owned(),
+            params: Some(json!({
+                "sessionId": "session_1",
+                "runId": "run_1",
+                "decisions": [{
+                    "approvalId": "approval_1",
+                    "decision": "approve"
+                }]
+            })),
+        },
+    )
+    .await;
+
+    assert!(response.error.is_none());
+    let result = response.result.expect("result");
+    assert_eq!(result["result"]["results"][0]["status"], json!("decided"));
+    assert_eq!(result["result"]["run"]["status"], json!("running"));
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -1616,6 +1642,7 @@ fn run_view_can_expose_tool_batches() {
             }],
         }],
         usage: None,
+        pending_approvals: Vec::new(),
     };
 
     let value = serde_json::to_value(run).expect("serialize run");
@@ -1988,6 +2015,24 @@ impl AgentApiService for TestService {
     ) -> Result<AgentApiOutcome<RunCancelResponse>, AgentApiError> {
         Ok(AgentApiOutcome::new(RunCancelResponse {
             run: test_run(params.run_id, RunStatus::Cancelled),
+        }))
+    }
+
+    async fn decide_run_approvals(
+        &self,
+        params: RunApprovalsDecideParams,
+    ) -> Result<AgentApiOutcome<RunApprovalsDecideResponse>, AgentApiError> {
+        Ok(AgentApiOutcome::new(RunApprovalsDecideResponse {
+            results: params
+                .decisions
+                .into_iter()
+                .map(|decision| ApprovalDecisionResult {
+                    approval_id: decision.approval_id,
+                    status: ApprovalDecisionStatus::Decided,
+                    failure: None,
+                })
+                .collect(),
+            run: test_run(params.run_id, RunStatus::Running),
         }))
     }
 
@@ -3064,6 +3109,7 @@ fn test_run(id: RunId, status: RunStatus) -> RunView {
         entries: Vec::new(),
         tool_batches: Vec::new(),
         usage: None,
+        pending_approvals: Vec::new(),
     }
 }
 
@@ -3090,7 +3136,7 @@ fn test_mcp_server(server_id: String) -> McpServerView {
         display_name: None,
         description: None,
         allowed_tools: None,
-        approval_default: RemoteMcpApprovalPolicy::ProviderDefault,
+        approval_default: RemoteMcpApprovalPolicy::Never,
         defer_loading_default: None,
         auth_policy: McpServerAuthPolicy::None,
         credential: None,

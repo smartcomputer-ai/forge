@@ -112,6 +112,11 @@ pub trait AgentApiService: Send + Sync {
         params: RunCancelParams,
     ) -> Result<AgentApiOutcome<RunCancelResponse>, AgentApiError>;
 
+    async fn decide_run_approvals(
+        &self,
+        params: RunApprovalsDecideParams,
+    ) -> Result<AgentApiOutcome<RunApprovalsDecideResponse>, AgentApiError>;
+
     async fn steer_run(
         &self,
         params: RunSteerParams,

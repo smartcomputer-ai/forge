@@ -252,6 +252,10 @@ pub enum ContextEntryKind {
     },
     ReasoningState,
     ProviderOpaque,
+    McpApprovalResponse {
+        approval_request_id: String,
+        approve: bool,
+    },
 }
 
 /// Catalog kinds supersede on keyed replacement instead of removing the
@@ -291,6 +295,10 @@ pub enum ContextEntrySource {
     AssistantOutput {
         run_id: RunId,
         turn_id: TurnId,
+    },
+    ApprovalDecision {
+        run_id: RunId,
+        approval_id: crate::ApprovalId,
     },
     Tool {
         run_id: RunId,
@@ -759,6 +767,9 @@ fn validate_external_context_edit_entry(
 
     match &entry.kind {
         ContextEntryKind::ProviderOpaque => Ok(()),
+        ContextEntryKind::McpApprovalResponse { .. } => Err(DomainError::InvariantViolation(
+            "MCP approval responses are runtime-owned context".to_owned(),
+        )),
         ContextEntryKind::Message {
             role: ContextMessageRole::User,
         } => Ok(()),
@@ -1505,6 +1516,7 @@ fn record_entry_materialization(
         }
         ContextEntrySource::ContextEdit
         | ContextEntrySource::AssistantOutput { .. }
+        | ContextEntrySource::ApprovalDecision { .. }
         | ContextEntrySource::Tool { .. }
         | ContextEntrySource::Reasoning { .. }
         | ContextEntrySource::Runtime { .. } => Ok(()),

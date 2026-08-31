@@ -32,6 +32,7 @@ pub const METHOD_SESSION_CONTEXT_REMOVE: &str = "session/context/remove";
 pub const METHOD_SESSION_CONTEXT_COMPACT: &str = "session/context/compact";
 pub const METHOD_SESSION_RUNS_START: &str = "session/runs/start";
 pub const METHOD_SESSION_RUNS_CANCEL: &str = "session/runs/cancel";
+pub const METHOD_SESSION_RUNS_APPROVALS_DECIDE: &str = "session/runs/approvals/decide";
 pub const METHOD_SESSION_RUNS_STEER: &str = "session/runs/steer";
 
 // ── Sessions: prompt and skill state ────────────────────────────────────────

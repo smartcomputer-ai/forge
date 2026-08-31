@@ -468,6 +468,61 @@ impl GatewayAgentApi {
         }
     }
 
+    pub(super) async fn wait_for_approval_decision(
+        &self,
+        session_id: &SessionId,
+        run_id: RunId,
+        approval_id: &engine::ApprovalId,
+        correlation_token: &str,
+    ) -> Result<(), AgentApiError> {
+        let started = Instant::now();
+        loop {
+            if started.elapsed() > self.operation_timeout {
+                return Err(AgentApiError::internal(format!(
+                    "timed out waiting for approval decision: {approval_id}"
+                )));
+            }
+            if let Some(status) = self.query_status_optional(session_id).await? {
+                if let Some(failure) =
+                    status.admission_failures.iter().rev().find(|failure| {
+                        failure.correlation_token.as_deref() == Some(correlation_token)
+                    })
+                {
+                    return Err(map_admission_failure_to_api_error(failure));
+                }
+                if let Some(error) = status.last_error {
+                    return Err(AgentApiError::internal(format!(
+                        "agent workflow reported error: {error}"
+                    )));
+                }
+            }
+            let loaded = self.load_session_state(session_id).await?;
+            if let Some(active_run) = loaded.state.runs.active.as_ref()
+                && active_run.run_id == run_id
+            {
+                let record = active_run.approvals.get(approval_id).ok_or_else(|| {
+                    AgentApiError::not_found(format!("approval not found: {approval_id}"))
+                })?;
+                if record.status.is_terminal() {
+                    return Ok(());
+                }
+            } else if loaded
+                .state
+                .runs
+                .completed
+                .iter()
+                .any(|record| record.run_id == run_id)
+            {
+                // The admission was accepted and the run may have continued
+                // through completion before this polling read observed it.
+                return Ok(());
+            } else {
+                return Err(AgentApiError::not_found(format!("run not found: {run_id}")));
+            }
+            tokio::time::sleep(self.poll_interval).await;
+        }
+    }
+
     pub(super) async fn wait_for_closed_session(
         &self,
         session_id: &SessionId,

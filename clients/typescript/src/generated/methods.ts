@@ -20,6 +20,7 @@ export const METHODS = [
   "session/context/compact",
   "session/runs/start",
   "session/runs/cancel",
+  "session/runs/approvals/decide",
   "session/runs/steer",
   "session/skills/list",
   "session/skills/active",
@@ -203,6 +204,11 @@ export const METHOD_INFO = {
     scope: "universe",
     summary: "Cancel a run",
     description: "Requests cancellation of the named queued or active run and returns its current projected state; observe session events for terminal completion. In-flight model and tool activity is aborted; no grace turn runs.",
+  },
+  "session/runs/approvals/decide": {
+    scope: "universe",
+    summary: "Decide pending run approvals",
+    description: "Approves or rejects pending MCP tool calls on the named active run. Valid decisions apply independently; the run resumes only after every pending approval has a decision.",
   },
   "session/runs/steer": {
     scope: "universe",
@@ -883,6 +889,15 @@ export interface MethodMap {
   "session/runs/cancel": {
     params: Api.RunCancelParams;
     result: Api.AgentApiOutcomeOfRunCancelResponse;
+  };
+  /**
+   * Decide pending run approvals
+   *
+   * Approves or rejects pending MCP tool calls on the named active run. Valid decisions apply independently; the run resumes only after every pending approval has a decision.
+   */
+  "session/runs/approvals/decide": {
+    params: Api.RunApprovalsDecideParams;
+    result: Api.AgentApiOutcomeOfRunApprovalsDecideResponse;
   };
   /**
    * Steer the active run
@@ -1967,6 +1982,14 @@ export const rpc = {
    */
   sessionRunsCancel(client: RpcCaller, params: Api.RunCancelParams): Promise<Api.AgentApiOutcomeOfRunCancelResponse> {
     return client.call("session/runs/cancel", params);
+  },
+  /**
+   * Decide pending run approvals
+   *
+   * Approves or rejects pending MCP tool calls on the named active run. Valid decisions apply independently; the run resumes only after every pending approval has a decision.
+   */
+  sessionRunsApprovalsDecide(client: RpcCaller, params: Api.RunApprovalsDecideParams): Promise<Api.AgentApiOutcomeOfRunApprovalsDecideResponse> {
+    return client.call("session/runs/approvals/decide", params);
   },
   /**
    * Steer the active run

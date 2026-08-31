@@ -14,16 +14,16 @@ use thiserror::Error;
 pub const AWAIT_TOOL_NAME: &str = "await";
 
 use crate::{
-    AwaitMode, AwaitSpec, BlobRef, CodecError, CommandError, ContextCompactionRequest,
-    ContextCompactionResult, ContextEntryInput, ContextEntryKind, ContextEntrySource, ContextEvent,
-    ContextMessageRole, CoreAgentCodec, CoreAgentEntry, CoreAgentEvent, CoreAgentEventProposal,
-    CoreAgentJoins, CoreAgentState, CoreAgentStatus, DomainError, LlmFinish, LlmGenerationRequest,
-    LlmGenerationResult, LlmGenerationStatus, LlmRequest, PlanningError, PromiseEvent, PromiseId,
-    PromiseOwnership, PromiseStatus, ResumeToolBatchCommand, RunEvent, SessionId, SessionPosition,
-    ToolBatchId, ToolBatchOutcome, ToolBatchResumeOutput, ToolBatchSuspension, ToolCallId,
-    ToolCallResult, ToolCallStatus, ToolEvent, ToolInvocationBatchRequest,
-    ToolInvocationBatchResult, ToolInvocationRequest, ToolInvocationResult, TurnEvent, TurnId,
-    TurnOutcome, WakeReason,
+    ApprovalEvent, ApprovalId, ApprovalRequested, AwaitMode, AwaitSpec, BlobRef, CodecError,
+    CommandError, ContextCompactionRequest, ContextCompactionResult, ContextEntryInput,
+    ContextEntryKind, ContextEntrySource, ContextEvent, ContextMessageRole, CoreAgentCodec,
+    CoreAgentEntry, CoreAgentEvent, CoreAgentEventProposal, CoreAgentJoins, CoreAgentState,
+    CoreAgentStatus, DomainError, LlmFinish, LlmGenerationRequest, LlmGenerationResult,
+    LlmGenerationStatus, LlmRequest, PlanningError, PromiseEvent, PromiseId, PromiseOwnership,
+    PromiseStatus, ResumeToolBatchCommand, RunEvent, SessionId, SessionPosition, ToolBatchId,
+    ToolBatchOutcome, ToolBatchResumeOutput, ToolBatchSuspension, ToolCallId, ToolCallResult,
+    ToolCallStatus, ToolEvent, ToolInvocationBatchRequest, ToolInvocationBatchResult,
+    ToolInvocationRequest, ToolInvocationResult, TurnEvent, TurnId, TurnOutcome, WakeReason,
     core::components::context::context_entries_from_inputs,
     session::{StoredSessionEntry, UncommittedStoredEvent},
 };
@@ -481,6 +481,7 @@ pub fn generation_result_proposals(
     }
     let context_entries = context_entries_from_llm_result(state, &result)?;
     let outcome = turn_outcome_for_generation_result(&result);
+    let approval_requests = result.facts.approval_requests.clone();
     let joins = CoreAgentJoins {
         run_id: Some(result.run_id),
         turn_id: Some(result.turn_id),
@@ -506,6 +507,23 @@ pub fn generation_result_proposals(
             facts: result.facts,
         }),
     ));
+    let mut next_approval_id = state.id_cursors.last_approval_id;
+    for observed in &approval_requests {
+        next_approval_id = next_approval_id.checked_add(1).ok_or_else(|| {
+            DomainError::InvariantViolation("approval id cursor exhausted".to_owned())
+        })?;
+        proposals.push(CoreAgentEventProposal::new(
+            joins.clone(),
+            CoreAgentEvent::Approval(ApprovalEvent::Requested {
+                approval: ApprovalRequested {
+                    approval_id: ApprovalId::new(format!("approval_{next_approval_id}")),
+                    run_id: result.run_id,
+                    subject: observed.subject.clone(),
+                    continuation: observed.continuation.clone(),
+                },
+            }),
+        ));
+    }
     proposals.push(CoreAgentEventProposal::new(
         joins,
         CoreAgentEvent::Turn(TurnEvent::Completed {
@@ -536,6 +554,9 @@ fn turn_outcome_for_generation_result(result: &LlmGenerationResult) -> TurnOutco
                 TurnOutcome::Failed {
                     failure_ref: result.failure_ref.clone(),
                 }
+            }
+            LlmFinish::Stop | LlmFinish::Unknown if !result.facts.approval_requests.is_empty() => {
+                TurnOutcome::ApprovalsRequested
             }
             LlmFinish::Stop | LlmFinish::Unknown => TurnOutcome::FinalOutput {
                 output_ref: final_output_ref(&result.context_entries),
@@ -585,11 +606,6 @@ fn final_output_ref(context_entries: &[ContextEntryInput]) -> Option<BlobRef> {
                 role: ContextMessageRole::Assistant,
             } => Some(entry.content_ref.clone()),
             _ => None,
-        })
-        .or_else(|| {
-            context_entries
-                .last()
-                .map(|entry| entry.content_ref.clone())
         })
 }
 
@@ -2152,6 +2168,7 @@ mod tests {
                         finish: LlmFinish::ToolCalls,
                         usage: None,
                         tool_calls,
+                        approval_requests: Vec::new(),
                         context_token_estimate: None,
                     },
                 },
@@ -2520,6 +2537,14 @@ mod tests {
             drive.state().runs.queued[0].source.input()[0].kind,
             ContextEntryKind::ProviderOpaque
         ));
+    }
+
+    #[test]
+    fn provider_opaque_approval_request_is_never_a_final_output() {
+        let opaque_ref = BlobRef::from_bytes(b"mcp approval request");
+        let entries = vec![provider_opaque_input(opaque_ref)];
+
+        assert_eq!(final_output_ref(&entries), None);
     }
 
     #[test]
@@ -3466,6 +3491,7 @@ mod tests {
                         finish: LlmFinish::Stop,
                         usage: None,
                         tool_calls: Vec::new(),
+                        approval_requests: Vec::new(),
                         context_token_estimate: None,
                     },
                 },
@@ -4160,6 +4186,7 @@ mod tests {
                     finish: LlmFinish::Stop,
                     usage: None,
                     tool_calls: Vec::new(),
+                    approval_requests: Vec::new(),
                     context_token_estimate: None,
                 },
             },
@@ -4252,6 +4279,7 @@ mod tests {
                             arguments_ref: BlobRef::from_bytes(br#"{"wait":true}"#),
                             native_call_ref: None,
                         }],
+                        approval_requests: Vec::new(),
                         context_token_estimate: None,
                     },
                 },
@@ -4333,6 +4361,7 @@ mod tests {
                 finish: LlmFinish::Stop,
                 usage: None,
                 tool_calls: Vec::new(),
+                approval_requests: Vec::new(),
                 context_token_estimate: None,
             },
         };
@@ -4757,6 +4786,7 @@ mod tests {
                         finish: LlmFinish::Stop,
                         usage: None,
                         tool_calls: Vec::new(),
+                        approval_requests: Vec::new(),
                         context_token_estimate: None,
                     },
                 },
@@ -4895,6 +4925,7 @@ mod tests {
                         finish: LlmFinish::Stop,
                         usage: None,
                         tool_calls: Vec::new(),
+                        approval_requests: Vec::new(),
                         context_token_estimate: None,
                     },
                 };
@@ -4960,6 +4991,7 @@ mod tests {
                         finish: LlmFinish::Length,
                         usage: None,
                         tool_calls: Vec::new(),
+                        approval_requests: Vec::new(),
                         context_token_estimate: None,
                     },
                 },
@@ -5036,6 +5068,7 @@ mod tests {
                         finish: LlmFinish::ContentFilter,
                         usage: None,
                         tool_calls: Vec::new(),
+                        approval_requests: Vec::new(),
                         context_token_estimate: None,
                     },
                 },
@@ -5103,6 +5136,7 @@ mod tests {
                         finish: LlmFinish::Failed,
                         usage: None,
                         tool_calls: Vec::new(),
+                        approval_requests: Vec::new(),
                         context_token_estimate: None,
                     },
                 },
@@ -5589,6 +5623,7 @@ mod tests {
                         finish: LlmFinish::Stop,
                         usage: None,
                         tool_calls: Vec::new(),
+                        approval_requests: Vec::new(),
                         context_token_estimate: None,
                     },
                 },

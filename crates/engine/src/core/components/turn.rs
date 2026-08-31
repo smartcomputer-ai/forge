@@ -2,8 +2,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     ActiveRun, BlobRef, CoreAgentEvent, CoreAgentEventProposal, CoreAgentJoins, CoreAgentState,
-    CoreAgentStatus, DomainError, ObservedToolCall, PlanningError, RunId, RunStatus, TokenEstimate,
-    TurnId,
+    CoreAgentStatus, DomainError, ObservedApprovalRequest, ObservedToolCall, PlanningError, RunId,
+    RunStatus, TokenEstimate, TurnId,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -214,6 +214,7 @@ pub enum TurnOutcome {
     FinalOutput { output_ref: Option<BlobRef> },
     ToolCallsQueued,
     ContextUpdateRequired,
+    ApprovalsRequested,
     Failed { failure_ref: Option<BlobRef> },
     Cancelled,
 }
@@ -224,6 +225,8 @@ pub struct LlmGenerationFacts {
     pub finish: LlmFinish,
     pub usage: Option<LlmUsage>,
     pub tool_calls: Vec<ObservedToolCall>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub approval_requests: Vec<ObservedApprovalRequest>,
     pub context_token_estimate: Option<TokenEstimate>,
 }
 
@@ -432,7 +435,8 @@ pub(crate) fn apply_event(state: &mut CoreAgentState, event: &Event) -> Result<(
             turn.status = match outcome {
                 TurnOutcome::FinalOutput { .. }
                 | TurnOutcome::ToolCallsQueued
-                | TurnOutcome::ContextUpdateRequired => TurnStatus::Completed,
+                | TurnOutcome::ContextUpdateRequired
+                | TurnOutcome::ApprovalsRequested => TurnStatus::Completed,
                 TurnOutcome::Failed { .. } => TurnStatus::Failed,
                 TurnOutcome::Cancelled => TurnStatus::Cancelled,
             };
@@ -502,7 +506,11 @@ fn validate_outcome_for_generation(
                 matches!(outcome, TurnOutcome::Failed { .. })
             }
             LlmFinish::Stop | LlmFinish::Unknown => {
-                matches!(outcome, TurnOutcome::FinalOutput { .. })
+                if facts.approval_requests.is_empty() {
+                    matches!(outcome, TurnOutcome::FinalOutput { .. })
+                } else {
+                    matches!(outcome, TurnOutcome::ApprovalsRequested)
+                }
             }
         },
     };

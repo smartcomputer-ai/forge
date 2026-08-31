@@ -35,6 +35,9 @@ fn apply_event_kind(state: &mut CoreAgentState, entry: &CoreAgentEntry) -> Resul
             crate::core::components::lifecycle::apply_event(state, event)
         }
         CoreAgentEvent::Run(event) => crate::core::components::run::apply_event(state, event),
+        CoreAgentEvent::Approval(event) => {
+            crate::core::components::approval::apply_approval_event(state, event)
+        }
         CoreAgentEvent::Turn(event) => crate::core::components::turn::apply_event(state, event),
         CoreAgentEvent::Context(event) => {
             crate::core::components::context::apply_event(state, event)

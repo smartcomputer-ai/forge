@@ -340,6 +340,8 @@ api_methods! {
         ["Start an agent run", "Accepts input or existing context keys and returns once the run is accepted — queued behind an active run, or running — not when it finishes. Supply submissionId for retry safety, then follow session events or reread the session."],
     METHOD_SESSION_RUNS_CANCEL => cancel_run(RunCancelParams) -> RunCancelResponse =>
         ["Cancel a run", "Requests cancellation of the named queued or active run and returns its current projected state; observe session events for terminal completion. In-flight model and tool activity is aborted; no grace turn runs."],
+    METHOD_SESSION_RUNS_APPROVALS_DECIDE => decide_run_approvals(RunApprovalsDecideParams) -> RunApprovalsDecideResponse =>
+        ["Decide pending run approvals", "Approves or rejects pending MCP tool calls on the named active run. Valid decisions apply independently; the run resumes only after every pending approval has a decision."],
     METHOD_SESSION_RUNS_STEER => steer_run(RunSteerParams) -> RunSteerResponse =>
         ["Steer the active run", "Injects input into the named active run; the model sees it at the next turn boundary without interrupting the in-flight turn. Accepted while the run is running or parked on an await; rejected for queued, cancelling, or finished runs."],
     METHOD_SESSION_SKILLS_LIST => list_skills(SkillListParams) -> SkillListResponse =>

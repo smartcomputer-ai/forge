@@ -447,6 +447,14 @@ Release construction, snapshots, and tagged publication are documented in
   to Streamable HTTP and is not public configuration while it is the only
   supported value. See
   `docs/roadmap/p110-universe-owned-mcp-auth.md` and P143.
+- MCP approval is per concrete call, never sticky. `approvalDefault` is only
+  `always | never`; `always` creates a single-use approval owned by the active
+  run, while only the monotonic `approval_n` cursor is session-scoped. A run
+  remains parked until every pending approval is decided, cancellation records
+  pending approvals as cancelled, and sub-agent children auto-reject because
+  no approval surface reaches them. Do not cache an approval by tool, arguments,
+  run, or session; a standing grant is an explicit MCP server policy change.
+  See `docs/roadmap/p144-mcp-approvals.md`.
 - VFS session topology is declared only by
   `features.vfs.workspaceLinks`. Snapshots and mutable workspace heads remain
   catalog resources; resolved links are transient, and no session-link or

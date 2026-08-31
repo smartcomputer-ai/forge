@@ -1044,6 +1044,27 @@ pub enum SessionEventKindView {
     RunCancellationRequested {
         run_id: RunId,
     },
+    ApprovalRequested {
+        run_id: RunId,
+        approval_id: String,
+        subject: ApprovalSubjectView,
+    },
+    ApprovalRunParked {
+        run_id: RunId,
+    },
+    ApprovalDecided {
+        run_id: RunId,
+        approval_id: String,
+        decision: ApprovalDecisionKind,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        note: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        decided_by: Option<PrincipalRefView>,
+    },
+    ApprovalCancelled {
+        run_id: RunId,
+        approval_id: String,
+    },
     RunCompleted {
         run_id: RunId,
         output_ref: Option<String>,

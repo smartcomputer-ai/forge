@@ -33,6 +33,10 @@ pub struct AgentSessionArgs {
     pub continue_as_new_history_threshold: Option<u32>,
     #[serde(default)]
     pub close_on_terminal: bool,
+    /// One-shot unattended child sessions cannot expose approval UI. They
+    /// append explicit rejection continuations instead of parking forever.
+    #[serde(default)]
+    pub auto_reject_approvals: bool,
     /// Workflow-local query state that is not reconstructible from the
     /// PostgreSQL session log. Transport queues are deliberately drained
     /// instead of being copied into this payload.

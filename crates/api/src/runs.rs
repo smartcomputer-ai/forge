@@ -79,6 +79,73 @@ pub struct RunCancelResponse {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
+pub struct RunApprovalsDecideParams {
+    pub session_id: SessionId,
+    pub run_id: RunId,
+    pub decisions: Vec<ApprovalDecisionInput>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ApprovalDecisionInput {
+    pub approval_id: String,
+    pub decision: ApprovalDecisionKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum ApprovalDecisionKind {
+    Approve,
+    Reject,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct RunApprovalsDecideResponse {
+    pub results: Vec<ApprovalDecisionResult>,
+    pub run: RunView,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ApprovalDecisionResult {
+    pub approval_id: String,
+    pub status: ApprovalDecisionStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure: Option<ApprovalDecisionFailure>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum ApprovalDecisionStatus {
+    Decided,
+    Failed,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ApprovalDecisionFailure {
+    pub kind: ApprovalDecisionFailureKind,
+    pub message: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum ApprovalDecisionFailureKind {
+    InvalidId,
+    Unknown,
+    ForeignRun,
+    AlreadyDecided,
+    Cancelled,
+    Duplicate,
+    InvalidNote,
+    Rejected,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct RunSteerParams {
     pub session_id: SessionId,
     /// The run to steer. Must be the session's current active run (running

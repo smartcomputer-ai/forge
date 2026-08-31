@@ -11,24 +11,26 @@ use std::{
 };
 
 use api::{
-    AgentApiErrorKind, AgentApiService, AgentProfileInput, ContextAppendEntry, ContextAppendParams,
+    AgentApiErrorKind, AgentApiService, AgentProfileInput, ApprovalDecisionInput,
+    ApprovalDecisionKind, ApprovalDecisionStatus, ContextAppendEntry, ContextAppendParams,
     ContextAppendStatus, ContextEntryKindView, ContextMessageRoleView, FeaturesConfig,
     InitializeParams, InlineAgentProfile, InputItem, McpServerDeleteParams, McpServerInput,
     McpServerListParams, McpServerPutParams, McpServerReadParams, McpServerStatus,
     McpServerToolsDiscoverParams, McpServerToolsDiscoverResponse, ProfileApplyParams,
     ProfileCreateParams, ProfileDeleteParams, ProfileDocument, ProfileId, ProfileInstructions,
     ProfileListParams, ProfilePutParams, ProfileReadParams, ProfileSource, RemoteMcpApprovalPolicy,
-    RunCancelParams, RunStartParams, RunStartSource, RunSteerParams, SessionConfig,
-    SessionConfigPutParams, SessionDeleteParams, SessionEventsReadParams, SessionLifecycleStatus,
-    SessionListParams, SessionReadParams, SessionStartParams, SessionStatus, TimersFeature,
+    RunApprovalsDecideParams, RunCancelParams, RunStartParams, RunStartSource, RunSteerParams,
+    SessionConfig, SessionConfigPutParams, SessionDeleteParams, SessionEventsReadParams,
+    SessionLifecycleStatus, SessionListParams, SessionReadParams, SessionStartParams,
+    SessionStatus, TimersFeature,
 };
 use api_projection::model_to_api;
 use async_trait::async_trait;
 use engine::{
-    ContextEntryInput, ContextEntryKind, ContextMessageRole, CoreAgentCommand, CoreAgentIoError,
-    CoreAgentLlm, CoreAgentTools, LlmFinish, LlmGenerationFacts, LlmGenerationRequest,
-    LlmGenerationResult, LlmGenerationStatus, ModelSelection, ObservedToolCall, SessionId,
-    ToolCallId, ToolName,
+    ApprovalContinuation, ApprovalSubject, ContextEntryInput, ContextEntryKind, ContextMessageRole,
+    CoreAgentCommand, CoreAgentIoError, CoreAgentLlm, CoreAgentTools, LlmFinish,
+    LlmGenerationFacts, LlmGenerationRequest, LlmGenerationResult, LlmGenerationStatus,
+    ModelSelection, ObservedApprovalRequest, ObservedToolCall, SessionId, ToolCallId, ToolName,
     storage::{BlobStore, SessionStore},
 };
 use support::live::{
@@ -44,7 +46,10 @@ use temporal_server::{
     gateway::{DEFAULT_MAX_REQUEST_BODY_BYTES, GatewayAgentApi, GatewayState, gateway_router},
     pg_store_from_env,
     subagents::AgentApiSubagentRuntime,
-    worker::{ActivityState, SessionTools, WorkerActivities, core_runtime, worker_with_activities},
+    worker::{
+        ActivityState, FakeTools, SessionTools, WorkerActivities, core_runtime,
+        worker_with_activities,
+    },
 };
 use temporal_workflow::{
     AgentAdmission, AgentAdmissionFailureKind, AgentSessionWorkflow, DEFAULT_TEMPORAL_NAMESPACE,
@@ -68,6 +73,26 @@ async fn temporal_live_session_start_then_run_start_completes_fake_runs() -> any
 
     let activities = fake_worker_activities().await?;
     run_with_live_worker(activities, run_fake_live_client).await
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires ./dev.sh infra or compatible Temporal + Postgres env"]
+async fn temporal_live_mcp_approval_approve_and_reject_continue_runs() -> anyhow::Result<()> {
+    let _lock = LIVE_TEST_LOCK.lock().await;
+    let _ = dotenvy::dotenv();
+    require_storage_live_env()?;
+
+    let store = pg_store_from_env().await?;
+    let blobs: Arc<dyn BlobStore> = store.clone();
+    let llm = Arc::new(ApprovalScriptedLlm {
+        blobs: blobs.clone(),
+    }) as Arc<dyn CoreAgentLlm>;
+    let tools = Arc::new(FakeTools::new(blobs)) as Arc<dyn CoreAgentTools>;
+    let activities = WorkerActivities::for_universe(
+        support::live::live_universe_id()?,
+        ActivityState::from_pg_store(store, llm, tools),
+    );
+    run_with_live_worker(activities, run_approval_live_client).await
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -424,6 +449,134 @@ async fn temporal_live_openai_completions_tool_call_round_trip() -> anyhow::Resu
 }
 
 #[derive(Clone)]
+struct ApprovalScriptedLlm {
+    blobs: Arc<dyn BlobStore>,
+}
+
+#[async_trait]
+impl CoreAgentLlm for ApprovalScriptedLlm {
+    async fn generate(
+        &self,
+        request: LlmGenerationRequest,
+    ) -> Result<LlmGenerationResult, CoreAgentIoError> {
+        let decision = request
+            .request
+            .context
+            .entries
+            .iter()
+            .rev()
+            .find_map(|entry| {
+                let ContextEntryKind::McpApprovalResponse { approve, .. } = entry.kind else {
+                    return None;
+                };
+                match &entry.source {
+                    engine::ContextEntrySource::ApprovalDecision { run_id, .. }
+                        if *run_id == request.run_id =>
+                    {
+                        Some(approve)
+                    }
+                    _ => None,
+                }
+            });
+        if let Some(approve) = decision {
+            let output_ref = self
+                .blobs
+                .put_bytes(
+                    format!("approval continuation observed: approve={approve}").into_bytes(),
+                )
+                .await
+                .map_err(io_error)?;
+            return Ok(LlmGenerationResult {
+                run_id: request.run_id,
+                turn_id: request.turn_id,
+                status: LlmGenerationStatus::Succeeded,
+                failure_ref: None,
+                context_entries: vec![ContextEntryInput {
+                    kind: ContextEntryKind::Message {
+                        role: ContextMessageRole::Assistant,
+                    },
+                    content_ref: output_ref,
+                    media_type: Some("text/plain".to_owned()),
+                    preview: None,
+                    provider_kind: Some("approval-script".to_owned()),
+                    provider_item_id: None,
+                    token_estimate: None,
+                }],
+                facts: LlmGenerationFacts {
+                    provider_response_id: Some(format!(
+                        "approval-final-{}-{}",
+                        request.run_id.as_u64(),
+                        request.turn_id.as_u64()
+                    )),
+                    finish: LlmFinish::Stop,
+                    usage: None,
+                    tool_calls: Vec::new(),
+                    approval_requests: Vec::new(),
+                    context_token_estimate: None,
+                },
+            });
+        }
+
+        let provider_request_id = format!("mcpr_{}", request.run_id.as_u64());
+        let arguments = format!("{{\"run\":{}}}", request.run_id.as_u64());
+        let arguments_ref = self
+            .blobs
+            .put_bytes(arguments.clone().into_bytes())
+            .await
+            .map_err(io_error)?;
+        let opaque_ref = self
+            .blobs
+            .put_bytes(
+                serde_json::to_vec(&serde_json::json!({
+                    "id": provider_request_id.clone(),
+                    "type": "mcp_approval_request",
+                    "server_label": "approval-test",
+                    "name": "send",
+                    "arguments": arguments,
+                }))
+                .map_err(io_error)?,
+            )
+            .await
+            .map_err(io_error)?;
+        Ok(LlmGenerationResult {
+            run_id: request.run_id,
+            turn_id: request.turn_id,
+            status: LlmGenerationStatus::Succeeded,
+            failure_ref: None,
+            context_entries: vec![ContextEntryInput {
+                kind: ContextEntryKind::ProviderOpaque,
+                content_ref: opaque_ref,
+                media_type: Some("application/json".to_owned()),
+                preview: None,
+                provider_kind: Some(
+                    engine::OPENAI_RESPONSES_MCP_APPROVAL_REQUEST_PROVIDER_KIND.to_owned(),
+                ),
+                provider_item_id: Some(provider_request_id.clone()),
+                token_estimate: None,
+            }],
+            facts: LlmGenerationFacts {
+                provider_response_id: Some(format!("approval-request-{}", request.run_id.as_u64())),
+                finish: LlmFinish::Stop,
+                usage: None,
+                tool_calls: Vec::new(),
+                approval_requests: vec![ObservedApprovalRequest {
+                    subject: ApprovalSubject::McpToolCall {
+                        server_id: "approval-test".to_owned(),
+                        server_label: "approval-test".to_owned(),
+                        tool_name: "send".to_owned(),
+                        arguments_ref,
+                    },
+                    continuation: ApprovalContinuation::OpenAiMcp {
+                        provider_request_id,
+                    },
+                }],
+                context_token_estimate: None,
+            },
+        })
+    }
+}
+
+#[derive(Clone)]
 struct SubagentScriptedLlm {
     blobs: Arc<dyn BlobStore>,
 }
@@ -516,6 +669,7 @@ impl SubagentScriptedLlm {
                 finish: LlmFinish::ToolCalls,
                 usage: None,
                 tool_calls,
+                approval_requests: Vec::new(),
                 context_token_estimate: None,
             },
         })
@@ -552,6 +706,7 @@ impl SubagentScriptedLlm {
                 finish: LlmFinish::Stop,
                 usage: None,
                 tool_calls: Vec::new(),
+                approval_requests: Vec::new(),
                 context_token_estimate: None,
             },
         })
@@ -1757,6 +1912,124 @@ async fn run_fake_live_client(
         )
         .await;
     Ok(())
+}
+
+async fn run_approval_live_client(
+    client: Client,
+    task_queue: String,
+    session_id: SessionId,
+) -> anyhow::Result<()> {
+    let store = pg_store_from_env().await?;
+    let model = default_model_from_env();
+    let api = GatewayAgentApi::builder(client, store)
+        .with_task_queue(task_queue)
+        .with_default_model(model.clone())
+        .build();
+    api.start_session(SessionStartParams {
+        session_id: Some(session_id.as_str().to_owned()),
+        display_name: None,
+        config: Some(SessionConfig {
+            model: Some(model_to_api(&model)),
+            ..SessionConfig::default()
+        }),
+        profile: None,
+    })
+    .await?;
+
+    for (index, decision) in [ApprovalDecisionKind::Approve, ApprovalDecisionKind::Reject]
+        .into_iter()
+        .enumerate()
+    {
+        let started = api
+            .start_run(RunStartParams {
+                session_id: session_id.as_str().to_owned(),
+                source: RunStartSource::Input {
+                    items: vec![InputItem::Text {
+                        text: format!("approval test {index}"),
+                    }],
+                },
+                submission_id: None,
+                config: None,
+                notify_on_terminal: None,
+            })
+            .await?;
+        let pending = wait_for_pending_approval(&api, &session_id, &started.result.run.id).await?;
+        assert_eq!(pending.approval_id, format!("approval_{}", index + 1));
+        let decided = api
+            .decide_run_approvals(RunApprovalsDecideParams {
+                session_id: session_id.as_str().to_owned(),
+                run_id: started.result.run.id.clone(),
+                decisions: vec![ApprovalDecisionInput {
+                    approval_id: pending.approval_id,
+                    decision,
+                    note: (decision == ApprovalDecisionKind::Reject)
+                        .then(|| "operator declined this call".to_owned()),
+                }],
+            })
+            .await?;
+        assert_eq!(decided.result.results.len(), 1);
+        assert_eq!(
+            decided.result.results[0].status,
+            ApprovalDecisionStatus::Decided
+        );
+
+        let terminal = wait_for_terminal_run(&api, &session_id, &started.result.run.id).await?;
+        let output = final_assistant_text(&terminal).expect("approval continuation output");
+        assert!(output.contains(match decision {
+            ApprovalDecisionKind::Approve => "approve=true",
+            ApprovalDecisionKind::Reject => "approve=false",
+        }));
+        assert!(terminal.pending_approvals.is_empty());
+    }
+
+    let events = api
+        .read_session_events(SessionEventsReadParams {
+            session_id: session_id.as_str().to_owned(),
+            after: None,
+            limit: Some(500),
+            wait_ms: None,
+        })
+        .await?;
+    let decisions = events
+        .result
+        .events
+        .iter()
+        .filter(|event| {
+            matches!(
+                event.kind,
+                api::SessionEventKindView::ApprovalDecided { .. }
+            )
+        })
+        .count();
+    assert_eq!(decisions, 2);
+    Ok(())
+}
+
+async fn wait_for_pending_approval(
+    api: &GatewayAgentApi,
+    session_id: &SessionId,
+    run_id: &str,
+) -> anyhow::Result<api::PendingApprovalView> {
+    tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            let session = api
+                .read_session(SessionReadParams {
+                    session_id: session_id.as_str().to_owned(),
+                })
+                .await?
+                .result
+                .session;
+            if let Some(run) = session.runs.iter().find(|run| run.id == run_id)
+                && run.status == api::RunStatus::Parked
+                && let Some(approval) = run.pending_approvals.first()
+            {
+                return Ok(approval.clone());
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .map_err(|_| anyhow::anyhow!("timed out waiting for pending approval"))?
 }
 
 async fn run_lifecycle_delete_live_client(

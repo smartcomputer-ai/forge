@@ -271,6 +271,24 @@
       "summary": "Cancel a run"
     },
     {
+      "description": "Approves or rejects pending MCP tool calls on the named active run. Valid decisions apply independently; the run resumes only after every pending approval has a decision.",
+      "method": "session/runs/approvals/decide",
+      "params": {
+        "schema": {
+          "$ref": "#/definitions/RunApprovalsDecideParams"
+        },
+        "type": "RunApprovalsDecideParams"
+      },
+      "result": {
+        "schema": {
+          "$ref": "#/definitions/AgentApiOutcomeOfRunApprovalsDecideResponse"
+        },
+        "type": "AgentApiOutcome<RunApprovalsDecideResponse>"
+      },
+      "scope": "universe",
+      "summary": "Decide pending run approvals"
+    },
+    {
       "description": "Injects input into the named active run; the model sees it at the next turn boundary without interrupting the in-flight turn. Accepted while the run is running or parked on an await; rejected for queued, cancelling, or finished runs.",
       "method": "session/runs/steer",
       "params": {

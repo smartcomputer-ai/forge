@@ -148,6 +148,10 @@ pub(super) async fn drive_until_idle(
                 action = tool_batches::invoke_tool_batch(ctx, drive, request).await?;
             }
             CoreAgentAction::Idle | CoreAgentAction::Closed => {
+                if args.auto_reject_approvals && auto_reject_pending_approvals(ctx, drive).await? {
+                    action = drive.next_action_unbounded(workflow_time_ms(ctx))?;
+                    continue;
+                }
                 maybe_close_on_terminal(ctx, args, drive).await?;
                 return Ok(DriveOutcome::Idle);
             }
@@ -156,6 +160,74 @@ pub(super) async fn drive_until_idle(
             }
         }
     }
+}
+
+async fn auto_reject_pending_approvals(
+    ctx: &mut WorkflowContext<AgentSessionWorkflow>,
+    drive: &mut CoreAgentDrive,
+) -> anyhow::Result<bool> {
+    const NOTE: &str = "approval required, but no approval surface reaches this session";
+    let Some(run_id) = drive.state().runs.active.as_ref().map(|run| run.run_id) else {
+        return Ok(false);
+    };
+    let pending = drive
+        .state()
+        .runs
+        .active
+        .as_ref()
+        .expect("active run was resolved above")
+        .pending_approvals()
+        .map(|record| record.request.clone())
+        .collect::<Vec<_>>();
+    if pending.is_empty() {
+        return Ok(false);
+    }
+    for approval in pending {
+        let engine::ApprovalContinuation::OpenAiMcp {
+            provider_request_id,
+        } = &approval.continuation
+        else {
+            anyhow::bail!("native MCP approval continuation arrived before P145")
+        };
+        let response = serde_json::json!({
+            "type": "mcp_approval_response",
+            "approval_request_id": provider_request_id,
+            "approve": false,
+        });
+        let content_ref = put_detached_followup_blob(ctx, serde_json::to_vec(&response)?).await?;
+        match admit_and_append_command(
+            ctx,
+            drive,
+            CoreAgentCommand::DecideApproval(engine::ApprovalDecisionCommand {
+                approval_id: approval.approval_id,
+                run_id,
+                decision: engine::ApprovalDecision::Rejected,
+                note: Some(NOTE.to_owned()),
+                decided_by: None,
+                response: ContextEntryInput {
+                    kind: ContextEntryKind::McpApprovalResponse {
+                        approval_request_id: provider_request_id.clone(),
+                        approve: false,
+                    },
+                    content_ref,
+                    media_type: Some("application/json".to_owned()),
+                    preview: Some("MCP tool call auto-rejected in unattended session".to_owned()),
+                    provider_kind: Some("openai.responses.mcp_approval_response".to_owned()),
+                    provider_item_id: None,
+                    token_estimate: None,
+                },
+            }),
+            None,
+        )
+        .await?
+        {
+            CommandAdmissionResult::Accepted => {}
+            CommandAdmissionResult::Rejected(failure) => {
+                anyhow::bail!("auto-reject approval command failed: {}", failure.message)
+            }
+        }
+    }
+    Ok(true)
 }
 
 fn history_boundary_outcome(

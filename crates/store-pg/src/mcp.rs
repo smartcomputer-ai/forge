@@ -560,7 +560,6 @@ fn transport_from_str(value: &str) -> Result<RemoteMcpTransport, McpRegistryErro
 
 fn approval_policy_to_str(value: McpApprovalPolicy) -> &'static str {
     match value {
-        McpApprovalPolicy::ProviderDefault => "provider_default",
         McpApprovalPolicy::Always => "always",
         McpApprovalPolicy::Never => "never",
     }
@@ -568,7 +567,6 @@ fn approval_policy_to_str(value: McpApprovalPolicy) -> &'static str {
 
 fn approval_policy_from_str(value: &str) -> Result<McpApprovalPolicy, McpRegistryError> {
     match value {
-        "provider_default" => Ok(McpApprovalPolicy::ProviderDefault),
         "always" => Ok(McpApprovalPolicy::Always),
         "never" => Ok(McpApprovalPolicy::Never),
         other => Err(McpRegistryError::Store {

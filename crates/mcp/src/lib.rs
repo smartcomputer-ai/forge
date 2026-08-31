@@ -360,9 +360,8 @@ pub enum RemoteMcpTransport {
 #[serde(rename_all = "snake_case")]
 pub enum McpApprovalPolicy {
     #[default]
-    ProviderDefault,
-    Always,
     Never,
+    Always,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

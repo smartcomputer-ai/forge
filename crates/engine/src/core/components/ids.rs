@@ -127,6 +127,7 @@ string_id!(SkillId, validate_general_string_id);
 string_id!(ToolCallId, validate_general_string_id);
 string_id!(ToolName, validate_tool_name);
 string_id!(WorkflowToolId, validate_general_string_id);
+string_id!(ApprovalId, validate_approval_id);
 string_id!(
     WorkflowToolInvocationId,
     validate_workflow_tool_invocation_id
@@ -147,6 +148,33 @@ pub struct IdCursors {
     pub last_context_item_id: u64,
     #[serde(default)]
     pub last_promise_id: u64,
+    #[serde(default)]
+    pub last_approval_id: u64,
+}
+
+fn validate_approval_id(kind: &'static str, value: &str) -> Result<(), StringIdError> {
+    const PREFIX: &str = "approval_";
+    let Some(suffix) = value.strip_prefix(PREFIX) else {
+        return Err(StringIdError::InvalidCharacter {
+            kind,
+            index: 0,
+            ch: value.chars().next().unwrap_or('?'),
+            allowed: "'approval_' followed by a positive decimal integer",
+        });
+    };
+    let valid = !suffix.is_empty()
+        && suffix.bytes().all(|byte| byte.is_ascii_digit())
+        && suffix.parse::<u64>().is_ok_and(|number| number > 0)
+        && !suffix.starts_with('0');
+    if !valid {
+        return Err(StringIdError::InvalidCharacter {
+            kind,
+            index: PREFIX.len(),
+            ch: suffix.chars().next().unwrap_or('?'),
+            allowed: "'approval_' followed by a positive decimal integer",
+        });
+    }
+    Ok(())
 }
 
 fn validate_tool_name(kind: &'static str, value: &str) -> Result<(), StringIdError> {

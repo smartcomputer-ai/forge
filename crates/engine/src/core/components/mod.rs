@@ -3,6 +3,7 @@
 //! These modules define the built-in agent's closed command/event/state
 //! vocabulary plus the domain-local logic that owns those facts.
 
+pub mod approval;
 pub mod command;
 pub mod config;
 pub mod context;
@@ -20,6 +21,7 @@ pub mod tooling;
 pub mod turn;
 pub mod workflow_tool;
 
+pub use approval::*;
 pub use command::*;
 pub use config::*;
 pub use context::{

@@ -2,7 +2,11 @@
 
 **Status**
 
-- Proposed 2026-08-31. Supersedes the sketch in
+- Implemented 2026-08-31 for the shared engine/API/client surface and the
+  OpenAI Responses provider-hosted backend. The native dispatch gate remains
+  part of [P145](p145-native-mcp-execution.md); P144's envelope and UX are
+  ready for it without another client contract.
+- Supersedes the sketch in
   `later/pNNN-mcp-approval-flow.md` (production incident 2026-07-10: an OpenAI
   `mcp_approval_request` became a run's terminal output).
 - Builds on P67 (provider-hosted remote MCP and opaque MCP context entries),
@@ -93,6 +97,13 @@ An approval becomes terminal exactly once. A run continues only after every
 pending approval in it is decided; partial decisions update state but do not
 wake the run. Cancelling the run instead cancels every pending approval and the
 run itself.
+
+Approval decisions are deliberately not reusable or sticky. Each one grants or
+refuses exactly one concrete provider request id or native call id. Approval
+records are owned by the active run and leave materialized state with it; their
+events remain the audit trail. Only the monotonic `approval_<n>` allocator is
+session-scoped. A standing decision belongs in the MCP server policy (`never`),
+not in an implicit cache keyed by tool, arguments, run, or session.
 
 ## Engine Model
 
@@ -384,9 +395,9 @@ auto-approve under any name.
 
 ## Acceptance
 
-1. `approval: always` is usable end to end on OpenAI Responses provider mode
-   and on native execution; a human can approve or reject from the web UI and
-   CLI, and the run continues correctly either way.
+1. `approval: always` is usable end to end on OpenAI Responses provider mode;
+   a human can approve or reject from the web UI and CLI, and the run continues
+   correctly either way. P145 applies the same surface to native execution.
 2. No run ever reports an approval request (or any opaque provider entry) as
    its final output.
 3. Pending approvals are visible on `RunView` with stable counter ids;

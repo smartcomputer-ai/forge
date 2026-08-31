@@ -617,7 +617,10 @@ async fn materialize_message(
         }),
         ContextEntryKind::ToolCall { .. }
         | ContextEntryKind::ReasoningState
-        | ContextEntryKind::ProviderOpaque => unreachable!("handled by materialize_messages"),
+        | ContextEntryKind::ProviderOpaque
+        | ContextEntryKind::McpApprovalResponse { .. } => {
+            unreachable!("handled by materialize_messages")
+        }
     }
 }
 
@@ -1044,6 +1047,7 @@ pub async fn result_from_response(
             finish,
             usage,
             tool_calls,
+            approval_requests: Vec::new(),
             context_token_estimate,
         },
     })

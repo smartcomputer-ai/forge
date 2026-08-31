@@ -258,6 +258,19 @@ const sessionSteerSchema = z.object({
   text: z.string().min(1).max(100_000),
 });
 
+const sessionApprovalDecideSchema = z.object({
+  decisions: z
+    .array(
+      z.object({
+        approvalId: z.string().regex(/^approval_[1-9][0-9]*$/),
+        decision: z.enum(["approve", "reject"]),
+        note: z.string().trim().min(1).max(2_000).optional(),
+      }),
+    )
+    .min(1)
+    .max(64),
+});
+
 /// Loose validation (required identifiers only): the engine is the
 /// validator of record for MCP server records, like profile documents.
 const mcpServerDocumentSchema = z
@@ -703,6 +716,26 @@ export function gatewayRoutes(ctx: AppContext) {
         steeringId: response.result.steeringId,
         run: { id: run.id, status: run.status },
       });
+    });
+  });
+
+  app.post("/:id/sessions/:sessionId/runs/:runId/approvals", async (c) => {
+    const access = await universeForSession(ctx, c, c.req.param("id"), true);
+    if (!access) {
+      return c.json({ error: "not found" }, 404);
+    }
+    const body = await parseBody(c, sessionApprovalDecideSchema);
+    if (!body.ok) {
+      return body.response;
+    }
+    return withGateway(c, async () => {
+      const client = engineClientFor(ctx, access.universe);
+      const response = await client.call("session/runs/approvals/decide", {
+        sessionId: c.req.param("sessionId"),
+        runId: c.req.param("runId"),
+        decisions: body.data.decisions,
+      });
+      return c.json(response.result);
     });
   });
 

@@ -1,11 +1,11 @@
 //! Core command admission for external session requests.
 
 use crate::{
-    CommandError, CommandRejection, CommandRejectionKind, ContextEntrySource, ContextEvent,
-    CoreAgentCommand, CoreAgentEvent, CoreAgentEventProposal, CoreAgentJoins,
-    CoreAgentLifecycleEvent, CoreAgentState, CoreAgentStatus, DomainError, PromiseEvent,
-    PromiseResolution, RunEvent, RunRequestSource, RunSource, RunStatus, ToolConfigEvent,
-    WorkflowToolConfigEvent,
+    ApprovalContinuation, ApprovalEvent, ApprovalStatus, CommandError, CommandRejection,
+    CommandRejectionKind, ContextEntrySource, ContextEvent, CoreAgentCommand, CoreAgentEvent,
+    CoreAgentEventProposal, CoreAgentJoins, CoreAgentLifecycleEvent, CoreAgentState,
+    CoreAgentStatus, DomainError, PromiseEvent, PromiseResolution, RunEvent, RunRequestSource,
+    RunSource, RunStatus, ToolConfigEvent, WorkflowToolConfigEvent,
     core::components::{
         config::{validate_config_update_for_state, validate_run_config_for_state},
         tooling::validate_tool_map,
@@ -446,7 +446,7 @@ pub fn admit_command(
                     return Ok(Vec::new());
                 }
                 if matches!(active_run.status, RunStatus::Active | RunStatus::Parked) {
-                    return Ok(vec![CoreAgentEventProposal::new(
+                    let mut proposals = vec![CoreAgentEventProposal::new(
                         CoreAgentJoins {
                             run_id: Some(active_run.run_id),
                             ..CoreAgentJoins::default()
@@ -454,7 +454,20 @@ pub fn admit_command(
                         CoreAgentEvent::Run(RunEvent::CancellationRequested {
                             run_id: active_run.run_id,
                         }),
-                    )]);
+                    )];
+                    proposals.extend(active_run.pending_approvals().map(|record| {
+                        CoreAgentEventProposal::new(
+                            CoreAgentJoins {
+                                run_id: Some(run_id),
+                                ..CoreAgentJoins::default()
+                            },
+                            CoreAgentEvent::Approval(ApprovalEvent::Cancelled {
+                                approval_id: record.request.approval_id.clone(),
+                                run_id,
+                            }),
+                        )
+                    }));
+                    return Ok(proposals);
                 }
                 return Ok(Vec::new());
             }
@@ -473,6 +486,123 @@ pub fn admit_command(
                 )]);
             }
             Ok(Vec::new())
+        }
+        CoreAgentCommand::DecideApproval(command) => {
+            require_open(state)?;
+            crate::core::components::approval::validate_note(command.note.as_deref())
+                .map_err(command_rejection_from_domain)?;
+            let active_run = state
+                .runs
+                .active
+                .as_ref()
+                .filter(|run| run.run_id == command.run_id)
+                .ok_or_else(|| {
+                    CommandError::Rejected(CommandRejection::new(
+                        CommandRejectionKind::UnknownReference,
+                        format!("run {} is not active", command.run_id),
+                    ))
+                })?;
+            let record = active_run
+                .approvals
+                .get(&command.approval_id)
+                .ok_or_else(|| {
+                    CommandError::Rejected(CommandRejection::new(
+                        CommandRejectionKind::UnknownReference,
+                        format!("unknown approval {}", command.approval_id),
+                    ))
+                })?;
+            if record.request.run_id != command.run_id {
+                return reject(
+                    CommandRejectionKind::UnknownReference,
+                    format!(
+                        "approval {} does not belong to run {}",
+                        command.approval_id, command.run_id
+                    ),
+                );
+            }
+            if record.status != ApprovalStatus::Pending {
+                return reject(
+                    CommandRejectionKind::InvalidConfiguration,
+                    format!("approval {} is already terminal", command.approval_id),
+                );
+            }
+            let Some(active) = state.runs.active.as_ref() else {
+                return reject(
+                    CommandRejectionKind::MissingActiveRun,
+                    "approval decision requires an active run",
+                );
+            };
+            if active.run_id != command.run_id
+                || !matches!(active.status, RunStatus::Active | RunStatus::Parked)
+            {
+                return reject(
+                    CommandRejectionKind::ActiveWork,
+                    "approval decision does not target the accepting active run",
+                );
+            }
+            let (expected_provider_id, expected_approve) = match &record.request.continuation {
+                ApprovalContinuation::OpenAiMcp {
+                    provider_request_id,
+                } => (
+                    provider_request_id.as_str(),
+                    command.decision == crate::ApprovalDecision::Approved,
+                ),
+                ApprovalContinuation::NativeMcp { .. } => {
+                    return reject(
+                        CommandRejectionKind::InvalidConfiguration,
+                        "native MCP approval continuations land with P145",
+                    );
+                }
+            };
+            match &command.response.kind {
+                crate::ContextEntryKind::McpApprovalResponse {
+                    approval_request_id,
+                    approve,
+                } if approval_request_id == expected_provider_id
+                    && *approve == expected_approve => {}
+                _ => {
+                    return reject(
+                        CommandRejectionKind::InvariantViolation,
+                        "approval response context does not match the pending continuation",
+                    );
+                }
+            }
+            let entries = crate::core::components::context::context_entries_from_inputs(
+                state,
+                vec![(
+                    None,
+                    ContextEntrySource::ApprovalDecision {
+                        run_id: command.run_id,
+                        approval_id: command.approval_id.clone(),
+                    },
+                    command.response,
+                )],
+            )?;
+            Ok(vec![
+                CoreAgentEventProposal::new(
+                    CoreAgentJoins {
+                        run_id: Some(command.run_id),
+                        ..CoreAgentJoins::default()
+                    },
+                    CoreAgentEvent::Approval(ApprovalEvent::Decided {
+                        approval_id: command.approval_id,
+                        run_id: command.run_id,
+                        decision: command.decision,
+                        note: command.note,
+                        decided_by: command.decided_by,
+                    }),
+                ),
+                CoreAgentEventProposal::new(
+                    CoreAgentJoins {
+                        run_id: Some(command.run_id),
+                        ..CoreAgentJoins::default()
+                    },
+                    CoreAgentEvent::Context(ContextEvent::EntriesApplied {
+                        base_revision: state.context.revision,
+                        entries,
+                    }),
+                ),
+            ])
         }
         CoreAgentCommand::ResolvePromise {
             promise_id,

@@ -7,10 +7,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use api::{
-    ActiveToolsView, AgentApiError, BoundWorkflowToolDispatchInput, ContextEntryInputView,
-    ContextEntryKindView, ContextEntrySourceView, ContextEntryView, ContextMessageRoleView,
-    ContextView, EventCursor, EventJoinsView, InputItem, LlmUsageView,
-    ManagedSessionWorkflowToolsInput, MediaKind, ModelConfig, ProviderContextDisplayView,
+    ActiveToolsView, AgentApiError, ApprovalDecisionKind, ApprovalSubjectView,
+    BoundWorkflowToolDispatchInput, ContextEntryInputView, ContextEntryKindView,
+    ContextEntrySourceView, ContextEntryView, ContextMessageRoleView, ContextView, EventCursor,
+    EventJoinsView, InputItem, LlmUsageView, ManagedSessionWorkflowToolsInput, MediaKind,
+    ModelConfig, PendingApprovalView, PrincipalKind, PrincipalRefView, ProviderContextDisplayView,
     ProviderNativeToolExecutionView, RunAcceptedSourceView, RunStatus as ApiRunStatus, RunView,
     RunViewSource, SessionEventKindView, SessionEventView, SessionManagementView,
     SessionStatus as ApiSessionStatus, SessionView, TokenEstimateQualityView, TokenEstimateView,
@@ -172,7 +173,73 @@ impl<'a> CoreAgentProjector<'a> {
                 .project_tool_batches_for_run(&projection, &context_entries, run_id)
                 .await?,
             usage,
+            pending_approvals: self.pending_approvals_for_run(&projection, run_id).await?,
         })
+    }
+
+    async fn pending_approvals_for_run(
+        &self,
+        projection: &CoreAgentProjection<'_>,
+        run_id: RunId,
+    ) -> Result<Vec<PendingApprovalView>, AgentApiError> {
+        let mut pending = BTreeMap::new();
+        for entry in projection.entries() {
+            let CoreAgentEvent::Approval(event) = &entry.event else {
+                continue;
+            };
+            match event {
+                engine::ApprovalEvent::Requested { approval } if approval.run_id == run_id => {
+                    pending.insert(
+                        approval.approval_id.clone(),
+                        (entry.observed_at_ms, approval.subject.clone()),
+                    );
+                }
+                engine::ApprovalEvent::Decided {
+                    approval_id,
+                    run_id: event_run_id,
+                    ..
+                }
+                | engine::ApprovalEvent::Cancelled {
+                    approval_id,
+                    run_id: event_run_id,
+                } if *event_run_id == run_id => {
+                    pending.remove(approval_id);
+                }
+                _ => {}
+            }
+        }
+        let mut views = Vec::with_capacity(pending.len());
+        for (approval_id, (requested_at_ms, subject)) in pending {
+            views.push(PendingApprovalView {
+                approval_id: approval_id.as_str().to_owned(),
+                requested_at_ms,
+                subject: self.approval_subject_to_api(&subject).await?,
+            });
+        }
+        Ok(views)
+    }
+
+    async fn approval_subject_to_api(
+        &self,
+        subject: &engine::ApprovalSubject,
+    ) -> Result<ApprovalSubjectView, AgentApiError> {
+        match subject {
+            engine::ApprovalSubject::McpToolCall {
+                server_id,
+                server_label,
+                tool_name,
+                arguments_ref,
+            } => {
+                let arguments = self.read_blob_text(arguments_ref).await?;
+                Ok(ApprovalSubjectView::McpToolCall {
+                    server_id: server_id.clone(),
+                    server_label: server_label.clone(),
+                    tool_name: tool_name.clone(),
+                    arguments_ref: arguments_ref.as_str().to_owned(),
+                    arguments_preview: truncate_utf8(&arguments, 4_096),
+                })
+            }
+        }
     }
 
     pub async fn project_context_state(
@@ -466,6 +533,43 @@ impl<'a> CoreAgentProjector<'a> {
                 | RunEvent::ForceCancelled { run_id }
                 | RunEvent::QueuedCancelled { run_id } => Ok(SessionEventKindView::RunCancelled {
                     run_id: api_run_id(*run_id),
+                }),
+            },
+            CoreAgentEvent::Approval(event) => match event {
+                engine::ApprovalEvent::Requested { approval } => {
+                    Ok(SessionEventKindView::ApprovalRequested {
+                        run_id: api_run_id(approval.run_id),
+                        approval_id: approval.approval_id.as_str().to_owned(),
+                        subject: self.approval_subject_to_api(&approval.subject).await?,
+                    })
+                }
+                engine::ApprovalEvent::RunParked { run_id } => {
+                    Ok(SessionEventKindView::ApprovalRunParked {
+                        run_id: api_run_id(*run_id),
+                    })
+                }
+                engine::ApprovalEvent::Decided {
+                    approval_id,
+                    run_id,
+                    decision,
+                    note,
+                    decided_by,
+                } => Ok(SessionEventKindView::ApprovalDecided {
+                    run_id: api_run_id(*run_id),
+                    approval_id: approval_id.as_str().to_owned(),
+                    decision: match decision {
+                        engine::ApprovalDecision::Approved => ApprovalDecisionKind::Approve,
+                        engine::ApprovalDecision::Rejected => ApprovalDecisionKind::Reject,
+                    },
+                    note: note.clone(),
+                    decided_by: decided_by.as_ref().map(approval_principal_to_api),
+                }),
+                engine::ApprovalEvent::Cancelled {
+                    approval_id,
+                    run_id,
+                } => Ok(SessionEventKindView::ApprovalCancelled {
+                    run_id: api_run_id(*run_id),
+                    approval_id: approval_id.as_str().to_owned(),
                 }),
             },
             CoreAgentEvent::Promise(event) => match event {
@@ -1167,6 +1271,7 @@ pub fn context_entry_run_id(entry: &ContextEntry) -> Option<RunId> {
         ContextEntrySource::RunInput { run_id, .. }
         | ContextEntrySource::Steering { run_id, .. }
         | ContextEntrySource::AssistantOutput { run_id, .. }
+        | ContextEntrySource::ApprovalDecision { run_id, .. }
         | ContextEntrySource::Tool { run_id, .. }
         | ContextEntrySource::Reasoning { run_id, .. } => Some(*run_id),
         ContextEntrySource::ContextEdit | ContextEntrySource::Runtime { .. } => None,
@@ -1302,6 +1407,13 @@ pub fn context_entry_source_to_api(source: &ContextEntrySource) -> ContextEntryS
                 turn_id: api_turn_id(*turn_id),
             }
         }
+        ContextEntrySource::ApprovalDecision {
+            run_id,
+            approval_id,
+        } => ContextEntrySourceView::ApprovalDecision {
+            run_id: api_run_id(*run_id),
+            approval_id: approval_id.as_str().to_owned(),
+        },
         ContextEntrySource::Tool {
             run_id,
             turn_id,
@@ -1330,6 +1442,28 @@ fn promise_source_name(source: &engine::PromiseSource) -> &'static str {
         engine::PromiseSource::Timer { .. } => "timer",
         engine::PromiseSource::Workflow { .. } => "workflow",
     }
+}
+
+fn approval_principal_to_api(principal: &engine::ApprovalPrincipal) -> PrincipalRefView {
+    PrincipalRefView {
+        kind: match principal.kind.as_str() {
+            "user" => PrincipalKind::User,
+            "service_account" => PrincipalKind::ServiceAccount,
+            _ => PrincipalKind::UniverseDefault,
+        },
+        id: principal.id.clone(),
+    }
+}
+
+fn truncate_utf8(value: &str, max_bytes: usize) -> String {
+    if value.len() <= max_bytes {
+        return value.to_owned();
+    }
+    let mut end = max_bytes;
+    while !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}…", &value[..end])
 }
 
 pub fn api_steering_id(steering_id: SteeringId) -> String {
@@ -1448,7 +1582,7 @@ pub fn session_status(state: &CoreAgentState) -> ApiSessionStatus {
 pub fn core_run_status_to_api_status(status: RunStatus) -> ApiRunStatus {
     match status {
         RunStatus::Active => ApiRunStatus::Running,
-        RunStatus::Parked => ApiRunStatus::Running,
+        RunStatus::Parked => ApiRunStatus::Parked,
         RunStatus::Cancelling => ApiRunStatus::Cancelling,
         RunStatus::Completed => ApiRunStatus::Completed,
         RunStatus::Failed => ApiRunStatus::Failed,
@@ -1683,9 +1817,6 @@ fn remote_mcp_approval_to_api(
     policy: &engine::RemoteMcpApprovalPolicy,
 ) -> api::RemoteMcpApprovalPolicy {
     match policy {
-        engine::RemoteMcpApprovalPolicy::ProviderDefault => {
-            api::RemoteMcpApprovalPolicy::ProviderDefault
-        }
         engine::RemoteMcpApprovalPolicy::Always => api::RemoteMcpApprovalPolicy::Always,
         engine::RemoteMcpApprovalPolicy::Never => api::RemoteMcpApprovalPolicy::Never,
     }
@@ -1850,6 +1981,9 @@ fn context_entry_kind_to_api(kind: &ContextEntryKind) -> ContextEntryKindView {
         },
         ContextEntryKind::ReasoningState => ContextEntryKindView::ReasoningState,
         ContextEntryKind::ProviderOpaque => ContextEntryKindView::ProviderOpaque,
+        ContextEntryKind::McpApprovalResponse { approve, .. } => {
+            ContextEntryKindView::McpApprovalResponse { approve: *approve }
+        }
     }
 }
 

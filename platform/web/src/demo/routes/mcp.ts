@@ -6,7 +6,7 @@ import type { McpOAuthFlow, McpServer, SecretGrant } from "@/api";
 import type { DemoStore, UniverseState } from "../store";
 import { badRequest, conflict, notFound, readBody, universeFor } from "./common";
 
-const APPROVALS = new Set<string>(["providerDefault", "always", "never"]);
+const APPROVALS = new Set<string>(["always", "never"]);
 const STATUSES = new Set<string>(["active", "needsAuthConfig", "unverified", "disabled"]);
 const OAUTH_POLICIES = new Set<string>(["optionalOAuth", "requiredOAuth"]);
 const REQUIRED_POLICIES = new Set<string>(["requiredBearer", "requiredOAuth"]);
@@ -70,7 +70,7 @@ function materialize(
       allowedTools: allowedTools.length > 0 ? allowedTools : null,
       approvalDefault: typeof input.approvalDefault === "string" && APPROVALS.has(input.approvalDefault)
         ? (input.approvalDefault as McpServer["approvalDefault"])
-        : "providerDefault",
+        : "never",
       deferLoadingDefault: typeof input.deferLoadingDefault === "boolean"
         ? input.deferLoadingDefault
         : null,

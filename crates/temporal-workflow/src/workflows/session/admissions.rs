@@ -117,6 +117,7 @@ fn admissible_during_turn(command: &CoreAgentCommand) -> bool {
         CoreAgentCommand::CancelRun { .. }
             | CoreAgentCommand::ForceCancelRun { .. }
             | CoreAgentCommand::RequestRunSteering { .. }
+            | CoreAgentCommand::DecideApproval(_)
             | CoreAgentCommand::RequestRun(_)
             | CoreAgentCommand::ResolvePromise { .. }
             | CoreAgentCommand::FailWorkflowToolDelivery { .. }

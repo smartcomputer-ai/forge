@@ -2764,6 +2764,67 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
     }
   },
   {
+    "name": "lightspeed_session_runs_approvals_decide",
+    "method": "session/runs/approvals/decide",
+    "summary": "Decide pending run approvals",
+    "description": "Approves or rejects pending MCP tool calls on the named active run. Valid decisions apply independently; the run resumes only after every pending approval has a decision.",
+    "paramsType": "RunApprovalsDecideParams",
+    "resultType": "AgentApiOutcome<RunApprovalsDecideResponse>",
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "decisions": {
+          "items": {
+            "$ref": "#/definitions/ApprovalDecisionInput"
+          },
+          "type": "array"
+        },
+        "runId": {
+          "type": "string"
+        },
+        "sessionId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "sessionId",
+        "runId",
+        "decisions"
+      ],
+      "type": "object",
+      "definitions": {
+        "ApprovalDecisionInput": {
+          "properties": {
+            "approvalId": {
+              "type": "string"
+            },
+            "decision": {
+              "$ref": "#/definitions/ApprovalDecisionKind"
+            },
+            "note": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "approvalId",
+            "decision"
+          ],
+          "type": "object"
+        },
+        "ApprovalDecisionKind": {
+          "enum": [
+            "approve",
+            "reject"
+          ],
+          "type": "string"
+        }
+      }
+    }
+  },
+  {
     "name": "lightspeed_session_runs_steer",
     "method": "session/runs/steer",
     "summary": "Steer the active run",
@@ -7624,9 +7685,8 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
         },
         "RemoteMcpApprovalPolicy": {
           "enum": [
-            "providerDefault",
-            "always",
-            "never"
+            "never",
+            "always"
           ],
           "type": "string"
         }

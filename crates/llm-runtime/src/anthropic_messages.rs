@@ -646,6 +646,11 @@ async fn materialize_block(
             let raw = read_json(blobs, &entry.content_ref).await?;
             Ok((am::MessageRole::Assistant, am::ContentBlockParam::Raw(raw)))
         }
+        ContextEntryKind::McpApprovalResponse { .. } => {
+            Err(LlmAdapterError::InvalidProviderRequest {
+                message: "Anthropic provider-hosted MCP does not support approval responses; use native MCP execution or an OpenAI Responses model".to_owned(),
+            })
+        }
     }
 }
 
@@ -968,6 +973,7 @@ pub async fn result_from_response(
             finish,
             usage,
             tool_calls,
+            approval_requests: Vec::new(),
             context_token_estimate,
         },
     })
@@ -1011,6 +1017,7 @@ async fn refused_generation_result(
             finish: LlmFinish::ContentFilter,
             usage: response.parsed.usage.as_ref().map(llm_usage),
             tool_calls: Vec::new(),
+            approval_requests: Vec::new(),
             context_token_estimate: None,
         },
     })

@@ -466,7 +466,7 @@ export function mcpServer(init: McpServerInit): McpServer {
     defaultServerLabel: init.serverId,
     description: null,
     allowedTools: null,
-    approvalDefault: "providerDefault",
+    approvalDefault: "never",
     deferLoadingDefault: null,
     credential: null,
     revision: 1,

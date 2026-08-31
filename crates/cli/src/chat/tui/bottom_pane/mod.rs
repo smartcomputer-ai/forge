@@ -209,6 +209,11 @@ impl BottomPaneState {
                     self.status = format!("run {} running", run.run_seq);
                 }
             }
+            ChatEvent::ApprovalsPending { approvals, .. } => {
+                self.run_control_active = true;
+                self.sticky_error = None;
+                self.status = format!("{} approval(s) pending", approvals.len());
+            }
             ChatEvent::StatusChanged(ChatStatus {
                 session_id,
                 status,

@@ -1698,6 +1698,23 @@
       ],
       "type": "object"
     },
+    "AgentApiOutcomeOfRunApprovalsDecideResponse": {
+      "properties": {
+        "notifications": {
+          "items": {
+            "$ref": "#/definitions/AgentNotification"
+          },
+          "type": "array"
+        },
+        "result": {
+          "$ref": "#/definitions/RunApprovalsDecideResponse"
+        }
+      },
+      "required": [
+        "result"
+      ],
+      "type": "object"
+    },
     "AgentApiOutcomeOfRunCancelResponse": {
       "properties": {
         "notifications": {
@@ -2429,6 +2446,130 @@
         "updatedAtMs"
       ],
       "type": "object"
+    },
+    "ApprovalDecisionFailure": {
+      "properties": {
+        "kind": {
+          "$ref": "#/definitions/ApprovalDecisionFailureKind"
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "message"
+      ],
+      "type": "object"
+    },
+    "ApprovalDecisionFailureKind": {
+      "enum": [
+        "invalidId",
+        "unknown",
+        "foreignRun",
+        "alreadyDecided",
+        "cancelled",
+        "duplicate",
+        "invalidNote",
+        "rejected"
+      ],
+      "type": "string"
+    },
+    "ApprovalDecisionInput": {
+      "properties": {
+        "approvalId": {
+          "type": "string"
+        },
+        "decision": {
+          "$ref": "#/definitions/ApprovalDecisionKind"
+        },
+        "note": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "approvalId",
+        "decision"
+      ],
+      "type": "object"
+    },
+    "ApprovalDecisionKind": {
+      "enum": [
+        "approve",
+        "reject"
+      ],
+      "type": "string"
+    },
+    "ApprovalDecisionResult": {
+      "properties": {
+        "approvalId": {
+          "type": "string"
+        },
+        "failure": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ApprovalDecisionFailure"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "status": {
+          "$ref": "#/definitions/ApprovalDecisionStatus"
+        }
+      },
+      "required": [
+        "approvalId",
+        "status"
+      ],
+      "type": "object"
+    },
+    "ApprovalDecisionStatus": {
+      "enum": [
+        "decided",
+        "failed"
+      ],
+      "type": "string"
+    },
+    "ApprovalSubjectView": {
+      "oneOf": [
+        {
+          "properties": {
+            "argumentsPreview": {
+              "type": "string"
+            },
+            "argumentsRef": {
+              "type": "string"
+            },
+            "kind": {
+              "const": "mcpToolCall",
+              "type": "string"
+            },
+            "serverId": {
+              "type": "string"
+            },
+            "serverLabel": {
+              "type": "string"
+            },
+            "toolName": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind",
+            "serverId",
+            "serverLabel",
+            "toolName",
+            "argumentsRef",
+            "argumentsPreview"
+          ],
+          "type": "object"
+        }
+      ]
     },
     "AuthClientCreateParams": {
       "description": "Register an OAuth client configuration. `client_secret` is the second\ndeliberate inbound-plaintext path after `auth/grants/import`: it is\nencrypted on receipt and never returned by any method. `Debug` output\nredacts it; request logging must never echo these params.",
@@ -7097,6 +7238,22 @@
             "type"
           ],
           "type": "object"
+        },
+        {
+          "properties": {
+            "approve": {
+              "type": "boolean"
+            },
+            "type": {
+              "const": "mcpApprovalResponse",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "approve"
+          ],
+          "type": "object"
         }
       ]
     },
@@ -7179,6 +7336,26 @@
             "type",
             "runId",
             "turnId"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "approvalId": {
+              "type": "string"
+            },
+            "runId": {
+              "type": "string"
+            },
+            "type": {
+              "const": "approvalDecision",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "runId",
+            "approvalId"
           ],
           "type": "object"
         },
@@ -10930,6 +11107,27 @@
       ],
       "type": "object"
     },
+    "PendingApprovalView": {
+      "properties": {
+        "approvalId": {
+          "type": "string"
+        },
+        "requestedAtMs": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "subject": {
+          "$ref": "#/definitions/ApprovalSubjectView"
+        }
+      },
+      "required": [
+        "approvalId",
+        "requestedAtMs",
+        "subject"
+      ],
+      "type": "object"
+    },
     "PollCursorSpec": {
       "description": "Dedupe discipline of a poll: an id set for unordered feeds, a watermark\nfor ordered ones.",
       "oneOf": [
@@ -11608,9 +11806,8 @@
     },
     "RemoteMcpApprovalPolicy": {
       "enum": [
-        "providerDefault",
-        "always",
-        "never"
+        "never",
+        "always"
       ],
       "type": "string"
     },
@@ -11655,6 +11852,46 @@
           "type": "object"
         }
       ]
+    },
+    "RunApprovalsDecideParams": {
+      "properties": {
+        "decisions": {
+          "items": {
+            "$ref": "#/definitions/ApprovalDecisionInput"
+          },
+          "type": "array"
+        },
+        "runId": {
+          "type": "string"
+        },
+        "sessionId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "sessionId",
+        "runId",
+        "decisions"
+      ],
+      "type": "object"
+    },
+    "RunApprovalsDecideResponse": {
+      "properties": {
+        "results": {
+          "items": {
+            "$ref": "#/definitions/ApprovalDecisionResult"
+          },
+          "type": "array"
+        },
+        "run": {
+          "$ref": "#/definitions/RunView"
+        }
+      },
+      "required": [
+        "results",
+        "run"
+      ],
+      "type": "object"
     },
     "RunCancelParams": {
       "properties": {
@@ -11838,6 +12075,7 @@
       "enum": [
         "queued",
         "running",
+        "parked",
         "cancelling",
         "completed",
         "failed",
@@ -11917,6 +12155,12 @@
         },
         "id": {
           "type": "string"
+        },
+        "pendingApprovals": {
+          "items": {
+            "$ref": "#/definitions/PendingApprovalView"
+          },
+          "type": "array"
         },
         "source": {
           "$ref": "#/definitions/RunViewSource"
@@ -12597,6 +12841,106 @@
           "required": [
             "type",
             "runId"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "approvalId": {
+              "type": "string"
+            },
+            "runId": {
+              "type": "string"
+            },
+            "subject": {
+              "$ref": "#/definitions/ApprovalSubjectView"
+            },
+            "type": {
+              "const": "approvalRequested",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "runId",
+            "approvalId",
+            "subject"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "runId": {
+              "type": "string"
+            },
+            "type": {
+              "const": "approvalRunParked",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "runId"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "approvalId": {
+              "type": "string"
+            },
+            "decidedBy": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/PrincipalRefView"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "decision": {
+              "$ref": "#/definitions/ApprovalDecisionKind"
+            },
+            "note": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "runId": {
+              "type": "string"
+            },
+            "type": {
+              "const": "approvalDecided",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "runId",
+            "approvalId",
+            "decision"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "approvalId": {
+              "type": "string"
+            },
+            "runId": {
+              "type": "string"
+            },
+            "type": {
+              "const": "approvalCancelled",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "runId",
+            "approvalId"
           ],
           "type": "object"
         },

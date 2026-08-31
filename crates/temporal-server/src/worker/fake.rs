@@ -254,6 +254,7 @@ impl FakeLlm {
                 finish: LlmFinish::ToolCalls,
                 usage: None,
                 tool_calls,
+                approval_requests: Vec::new(),
                 context_token_estimate: None,
             },
         })
@@ -304,6 +305,7 @@ impl FakeLlm {
                 finish: LlmFinish::Stop,
                 usage: None,
                 tool_calls: Vec::new(),
+                approval_requests: Vec::new(),
                 context_token_estimate: None,
             },
         })

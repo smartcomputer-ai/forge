@@ -419,6 +419,7 @@ fn agent_session_args_with_close_on_terminal(close_on_terminal: bool) -> AgentSe
         legacy_max_steps_per_input: None,
         continue_as_new_history_threshold: None,
         close_on_terminal,
+        auto_reject_approvals: false,
         continuation_state: None,
     }
 }
@@ -568,6 +569,7 @@ fn workflow_with_parked_tool_batch(spec: engine::AwaitSpec) -> AgentSessionWorkf
         turns: std::collections::BTreeMap::new(),
         active_turn_id: None,
         active_tool_batch_id: Some(batch_id),
+        approvals: Default::default(),
         parked_tool_batch: Some(engine::ParkedToolBatch {
             batch_id,
             suspension: engine::ToolBatchSuspension::AwaitTool { call_id, spec },

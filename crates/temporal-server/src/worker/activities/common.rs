@@ -119,6 +119,7 @@ pub(super) async fn failed_generation_result_from_error(
             finish: LlmFinish::Failed,
             usage: None,
             tool_calls: Vec::new(),
+            approval_requests: Vec::new(),
             context_token_estimate: None,
         },
     })

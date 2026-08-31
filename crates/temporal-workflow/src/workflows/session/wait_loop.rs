@@ -61,8 +61,11 @@ pub(super) fn workflow_state_needs_core_drive(ctx: &WorkflowContext<AgentSession
 pub(super) fn workflow_state_needs_core_drive_for_state(state: &AgentSessionWorkflow) -> bool {
     !state.core_state.runs.queued.is_empty()
         || state.core_state.context.pending_compaction
-        || (state.core_state.runs.active.is_some()
-            && awaits::parked_tool_batch(&state.core_state).is_none())
+        || state.core_state.runs.active.as_ref().is_some_and(|run| {
+            awaits::parked_tool_batch(&state.core_state).is_none()
+                && !(run.status == engine::RunStatus::Parked
+                    && run.pending_approvals().next().is_some())
+        })
 }
 
 fn nearest_workflow_wake_ms(ctx: &WorkflowContext<AgentSessionWorkflow>) -> Option<u64> {

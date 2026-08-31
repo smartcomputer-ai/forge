@@ -139,6 +139,15 @@ Requests cancellation of the named queued or active run and returns its current 
 - Params: `RunCancelParams`
 - Result: `AgentApiOutcome<RunCancelResponse>`
 
+### `session/runs/approvals/decide`
+
+**Decide pending run approvals**
+
+Approves or rejects pending MCP tool calls on the named active run. Valid decisions apply independently; the run resumes only after every pending approval has a decision.
+
+- Params: `RunApprovalsDecideParams`
+- Result: `AgentApiOutcome<RunApprovalsDecideResponse>`
+
 ### `session/runs/steer`
 
 **Steer the active run**

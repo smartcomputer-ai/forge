@@ -836,6 +836,7 @@ mod tests {
             entries: Vec::new(),
             tool_batches: Vec::new(),
             usage: None,
+            pending_approvals: Vec::new(),
         }
     }
 

@@ -88,6 +88,34 @@ impl TranscriptState {
                 };
                 self.active_cell_revision = self.active_cell_revision.wrapping_add(1);
             }
+            ChatEvent::ApprovalsPending {
+                run_id, approvals, ..
+            } => {
+                for approval in approvals {
+                    let api::ApprovalSubjectView::McpToolCall {
+                        server_label,
+                        tool_name,
+                        arguments_preview,
+                        ..
+                    } = approval.subject;
+                    self.push_committed_cell(Box::new(NoticeCell::new(
+                        format!("approval:{}", approval.approval_id),
+                        format!(
+                            "approval required: {} on {}\n{}\n/approve {}  or  /reject {} [note]",
+                            tool_name,
+                            server_label,
+                            arguments_preview,
+                            approval.approval_id,
+                            approval.approval_id
+                        ),
+                    )));
+                }
+                self.active_cell = Some(Box::new(RunCell::new(
+                    format!("active-run:{run_id}"),
+                    "waiting for approval".to_owned(),
+                )));
+                self.active_cell_revision = self.active_cell_revision.wrapping_add(1);
+            }
             ChatEvent::ToolChainsChanged { chains, .. } => {
                 if chains.is_empty() {
                     self.flush_terminal_active_tool_chains();

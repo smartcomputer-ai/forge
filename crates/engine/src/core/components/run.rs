@@ -3,10 +3,11 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    ActiveToolBatch, BlobRef, CompletedToolBatch, ContextEntryId, ContextEntryInput,
-    ContextEntryKey, CoreAgentEvent, CoreAgentEventProposal, CoreAgentJoins, CoreAgentState,
-    CoreAgentStatus, DomainError, PlanningError, PromiseId, RunConfig, RunId, SteeringId,
-    SubmissionId, ToolBatchId, ToolCallId, TurnId, TurnOutcome, TurnState, TurnStatus,
+    ActiveToolBatch, ApprovalId, ApprovalRecord, ApprovalStatus, BlobRef, CompletedToolBatch,
+    ContextEntryId, ContextEntryInput, ContextEntryKey, CoreAgentEvent, CoreAgentEventProposal,
+    CoreAgentJoins, CoreAgentState, CoreAgentStatus, DomainError, PlanningError, PromiseId,
+    RunConfig, RunId, SteeringId, SubmissionId, ToolBatchId, ToolCallId, TurnId, TurnOutcome,
+    TurnState, TurnStatus,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -84,6 +85,11 @@ pub struct ActiveRun {
     pub turns: BTreeMap<TurnId, TurnState>,
     pub active_turn_id: Option<TurnId>,
     pub active_tool_batch_id: Option<ToolBatchId>,
+    /// Single-use approval records owned by this run. They disappear from
+    /// materialized state with the active run; their immutable audit trail
+    /// remains in the session event log.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub approvals: BTreeMap<ApprovalId, ApprovalRecord>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parked_tool_batch: Option<ParkedToolBatch>,
     pub tool_batches: BTreeMap<ToolBatchId, ActiveToolBatch>,
@@ -92,6 +98,14 @@ pub struct ActiveRun {
     pub failure: Option<RunFailure>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub notify_on_terminal: Vec<RunTerminalNotifyIntent>,
+}
+
+impl ActiveRun {
+    pub fn pending_approvals(&self) -> impl Iterator<Item = &ApprovalRecord> {
+        self.approvals
+            .values()
+            .filter(|record| record.status == ApprovalStatus::Pending)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -444,11 +458,19 @@ fn terminal_run_proposal(
         }
         (
             TurnStatus::Completed,
-            Some(TurnOutcome::ToolCallsQueued | TurnOutcome::ContextUpdateRequired),
+            Some(
+                TurnOutcome::ToolCallsQueued
+                | TurnOutcome::ContextUpdateRequired
+                | TurnOutcome::ApprovalsRequested,
+            ),
         ) => None,
         (
             TurnStatus::Failed | TurnStatus::Cancelled,
-            Some(TurnOutcome::ToolCallsQueued | TurnOutcome::ContextUpdateRequired),
+            Some(
+                TurnOutcome::ToolCallsQueued
+                | TurnOutcome::ContextUpdateRequired
+                | TurnOutcome::ApprovalsRequested,
+            ),
         ) => {
             return Err(DomainError::InvariantViolation(format!(
                 "turn {} status {:?} does not match outcome {:?}",
@@ -601,6 +623,7 @@ pub(crate) fn apply_event(state: &mut CoreAgentState, event: &Event) -> Result<(
                 turns: BTreeMap::new(),
                 active_turn_id: None,
                 active_tool_batch_id: None,
+                approvals: BTreeMap::new(),
                 parked_tool_batch: None,
                 tool_batches: BTreeMap::new(),
                 completed_tool_batches: BTreeMap::new(),

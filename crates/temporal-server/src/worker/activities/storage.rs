@@ -498,6 +498,7 @@ mod tests {
                     } else {
                         Default::default()
                     },
+                    approval_requests: Vec::new(),
                     context_token_estimate: None,
                 },
             })

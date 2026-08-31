@@ -42,7 +42,7 @@ export type ProviderNativeToolExecutionView = "providerHosted" | "clientEffect";
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "RemoteMcpApprovalPolicy".
  */
-export type RemoteMcpApprovalPolicy = "providerDefault" | "always" | "never";
+export type RemoteMcpApprovalPolicy = "never" | "always";
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "ToolParallelismView".
@@ -169,6 +169,10 @@ export type ContextEntryKindView =
     }
   | {
       type: "providerOpaque";
+    }
+  | {
+      approve: boolean;
+      type: "mcpApprovalResponse";
     };
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
@@ -198,6 +202,11 @@ export type ContextEntrySourceView =
       runId: string;
       turnId: string;
       type: "assistantOutput";
+    }
+  | {
+      approvalId: string;
+      runId: string;
+      type: "approvalDecision";
     }
   | {
       batchId?: string | null;
@@ -381,6 +390,18 @@ export type BoundWorkflowToolDispatchInput = "pull" | "push";
 export type SessionOriginKind = "subagent";
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "ApprovalSubjectView".
+ */
+export type ApprovalSubjectView = {
+  argumentsPreview: string;
+  argumentsRef: string;
+  kind: "mcpToolCall";
+  serverId: string;
+  serverLabel: string;
+  toolName: string;
+};
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "RunViewSource".
  */
 export type RunViewSource =
@@ -432,7 +453,8 @@ export type MediaKind = "image" | "audio" | "document";
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "RunStatus".
  */
-export type RunStatus = "queued" | "running" | "cancelling" | "completed" | "failed" | "cancelled";
+export type RunStatus =
+  "queued" | "running" | "parked" | "cancelling" | "completed" | "failed" | "cancelled";
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "SessionStatus".
@@ -540,6 +562,29 @@ export type SessionEventKindView =
   | {
       runId: string;
       type: "runCancellationRequested";
+    }
+  | {
+      approvalId: string;
+      runId: string;
+      subject: ApprovalSubjectView;
+      type: "approvalRequested";
+    }
+  | {
+      runId: string;
+      type: "approvalRunParked";
+    }
+  | {
+      approvalId: string;
+      decidedBy?: PrincipalRefView | null;
+      decision: ApprovalDecisionKind;
+      note?: string | null;
+      runId: string;
+      type: "approvalDecided";
+    }
+  | {
+      approvalId: string;
+      runId: string;
+      type: "approvalCancelled";
     }
   | {
       outputRef?: string | null;
@@ -739,6 +784,16 @@ export type RunAcceptedSourceView =
     };
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "PrincipalKind".
+ */
+export type PrincipalKind = "user" | "serviceAccount" | "universeDefault";
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "ApprovalDecisionKind".
+ */
+export type ApprovalDecisionKind = "approve" | "reject";
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "AuthProviderKind".
  */
 export type AuthProviderKind =
@@ -764,11 +819,6 @@ export type AuthFlowStatus = "pending" | "completed" | "failed" | "expired";
  * via the `definition` "AuthGrantExposure".
  */
 export type AuthGrantExposure = "brokered" | "retrievable";
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "PrincipalKind".
- */
-export type PrincipalKind = "user" | "serviceAccount" | "universeDefault";
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "AuthGrantStatus".
@@ -1418,6 +1468,24 @@ export type ProfileInstructions =
       blobRef: string;
       type: "textRef";
     };
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "ApprovalDecisionFailureKind".
+ */
+export type ApprovalDecisionFailureKind =
+  | "invalidId"
+  | "unknown"
+  | "foreignRun"
+  | "alreadyDecided"
+  | "cancelled"
+  | "duplicate"
+  | "invalidNote"
+  | "rejected";
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "ApprovalDecisionStatus".
+ */
+export type ApprovalDecisionStatus = "decided" | "failed";
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "SkillActivationScope".
@@ -2149,6 +2217,7 @@ export interface RunView {
   completedAtMs?: number | null;
   entries?: ContextEntryView[];
   id: string;
+  pendingApprovals?: PendingApprovalView[];
   source: RunViewSource;
   /**
    * When the run left the queue and began executing, derived from the
@@ -2163,6 +2232,15 @@ export interface RunView {
    * (`cachedInputTokens / inputTokens`) is the prompt-cache hit rate.
    */
   usage?: LlmUsageView | null;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "PendingApprovalView".
+ */
+export interface PendingApprovalView {
+  approvalId: string;
+  requestedAtMs: number;
+  subject: ApprovalSubjectView;
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
@@ -2265,6 +2343,14 @@ export interface ContextEntryInputView {
   providerItemId?: string | null;
   providerKind?: string | null;
   tokenEstimate?: TokenEstimateView | null;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "PrincipalRefView".
+ */
+export interface PrincipalRefView {
+  id?: string | null;
+  kind?: PrincipalKind & string;
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
@@ -2446,14 +2532,6 @@ export interface AuthGrantView {
   status: AuthGrantStatus;
   subjectHint?: string | null;
   updatedAtMs: number;
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "PrincipalRefView".
- */
-export interface PrincipalRefView {
-  id?: string | null;
-  kind?: PrincipalKind & string;
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
@@ -5007,6 +5085,39 @@ export interface ProfileReadResponse {
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "AgentApiOutcomeOfRunApprovalsDecideResponse".
+ */
+export interface AgentApiOutcomeOfRunApprovalsDecideResponse {
+  notifications?: AgentNotification[];
+  result: RunApprovalsDecideResponse;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "RunApprovalsDecideResponse".
+ */
+export interface RunApprovalsDecideResponse {
+  results: ApprovalDecisionResult[];
+  run: RunView;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "ApprovalDecisionResult".
+ */
+export interface ApprovalDecisionResult {
+  approvalId: string;
+  failure?: ApprovalDecisionFailure | null;
+  status: ApprovalDecisionStatus;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "ApprovalDecisionFailure".
+ */
+export interface ApprovalDecisionFailure {
+  kind: ApprovalDecisionFailureKind;
+  message: string;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "AgentApiOutcomeOfRunCancelResponse".
  */
 export interface AgentApiOutcomeOfRunCancelResponse {
@@ -5460,6 +5571,15 @@ export interface AgentProfileInput {
   environment?: ProfileEnvironment | null;
   instructions?: ProfileInstructions | null;
   profileId: ProfileId;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "ApprovalDecisionInput".
+ */
+export interface ApprovalDecisionInput {
+  approvalId: string;
+  decision: ApprovalDecisionKind;
+  note?: string | null;
 }
 /**
  * Register an OAuth client configuration. `client_secret` is the second
@@ -6642,6 +6762,15 @@ export interface ProfilePutParams {
  */
 export interface ProfileReadParams {
   profileId: ProfileId;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "RunApprovalsDecideParams".
+ */
+export interface RunApprovalsDecideParams {
+  decisions: ApprovalDecisionInput[];
+  runId: string;
+  sessionId: string;
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema

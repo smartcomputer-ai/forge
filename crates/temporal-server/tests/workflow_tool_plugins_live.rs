@@ -564,6 +564,7 @@ impl WorkflowToolScriptedLlm {
                     arguments_ref,
                     native_call_ref: None,
                 }],
+                approval_requests: Vec::new(),
                 context_token_estimate: None,
             },
         })
@@ -603,6 +604,7 @@ impl WorkflowToolScriptedLlm {
                 finish: LlmFinish::Stop,
                 usage: None,
                 tool_calls: Vec::new(),
+                approval_requests: Vec::new(),
                 context_token_estimate: None,
             },
         })

@@ -321,7 +321,7 @@ export interface McpServer {
   defaultServerLabel: string;
   description?: string | null;
   allowedTools?: string[] | null;
-  approvalDefault: "providerDefault" | "always" | "never";
+  approvalDefault: "always" | "never";
   deferLoadingDefault?: boolean | null;
   authPolicy: { type: string } & Record<string, unknown>;
   credential?: { type: "authGrant"; grantId: string } | null;
@@ -522,6 +522,15 @@ export interface SessionRunSteered {
 /// queued one.
 export interface SessionRunCancelled {
   run: { id: string; status: SessionRunStatus };
+}
+
+export interface SessionRunApprovalsDecided {
+  results: Array<{
+    approvalId: string;
+    status: "decided" | "failed";
+    failure?: { kind: string; message: string };
+  }>;
+  run: SessionRunView;
 }
 
 /// Engine workspace view, straight from `vfs/workspaces/list`.

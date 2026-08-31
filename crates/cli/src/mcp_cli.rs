@@ -315,7 +315,6 @@ struct McpListArgs {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
 enum RemoteMcpApprovalArg {
-    ProviderDefault,
     Always,
     Never,
 }
@@ -323,7 +322,6 @@ enum RemoteMcpApprovalArg {
 impl std::fmt::Display for RemoteMcpApprovalArg {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
-            Self::ProviderDefault => "provider-default",
             Self::Always => "always",
             Self::Never => "never",
         })
@@ -333,7 +331,6 @@ impl std::fmt::Display for RemoteMcpApprovalArg {
 impl From<RemoteMcpApprovalArg> for api::RemoteMcpApprovalPolicy {
     fn from(value: RemoteMcpApprovalArg) -> Self {
         match value {
-            RemoteMcpApprovalArg::ProviderDefault => Self::ProviderDefault,
             RemoteMcpApprovalArg::Always => Self::Always,
             RemoteMcpApprovalArg::Never => Self::Never,
         }
@@ -866,7 +863,6 @@ fn print_link(tool: &api::ToolView) {
 
 fn approval_label(value: api::RemoteMcpApprovalPolicy) -> &'static str {
     match value {
-        api::RemoteMcpApprovalPolicy::ProviderDefault => "provider-default",
         api::RemoteMcpApprovalPolicy::Always => "always",
         api::RemoteMcpApprovalPolicy::Never => "never",
     }

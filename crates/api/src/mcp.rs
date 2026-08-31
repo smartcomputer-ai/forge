@@ -125,10 +125,9 @@ pub enum McpToolDiscoveryFailureCode {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub enum RemoteMcpApprovalPolicy {
-    ProviderDefault,
-    Always,
     #[default]
     Never,
+    Always,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

@@ -2904,6 +2904,7 @@ mod tests {
                         finish: LlmFinish::ToolCalls,
                         usage: None,
                         tool_calls: calls,
+                        approval_requests: Vec::new(),
                         context_token_estimate: None,
                     },
                 },

@@ -134,6 +134,7 @@ fn should_follow_after(command: &ChatCommand) -> bool {
         ChatCommand::SubmitUserMessage { .. }
             | ChatCommand::SteerRun { .. }
             | ChatCommand::InterruptRun { .. }
+            | ChatCommand::DecideApproval { .. }
             | ChatCommand::ResumeSession
     )
 }
@@ -434,6 +435,20 @@ impl ChatTuiApp {
                     self.local_error("/steer is only available while a run is active");
                 }
             }
+            SlashCommand::Approve { approval_id } => {
+                self.send_chat_command(ChatCommand::DecideApproval {
+                    approval_id,
+                    decision: api::ApprovalDecisionKind::Approve,
+                    note: None,
+                });
+            }
+            SlashCommand::Reject { approval_id, note } => {
+                self.send_chat_command(ChatCommand::DecideApproval {
+                    approval_id,
+                    decision: api::ApprovalDecisionKind::Reject,
+                    note,
+                });
+            }
         }
     }
 
@@ -522,7 +537,7 @@ impl ChatTuiApp {
 }
 
 fn command_help() -> &'static str {
-    "commands: /new, /sessions, /skills, /skills-active, /skill, /skill-off, /model, /provider, /effort, /max-tokens, /interrupt, /steer, /help, /quit"
+    "commands: /new, /sessions, /skills, /skills-active, /skill, /skill-off, /model, /provider, /effort, /max-tokens, /interrupt, /steer, /approve, /reject, /help, /quit"
 }
 
 fn api_skill_activation_scope(scope: SlashSkillScope) -> api::SkillActivationScope {

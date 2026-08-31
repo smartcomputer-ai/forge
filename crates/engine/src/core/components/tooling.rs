@@ -455,9 +455,8 @@ impl RemoteMcpToolSpec {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RemoteMcpApprovalPolicy {
-    ProviderDefault,
-    Always,
     Never,
+    Always,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

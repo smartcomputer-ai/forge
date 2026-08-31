@@ -91,7 +91,7 @@ export function McpServersPage({ admin }: { admin: boolean }) {
   return <ServerList universeId={universe.id} />;
 }
 
-const APPROVALS = ["providerDefault", "always", "never"] as const;
+const APPROVALS = ["always", "never"] as const;
 
 function ServerList({ universeId }: { universeId: string }) {
   const queryClient = useQueryClient();
@@ -373,7 +373,7 @@ function ServerDialog({
   const [idTouched, setIdTouched] = useState(false);
   const [serverUrl, setServerUrl] = useState(server?.serverUrl ?? "");
   const [approval, setApproval] = useState<string>(
-    server?.approvalDefault ?? "providerDefault",
+    server?.approvalDefault ?? "never",
   );
   const [allToolsAllowed, setAllToolsAllowed] = useState(server?.allowedTools == null);
   const [allowedTools, setAllowedTools] = useState<string[]>(server?.allowedTools ?? []);
@@ -772,7 +772,7 @@ function ServerDialog({
                     <span className="ml-2 text-xs font-normal text-muted-foreground">
                       {[
                         ...(!editing ? [`id ${serverId || "…"}`] : []),
-                        approval === "providerDefault" ? "provider approval" : approvalLabel(approval).toLowerCase(),
+                        approvalLabel(approval).toLowerCase(),
                         allToolsAllowed ? "all tools" : `${parsedTools.length} selected tool${parsedTools.length === 1 ? "" : "s"}`,
                       ].join(" · ")}
                     </span>
@@ -1315,7 +1315,6 @@ export function isValidMcpUrl(value: string): boolean {
 }
 
 function approvalLabel(value: string): string {
-  if (value === "providerDefault") return "Use provider default";
   if (value === "always") return "Always require approval";
   return "Never require approval";
 }

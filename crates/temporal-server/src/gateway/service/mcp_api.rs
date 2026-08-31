@@ -213,7 +213,6 @@ impl GatewayAgentApi {
 
 fn registry_approval(value: api::RemoteMcpApprovalPolicy) -> mcp::McpApprovalPolicy {
     match value {
-        api::RemoteMcpApprovalPolicy::ProviderDefault => mcp::McpApprovalPolicy::ProviderDefault,
         api::RemoteMcpApprovalPolicy::Always => mcp::McpApprovalPolicy::Always,
         api::RemoteMcpApprovalPolicy::Never => mcp::McpApprovalPolicy::Never,
     }
@@ -221,7 +220,6 @@ fn registry_approval(value: api::RemoteMcpApprovalPolicy) -> mcp::McpApprovalPol
 
 fn api_approval(value: mcp::McpApprovalPolicy) -> api::RemoteMcpApprovalPolicy {
     match value {
-        mcp::McpApprovalPolicy::ProviderDefault => api::RemoteMcpApprovalPolicy::ProviderDefault,
         mcp::McpApprovalPolicy::Always => api::RemoteMcpApprovalPolicy::Always,
         mcp::McpApprovalPolicy::Never => api::RemoteMcpApprovalPolicy::Never,
     }
@@ -229,9 +227,6 @@ fn api_approval(value: mcp::McpApprovalPolicy) -> api::RemoteMcpApprovalPolicy {
 
 fn engine_approval(value: api::RemoteMcpApprovalPolicy) -> engine::RemoteMcpApprovalPolicy {
     match value {
-        api::RemoteMcpApprovalPolicy::ProviderDefault => {
-            engine::RemoteMcpApprovalPolicy::ProviderDefault
-        }
         api::RemoteMcpApprovalPolicy::Always => engine::RemoteMcpApprovalPolicy::Always,
         api::RemoteMcpApprovalPolicy::Never => engine::RemoteMcpApprovalPolicy::Never,
     }

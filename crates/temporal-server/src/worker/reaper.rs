@@ -704,6 +704,7 @@ mod tests {
             turns: BTreeMap::new(),
             active_turn_id: None,
             active_tool_batch_id: None,
+            approvals: Default::default(),
             parked_tool_batch: None,
             tool_batches: BTreeMap::new(),
             completed_tool_batches: BTreeMap::new(),

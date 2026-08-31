@@ -80,6 +80,32 @@ pub struct RunView {
     /// (`cachedInputTokens / inputTokens`) is the prompt-cache hit rate.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<LlmUsageView>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pending_approvals: Vec<PendingApprovalView>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct PendingApprovalView {
+    pub approval_id: String,
+    pub requested_at_ms: u64,
+    pub subject: ApprovalSubjectView,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum ApprovalSubjectView {
+    McpToolCall {
+        server_id: String,
+        server_label: String,
+        tool_name: String,
+        arguments_ref: String,
+        arguments_preview: String,
+    },
 }
 
 /// Provider-reported token usage for one generation or a sum of them. Every
@@ -195,6 +221,7 @@ pub struct ProviderContextDisplayView {
 pub enum RunStatus {
     Queued,
     Running,
+    Parked,
     Cancelling,
     Completed,
     Failed,
@@ -293,6 +320,9 @@ pub enum ContextEntryKindView {
     },
     ReasoningState,
     ProviderOpaque,
+    McpApprovalResponse {
+        approve: bool,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -382,6 +412,10 @@ pub enum ContextEntrySourceView {
     AssistantOutput {
         run_id: RunId,
         turn_id: String,
+    },
+    ApprovalDecision {
+        run_id: RunId,
+        approval_id: String,
     },
     Tool {
         run_id: RunId,

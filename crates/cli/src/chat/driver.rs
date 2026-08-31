@@ -347,6 +347,11 @@ impl ChatSessionDriver {
             ChatCommand::NewSession => self.new_session().await,
             ChatCommand::SteerRun { text } => self.steer_active_run(text).await,
             ChatCommand::InterruptRun { .. } => self.cancel_active_run().await,
+            ChatCommand::DecideApproval {
+                approval_id,
+                decision,
+                note,
+            } => self.decide_approval(approval_id, decision, note).await,
             ChatCommand::PauseSession | ChatCommand::ResumeSession => {
                 Ok(vec![ChatEvent::Error(ChatErrorView {
                     message: "pause/resume is not implemented for Lightspeed API sessions".into(),
@@ -553,6 +558,66 @@ impl ChatSessionDriver {
         Ok(events)
     }
 
+    async fn decide_approval(
+        &mut self,
+        approval_id: String,
+        decision: api::ApprovalDecisionKind,
+        note: Option<String>,
+    ) -> Result<Vec<ChatEvent>> {
+        let session = self
+            .api
+            .read_session(SessionReadParams {
+                session_id: self.session_id.clone(),
+            })
+            .await
+            .map_err(api_error)?
+            .result
+            .session;
+        let run = session
+            .runs
+            .iter()
+            .find(|run| {
+                run.pending_approvals
+                    .iter()
+                    .any(|approval| approval.approval_id == approval_id)
+            })
+            .ok_or_else(|| anyhow!("pending approval not found: {approval_id}"))?;
+        let response = self
+            .api
+            .decide_run_approvals(api::RunApprovalsDecideParams {
+                session_id: self.session_id.clone(),
+                run_id: run.id.clone(),
+                decisions: vec![api::ApprovalDecisionInput {
+                    approval_id: approval_id.clone(),
+                    decision,
+                    note,
+                }],
+            })
+            .await
+            .map_err(api_error)?
+            .result;
+        let result = response
+            .results
+            .first()
+            .ok_or_else(|| anyhow!("approval decision returned no result"))?;
+        if result.status == api::ApprovalDecisionStatus::Failed {
+            return Err(anyhow!(
+                "approval decision failed: {}",
+                result
+                    .failure
+                    .as_ref()
+                    .map(|failure| failure.message.as_str())
+                    .unwrap_or("unknown failure")
+            ));
+        }
+        let mut events = vec![self.notice_event(
+            "approval",
+            format!("{} {approval_id}", approval_decision_label(decision)),
+        )];
+        events.extend(self.drain_event_log().await?);
+        Ok(events)
+    }
+
     async fn list_skills(&mut self) -> Result<Vec<ChatEvent>> {
         let response = self
             .api
@@ -714,13 +779,24 @@ impl ChatSessionDriver {
         if let Some(active_run) = session
             .runs
             .iter()
-            .find(|run| matches!(run.status, api::RunStatus::Running))
+            .find(|run| matches!(run.status, api::RunStatus::Running | api::RunStatus::Parked))
         {
             events.push(run_event_from_view(
                 active_run,
                 &self.settings,
                 run_seq_from_id(&active_run.id),
             ));
+        }
+        for run in session
+            .runs
+            .iter()
+            .filter(|run| !run.pending_approvals.is_empty())
+        {
+            events.push(ChatEvent::ApprovalsPending {
+                session_id: self.session_id.clone(),
+                run_id: run.id.clone(),
+                approvals: run.pending_approvals.clone(),
+            });
         }
         events.push(ChatEvent::StatusChanged(ChatStatus {
             session_id: self.session_id.clone(),
@@ -872,6 +948,14 @@ impl ChatSessionDriver {
             }
             SessionEventKindView::RunCancellationRequested { .. } => {
                 events.push(self.status_event("cancelling"));
+            }
+            SessionEventKindView::ApprovalRequested { .. }
+            | SessionEventKindView::ApprovalRunParked { .. } => {
+                events.push(self.status_event("waiting for approval"));
+            }
+            SessionEventKindView::ApprovalDecided { .. }
+            | SessionEventKindView::ApprovalCancelled { .. } => {
+                events.push(self.status_event("approval resolved"));
             }
             SessionEventKindView::SessionOpened { .. }
             | SessionEventKindView::SessionConfigChanged { .. }
@@ -1318,8 +1402,18 @@ fn event_needs_snapshot(kind: &SessionEventKindView) -> bool {
             | SessionEventKindView::RunCompleted { .. }
             | SessionEventKindView::RunFailed { .. }
             | SessionEventKindView::RunCancelled { .. }
+            | SessionEventKindView::ApprovalRequested { .. }
+            | SessionEventKindView::ApprovalDecided { .. }
+            | SessionEventKindView::ApprovalCancelled { .. }
             | SessionEventKindView::ToolBatchCompleted { .. }
     )
+}
+
+fn approval_decision_label(decision: api::ApprovalDecisionKind) -> &'static str {
+    match decision {
+        api::ApprovalDecisionKind::Approve => "approved",
+        api::ApprovalDecisionKind::Reject => "rejected",
+    }
 }
 
 fn tool_call_from_event(index: usize, call: &ToolCallEventView) -> ChatToolCallView {
@@ -1435,7 +1529,7 @@ fn summary_from_session(session: &SessionView) -> ChatSessionSummary {
         active_run: session
             .runs
             .iter()
-            .find(|run| matches!(run.status, api::RunStatus::Running))
+            .find(|run| matches!(run.status, api::RunStatus::Running | api::RunStatus::Parked))
             .map(|run| run.id.clone()),
     }
 }
@@ -1671,6 +1765,28 @@ fn print_event(event: &ChatEvent) -> Result<()> {
         ChatEvent::RunChanged(run) => {
             println!("run {} {}", run.id, progress_label(run.status));
         }
+        ChatEvent::ApprovalsPending {
+            run_id, approvals, ..
+        } => {
+            for approval in approvals {
+                let api::ApprovalSubjectView::McpToolCall {
+                    server_label,
+                    tool_name,
+                    arguments_preview,
+                    ..
+                } = &approval.subject;
+                println!(
+                    "approval {} pending for run {}: {} on {}\n{}\n  /approve {}\n  /reject {} [note]",
+                    approval.approval_id,
+                    run_id,
+                    tool_name,
+                    server_label,
+                    arguments_preview,
+                    approval.approval_id,
+                    approval.approval_id
+                );
+            }
+        }
         ChatEvent::ToolChainsChanged { .. }
         | ChatEvent::CompactionsChanged { .. }
         | ChatEvent::GapObserved { .. }
@@ -1904,6 +2020,7 @@ mod tests {
                 }],
             }],
             usage: None,
+            pending_approvals: Vec::new(),
         };
 
         let chains = project_tool_chains(&run);
@@ -1969,6 +2086,7 @@ mod tests {
             }],
             tool_batches: Vec::new(),
             usage: None,
+            pending_approvals: Vec::new(),
         };
 
         let chains = project_tool_chains(&run);
@@ -2045,6 +2163,7 @@ mod tests {
                     },
                 ],
                 usage: None,
+                pending_approvals: Vec::new(),
             }],
             active_context: api::ContextView::default(),
             active_tools: api::ActiveToolsView::default(),
@@ -2145,6 +2264,7 @@ mod tests {
                 ],
                 tool_batches: Vec::new(),
                 usage: None,
+                pending_approvals: Vec::new(),
             }],
             active_context: api::ContextView::default(),
             active_tools: api::ActiveToolsView::default(),
@@ -2195,6 +2315,7 @@ mod tests {
                 entries: vec![reasoning_state_entry("item_1", "reasoning state rs_abc123")],
                 tool_batches: Vec::new(),
                 usage: None,
+                pending_approvals: Vec::new(),
             }],
             active_context: api::ContextView::default(),
             active_tools: api::ActiveToolsView::default(),

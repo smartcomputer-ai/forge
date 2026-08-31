@@ -101,14 +101,15 @@ use auth::{
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use engine::{
-    BlobRef, BoundWorkflowToolDispatch, CompactionPolicy, ContextEntry, ContextEntryInput,
-    ContextEntryKey, ContextEntryKind, ContextMessageRole, CoreAgentCommand, CoreAgentStatus,
-    FunctionToolSpec, ManagedSessionWorkflowTools, ModelSelection, ProviderApiKind, RunConfig,
-    RunId, RunStatus, SKILL_ACTIVATION_PROVIDER_KIND_RUN, SKILL_ACTIVATION_PROVIDER_KIND_SESSION,
-    SKILL_CATALOG_CONTEXT_KEY, SessionConfig, SessionId, SkillId, SubmissionId, ToolChoice,
-    ToolKind, ToolName, ToolParallelism, ToolSpec, WorkflowEndpointRef, WorkflowStartRef,
-    WorkflowToolCompletion, WorkflowToolCompletionKeySource, WorkflowToolDeclaration,
-    WorkflowToolDefinition, WorkflowToolId, WorkflowToolTarget, skill_activation_context_key,
+    ApprovalId, BlobRef, BoundWorkflowToolDispatch, CompactionPolicy, ContextEntry,
+    ContextEntryInput, ContextEntryKey, ContextEntryKind, ContextMessageRole, CoreAgentCommand,
+    CoreAgentStatus, FunctionToolSpec, ManagedSessionWorkflowTools, ModelSelection,
+    ProviderApiKind, RunConfig, RunId, RunStatus, SKILL_ACTIVATION_PROVIDER_KIND_RUN,
+    SKILL_ACTIVATION_PROVIDER_KIND_SESSION, SKILL_CATALOG_CONTEXT_KEY, SessionConfig, SessionId,
+    SkillId, SubmissionId, ToolChoice, ToolKind, ToolName, ToolParallelism, ToolSpec,
+    WorkflowEndpointRef, WorkflowStartRef, WorkflowToolCompletion, WorkflowToolCompletionKeySource,
+    WorkflowToolDeclaration, WorkflowToolDefinition, WorkflowToolId, WorkflowToolTarget,
+    skill_activation_context_key,
     storage::{BlobStore, BlobStoreError, ReadSessionEvents, SessionStore},
 };
 use llm_clients::{anthropic::messages as anthropic, openai::responses as openai};
@@ -241,6 +242,21 @@ fn status_has_submission(
             .completed_runs
             .iter()
             .any(|run| run.submission_id.as_ref() == Some(submission_id))
+}
+
+fn approval_decision_failure(
+    approval_id: String,
+    kind: ApprovalDecisionFailureKind,
+    message: impl Into<String>,
+) -> ApprovalDecisionResult {
+    ApprovalDecisionResult {
+        approval_id,
+        status: ApprovalDecisionStatus::Failed,
+        failure: Some(ApprovalDecisionFailure {
+            kind,
+            message: message.into(),
+        }),
+    }
 }
 
 enum ExistingRunSubmission {
@@ -860,6 +876,7 @@ impl GatewayAgentApi {
         session_config: SessionConfig,
         workflow_tools: Option<ManagedSessionWorkflowTools>,
         close_on_terminal: bool,
+        auto_reject_approvals: bool,
     ) -> AgentSessionArgs {
         AgentSessionArgs {
             universe_id: self.universe_id(),
@@ -870,6 +887,7 @@ impl GatewayAgentApi {
             legacy_max_steps_per_input: None,
             continue_as_new_history_threshold: self.continue_as_new_history_threshold,
             close_on_terminal,
+            auto_reject_approvals,
             continuation_state: None,
         }
     }
@@ -891,6 +909,7 @@ impl GatewayAgentApi {
                 profile: Some(profile),
             },
             false,
+            true,
             None,
         )
         .await?;
@@ -914,6 +933,7 @@ impl GatewayAgentApi {
                 profile,
             },
             close_on_terminal,
+            false,
             Some(workflow_tools),
         )
         .await?;
@@ -1059,6 +1079,7 @@ impl GatewayAgentApi {
         &self,
         params: SessionStartParams,
         close_on_terminal: bool,
+        auto_reject_approvals: bool,
         trusted_workflow_tools: Option<ManagedSessionWorkflowTools>,
     ) -> Result<AgentApiOutcome<SessionStartResponse>, AgentApiError> {
         let SessionStartParams {
@@ -1171,6 +1192,7 @@ impl GatewayAgentApi {
                     session_config,
                     workflow_tools.clone(),
                     close_on_terminal,
+                    auto_reject_approvals,
                 ),
                 WorkflowStartOptions::new(
                     self.task_queue.clone(),
@@ -2345,7 +2367,8 @@ impl AgentApiService for GatewayAgentApi {
         &self,
         params: SessionStartParams,
     ) -> Result<AgentApiOutcome<SessionStartResponse>, AgentApiError> {
-        self.start_session_internal(params, false, None).await
+        self.start_session_internal(params, false, false, None)
+            .await
     }
 
     async fn start_managed_session(
@@ -2367,6 +2390,7 @@ impl AgentApiService for GatewayAgentApi {
                 config,
                 profile,
             },
+            false,
             false,
             Some(workflow_tools),
         )
@@ -3076,6 +3100,210 @@ impl AgentApiService for GatewayAgentApi {
             .wait_for_cancelled_run(&session_id, requested_run_id)
             .await?;
         Ok(AgentApiOutcome::new(RunCancelResponse { run }))
+    }
+
+    async fn decide_run_approvals(
+        &self,
+        params: RunApprovalsDecideParams,
+    ) -> Result<AgentApiOutcome<RunApprovalsDecideResponse>, AgentApiError> {
+        const MAX_DECISIONS: usize = 64;
+        let session_id = SessionId::try_new(params.session_id).map_err(|error| {
+            AgentApiError::invalid_request(format!("invalid session id: {error}"))
+        })?;
+        let run_id = parse_api_run_id(&params.run_id)?;
+        if params.decisions.is_empty() || params.decisions.len() > MAX_DECISIONS {
+            return Err(AgentApiError::invalid_request(format!(
+                "session/runs/approvals/decide requires 1 to {MAX_DECISIONS} decisions"
+            )));
+        }
+        let loaded = self.load_session_state(&session_id).await?;
+        let Some(active) = loaded.state.runs.active.as_ref() else {
+            return Err(AgentApiError::rejected(format!(
+                "run is not active: {}",
+                params.run_id
+            )));
+        };
+        if active.run_id != run_id
+            || !matches!(active.status, RunStatus::Active | RunStatus::Parked)
+        {
+            return Err(AgentApiError::rejected(format!(
+                "run is not accepting approval decisions: {}",
+                params.run_id
+            )));
+        }
+
+        let principal = crate::gateway::principal::request_principal();
+        let decided_by = engine::ApprovalPrincipal {
+            kind: match principal.kind {
+                auth::PrincipalKind::User => "user",
+                auth::PrincipalKind::ServiceAccount => "service_account",
+                auth::PrincipalKind::UniverseDefault => "universe_default",
+            }
+            .to_owned(),
+            id: principal.id,
+        };
+        let mut seen = BTreeSet::new();
+        let mut results = Vec::with_capacity(params.decisions.len());
+        for input in params.decisions {
+            let approval_id = match ApprovalId::try_new(input.approval_id.clone()) {
+                Ok(id) => id,
+                Err(error) => {
+                    results.push(approval_decision_failure(
+                        input.approval_id,
+                        ApprovalDecisionFailureKind::InvalidId,
+                        error.to_string(),
+                    ));
+                    continue;
+                }
+            };
+            if !seen.insert(approval_id.clone()) {
+                results.push(approval_decision_failure(
+                    input.approval_id,
+                    ApprovalDecisionFailureKind::Duplicate,
+                    "duplicate approval id in decision batch",
+                ));
+                continue;
+            }
+            if let Err(error) = engine::validate_note(input.note.as_deref()) {
+                results.push(approval_decision_failure(
+                    input.approval_id,
+                    ApprovalDecisionFailureKind::InvalidNote,
+                    error.to_string(),
+                ));
+                continue;
+            }
+            let Some(record) = active.approvals.get(&approval_id) else {
+                let belongs_to_other_run = loaded.entries.iter().rev().any(|entry| {
+                    matches!(
+                        &entry.event,
+                        engine::CoreAgentEvent::Approval(engine::ApprovalEvent::Requested {
+                            approval,
+                        }) if approval.approval_id == approval_id && approval.run_id != run_id
+                    )
+                });
+                results.push(approval_decision_failure(
+                    input.approval_id,
+                    if belongs_to_other_run {
+                        ApprovalDecisionFailureKind::ForeignRun
+                    } else {
+                        ApprovalDecisionFailureKind::Unknown
+                    },
+                    if belongs_to_other_run {
+                        "approval belongs to a different run"
+                    } else {
+                        "approval was not found"
+                    },
+                ));
+                continue;
+            };
+            if record.request.run_id != run_id {
+                results.push(approval_decision_failure(
+                    input.approval_id,
+                    ApprovalDecisionFailureKind::ForeignRun,
+                    "approval belongs to a different run",
+                ));
+                continue;
+            }
+            if record.status != engine::ApprovalStatus::Pending {
+                let kind = if record.status == engine::ApprovalStatus::Cancelled {
+                    ApprovalDecisionFailureKind::Cancelled
+                } else {
+                    ApprovalDecisionFailureKind::AlreadyDecided
+                };
+                results.push(approval_decision_failure(
+                    input.approval_id,
+                    kind,
+                    "approval is already terminal",
+                ));
+                continue;
+            }
+            let engine_decision = match input.decision {
+                ApprovalDecisionKind::Approve => engine::ApprovalDecision::Approved,
+                ApprovalDecisionKind::Reject => engine::ApprovalDecision::Rejected,
+            };
+            let engine::ApprovalContinuation::OpenAiMcp {
+                provider_request_id,
+            } = &record.request.continuation
+            else {
+                results.push(approval_decision_failure(
+                    input.approval_id,
+                    ApprovalDecisionFailureKind::Rejected,
+                    "native MCP approvals land with P145",
+                ));
+                continue;
+            };
+            let approve = engine_decision == engine::ApprovalDecision::Approved;
+            let response_json = serde_json::json!({
+                "type": "mcp_approval_response",
+                "approval_request_id": provider_request_id,
+                "approve": approve,
+            });
+            let response_ref = self
+                .store
+                .put_bytes(serde_json::to_vec(&response_json).map_err(|error| {
+                    AgentApiError::internal(format!("encode MCP approval response: {error}"))
+                })?)
+                .await
+                .map_err(|error| AgentApiError::internal(error.to_string()))?;
+            let correlation = format!("approval_{}", uuid::Uuid::new_v4().simple());
+            self.signal_submit_admissions(
+                &session_id,
+                vec![AgentAdmission {
+                    command: CoreAgentCommand::DecideApproval(engine::ApprovalDecisionCommand {
+                        approval_id: approval_id.clone(),
+                        run_id,
+                        decision: engine_decision,
+                        note: input.note,
+                        decided_by: Some(decided_by.clone()),
+                        response: ContextEntryInput {
+                            kind: ContextEntryKind::McpApprovalResponse {
+                                approval_request_id: provider_request_id.clone(),
+                                approve,
+                            },
+                            content_ref: response_ref,
+                            media_type: Some("application/json".to_owned()),
+                            preview: Some(
+                                if approve {
+                                    "MCP tool call approved"
+                                } else {
+                                    "MCP tool call rejected"
+                                }
+                                .to_owned(),
+                            ),
+                            provider_kind: Some(
+                                "openai.responses.mcp_approval_response".to_owned(),
+                            ),
+                            provider_item_id: None,
+                            token_estimate: None,
+                        },
+                    }),
+                    correlation_token: Some(correlation.clone()),
+                }],
+            )
+            .await?;
+            match self
+                .wait_for_approval_decision(&session_id, run_id, &approval_id, &correlation)
+                .await
+            {
+                Ok(()) => results.push(ApprovalDecisionResult {
+                    approval_id: approval_id.as_str().to_owned(),
+                    status: ApprovalDecisionStatus::Decided,
+                    failure: None,
+                }),
+                Err(error) => results.push(approval_decision_failure(
+                    approval_id.as_str().to_owned(),
+                    ApprovalDecisionFailureKind::Rejected,
+                    error.message,
+                )),
+            }
+        }
+        let run = self
+            .project_run_by_id(&session_id, run_id, RunStatus::Active)
+            .await?;
+        Ok(AgentApiOutcome::new(RunApprovalsDecideResponse {
+            results,
+            run,
+        }))
     }
 
     /// Steer the active run. The steering is admitted against the
