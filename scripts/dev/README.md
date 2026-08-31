@@ -87,6 +87,12 @@ LIGHTSPEED_CHANNELS_CONNECTORS=telegram ./dev.sh
 LIGHTSPEED_CHANNELS_CONNECTORS=telegram,whatsapp ./dev.sh
 ```
 
+The supervisor's local Configurator uses a default-off internal authentication
+path: the Runtime sends `x-lightspeed-universe` only to the exact loopback MCP
+URL it started, and the setup does not create a bearer credential. Supplying an
+external Configurator URL disables that path unless both development variables
+are explicitly enabled; the Runtime rejects non-loopback trusted-header URLs.
+
 Use `./dev.sh --plan full` to inspect a profile without starting
 anything. Pressing Ctrl-C or running `stop` from another terminal stops the
 tracked host supervisor and its children while leaving Docker infrastructure

@@ -53,9 +53,20 @@ access to that listener is unsafe. In `api-key` mode, clients send their
 Lightspeed key as `Authorization: Bearer lsk_...`; the Configurator does not
 store or resolve it locally.
 
-The first release is stateless JSON-response Streamable HTTP. It intentionally
-has no stdio, legacy SSE, MCP OAuth, operator tools, surface profiles, or tool
-approval overlay.
+For local development and tests, `dev.sh full` configures the Runtime itself as
+that trusted caller for the exact loopback Configurator URL. This route is
+disabled by default, cannot target a non-loopback URL, and is not a deployment
+authentication mode.
+
+The server uses the current per-request, sessionless Streamable HTTP lifecycle
+and negotiates the 2026 protocol through `server/discover`. It retains the
+official SDK's stateless 2025 fallback for older clients. Every request gets a
+fresh MCP server instance; no MCP session id or server-side session state is
+retained. Current-protocol requests use single JSON responses because the
+Configurator does not emit mid-call notifications or subscriptions.
+
+It intentionally has no stdio, legacy SSE endpoint, MCP OAuth, operator tools,
+surface profiles, or tool approval overlay.
 
 ## Regenerate and verify
 

@@ -48,6 +48,7 @@ They do not configure the TypeScript Platform server.
 | `LIGHTSPEED_GATEWAY_MAX_REQUEST_BODY_BYTES` | `67108864` | Maximum gateway request body size in bytes. |
 | `LIGHTSPEED_PUBLIC_BASE_URL` | `http://{LIGHTSPEED_GATEWAY_BIND}` | Externally reachable gateway base URL used for OAuth callbacks, bot webhook ingest URLs (`/hooks/bots/…`), and as the environment route base when the process runs the `gateway` role. Hosted deployments should set it explicitly. |
 | `LIGHTSPEED_MCP_PRIVATE_NETWORKS` | Empty (`localhost,127.0.0.1,::1` in `dev.sh` profiles) | Comma-separated exact hosts and CIDRs that native MCP discovery and execution may reach on private networks. A matching MCP server record must also opt in with `allowPrivateNetwork`; all other targets retain public-only HTTPS/SSRF policy. |
+| `LIGHTSPEED_CONFIGURATOR_MCP_INTERNAL_TRUSTED_HEADER_URL` | Empty (the local Configurator URL in `dev.sh full`) | Exact loopback URL at which the first-party Configurator receives the current universe through `x-lightspeed-universe` instead of bearer authentication. This default-off escape hatch exists only for local development and tests; other server ids and non-loopback URLs are rejected. |
 | `LIGHTSPEED_MCP_OAUTH_ALLOW_PRIVATE_NETWORKS` | `false` (`true` in `dev.sh` profiles) | Allows MCP OAuth metadata, registration, exchange, and refresh to use HTTP or private endpoints. This does not authorize discovery or tool execution; those use `LIGHTSPEED_MCP_PRIVATE_NETWORKS` plus the record opt-in. |
 | `LIGHTSPEED_AUTH_MODE` | `single` | Tenant/auth resolution: `single`, `trusted-header`, or `api-key`. Configurator MCP must use the same mode. |
 | `LIGHTSPEED_SECRETS_MASTER_KEY` | Unset | Base64-encoded 32-byte AES key for encrypted grants and secrets. Required before encrypted secret material can be persisted or resolved. Keep stable across restarts. |
@@ -195,6 +196,7 @@ the Rust runtime database and gateway authentication.
 | `LIGHTSPEED_API_URL` | Per-universe gateway URL, otherwise unset | Fallback Lightspeed JSON-RPC endpoint for universes without their own `gatewayUrl`. |
 | `LIGHTSPEED_PLATFORM_CONFIGURATOR_MCP_URL` | Unset | Public Configurator MCP endpoint installed by the Configurator setup. The setup is unavailable when omitted. |
 | `LIGHTSPEED_PLATFORM_CONFIGURATOR_MCP_ALLOW_PRIVATE_NETWORK` | `false` | Whether the setup-created Configurator MCP record may reach a private network. Enable only for an intentional local/internal endpoint and configure `LIGHTSPEED_MCP_PRIVATE_NETWORKS` on the Runtime accordingly. |
+| `LIGHTSPEED_PLATFORM_CONFIGURATOR_MCP_INTERNAL_TRUSTED_HEADER` | `false` | Register the Configurator without a bearer credential because the Runtime supplies its universe header through the loopback-only development/test path. Deployed configurations must leave this disabled. |
 | `LIGHTSPEED_PLATFORM_CHANNELS_HEALTH_URLS` | Empty list | Comma-separated internal connector-host health base URLs (`/healthz` reports every served account) aggregated for Platform administrators. |
 | `LIGHTSPEED_PLATFORM_DEV_ENVD_ENDPOINT` | unset | Development only: `lightspeed-envd` endpoint offered as the default when registering an external environment. Set by `./dev.sh`; never in deployed configuration. |
 
@@ -267,6 +269,8 @@ Never reuse their credentials in a deployed environment.
 | `LIGHTSPEED_CHANNELS_CONNECTORS` | Empty | Providers the `full` development profile hands to one connector host process (`LIGHTSPEED_CONNECTOR_PROVIDERS`). Values: `telegram`, `whatsapp`, or both. WhatsApp additionally needs `LIGHTSPEED_CONNECTOR_WHATSAPP_MEDIA_LOCATOR_KEY`; the session directory defaults to `.lightspeed-dev/whatsapp-auth`. |
 | `PORT` | `3000` | Platform server port. |
 | `LIGHTSPEED_CONFIGURATOR_MCP_BIND_PORT` | `18081` | Configurator port used by the supervisor. |
+| `LIGHTSPEED_CONFIGURATOR_MCP_INTERNAL_TRUSTED_HEADER_URL` | Local Configurator MCP URL in `full` | Enables the Runtime's exact-loopback internal Configurator route. Explicit external Configurator URLs do not enable it automatically. |
+| `LIGHTSPEED_PLATFORM_CONFIGURATOR_MCP_INTERNAL_TRUSTED_HEADER` | `true` for the supervisor's local Configurator; otherwise `false` | Makes the setup record credentialless when the matching Runtime route is enabled. |
 
 The supervisor also honors all runtime, Platform, connector host, and
 Configurator variables documented above.

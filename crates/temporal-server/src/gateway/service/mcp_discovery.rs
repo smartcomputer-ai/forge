@@ -1,5 +1,6 @@
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::net::IpAddr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -14,7 +15,7 @@ use mcp::{
 };
 use rmcp::model::{
     CallToolRequestParams, CallToolResult, ClientInfo, ClientJsonRpcMessage, Implementation,
-    PaginatedRequestParams, ServerJsonRpcMessage, Tool,
+    PaginatedRequestParams, ProtocolVersion, ServerJsonRpcMessage, Tool,
 };
 use rmcp::transport::{
     StreamableHttpClientTransport,
@@ -23,7 +24,7 @@ use rmcp::transport::{
         StreamableHttpClientTransportConfig, StreamableHttpError, StreamableHttpPostResponse,
     },
 };
-use rmcp::{ServiceExt, service::ClientInitializeError};
+use rmcp::{ClientLifecycleMode, ClientServiceExt, service::ClientInitializeError};
 use serde_json::Value;
 use sse_stream::{Sse, SseStream};
 use url::Url;
@@ -97,6 +98,7 @@ pub(crate) trait McpToolDiscoverer: Send + Sync {
         &self,
         server_url: &str,
         bearer: Option<&SecretValue>,
+        trusted_universe: Option<uuid::Uuid>,
         allow_private_network: bool,
         limits: McpToolDiscoveryLimits,
     ) -> Result<Vec<DiscoveredMcpTool>, McpToolDiscoveryFailure>;
@@ -107,6 +109,64 @@ pub(crate) struct HttpMcpToolDiscoverer {
     public_http_policy: PinnedHttpPolicy,
     private_http_policy: PinnedHttpPolicy,
     timeout: Duration,
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct ConfiguratorTrustedHeaderPolicy {
+    endpoint: Option<Arc<str>>,
+}
+
+impl ConfiguratorTrustedHeaderPolicy {
+    pub(crate) fn from_env() -> Result<Self, String> {
+        Self::parse(
+            std::env::var("LIGHTSPEED_CONFIGURATOR_MCP_INTERNAL_TRUSTED_HEADER_URL")
+                .ok()
+                .as_deref(),
+        )
+    }
+
+    fn parse(value: Option<&str>) -> Result<Self, String> {
+        let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+            return Ok(Self::default());
+        };
+        let endpoint = Url::parse(value).map_err(|error| {
+            format!("invalid LIGHTSPEED_CONFIGURATOR_MCP_INTERNAL_TRUSTED_HEADER_URL: {error}")
+        })?;
+        if endpoint.username() != ""
+            || endpoint.password().is_some()
+            || endpoint.fragment().is_some()
+        {
+            return Err(
+                "LIGHTSPEED_CONFIGURATOR_MCP_INTERNAL_TRUSTED_HEADER_URL must not contain credentials or a fragment"
+                    .to_owned(),
+            );
+        }
+        let host = endpoint.host_str().ok_or_else(|| {
+            "LIGHTSPEED_CONFIGURATOR_MCP_INTERNAL_TRUSTED_HEADER_URL must have a host".to_owned()
+        })?;
+        let loopback = host.eq_ignore_ascii_case("localhost")
+            || host
+                .parse::<IpAddr>()
+                .is_ok_and(|address| address.is_loopback());
+        if !loopback {
+            return Err(
+                "LIGHTSPEED_CONFIGURATOR_MCP_INTERNAL_TRUSTED_HEADER_URL is restricted to loopback"
+                    .to_owned(),
+            );
+        }
+        Ok(Self {
+            endpoint: Some(endpoint.to_string().into()),
+        })
+    }
+
+    pub(crate) fn permits(&self, server_id: &str, server_url: &str) -> bool {
+        server_id == "lightspeed-configurator"
+            && Url::parse(server_url).ok().is_some_and(|endpoint| {
+                self.endpoint
+                    .as_deref()
+                    .is_some_and(|expected| expected == endpoint.as_str())
+            })
+    }
 }
 
 #[derive(Clone)]
@@ -514,6 +574,7 @@ impl HttpMcpToolDiscoverer {
         &self,
         server_url: &str,
         bearer: Option<&SecretValue>,
+        trusted_universe: Option<uuid::Uuid>,
         allow_private_network: bool,
         limits: McpToolDiscoveryLimits,
         tool_name: String,
@@ -535,9 +596,7 @@ impl HttpMcpToolDiscoverer {
             let mut config = StreamableHttpClientTransportConfig::with_uri(endpoint.as_str())
                 .max_sse_event_size(limits.max_response_bytes)
                 .reinit_on_expired_session(false);
-            if let Some(token) = bearer {
-                config = config.auth_header(token.expose());
-            }
+            config = transport_auth(config, bearer, trusted_universe)?;
             let client = BoundedReqwestClient::new(client, limits.max_response_bytes);
             let diagnostics = client.diagnostics.clone();
             let transport = StreamableHttpClientTransport::with_client(client, config);
@@ -545,7 +604,7 @@ impl HttpMcpToolDiscoverer {
                 Default::default(),
                 Implementation::new("lightspeed", env!("CARGO_PKG_VERSION")),
             )
-            .serve(transport)
+            .serve_with_lifecycle(transport, client_lifecycle())
             .await
             .map_err(|error| {
                 diagnostics
@@ -574,6 +633,7 @@ impl McpToolDiscoverer for HttpMcpToolDiscoverer {
         &self,
         server_url: &str,
         bearer: Option<&SecretValue>,
+        trusted_universe: Option<uuid::Uuid>,
         allow_private_network: bool,
         limits: McpToolDiscoveryLimits,
     ) -> Result<Vec<DiscoveredMcpTool>, McpToolDiscoveryFailure> {
@@ -594,9 +654,7 @@ impl McpToolDiscoverer for HttpMcpToolDiscoverer {
             let mut config = StreamableHttpClientTransportConfig::with_uri(endpoint.as_str())
                 .max_sse_event_size(limits.max_response_bytes)
                 .reinit_on_expired_session(false);
-            if let Some(token) = bearer {
-                config = config.auth_header(token.expose());
-            }
+            config = transport_auth(config, bearer, trusted_universe)?;
             let client = BoundedReqwestClient::new(client, limits.max_response_bytes);
             let diagnostics = client.diagnostics.clone();
             let transport = StreamableHttpClientTransport::with_client(client, config);
@@ -604,7 +662,7 @@ impl McpToolDiscoverer for HttpMcpToolDiscoverer {
                 Default::default(),
                 Implementation::new("lightspeed", env!("CARGO_PKG_VERSION")),
             )
-            .serve(transport)
+            .serve_with_lifecycle(transport, client_lifecycle())
             .await
             .map_err(|error| {
                 diagnostics
@@ -618,6 +676,38 @@ impl McpToolDiscoverer for HttpMcpToolDiscoverer {
         })
         .await
         .map_err(|_| failure(FailureKind::Unreachable, "MCP endpoint timed out"))?
+    }
+}
+
+fn transport_auth(
+    mut config: StreamableHttpClientTransportConfig,
+    bearer: Option<&SecretValue>,
+    trusted_universe: Option<uuid::Uuid>,
+) -> Result<StreamableHttpClientTransportConfig, McpToolDiscoveryFailure> {
+    if bearer.is_some() && trusted_universe.is_some() {
+        return Err(failure(
+            FailureKind::InvalidResponse,
+            "MCP transport cannot combine bearer and trusted-header authentication",
+        ));
+    }
+    if let Some(token) = bearer {
+        config = config.auth_header(token.expose());
+    }
+    if let Some(universe_id) = trusted_universe {
+        let mut headers = HashMap::new();
+        headers.insert(
+            HeaderName::from_static("x-lightspeed-universe"),
+            HeaderValue::from_str(&universe_id.to_string()).expect("UUID is a valid header value"),
+        );
+        config = config.custom_headers(headers);
+    }
+    Ok(config)
+}
+
+fn client_lifecycle() -> ClientLifecycleMode {
+    ClientLifecycleMode::Auto {
+        preferred_versions: vec![ProtocolVersion::V_2026_07_28],
+        legacy_version: Some(ProtocolVersion::V_2025_11_25),
     }
 }
 
@@ -968,6 +1058,12 @@ mod tests {
         }
         let id = request.get("id").cloned().unwrap_or(Value::Null);
         match request.get("method").and_then(Value::as_str) {
+            Some("server/discover") => Json(json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "error": {"code": -32601, "message": "Method not found"}
+            }))
+            .into_response(),
             Some("initialize") => {
                 state.initialize_count += 1;
                 let mut response = Json(json!({
@@ -1058,6 +1154,44 @@ mod tests {
         assert!(auth::is_public_network_ip(
             "2606:4700:4700::1111".parse().unwrap()
         ));
+    }
+
+    #[test]
+    fn trusted_header_policy_is_exact_loopback_only() {
+        let policy = ConfiguratorTrustedHeaderPolicy::parse(Some("http://127.0.0.1:18081/mcp"))
+            .expect("loopback policy");
+        assert!(policy.permits("lightspeed-configurator", "http://127.0.0.1:18081/mcp"));
+        assert!(!policy.permits("other", "http://127.0.0.1:18081/mcp"));
+        assert!(!policy.permits("lightspeed-configurator", "http://127.0.0.1:18081/other"));
+        assert!(ConfiguratorTrustedHeaderPolicy::parse(Some("https://example.com/mcp")).is_err());
+    }
+
+    #[test]
+    fn trusted_header_transport_auth_excludes_bearer() {
+        let universe_id = uuid::Uuid::from_u128(7);
+        let config = transport_auth(
+            StreamableHttpClientTransportConfig::with_uri("http://127.0.0.1:18081/mcp"),
+            None,
+            Some(universe_id),
+        )
+        .expect("trusted header config");
+        let expected = universe_id.to_string();
+        assert_eq!(
+            config
+                .custom_headers
+                .get(&HeaderName::from_static("x-lightspeed-universe"))
+                .and_then(|value| value.to_str().ok()),
+            Some(expected.as_str())
+        );
+        assert!(config.auth_header.is_none());
+        assert!(
+            transport_auth(
+                StreamableHttpClientTransportConfig::with_uri("http://127.0.0.1:18081/mcp"),
+                Some(&SecretValue::new("not-sent")),
+                Some(universe_id),
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -1156,6 +1290,7 @@ mod tests {
                 .discover_tools(
                     &endpoint,
                     Some(&token),
+                    None,
                     true,
                     McpToolDiscoveryLimits::default(),
                 )
@@ -1210,6 +1345,7 @@ mod tests {
             .discover_tools(
                 &format!("http://{address}/mcp"),
                 None,
+                None,
                 true,
                 McpToolDiscoveryLimits {
                     max_response_bytes: 1024,
@@ -1245,6 +1381,7 @@ mod tests {
             .discover_tools(
                 &format!("http://{address}/mcp"),
                 Some(&SecretValue::new("expired-token")),
+                None,
                 true,
                 McpToolDiscoveryLimits::default(),
             )
@@ -1281,6 +1418,7 @@ mod tests {
         }
         .discover_tools(
             &format!("http://{address}/mcp"),
+            None,
             None,
             true,
             McpToolDiscoveryLimits::default(),

@@ -19,7 +19,9 @@ use mcp::search::McpToolSearchQuery;
 use tokio::sync::Mutex;
 use url::Url;
 
-use crate::gateway::service::mcp_discovery::{HttpMcpToolDiscoverer, McpToolDiscoverer};
+use crate::gateway::service::mcp_discovery::{
+    ConfiguratorTrustedHeaderPolicy, HttpMcpToolDiscoverer, McpToolDiscoverer,
+};
 
 pub enum NativeMcpExecutionOutcome {
     Completed {
@@ -46,6 +48,8 @@ pub struct NativeMcpRuntime {
     inventory: Arc<NativeMcpInventoryResolver>,
     transport: HttpMcpToolDiscoverer,
     private_networks: McpPrivateNetworkPolicy,
+    trusted_header: ConfiguratorTrustedHeaderPolicy,
+    universe_id: uuid::Uuid,
 }
 
 pub const MCP_INVENTORY_CACHE_TTL: Duration = Duration::from_secs(300);
@@ -120,6 +124,8 @@ pub struct NativeMcpInventoryResolver {
     discoverer: Arc<dyn McpToolDiscoverer>,
     secrets: Arc<dyn SecretResolver>,
     private_networks: McpPrivateNetworkPolicy,
+    trusted_header: ConfiguratorTrustedHeaderPolicy,
+    universe_id: uuid::Uuid,
     cache: Arc<Mutex<HashMap<(String, u64), CachedInventory>>>,
     locks: Arc<Mutex<HashMap<(String, u64), Arc<Mutex<()>>>>>,
     ttl: Duration,
@@ -132,14 +138,18 @@ struct CachedInventory {
 }
 
 impl NativeMcpInventoryResolver {
-    pub fn new(
+    pub(crate) fn new(
         secrets: Arc<dyn SecretResolver>,
         private_networks: McpPrivateNetworkPolicy,
+        trusted_header: ConfiguratorTrustedHeaderPolicy,
+        universe_id: uuid::Uuid,
     ) -> Self {
         Self {
             discoverer: Arc::new(HttpMcpToolDiscoverer::new()),
             secrets,
             private_networks,
+            trusted_header,
+            universe_id,
             cache: Arc::new(Mutex::new(HashMap::new())),
             locks: Arc::new(Mutex::new(HashMap::new())),
             ttl: MCP_INVENTORY_CACHE_TTL,
@@ -153,6 +163,8 @@ impl NativeMcpInventoryResolver {
             secrets: Arc::new(llm_runtime::secrets::AbsentSecretResolver),
             private_networks: McpPrivateNetworkPolicy::parse(Some("127.0.0.1"))
                 .expect("test private policy"),
+            trusted_header: ConfiguratorTrustedHeaderPolicy::default(),
+            universe_id: uuid::Uuid::nil(),
             cache: Arc::new(Mutex::new(HashMap::new())),
             locks: Arc::new(Mutex::new(HashMap::new())),
             ttl,
@@ -183,7 +195,15 @@ impl NativeMcpInventoryResolver {
         &self,
         spec: &RemoteMcpToolSpec,
     ) -> Result<Vec<NativeMcpTool>, McpInventoryError> {
-        let bearer = self.bearer(spec).await?;
+        let trusted_universe = self
+            .trusted_header
+            .permits(&spec.server_id, &spec.server_url)
+            .then_some(self.universe_id);
+        let bearer = if trusted_universe.is_some() {
+            None
+        } else {
+            self.bearer(spec).await?
+        };
         let allow_private = self
             .private_networks
             .permits(&spec.server_url, spec.allow_private_network);
@@ -192,6 +212,7 @@ impl NativeMcpInventoryResolver {
             .discover_tools(
                 &spec.server_url,
                 bearer.as_ref(),
+                trusted_universe,
                 allow_private,
                 mcp::McpToolDiscoveryLimits::default(),
             )
@@ -216,11 +237,13 @@ impl NativeMcpInventoryResolver {
 }
 
 impl NativeMcpRuntime {
-    pub fn new(
+    pub(crate) fn new(
         servers: Arc<dyn mcp::McpRegistryStore>,
         secrets: Arc<dyn SecretResolver>,
         inventory: Arc<NativeMcpInventoryResolver>,
         private_networks: McpPrivateNetworkPolicy,
+        trusted_header: ConfiguratorTrustedHeaderPolicy,
+        universe_id: uuid::Uuid,
     ) -> Self {
         Self {
             servers,
@@ -228,6 +251,8 @@ impl NativeMcpRuntime {
             inventory,
             transport: HttpMcpToolDiscoverer::new(),
             private_networks,
+            trusted_header,
+            universe_id,
         }
     }
 
@@ -471,7 +496,15 @@ impl NativeMcpRuntime {
             }
         }
         self.validate_current_record(target).await?;
-        let bearer = self.bearer_for_target(target).await?;
+        let trusted_universe = self
+            .trusted_header
+            .permits(&target.server_id, &target.server_url)
+            .then_some(self.universe_id);
+        let bearer = if trusted_universe.is_some() {
+            None
+        } else {
+            self.bearer_for_target(target).await?
+        };
         let allow_private = self
             .private_networks
             .permits(&target.server_url, target.allow_private_network);
@@ -480,6 +513,7 @@ impl NativeMcpRuntime {
             .call_tool(
                 &target.server_url,
                 bearer.as_ref(),
+                trusted_universe,
                 allow_private,
                 mcp::McpToolDiscoveryLimits::default(),
                 tool_name.to_owned(),
@@ -752,6 +786,7 @@ mod tests {
             &self,
             _server_url: &str,
             _bearer: Option<&SecretValue>,
+            _trusted_universe: Option<uuid::Uuid>,
             _allow_private_network: bool,
             _limits: mcp::McpToolDiscoveryLimits,
         ) -> Result<Vec<mcp::DiscoveredMcpTool>, mcp::McpToolDiscoveryFailure> {

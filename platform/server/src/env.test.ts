@@ -10,6 +10,7 @@ beforeEach(() => {
     "LIGHTSPEED_PLATFORM_GITHUB_CLIENT_ID",
     "LIGHTSPEED_PLATFORM_GITHUB_CLIENT_SECRET",
     "LIGHTSPEED_PLATFORM_CONFIGURATOR_MCP_ALLOW_PRIVATE_NETWORK",
+    "LIGHTSPEED_PLATFORM_CONFIGURATOR_MCP_INTERNAL_TRUSTED_HEADER",
   ]) {
     vi.stubEnv(name, "");
   }
@@ -36,6 +37,7 @@ describe("platform environment", () => {
     expect(env.baseUrl).toBe("https://platform.example");
     expect(env.trustedOrigins).toEqual(["https://app.example", "https://admin.example"]);
     expect(env.configuratorMcpAllowPrivateNetwork).toBe(false);
+    expect(env.configuratorMcpInternalTrustedHeader).toBe(false);
   });
 
   test("loads the Configurator MCP private-network opt-in", () => {
@@ -54,6 +56,14 @@ describe("platform environment", () => {
     expect(() => loadEnv()).toThrowError(
       "LIGHTSPEED_PLATFORM_CONFIGURATOR_MCP_ALLOW_PRIVATE_NETWORK must be true or false",
     );
+  });
+
+  test("loads the development-only Configurator trusted-header path", () => {
+    vi.stubEnv("LIGHTSPEED_PLATFORM_DATABASE_URL", "postgres://platform");
+    vi.stubEnv("LIGHTSPEED_PLATFORM_AUTH_SECRET", "platform-secret");
+    vi.stubEnv("LIGHTSPEED_PLATFORM_CONFIGURATOR_MCP_INTERNAL_TRUSTED_HEADER", "true");
+
+    expect(loadEnv().configuratorMcpInternalTrustedHeader).toBe(true);
   });
 
   test("requires the Lightspeed platform names", () => {

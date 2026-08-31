@@ -168,6 +168,14 @@ function createPlan(profile, sourceEnv) {
     18_081,
     "LIGHTSPEED_CONFIGURATOR_MCP_BIND_PORT",
   );
+  const defaultConfiguratorMcpUrl = `http://127.0.0.1:${configuratorPort}/mcp`;
+  const configuratorMcpUrl =
+    sourceEnv.LIGHTSPEED_PLATFORM_CONFIGURATOR_MCP_URL ?? defaultConfiguratorMcpUrl;
+  const configuratorInternalTrustedHeader =
+    sourceEnv.LIGHTSPEED_PLATFORM_CONFIGURATOR_MCP_INTERNAL_TRUSTED_HEADER ??
+    (profile === "full" && !sourceEnv.LIGHTSPEED_PLATFORM_CONFIGURATOR_MCP_URL
+      ? "true"
+      : "false");
   const runtimePort = addressPort(sourceEnv.LIGHTSPEED_GATEWAY_BIND, 18_080);
   const temporalAddress =
     sourceEnv.TEMPORAL_ADDRESS ?? `127.0.0.1:${sourceEnv.TEMPORAL_PORT ?? "7233"}`;
@@ -213,6 +221,9 @@ function createPlan(profile, sourceEnv) {
       sourceEnv.LIGHTSPEED_MCP_OAUTH_ALLOW_PRIVATE_NETWORKS ?? "true",
     LIGHTSPEED_MCP_PRIVATE_NETWORKS:
       sourceEnv.LIGHTSPEED_MCP_PRIVATE_NETWORKS ?? "localhost,127.0.0.1,::1",
+    LIGHTSPEED_CONFIGURATOR_MCP_INTERNAL_TRUSTED_HEADER_URL:
+      sourceEnv.LIGHTSPEED_CONFIGURATOR_MCP_INTERNAL_TRUSTED_HEADER_URL ??
+      (configuratorInternalTrustedHeader === "true" ? configuratorMcpUrl : ""),
     LIGHTSPEED_PLATFORM_DATABASE_URL: platformDatabaseUrl,
     LIGHTSPEED_PLATFORM_AUTH_SECRET:
       sourceEnv.LIGHTSPEED_PLATFORM_AUTH_SECRET ??
@@ -230,10 +241,11 @@ function createPlan(profile, sourceEnv) {
       sourceEnv.LIGHTSPEED_PLATFORM_ADMIN_PASSWORD ??
       "lightspeed-dev-password",
     LIGHTSPEED_PLATFORM_CONFIGURATOR_MCP_URL:
-      sourceEnv.LIGHTSPEED_PLATFORM_CONFIGURATOR_MCP_URL ??
-      `http://127.0.0.1:${configuratorPort}/mcp`,
+      configuratorMcpUrl,
     LIGHTSPEED_PLATFORM_CONFIGURATOR_MCP_ALLOW_PRIVATE_NETWORK:
       sourceEnv.LIGHTSPEED_PLATFORM_CONFIGURATOR_MCP_ALLOW_PRIVATE_NETWORK ?? "true",
+    LIGHTSPEED_PLATFORM_CONFIGURATOR_MCP_INTERNAL_TRUSTED_HEADER:
+      configuratorInternalTrustedHeader,
     LIGHTSPEED_CONFIGURATOR_MCP_RPC_URL:
       sourceEnv.LIGHTSPEED_CONFIGURATOR_MCP_RPC_URL ?? runtimeRpc,
     TEMPORAL_ADDRESS: temporalAddress,

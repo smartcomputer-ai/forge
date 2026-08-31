@@ -53,7 +53,9 @@ use github_api::{
 };
 use input::{context_entry_input_from_api, run_input_from_api};
 use mcp_api::{map_mcp_error, mcp_server_view, parse_mcp_server_id, put_mcp_server_record};
-use mcp_discovery::{HttpMcpToolDiscoverer, McpDiscoveryGate, McpToolDiscoverer};
+use mcp_discovery::{
+    ConfiguratorTrustedHeaderPolicy, HttpMcpToolDiscoverer, McpDiscoveryGate, McpToolDiscoverer,
+};
 use models_api::{ModelDiscoveryService, stored_provider_key_resolver};
 use oauth_api::{
     auth_client_create_draft, auth_flow_view, cimd_config, map_mcp_oauth_error,
@@ -625,6 +627,8 @@ impl GatewayAgentApiBuilder {
         let allow_private_mcp = env_flag("LIGHTSPEED_MCP_OAUTH_ALLOW_PRIVATE_NETWORKS");
         let mcp_private_networks = crate::worker::mcp::McpPrivateNetworkPolicy::from_env()
             .expect("parse LIGHTSPEED_MCP_PRIVATE_NETWORKS");
+        let configurator_trusted_header = ConfiguratorTrustedHeaderPolicy::from_env()
+            .expect("parse LIGHTSPEED_CONFIGURATOR_MCP_INTERNAL_TRUSTED_HEADER_URL");
         let metadata_client = self.oauth_metadata_client.unwrap_or_else(|| {
             Arc::new(HttpOAuthMetadataClient::with_private_networks(
                 allow_private_mcp,
@@ -716,6 +720,7 @@ impl GatewayAgentApiBuilder {
             mcp_oauth,
             mcp_tool_discoverer,
             mcp_private_networks,
+            configurator_trusted_header,
             mcp_discovery_gate,
             github_api,
             model_discovery,
@@ -742,6 +747,7 @@ pub struct GatewayAgentApi {
     mcp_oauth: McpOAuthDriver,
     mcp_tool_discoverer: Arc<dyn McpToolDiscoverer>,
     mcp_private_networks: crate::worker::mcp::McpPrivateNetworkPolicy,
+    configurator_trusted_header: ConfiguratorTrustedHeaderPolicy,
     mcp_discovery_gate: Arc<McpDiscoveryGate>,
     github_api: Arc<dyn GitHubApiClient>,
     model_discovery: ModelDiscoveryService,
@@ -3979,8 +3985,13 @@ impl AgentApiService for GatewayAgentApi {
             .map_err(AgentApiError::rejected)?;
         let discovery_started = Instant::now();
 
-        let bearer = match record.auth_grant_id.as_ref() {
-            Some(grant_id) => match self
+        let trusted_universe = self
+            .configurator_trusted_header
+            .permits(server_id.as_str(), &record.server_url)
+            .then_some(self.store.config().universe_id);
+        let bearer = match (trusted_universe, record.auth_grant_id.as_ref()) {
+            (Some(_), _) => None,
+            (None, Some(grant_id)) => match self
                 .auth_token_broker
                 .bearer_token(
                     grant_id,
@@ -4009,13 +4020,14 @@ impl AgentApiService for GatewayAgentApi {
                     )));
                 }
             },
-            None => None,
+            (None, None) => None,
         };
         let response = match self
             .mcp_tool_discoverer
             .discover_tools(
                 &record.server_url,
                 bearer.as_ref(),
+                trusted_universe,
                 self.mcp_private_networks
                     .permits(&record.server_url, record.allow_private_network),
                 mcp::McpToolDiscoveryLimits::default(),

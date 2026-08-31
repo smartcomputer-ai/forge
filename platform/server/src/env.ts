@@ -18,6 +18,9 @@ export interface ServerEnv {
   /// Permit the installed Configurator MCP record to reach a private network.
   /// This is intended for explicit local/internal deployments only.
   configuratorMcpAllowPrivateNetwork: boolean;
+  /// Use the Runtime's loopback-only trusted-header MCP path. Development and
+  /// tests may enable this; deployed configuration leaves it disabled.
+  configuratorMcpInternalTrustedHeader: boolean;
   /// Internal connector health endpoints aggregated for platform admins.
   channelsHealthUrls: string[];
   /// Development convenience: a directly attached `lightspeed-envd` endpoint
@@ -56,6 +59,10 @@ export function loadEnv(): ServerEnv {
     configuratorMcpUrl: process.env.LIGHTSPEED_PLATFORM_CONFIGURATOR_MCP_URL ?? null,
     configuratorMcpAllowPrivateNetwork: booleanEnv(
       "LIGHTSPEED_PLATFORM_CONFIGURATOR_MCP_ALLOW_PRIVATE_NETWORK",
+      false,
+    ),
+    configuratorMcpInternalTrustedHeader: booleanEnv(
+      "LIGHTSPEED_PLATFORM_CONFIGURATOR_MCP_INTERNAL_TRUSTED_HEADER",
       false,
     ),
     channelsHealthUrls: csv(process.env.LIGHTSPEED_PLATFORM_CHANNELS_HEALTH_URLS),

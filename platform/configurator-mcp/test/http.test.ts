@@ -1,6 +1,5 @@
 import { request as httpRequest } from "node:http";
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import { afterEach, describe, expect, it } from "vitest";
 import type { ConfiguratorConfig } from "../src/config.js";
 import { GENERATED_TOOLS } from "../src/generated/tools.js";
@@ -25,6 +24,7 @@ describe("Streamable HTTP configurator", () => {
     const { client, transport } = mcpClient(server, { authorization: "Bearer lsk_alpha" });
 
     await client.connect(transport as Parameters<typeof client.connect>[0]);
+    expect(client.getProtocolEra()).toBe("modern");
     const listed = await client.listTools();
     expect(listed.tools).toHaveLength(GENERATED_TOOLS.length);
     expect(listed.tools.some((tool) => tool.name.startsWith("lightspeed_operator_"))).toBe(false);
@@ -228,7 +228,10 @@ async function start(
 }
 
 function mcpClient(server: RunningConfigurator, headers: Record<string, string>) {
-  const client = new Client({ name: "configurator-test", version: "1" });
+  const client = new Client(
+    { name: "configurator-test", version: "1" },
+    { versionNegotiation: { mode: "auto" } },
+  );
   const transport = new StreamableHTTPClientTransport(new URL(`${server.url}/mcp`), {
     requestInit: { headers },
   });

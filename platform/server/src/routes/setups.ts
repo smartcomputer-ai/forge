@@ -13,7 +13,7 @@ import { engineClientFor, operatorClientFor } from "./gateway.js";
 import { universeForSession } from "./universes.js";
 
 const SETUP_ID = "configurator";
-const SETUP_VERSION = 4;
+const SETUP_VERSION = 5;
 const SERVER_ID = "lightspeed-configurator";
 const PROFILE_ID = "lightspeed-configurator";
 const KEY_DISPLAY_NAME = "Lightspeed Configurator service credential";
@@ -92,8 +92,9 @@ function setupView(ctx: AppContext, installation: Installation | null): Universe
   return {
     id: SETUP_ID,
     name: "Configurator",
-    description:
-      "Creates a dedicated credential, registers the Configurator MCP server, and adds a ready-to-use profile for managing this universe.",
+    description: ctx.env.configuratorMcpInternalTrustedHeader
+      ? "Registers the local Configurator MCP server and adds a ready-to-use profile for managing this universe."
+      : "Creates a dedicated credential, registers the Configurator MCP server, and adds a ready-to-use profile for managing this universe.",
     version: SETUP_VERSION,
     available,
     status: installation
@@ -188,15 +189,17 @@ async function installConfigurator(
   const operator = operatorClientFor(ctx, universe.gatewayUrl);
   let state = { ...installation.state };
 
-  state = await ensureCredential(
-    ctx,
-    installation.id,
-    universe,
-    client,
-    operator,
-    state,
-    mcpUrl,
-  );
+  state = ctx.env.configuratorMcpInternalTrustedHeader
+    ? await removeCredential(ctx, installation.id, universe, client, operator, state)
+    : await ensureCredential(
+        ctx,
+        installation.id,
+        universe,
+        client,
+        operator,
+        state,
+        mcpUrl,
+      );
   state = await ensureMcpServer(
     ctx,
     installation.id,
@@ -204,6 +207,7 @@ async function installConfigurator(
     state,
     mcpUrl,
     ctx.env.configuratorMcpAllowPrivateNetwork,
+    ctx.env.configuratorMcpInternalTrustedHeader,
   );
   state = await ensureProfile(ctx, installation.id, client, state);
 
@@ -222,6 +226,41 @@ async function installConfigurator(
     throw new Error("setup installation row disappeared during install");
   }
   return completed;
+}
+
+async function removeCredential(
+  ctx: AppContext,
+  installationId: string,
+  universe: Universe,
+  client: LightspeedClient,
+  operator: LightspeedClient,
+  state: UniverseSetupState,
+): Promise<UniverseSetupState> {
+  if (state.grantId) {
+    const grant = await readGrant(client, state.grantId);
+    if (grant?.status === "active") {
+      await client.call("auth/grants/revoke", { grantId: state.grantId });
+    }
+  }
+  if (state.keyPrefix) {
+    const keys = await operator.call("operator/api-keys/list", {
+      universeId: universe.lightspeedUniverseId,
+    });
+    const key = (keys.result.apiKeys ?? []).find(
+      (candidate) => candidate.keyPrefix === state.keyPrefix,
+    );
+    if (key && key.revokedAtMs == null) {
+      await operator.call("operator/api-keys/revoke", {
+        universeId: universe.lightspeedUniverseId,
+        keyPrefix: state.keyPrefix,
+      });
+    }
+  }
+  if (!state.grantId && !state.keyPrefix) {
+    return state;
+  }
+  const { grantId: _grantId, keyPrefix: _keyPrefix, ...withoutCredential } = state;
+  return await persistState(ctx, installationId, withoutCredential);
 }
 
 async function ensureCredential(
@@ -300,14 +339,21 @@ async function ensureMcpServer(
   state: UniverseSetupState,
   mcpUrl: string,
   allowPrivateNetwork: boolean,
+  internalTrustedHeader: boolean,
 ): Promise<UniverseSetupState> {
-  if (!state.grantId) {
+  if (!internalTrustedHeader && !state.grantId) {
     throw new Error("Configurator auth grant was not created");
   }
   const existing = await readMcpServer(client, SERVER_ID);
   if (existing && state.serverId !== SERVER_ID) {
     throw new SetupConflict(`MCP server id ${SERVER_ID} already exists and is not setup-managed`);
   }
+  const auth: Pick<McpServerInput, "authPolicy" | "credential"> = internalTrustedHeader
+    ? { authPolicy: { type: "none" } }
+    : {
+        authPolicy: { type: "requiredBearer" },
+        credential: { type: "authGrant", grantId: state.grantId! },
+      };
   const server: McpServerInput = {
     serverId: SERVER_ID,
     displayName: "Lightspeed Configurator",
@@ -318,8 +364,7 @@ async function ensureMcpServer(
     exposure: "search",
     approvalDefault: "never",
     allowPrivateNetwork,
-    authPolicy: { type: "requiredBearer" },
-    credential: { type: "authGrant", grantId: state.grantId },
+    ...auth,
     status: "active",
   };
   await client.call("mcp/servers/put", {

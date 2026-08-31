@@ -1,15 +1,13 @@
 import type { LightspeedClient, MethodParams } from "@lightspeed/agent-client";
-import AjvModule, { type ErrorObject, type ValidateFunction } from "ajv";
-import addFormatsModule from "ajv-formats";
-import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import {
-  CallToolRequestSchema,
-  ErrorCode,
-  ListToolsRequestSchema,
-  McpError,
+  ProtocolError,
+  ProtocolErrorCode,
+  Server,
   type CallToolResult,
   type Tool,
-} from "@modelcontextprotocol/sdk/types.js";
+} from "@modelcontextprotocol/server";
+import AjvModule, { type ErrorObject, type ValidateFunction } from "ajv";
+import addFormatsModule from "ajv-formats";
 import { GENERATED_TOOLS } from "./generated/tools.js";
 import type { RequestAuthContext } from "./request-auth.js";
 import type { GeneratedToolDescriptor } from "./tool-descriptor.js";
@@ -46,19 +44,22 @@ export function createToolRegistry(
         },
       );
 
-      server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [...tools] }));
+      server.setRequestHandler("tools/list", async () => ({ tools: [...tools] }));
       server.setRequestHandler(
-        CallToolRequestSchema,
-        async (request, extra): Promise<CallToolResult> => {
+        "tools/call",
+        async (request, ctx): Promise<CallToolResult> => {
           const descriptor = byName.get(request.params.name);
           if (!descriptor) {
-            throw new McpError(ErrorCode.InvalidParams, `unknown tool: ${request.params.name}`);
+            throw new ProtocolError(
+              ProtocolErrorCode.InvalidParams,
+              `unknown tool: ${request.params.name}`,
+            );
           }
           const args = request.params.arguments ?? {};
           const validate = validators.get(descriptor.name);
           if (!validate || !validate(args)) {
-            throw new McpError(
-              ErrorCode.InvalidParams,
+            throw new ProtocolError(
+              ProtocolErrorCode.InvalidParams,
               `invalid arguments for ${descriptor.name}: ${formatValidationErrors(validate?.errors)}`,
             );
           }
@@ -68,11 +69,11 @@ export function createToolRegistry(
               client,
               descriptor,
               args,
-              requestSignal(extra.signal, upstreamTimeoutMs),
+              requestSignal(ctx.mcpReq.signal, upstreamTimeoutMs),
             );
             return successfulToolResult(outcome);
           } catch (error) {
-            if (extra.signal.aborted) {
+            if (ctx.mcpReq.signal.aborted) {
               throw error;
             }
             return failedToolResult(error);
