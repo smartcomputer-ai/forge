@@ -923,6 +923,102 @@ fn toolset_reconcile_patch_removes_undeclared_remote_mcp_tools() {
 }
 
 #[test]
+fn toolset_reconcile_patch_tracks_every_mcp_policy_transition() {
+    let remote_tool_name = ToolName::new("mcp_crm");
+    let find_tool_name = ToolName::new("mcp_find_tools");
+    let call_tool_name = ToolName::new("mcp_call");
+
+    let mut inject_all = test_remote_mcp_tool(remote_tool_name.clone());
+    let engine::ToolKind::RemoteMcp(spec) = &mut inject_all.kind else {
+        unreachable!("test helper must produce a remote MCP tool");
+    };
+    spec.execution = engine::RemoteMcpExecution::Native;
+    let mut active = BTreeMap::from([(remote_tool_name.clone(), inject_all)]);
+
+    let mut search_selected = test_remote_mcp_tool(remote_tool_name.clone());
+    let engine::ToolKind::RemoteMcp(spec) = &mut search_selected.kind else {
+        unreachable!("test helper must produce a remote MCP tool");
+    };
+    spec.record_revision = 2;
+    spec.execution = engine::RemoteMcpExecution::Native;
+    spec.exposure = engine::RemoteMcpExposure::Search;
+    spec.allowed_tools = Some(vec!["lookup_customer".to_owned()]);
+    let desired = BTreeMap::from([
+        (remote_tool_name.clone(), search_selected),
+        (
+            find_tool_name.clone(),
+            test_function_tool(find_tool_name.clone()),
+        ),
+        (
+            call_tool_name.clone(),
+            test_function_tool(call_tool_name.clone()),
+        ),
+    ]);
+    active =
+        super::session_toolset::toolset_reconcile_patch(&active, empty_resolved_toolset(), desired)
+            .apply_to(&active)
+            .expect("switch inject-all to search-selected");
+    assert!(active.contains_key(&find_tool_name));
+    assert!(active.contains_key(&call_tool_name));
+    let engine::ToolKind::RemoteMcp(spec) = &active[&remote_tool_name].kind else {
+        panic!("expected remote MCP tool");
+    };
+    assert_eq!(spec.exposure, engine::RemoteMcpExposure::Search);
+    assert_eq!(spec.allowed_tools, Some(vec!["lookup_customer".to_owned()]));
+
+    let mut search_other_selection = active[&remote_tool_name].clone();
+    let engine::ToolKind::RemoteMcp(spec) = &mut search_other_selection.kind else {
+        unreachable!("expected remote MCP tool");
+    };
+    spec.record_revision = 3;
+    spec.allowed_tools = Some(vec!["create_customer".to_owned()]);
+    let desired = BTreeMap::from([
+        (remote_tool_name.clone(), search_other_selection),
+        (find_tool_name.clone(), active[&find_tool_name].clone()),
+        (call_tool_name.clone(), active[&call_tool_name].clone()),
+    ]);
+    active =
+        super::session_toolset::toolset_reconcile_patch(&active, empty_resolved_toolset(), desired)
+            .apply_to(&active)
+            .expect("change selected search tools");
+    let engine::ToolKind::RemoteMcp(spec) = &active[&remote_tool_name].kind else {
+        panic!("expected remote MCP tool");
+    };
+    assert_eq!(spec.allowed_tools, Some(vec!["create_customer".to_owned()]));
+
+    let mut inject_selected = active[&remote_tool_name].clone();
+    let engine::ToolKind::RemoteMcp(spec) = &mut inject_selected.kind else {
+        unreachable!("expected remote MCP tool");
+    };
+    spec.record_revision = 4;
+    spec.exposure = engine::RemoteMcpExposure::Inject;
+    let desired = BTreeMap::from([(remote_tool_name.clone(), inject_selected)]);
+    active =
+        super::session_toolset::toolset_reconcile_patch(&active, empty_resolved_toolset(), desired)
+            .apply_to(&active)
+            .expect("switch search to inject-selected");
+    assert!(!active.contains_key(&find_tool_name));
+    assert!(!active.contains_key(&call_tool_name));
+
+    let mut inject_all = active[&remote_tool_name].clone();
+    let engine::ToolKind::RemoteMcp(spec) = &mut inject_all.kind else {
+        unreachable!("expected remote MCP tool");
+    };
+    spec.record_revision = 5;
+    spec.allowed_tools = None;
+    let desired = BTreeMap::from([(remote_tool_name.clone(), inject_all)]);
+    active =
+        super::session_toolset::toolset_reconcile_patch(&active, empty_resolved_toolset(), desired)
+            .apply_to(&active)
+            .expect("switch inject-selected to inject-all");
+    let engine::ToolKind::RemoteMcp(spec) = &active[&remote_tool_name].kind else {
+        panic!("expected remote MCP tool");
+    };
+    assert_eq!(spec.exposure, engine::RemoteMcpExposure::Inject);
+    assert_eq!(spec.allowed_tools, None);
+}
+
+#[test]
 fn prompt_report_ref_reads_prompt_provider_metadata() {
     let prompt_ref = BlobRef::from_bytes(b"prompt");
     let report_ref = BlobRef::from_bytes(b"prompt-report");

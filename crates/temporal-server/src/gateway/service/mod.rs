@@ -1057,6 +1057,21 @@ impl GatewayAgentApi {
                 "session is not open: {session_id}"
             )));
         }
+        // MCP server records are universe-owned mutable policy. Reconcile the
+        // linked records before every new run so exposure and allowlist edits
+        // do not remain pinned to the session's previous materialization. A
+        // tool patch cannot move the revision of a request already in flight,
+        // so signal it first and let the workflow apply it at the next turn
+        // boundary before the subsequently queued run uses the toolset.
+        let turn_in_flight = loaded
+            .state
+            .runs
+            .active
+            .as_ref()
+            .is_some_and(|run| run.active_turn_id.is_some());
+        let _ = self
+            .configure_session_toolset(&session_id, &loaded, !turn_in_flight)
+            .await?;
         let status_before_signal = self.query_status_optional(&session_id).await?;
         let baseline_admission_failures = status_before_signal
             .as_ref()
@@ -1239,7 +1254,9 @@ impl GatewayAgentApi {
         if let Some(workflow_tools) = workflow_tools.as_ref() {
             validate_managed_session_retry(&loaded.state, self.universe_id(), workflow_tools)?;
         }
-        let _ = self.configure_session_toolset(&session_id, &loaded).await?;
+        let _ = self
+            .configure_session_toolset(&session_id, &loaded, true)
+            .await?;
         if let Some(profile) = resolved_profile {
             self.apply_profile_document(&session_id, &profile, false, None, None)
                 .await?;
@@ -2502,8 +2519,12 @@ impl AgentApiService for GatewayAgentApi {
         self.validate_subagent_agents(&config.features).await?;
         validate_subagent_deadline_for_existing_bindings(&loaded.state, &config.features)?;
         if &config == current_config {
-            // The config event is an idempotent no-op, but derived managed
-            // context may still need repair after an interrupted refresh.
+            // The config event is an idempotent no-op, but derived tools and
+            // managed context may still need repair or reflect newer
+            // universe-owned registry records.
+            let _ = self
+                .configure_session_toolset(&session_id, &loaded, true)
+                .await?;
             self.load_session_state_with_current_run_context(&session_id)
                 .await?;
             return Ok(AgentApiOutcome::new(SessionConfigPutResponse {
@@ -2532,7 +2553,9 @@ impl AgentApiService for GatewayAgentApi {
         self.wait_for_config_revision(&session_id, target_revision, baseline_failures)
             .await?;
         let loaded = self.load_session_state(&session_id).await?;
-        let _ = self.configure_session_toolset(&session_id, &loaded).await?;
+        let _ = self
+            .configure_session_toolset(&session_id, &loaded, true)
+            .await?;
         self.load_session_state_with_current_run_context(&session_id)
             .await?;
         let session = self.project_session_by_id(&session_id).await?;
