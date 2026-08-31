@@ -13,6 +13,10 @@
   (OpenAI Responses approval request/response items) and native MCP approvals
   (Lightspeed holds the tool dispatch). Clients see the same pending-approval
   model either way.
+- The durable approval envelope and client surface are generic, but MCP tool
+  calls are the only v1 approval subject. This leaves a narrow extension seam
+  for a later binary `request_approval` workflow tool without introducing a
+  general ask-user or human-task framework now.
 
 ## Problem
 
@@ -43,8 +47,9 @@ most need a human gate.
 
 ## Decision
 
-Model "a tool call is waiting for a human decision" as first-class session
-state with one client-facing shape, regardless of which side executes the call:
+Model "an action is waiting for a human decision" as first-class session state
+with one client-facing shape. MCP tool calls are the only action that creates
+this state in v1, regardless of which side executes the call:
 
 - A run with undecided approvals is **parked**, like a run waiting on an
   await. It is not complete, not failed, and holds no activity slot.
@@ -52,44 +57,64 @@ state with one client-facing shape, regardless of which side executes the call:
   (`approval_<n>`, P138 style — never the provider's opaque request id, which
   stays internal on the engine fact).
 - Decisions are run-control admissions: they land on a live session the same
-  way steer/cancel do, and `session/runs/cancel` rejects everything still
-  pending as part of cancelling the run.
+  way steer/cancel do, and `session/runs/cancel` records everything still
+  pending as cancelled as part of cancelling the run.
 - The MCP server record's `approvalDefault` remains the only policy authority
   (P143). Sessions, profiles, tool annotations, and models cannot grant,
   narrow, or bypass approval. `readOnlyHint`/`destructiveHint` may inform UI
   badges, never the decision to gate.
+
+The common approval layer records and resolves a gate; it does not decide when
+one is required. That policy stays with the subject producer — the MCP server
+record in v1 — so the generic envelope does not become a second authorization
+framework.
 
 ### Approval lifecycle
 
 ```text
 requested ──► approved ──► executed (provider continuation or native dispatch)
         └───► rejected ──► rejection result visible to the model
-        └───► cancelled (run cancel resolves all pending as rejected)
+        └───► cancelled (run cancel; no execution or provider continuation)
 ```
 
-An approval is decided exactly once. A run continues only after every pending
-approval in it is decided; partial decisions update state but do not wake the
-run.
+An approval becomes terminal exactly once. A run continues only after every
+pending approval in it is decided; partial decisions update state but do not
+wake the run. Cancelling the run instead cancels every pending approval and the
+run itself.
 
 ## Engine Model
 
 ### Typed approval facts
 
-Stop treating approval requests as purely opaque. On the generation response
-path, parse the minimal deterministic facts alongside the preserved opaque
-entry:
+Stop treating approval requests as purely opaque. Keep one generic approval
+envelope, with a tagged subject for what the human sees and an internal
+continuation for what the engine resumes. On the generation response path,
+parse the minimal deterministic facts alongside the preserved opaque entry:
 
 ```rust
-pub struct McpApprovalRequested {
-    pub approval_id: ApprovalId,          // approval_<n>, session counter
-    pub origin: McpApprovalOrigin,        // Provider { provider_request_id } | Native { call_id }
-    pub server_id: String,
-    pub server_label: String,
-    pub tool_name: String,
-    pub arguments_ref: BlobRef,
+pub struct ApprovalRequested {
+    pub approval_id: ApprovalId,       // approval_<n>, session counter
+    pub run_id: RunId,
+    pub subject: ApprovalSubject,
+    pub continuation: ApprovalContinuation,
 }
 
-pub enum McpApprovalDecision { Approved, Rejected }
+pub enum ApprovalSubject {
+    McpToolCall {
+        server_id: String,
+        server_label: String,
+        tool_name: String,
+        arguments_ref: BlobRef,
+    },
+}
+
+// Durable engine state, never projected to clients.
+pub enum ApprovalContinuation {
+    OpenAiMcp { provider_request_id: String },
+    NativeMcp { call_id: ToolCallId },
+}
+
+pub enum ApprovalDecision { Approved, Rejected }
 ```
 
 This follows the existing rule: parse only the reducer facts needed for
@@ -97,17 +122,30 @@ deterministic branching; the raw provider item stays blob-backed. The decision
 event records the decision, an optional bounded note, and the deciding
 principal when the gateway has caller identity (P90).
 
+`ApprovalSubject` is the public extension seam; `ApprovalContinuation` is
+engine-only correlation. A later binary `request_approval` may add a workflow
+subject plus `ResolvePromise { promise_id }` continuation without changing the
+approval ids, decide API, projection, notifications, or clients. P144 does not
+add those variants.
+
 ### Run parking
 
 A turn that ends with undecided approvals does not complete the run and does
-not plan the next turn. The run parks with a pending-approvals reason (exact
-run-state spelling decided with the P92 vocabulary at implementation). P129
-semantics extend naturally:
+not plan the next turn. P144 reuses `RunStatus::Parked` and the existing P92
+wake/cancellation funnel. The engine generalizes the current parked-tool-batch
+holder into one run-suspension shape with a pending-approvals variant (or an
+equivalent single tagged representation); it must not add a parallel parked
+flag, wake loop, or cancellation path. P129 semantics extend naturally:
 
 - steering is accepted while parked and materializes at the next turn;
 - a second `session/runs/start` queues;
-- `session/runs/cancel` rejects all pending approvals and cancels the run;
-- decisions are the only admissions that can unpark the run.
+- `session/runs/cancel` cancels all pending approvals and drains the run through
+  the ordinary cancellation funnel;
+- decisions are the only non-cancellation admissions that can unpark the run.
+
+Human rejection and run cancellation are distinct terminal approval facts. A
+rejection continues the run with a refusal visible to the model; cancellation
+does not manufacture a human decision or provider continuation.
 
 ### Terminal-output correctness (independent fix)
 
@@ -129,8 +167,9 @@ This slice is safe to land before any approval UX exists.
 When the response contains `mcp_approval_request` items:
 
 1. Preserve the opaque entry exactly as today (context replay needs it).
-2. Emit one `McpApprovalRequested` fact per item, mapping `server_label` back
-   to the session's RemoteMcp spec for `server_id`.
+2. Emit one `ApprovalRequested` fact per item, mapping `server_label` back to
+   the session's RemoteMcp spec for `server_id`; use an `McpToolCall` subject
+   and `OpenAiMcp` continuation.
 3. If the same response also queued ordinary tool calls, run that tool batch
    first; park at the boundary where the next turn would otherwise be planned.
 4. On full decision, plan the next turn. The adapter lowers each decision into
@@ -157,13 +196,13 @@ Native execution puts the gate exactly where it belongs — before dispatch:
    **dispatch boundary**: the runtime resolves the call's spec and effective
    policy, and a call that requires approval is reported back as
    needs-approval instead of executing; the engine emits an
-   `McpApprovalRequested` fact with `origin: Native { call_id }` and the
-   call enters `awaiting_approval`. One gate location covers both P145
-   exposures — an injected call's server is knowable from its namespaced
-   name, but a search-exposure `mcp_call` carries server and tool in
-   arguments, which reducers do not parse. The fact always carries the
-   resolved server and tool, so approval cards and transcripts never render
-   a generic `mcp_call` row.
+   `ApprovalRequested` fact with an `McpToolCall` subject and `NativeMcp`
+   continuation, and the call enters `awaiting_approval`. One gate location
+   covers both P145 exposures — an injected call's server is knowable from its
+   namespaced name, but a search-exposure `mcp_call` carries server and tool
+   in arguments, which reducers do not parse. The fact always carries the
+   resolved server and tool, so approval cards and transcripts never render a
+   generic `mcp_call` row.
 2. Approved calls dispatch through the ordinary per-call activity path.
 3. Rejected calls complete immediately with a deterministic rejection result
    (`{"approved": false, "reason": …}` as a tool error), so the model sees the
@@ -187,6 +226,7 @@ session/runs/approvals/decide
 ```rust
 pub struct RunApprovalsDecideParams {
     pub session_id: String,
+    pub run_id: String,
     pub decisions: Vec<ApprovalDecisionInput>,
 }
 
@@ -195,14 +235,34 @@ pub struct ApprovalDecisionInput {
     pub decision: ApprovalDecisionKind,   // approve | reject
     pub note: Option<String>,             // bounded, audit/display only
 }
+
+pub struct PendingApprovalView {
+    pub approval_id: String,
+    pub requested_at_ms: u64,
+    pub subject: ApprovalSubjectView,
+}
+
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum ApprovalSubjectView {
+    McpToolCall {
+        server_id: String,
+        server_label: String,
+        tool_name: String,
+        arguments_ref: String,
+        arguments_preview: String,
+    },
+}
 ```
 
-- `RunView` gains `pendingApprovals`: approval id, server id, tool name, a
-  bounded arguments preview, requested-at, and origin. Full arguments stay
-  blob-backed and readable through the existing item/blob paths.
-- Deciding an unknown, already-decided, or other-run approval is a typed API
-  error; valid decisions in the same request still apply (per-decision
-  outcome in the response).
+- `RunView` gains `pendingApprovals: Vec<PendingApprovalView>`. The tagged
+  subject prevents a supposedly generic view from accumulating nullable
+  MCP-specific fields. Full arguments stay blob-backed and readable through
+  the existing item/blob paths; backend continuation details are not
+  projected.
+- `runId` makes this run control like steer/cancel and prevents a stale client
+  from deciding a later run's approval. Deciding an unknown, already-decided,
+  cancelled, or other-run approval is a typed API error; valid decisions in
+  the same request still apply (per-decision outcome in the response).
 - A notification/event on `session/events/read` announces newly pending
   approvals so clients do not poll `session/read`.
 
@@ -221,7 +281,8 @@ pub struct ApprovalDecisionInput {
 
 v1 has no automatic approval deadline: a pending approval parks the run until
 a human decides or the run is cancelled. Cancellation is the escape hatch and
-must resolve every pending approval as rejected on its way down. A per-server
+must record every pending approval as cancelled on its way down, without
+continuing the provider or native call. A per-server
 `approvalTimeout` (auto-reject after a bound, primarily for unattended bots)
 is a follow-up once real demand shows the right default; do not add a silent
 auto-approve under any name.
@@ -234,10 +295,11 @@ auto-approve under any name.
   finishes with no assistant message resolve to `output_ref: None`.
 - Regression fixtures for OpenAI approval-request-only responses.
 
-### Slice 2 — Approval facts and parked runs
+### Slice 2 — Generic approval facts and parked runs
 
-- `ApprovalId` counter, `McpApprovalRequested`/decision events, reducer state,
-  parked-run behavior, cancel-resolves-pending.
+- `ApprovalId` counter, generic request/decision/cancellation events, the
+  `McpToolCall` subject and MCP continuation variants, reducer state,
+  single-funnel parked-run behavior, and cancel-terminates-pending.
 - OpenAI Responses parsing of `mcp_approval_request` into facts alongside the
   opaque entry.
 
@@ -262,7 +324,8 @@ auto-approve under any name.
 
 - Engine: approval facts are deterministic and replay-stable; a run with
   undecided approvals never completes; decisions are single-shot; cancel
-  rejects pending; steering while parked lands at the next boundary.
+  records pending approvals as cancelled; steering while parked lands at the
+  next boundary.
 - Adapter: approval-request parsing, decision lowering, prefix stability of
   the appended decision entry.
 - API: decide validation (unknown/duplicate/foreign ids), projection shape,
@@ -281,7 +344,8 @@ auto-approve under any name.
 3. Pending approvals are visible on `RunView` with stable counter ids;
    decisions are auditable events carrying the deciding principal when
    available.
-4. Cancelling a run with pending approvals rejects them and cancels cleanly.
+4. Cancelling a run with pending approvals records them as cancelled, performs
+   no continuation, and cancels the run cleanly.
 5. Anthropic provider mode still refuses `always` with an actionable message.
 
 ## Non-Goals
@@ -291,6 +355,9 @@ auto-approve under any name.
 - Emulating an approval protocol on providers that lack one.
 - Approval deadlines/expiry policies in v1.
 - A standing approvals inbox across sessions; v1 is per-run state.
+- A model-authored `request_approval` tool or a generic ask-user interaction.
+  The former can reuse this approval surface later; free-form or structured
+  elicitation is a different interaction contract.
 
 ## Follow-ups
 
@@ -298,3 +365,7 @@ auto-approve under any name.
 - Per-server `approvalTimeout` with auto-reject.
 - Per-tool approval policy on the server record if All/Selected-style
   granularity proves insufficient.
+- A binary `request_approval` workflow tool that creates the same approval
+  envelope and resolves its existing workflow-tool promise when decided. It
+  reuses approval ids, projection, notifications, decide API, audit, and UI;
+  the workflow receiver remains authoritative for its payload and policy.
