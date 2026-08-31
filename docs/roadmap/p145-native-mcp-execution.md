@@ -46,9 +46,10 @@ but it cannot cover:
    toolsets on it today. Native execution makes MCP available to every model
    Lightspeed can drive.
 3. **Provider asymmetry.** Anthropic's connector has no approval flow and
-   silently drops `server_description` and `defer_loading`; diagnostics for
-   provider-side MCP failures are opaque (the P143 problem, at model time).
-   Native execution behaves identically on every API kind.
+   drops `server_description`; P146 added its provider-specific deferred tool
+   search. Diagnostics for provider-side MCP failures remain opaque (the P143
+   problem, at model time). Native execution behaves identically on every API
+   kind.
 4. **Data path.** In provider mode the model provider holds the MCP bearer
    token and the tool traffic. Native mode keeps both between Lightspeed and
    the MCP server.
@@ -272,7 +273,7 @@ Each adapter (Responses, Completions, Anthropic) lowers a native spec by
 calling the resolver and expanding it, **in place at the spec's position and
 sorted by name**, into function tool entries — canonical JSON so the rendered
 prefix is byte-stable across turns while the inventory is unchanged (P137;
-the Anthropic breakpoint sits on the last tool, so inventory churn
+the Anthropic breakpoint sits on the last non-deferred tool, so inventory churn
 invalidates from the tools array onward — inherent, and the reason the cache
 below has a TTL rather than none). The injected tools appear identically in
 the send request and the redacted persisted blob; there is nothing secret in

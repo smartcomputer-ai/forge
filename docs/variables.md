@@ -87,7 +87,7 @@ provider credential.
 | `ANTHROPIC_API_KEY` | Conditional | Default Anthropic Messages credential. |
 | `ANTHROPIC_BASE_URL` | `https://api.anthropic.com/v1` | Anthropic-compatible API base URL. |
 | `ANTHROPIC_VERSION` | `2023-06-01` | Anthropic API version header. |
-| `ANTHROPIC_BETA` | Unset | Comma-separated Anthropic beta headers. |
+| `ANTHROPIC_BETA` | Unset | Comma-separated Anthropic beta headers. Anthropic provider-mode MCP requires `mcp-client-2025-11-20`; native MCP does not. |
 
 ### Object storage
 

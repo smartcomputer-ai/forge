@@ -26,6 +26,8 @@ pub const DEFAULT_ANTHROPIC_VERSION: &str = "2023-06-01";
 /// Beta header required when authenticating with an OAuth bearer token
 /// instead of an API key.
 pub const ANTHROPIC_OAUTH_BETA: &str = "oauth-2025-04-20";
+/// Current beta header for Anthropic's provider-hosted MCP connector.
+pub const ANTHROPIC_MCP_BETA: &str = "mcp-client-2025-11-20";
 const DEFAULT_BASE_URL: &str = "https://api.anthropic.com/v1";
 
 #[derive(Clone, Debug, PartialEq)]

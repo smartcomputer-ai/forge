@@ -403,9 +403,9 @@ Release construction, snapshots, and tagged publication are documented in
   or index-derived keys in anything the model must copy back.
 - Prompt caching is the adapters' job, and the rendered prefix must stay
   stable to keep it. The Anthropic adapter places `cache_control`
-  breakpoints on every request (system prompt, last tool, last block of the
-  last message; TTL from `prompt_cache_ttl`); the OpenAI adapters send the
-  session id as `prompt_cache_key`. Markers are placement, not content —
+  breakpoints on every request (system prompt, last non-deferred tool, last
+  block of the last message; TTL from `prompt_cache_ttl`); the OpenAI adapters
+  send the session id as `prompt_cache_key`. Markers are placement, not content —
   tests about lowering strip them. Anything that rewrites context before
   the tail (an instructions rewrite, compaction, an in-place catalog
   replace) invalidates the cache from that point; append instead where you
