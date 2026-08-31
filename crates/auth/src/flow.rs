@@ -1,4 +1,4 @@
-//! Authorization-code flow orchestration (P69 G2).
+//! Authorization-code flow orchestration.
 //!
 //! [`OAuthFlowService`] drives the generic flow over the store traits and the
 //! [`OAuthTokenClient`]: start builds the authorization URL and persists the

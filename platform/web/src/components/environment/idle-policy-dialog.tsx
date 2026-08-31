@@ -14,7 +14,7 @@ import { IdlePolicyFields, idlePolicyIsMonotone, type IdlePolicy } from "./idle-
 
 /**
  * Edit (or clear) the idle policy of an existing provisioned environment
- * (P126 `environments/idle-policy/put`). The policy lives on the environment,
+ * (`environments/idle-policy/put`). The policy lives on the environment,
  * not on any profile or bot that uses it — this is the one place to set it
  * for a box that long-lived sessions share.
  */

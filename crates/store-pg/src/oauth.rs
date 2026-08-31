@@ -1,5 +1,5 @@
 //! OAuth client configurations, authorization flows, and the per-grant
-//! refresh lock (P69 G2/G3).
+//! refresh lock.
 //!
 //! Tables never hold secret values: client secrets and PKCE verifiers live in
 //! `auth_secrets`, flows store only the SHA-256 hash of the `state`

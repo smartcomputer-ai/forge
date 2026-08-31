@@ -391,7 +391,7 @@ pub async fn serve_gateway(config: GatewayServerConfig) -> anyhow::Result<()> {
 
 /// In `single` mode, build the pinned universe's state at startup so
 /// misconfiguration fails the process instead of the first request. This also
-/// preserves the pre-P90 behavior of creating the configured universe row.
+/// preserves the legacy behavior of creating the configured universe row.
 pub async fn prewarm_single_universe(
     mode: &GatewayAuthMode,
     runtime: &Arc<UniverseRuntime>,

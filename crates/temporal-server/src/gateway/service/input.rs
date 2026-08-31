@@ -1,8 +1,8 @@
 use super::*;
 
-/// P71 G3: images and documents, bounded per run.
+/// Images and documents, bounded per run.
 const ALLOWED_IMAGE_MIMES: &[&str] = &["image/jpeg", "image/png", "image/webp", "image/gif"];
-/// P72 G1: bounded audio blobs are accepted at admission, then rewritten by
+/// Bounded audio blobs are accepted at admission, then rewritten by
 /// workflow preprocessing before core planning.
 const ALLOWED_AUDIO_MIMES: &[&str] = &[
     "audio/mpeg",

@@ -10,8 +10,8 @@ import { isPlatformAdmin } from "../context.js";
 import { engineClientFor, operatorClientFor, withGateway } from "./gateway.js";
 import { universeForSession } from "./universes.js";
 
-/// Channel accounts are universe resources in the core (`channels/*`,
-/// P142): a provider account (a Telegram bot token, a WhatsApp number)
+/// Channel accounts are universe resources in the core (`channels/*`): a
+/// provider account (a Telegram bot token, a WhatsApp number)
 /// belongs to exactly one universe, whose owners/admins manage it. The
 /// platform passes through with membership checks, exactly like the bot
 /// routes.

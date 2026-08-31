@@ -73,7 +73,7 @@ pub(super) async fn invoke_batch(
 /// ordinary terminal failed result; only blob-store failures fail the
 /// activity. A call whose active environment is still provisioning does not
 /// run and reports `EnvironmentNotReady` so the workflow can wait outside
-/// this deadline (P125).
+/// this deadline.
 pub(super) async fn invoke_call(
     deps: &ToolActivityDeps,
     request: crate::worker::ToolInvokeCallActivityRequest,

@@ -1,4 +1,4 @@
-//! OAuth client and authorization flow API helpers (P69 G2).
+//! OAuth client and authorization flow API helpers.
 //!
 //! Maps between `api` DTOs and `auth` records. The client secret in
 //! `auth/clients/create` params is the second deliberate inbound-plaintext

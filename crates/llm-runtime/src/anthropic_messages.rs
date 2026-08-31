@@ -88,7 +88,7 @@ to continue seamlessly. Reply with the summary only.";
 #[async_trait]
 pub trait AnthropicMessagesApi: Send + Sync {
     /// `auth` overrides the client's transport-configured key for this
-    /// request (stored provider credentials, P69 G6).
+    /// request when stored provider credentials are used.
     async fn create(
         &self,
         request: am::CreateMessageRequest,
@@ -302,7 +302,7 @@ async fn materialize_create_request_with_inventory(
         });
     }
 
-    // Prompt-cache breakpoints (P137): Anthropic caches only at explicit
+    // Prompt-cache breakpoints: Anthropic caches only at explicit
     // `cache_control` markers, so the adapter places the standard layout on
     // every request — end of the system prompt, last non-deferred tool
     // definition, last block of the last message (a moving marker that keeps

@@ -590,7 +590,7 @@ impl SessionTools {
         )
         .is_some()
         {
-            // Sub-agent admission (P134): the grant on the batch request is
+            // Sub-agent admission: the grant on the batch request is
             // the authority. Validate the agent against its allowlist here,
             // pin the grant limits and parent identity for the execution,
             // and let the generic start-on-call path do the rest.

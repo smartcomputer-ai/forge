@@ -1,4 +1,4 @@
-//! Generic auth provider configurations (P69 G5).
+//! Generic auth provider configurations.
 //!
 //! One record shape serves every provider kind: non-secret, provider-specific
 //! config is stored as JSON but decoded into the typed [`AuthProviderConfig`]
@@ -55,7 +55,7 @@ pub struct GitHubAppConfig {
     pub api_base_url: String,
 }
 
-/// Stored API key for a model provider (P69 G6). The key itself is the
+/// Stored API key for a model provider. The key itself is the
 /// provider row's credential secret; the config carries no secret material.
 /// Rows use the `model:<provider_id>` provider-id convention, keyed off the
 /// session's `ModelSelection.provider_id`.
@@ -66,7 +66,7 @@ pub struct ModelApiKeyConfig {
     pub endpoint: Option<ModelEndpointConfig>,
 }
 
-/// OAuth-grant-backed model provider credential (P69 G7). The referenced
+/// OAuth-grant-backed model provider credential. The referenced
 /// grant's access token (refreshed by the broker as needed) authenticates
 /// provider calls as an OAuth bearer token instead of an API key. The row
 /// carries no credential secret of its own.

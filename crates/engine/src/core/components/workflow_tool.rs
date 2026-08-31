@@ -509,7 +509,7 @@ impl WorkflowToolBinding {
         })
     }
 
-    /// Convenience for the P100 v1 shape: bound receiver, notify-only.
+    /// Convenience for the original bound-receiver, notify-only shape.
     pub fn admit_bound_notify(
         session_universe_id: Uuid,
         definition: WorkflowToolDefinition,
@@ -574,7 +574,7 @@ impl WorkflowToolDeclaration {
         }
     }
 
-    /// The P100 v1 shape: bound receiver, notify-only completion.
+    /// The original shape: bound receiver, notify-only completion.
     pub fn bound_notify(definition: WorkflowToolDefinition, receiver: WorkflowEndpointRef) -> Self {
         Self::new(
             definition,

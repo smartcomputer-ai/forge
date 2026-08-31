@@ -1,4 +1,4 @@
-//! Channels runtime (P142): the control plane behind `channels/inbound/admit`
+//! Channels runtime: the control plane behind `channels/inbound/admit`
 //! (which chat trigger serves a conversation, pairing), the conversation
 //! workflow's core-side activities, and the mapping onto bots admission.
 //!

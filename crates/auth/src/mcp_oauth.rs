@@ -1,4 +1,4 @@
-//! MCP OAuth protocol adapter (P143b).
+//! MCP OAuth protocol adapter.
 //!
 //! `rmcp` owns MCP discovery, registration, PKCE, issuer/resource binding,
 //! challenges, token exchange, and refresh wire behavior. Lightspeed keeps

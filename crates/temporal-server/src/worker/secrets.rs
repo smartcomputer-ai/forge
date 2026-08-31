@@ -1,6 +1,6 @@
 //! Broker-backed secret resolution for the worker LLM runtime.
 //!
-//! Adapts the P69 token broker to `llm-runtime`'s [`SecretResolver`] boundary.
+//! Adapts the auth token broker to `llm-runtime`'s [`SecretResolver`] boundary.
 //! Resolution runs only inside activity execution; resolved values never enter
 //! Temporal history, engine events, or persisted provider request blobs.
 
@@ -123,7 +123,7 @@ impl SecretResolver for BrokerSecretResolver {
 }
 
 /// Resolves stored model provider credentials from `model:<provider_id>`
-/// auth provider rows (P69 G6/G7). An absent row resolves to `None` so
+/// auth provider rows. An absent row resolves to `None` so
 /// adapters fall back to the env-configured client key; a row that exists but
 /// is disabled, of the wrong kind, missing its credential, or bound to an
 /// unusable grant fails resolution instead of silently falling back.

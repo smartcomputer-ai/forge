@@ -619,7 +619,7 @@ impl GatewayAgentApi {
     }
 
     /// Converge a steady-state provisioned environment toward its desired
-    /// power (P126). One idempotent `setTargetPower` per pass; the observed
+    /// power. One idempotent `setTargetPower` per pass; the observed
     /// summary is recorded like any other observation, so a transitional
     /// answer (`Starting`) flows back through the create/observe path.
     async fn reconcile_environment_power(

@@ -287,7 +287,7 @@ function SessionList({
 type SessionNode = { session: SessionSummary; children: SessionNode[] };
 
 /// Group sub-agent sessions under their parent when the parent is in the
-/// loaded page set (P134 lineage). Children whose parent is not loaded stay
+/// loaded page set. Children whose parent is not loaded stay
 /// at the top level and still carry their sub-agent badge; list order (most
 /// recently updated first) is preserved at every level.
 function buildSessionTree(sessions: SessionSummary[]): SessionNode[] {
@@ -1572,7 +1572,7 @@ function SessionScrollFollower({
   return null;
 }
 
-/// Sub-agent lineage strip (P134): where this session came from and the
+/// Sub-agent lineage strip: where this session came from and the
 /// children it delegated to. Children are re-read whenever the run revision
 /// moves, since delegations appear and close mid-run.
 function SessionLineage({

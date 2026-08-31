@@ -1,6 +1,6 @@
 import type { SecretGrant } from "@/api";
 
-/// Coding-agent subscription grants (P127) and how they bind into
+/// Coding-agent subscription grants and how they bind into
 /// environments. Kept free of React so pages and tests can share it.
 
 export type SubscriptionProvider = "anthropic" | "openAi";
@@ -52,7 +52,7 @@ export function subscriptionBinding(grant: GrantLike): SubscriptionBinding | nul
 }
 
 /// Shell snippet the environment runs before Codex to materialize the
-/// injected auth.json content (P127 D4).
+/// injected auth.json content.
 export const CODEX_AUTH_JSON_BOOTSTRAP = [
   'install -d -m 700 "${CODEX_HOME:-$HOME/.codex}" \\',
   '  && printf \'%s\' "$CODEX_AUTH_JSON" > "${CODEX_HOME:-$HOME/.codex}/auth.json" \\',

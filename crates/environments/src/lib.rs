@@ -292,9 +292,9 @@ pub enum EnvironmentStatus {
     Provisioning,
     Booting,
     Ready,
-    /// Execution frozen with RAM resident (P126); wakes on use.
+    /// Execution frozen with RAM resident; wakes on use.
     Paused,
-    /// Execution state saved to disk (P126); wakes on use.
+    /// Execution state saved to disk; wakes on use.
     Suspended,
     /// Powered off with disk retained; wakes on use for provisioned
     /// environments whose provider supports power control.
@@ -446,7 +446,7 @@ pub struct EnvironmentRecord {
     pub source: EnvironmentSource,
     pub display_name: Option<String>,
     pub status: EnvironmentStatus,
-    /// Lightspeed-owned power intent (P126). The lifecycle reconciler
+    /// Lightspeed-owned power intent. The lifecycle reconciler
     /// converges the provider target toward it; observed state is `status`.
     pub desired_power: PowerState,
     /// Optional staged idle policy the power reaper applies from the

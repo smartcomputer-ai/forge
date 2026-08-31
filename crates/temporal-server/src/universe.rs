@@ -280,7 +280,7 @@ impl UniverseRuntime {
         }
     }
 
-    /// Run the one active power reaper (P126). Every pass reads daemon idle
+    /// Run the one active power reaper. Every pass reads daemon idle
     /// reports for ready environments with an idle policy and records power
     /// intent; the lifecycle reconciler converges the provider. Failures are
     /// logged and retried on the next tick.

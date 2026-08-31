@@ -1723,7 +1723,7 @@ fn session_id_validation_matches_public_api_shape() {
 #[test]
 fn session_id_reserves_slash_as_the_workflow_id_separator() {
     // The hosted runtime composes Temporal workflow ids as
-    // `{universe_id}/{session_id}` (P90 multi-tenancy). Session ids rejecting
+    // `{universe_id}/{session_id}`. Session ids rejecting
     // `/` is what makes that composition unambiguously splittable, so this is
     // a load-bearing invariant, not an incidental charset choice.
     assert_eq!(

@@ -1,4 +1,4 @@
-//! Deployment-scoped API key store (P90 Phase 2).
+//! Deployment-scoped API key store.
 //!
 //! API keys resolve callers *to* a universe, so this store deliberately does
 //! not hang off a universe-bound [`crate::PgStore`]: it wraps the shared

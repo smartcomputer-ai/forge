@@ -896,7 +896,7 @@ impl GatewayAgentApi {
         }
     }
 
-    /// Sub-agent child creation (P134): the child's store row already
+    /// Sub-agent child creation: the child's store row already
     /// exists with its origin (the execution's reservation); this opens its
     /// workflow with the pinned profile applied. The execution closes the
     /// child, so `close_on_terminal` stays off.
@@ -4506,7 +4506,7 @@ pub enum OAuthCallbackOutcome {
 
 impl GatewayAgentApi {
     /// Lazily discover and register the OAuth client for an OAuth-protected
-    /// MCP server (P69 G4): protected resource metadata, authorization
+    /// MCP server: protected resource metadata, authorization
     /// server metadata, then CIMD or dynamic client registration. Existing
     /// `mcp:<server_id>` client records are reused without network traffic.
     async fn ensure_mcp_oauth_client(

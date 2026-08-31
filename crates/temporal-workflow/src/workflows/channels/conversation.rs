@@ -1,5 +1,5 @@
-//! One durable conversation: the provider side of a bot's `chat` trigger
-//! (P142, ported from the TypeScript `channelConversationWorkflowV1`).
+//! One durable conversation: the provider side of a bot's `chat` trigger,
+//! ported from the TypeScript `channelConversationWorkflowV1`.
 //!
 //! Every activated message becomes a bot event through admission; the
 //! bot's routed session for this conversation carries this workflow as the

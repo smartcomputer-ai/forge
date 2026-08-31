@@ -1,4 +1,4 @@
--- P85: agent profile catalog.
+-- Agent profile catalog.
 --
 -- Profiles are universe-scoped declarative provisioning documents. They never
 -- store credentials or runtime state; session-visible setup is materialized by

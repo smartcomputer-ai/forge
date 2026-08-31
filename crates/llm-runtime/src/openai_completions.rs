@@ -166,7 +166,7 @@ impl LlmGenerationAdapter for OpenAiCompletionsLlmAdapter {
             });
         }
         let mut provider_request = self.materialize_create_request(&request.request).await?;
-        // Route every turn of a session to the same prompt cache (P137).
+        // Route every turn of a session to the same prompt cache.
         provider_request.prompt_cache_key =
             Some(crate::prompt_cache::prompt_cache_key(&request.session_id));
         let provider =

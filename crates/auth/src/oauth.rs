@@ -1,4 +1,4 @@
-//! Generic OAuth substrate (P69 G2): client records, authorization flows,
+//! Generic OAuth substrate: client records, authorization flows,
 //! PKCE helpers, and the token-endpoint client used for code exchange and
 //! refresh.
 //!
@@ -45,7 +45,7 @@ pub(crate) fn is_oauth_provider_kind(kind: AuthProviderKind) -> bool {
 
 /// A manually configured OAuth client: authorization/token endpoint metadata
 /// plus the AS-issued client identifier. Discovery, DCR, and CIMD arrive with
-/// the MCP OAuth driver (P69 G4). The client secret, when present, lives in
+/// the MCP OAuth driver. The client secret, when present, lives in
 /// the secret store and is referenced here by id.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OAuthClientRecord {

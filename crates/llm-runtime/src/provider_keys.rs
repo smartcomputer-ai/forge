@@ -1,4 +1,4 @@
-//! Universe model-provider resolution (P69 G6/G7, P128 Phase 2).
+//! Universe model-provider resolution.
 //!
 //! Mirrors the [`crate::secrets`] boundary: `llm-runtime` owns this narrow
 //! trait and stays free of auth and store dependencies; hosting runtimes adapt

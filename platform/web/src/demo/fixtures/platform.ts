@@ -59,7 +59,7 @@ export function seedPlatform(store: DemoStore): void {
     updatedAtMs: Date.parse("2026-08-10T09:00:00.000Z"),
   });
 
-  // Channel accounts are universe resources (P142); each use-case fixture
+  // Channel accounts are universe resources; each use-case fixture
   // seeds its own under these shared ids. Connector health stays
   // deployment-wide.
   const changedAtMs = Date.now() - 42 * 60_000;

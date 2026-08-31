@@ -19,7 +19,7 @@ export function idlePolicyIsMonotone(value: IdlePolicy | undefined): boolean {
   return ordered.every((ms, index) => index === 0 || ms >= (ordered[index - 1] ?? 0));
 }
 
-/// Idle policy (P126): minutes of daemon-reported idle time per stage. Empty
+/// Idle policy: minutes of daemon-reported idle time per stage. Empty
 /// stages are omitted; stages the provider cannot realize are skipped at
 /// runtime. A powered-down environment wakes when a session uses it. Shared
 /// by the profile editor (provisioned-per-session environments), the

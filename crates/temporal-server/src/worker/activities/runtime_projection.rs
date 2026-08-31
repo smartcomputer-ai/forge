@@ -71,7 +71,7 @@ pub(super) async fn refresh_runtime_projection(
         });
     }
 
-    // Sub-agent catalog (P134): follows the grant, refreshed like the
+    // Sub-agent catalog: follows the grant, refreshed like the
     // skill catalog so profile description edits land at the next run.
     match request.subagents.as_ref() {
         Some(subagents) => {

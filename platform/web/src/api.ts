@@ -402,7 +402,7 @@ export type EnvironmentTemplate = EnvironmentTemplateView;
 export type EnvironmentCredentialSource = EnvironmentCredentialSourceView;
 export type EnvironmentCredential = EnvironmentCredentialView;
 
-/// Sub-agent lineage (P134): who delegated the session, under which root,
+/// Sub-agent lineage: who delegated the session, under which root,
 /// at what depth, from which pinned profile revision. Provenance only.
 export interface SessionOrigin {
   kind: "subagent";
@@ -577,8 +577,8 @@ export interface BlobContent {
   bytesBase64: string;
 }
 
-/// Bot and channel wire types come from the generated core API client
-/// (P142): the platform routes are passthroughs, so the browser reads the
+/// Bot and channel wire types come from the generated core API client: the
+/// platform routes are passthroughs, so the browser reads the
 /// core response shapes verbatim. Only the connector health report — a
 /// platform-owned surface — keeps a local shape.
 export type {

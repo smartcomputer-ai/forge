@@ -545,7 +545,7 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
               "additionalProperties": {
                 "not": {}
               },
-              "description": "Activate the delegating parent's active environment (sub-agents,\nP134). Resolved at spawn, shared not copied, never closed by the\nchild; rejected on a session without a delegation origin or whose\nparent has no active environment.",
+              "description": "Activate the delegating parent's active environment. Resolved at\nsub-agent spawn, shared not copied, never closed by the\nchild; rejected on a session without a delegation origin or whose\nparent has no active environment.",
               "properties": {
                 "type": {
                   "const": "inherit",
@@ -564,7 +564,7 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
               "description": "Provision one environment for the session from the universe's enabled\nbinding for `providerId`, then activate it. The provision request id\nis derived from the session id, so retries and repeated applies\nconverge on the same environment.",
               "properties": {
                 "credentials": {
-                  "description": "Credentials bound to the environment right after it is\nprovisioned, before activation (P127 D5): references to universe\ngrants/providers/secrets, never values. They become ordinary\nenvironment credential bindings; the profile is the initial set,\nnot a live sync. Not available for `existing` environments.",
+                  "description": "Credentials bound to the environment right after it is\nprovisioned before activation: references to universe\ngrants/providers/secrets, never values. They become ordinary\nenvironment credential bindings; the profile is the initial set,\nnot a live sync. Not available for `existing` environments.",
                   "items": {
                     "$ref": "#/definitions/ProfileEnvironmentCredential"
                   },
@@ -585,7 +585,7 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                       "type": "null"
                     }
                   ],
-                  "description": "Optional staged idle policy for the provisioned environment\n(P126). Stages the provider cannot realize are skipped."
+                  "description": "Optional staged idle policy for the provisioned environment.\nStages the provider cannot realize are skipped."
                 },
                 "metadata": {
                   "additionalProperties": {
@@ -3592,7 +3592,7 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
               "additionalProperties": {
                 "not": {}
               },
-              "description": "Activate the delegating parent's active environment (sub-agents,\nP134). Resolved at spawn, shared not copied, never closed by the\nchild; rejected on a session without a delegation origin or whose\nparent has no active environment.",
+              "description": "Activate the delegating parent's active environment. Resolved at\nsub-agent spawn, shared not copied, never closed by the\nchild; rejected on a session without a delegation origin or whose\nparent has no active environment.",
               "properties": {
                 "type": {
                   "const": "inherit",
@@ -3611,7 +3611,7 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
               "description": "Provision one environment for the session from the universe's enabled\nbinding for `providerId`, then activate it. The provision request id\nis derived from the session id, so retries and repeated applies\nconverge on the same environment.",
               "properties": {
                 "credentials": {
-                  "description": "Credentials bound to the environment right after it is\nprovisioned, before activation (P127 D5): references to universe\ngrants/providers/secrets, never values. They become ordinary\nenvironment credential bindings; the profile is the initial set,\nnot a live sync. Not available for `existing` environments.",
+                  "description": "Credentials bound to the environment right after it is\nprovisioned before activation: references to universe\ngrants/providers/secrets, never values. They become ordinary\nenvironment credential bindings; the profile is the initial set,\nnot a live sync. Not available for `existing` environments.",
                   "items": {
                     "$ref": "#/definitions/ProfileEnvironmentCredential"
                   },
@@ -3632,7 +3632,7 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                       "type": "null"
                     }
                   ],
-                  "description": "Optional staged idle policy for the provisioned environment\n(P126). Stages the provider cannot realize are skipped."
+                  "description": "Optional staged idle policy for the provisioned environment.\nStages the provider cannot realize are skipped."
                 },
                 "metadata": {
                   "additionalProperties": {
@@ -4549,12 +4549,12 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
             },
             {
               "const": "paused",
-              "description": "Execution frozen (P126); wakes on next use.",
+              "description": "Execution frozen; wakes on next use.",
               "type": "string"
             },
             {
               "const": "suspended",
-              "description": "Execution state saved to disk (P126); wakes on next use.",
+              "description": "Execution state saved to disk; wakes on next use.",
               "type": "string"
             },
             {
@@ -4733,7 +4733,7 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
       "type": "object",
       "definitions": {
         "EnvironmentPowerStateView": {
-          "description": "Steady power state of a provisioned environment (P126).",
+          "description": "Steady power state of a provisioned environment.",
           "oneOf": [
             {
               "enum": [
@@ -5444,7 +5444,7 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
               "additionalProperties": {
                 "not": {}
               },
-              "description": "Activate the delegating parent's active environment (sub-agents,\nP134). Resolved at spawn, shared not copied, never closed by the\nchild; rejected on a session without a delegation origin or whose\nparent has no active environment.",
+              "description": "Activate the delegating parent's active environment. Resolved at\nsub-agent spawn, shared not copied, never closed by the\nchild; rejected on a session without a delegation origin or whose\nparent has no active environment.",
               "properties": {
                 "type": {
                   "const": "inherit",
@@ -5463,7 +5463,7 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
               "description": "Provision one environment for the session from the universe's enabled\nbinding for `providerId`, then activate it. The provision request id\nis derived from the session id, so retries and repeated applies\nconverge on the same environment.",
               "properties": {
                 "credentials": {
-                  "description": "Credentials bound to the environment right after it is\nprovisioned, before activation (P127 D5): references to universe\ngrants/providers/secrets, never values. They become ordinary\nenvironment credential bindings; the profile is the initial set,\nnot a live sync. Not available for `existing` environments.",
+                  "description": "Credentials bound to the environment right after it is\nprovisioned before activation: references to universe\ngrants/providers/secrets, never values. They become ordinary\nenvironment credential bindings; the profile is the initial set,\nnot a live sync. Not available for `existing` environments.",
                   "items": {
                     "$ref": "#/definitions/ProfileEnvironmentCredential"
                   },
@@ -5484,7 +5484,7 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                       "type": "null"
                     }
                   ],
-                  "description": "Optional staged idle policy for the provisioned environment\n(P126). Stages the provider cannot realize are skipped."
+                  "description": "Optional staged idle policy for the provisioned environment.\nStages the provider cannot realize are skipped."
                 },
                 "metadata": {
                   "additionalProperties": {
@@ -6587,7 +6587,7 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
               "additionalProperties": {
                 "not": {}
               },
-              "description": "Activate the delegating parent's active environment (sub-agents,\nP134). Resolved at spawn, shared not copied, never closed by the\nchild; rejected on a session without a delegation origin or whose\nparent has no active environment.",
+              "description": "Activate the delegating parent's active environment. Resolved at\nsub-agent spawn, shared not copied, never closed by the\nchild; rejected on a session without a delegation origin or whose\nparent has no active environment.",
               "properties": {
                 "type": {
                   "const": "inherit",
@@ -6606,7 +6606,7 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
               "description": "Provision one environment for the session from the universe's enabled\nbinding for `providerId`, then activate it. The provision request id\nis derived from the session id, so retries and repeated applies\nconverge on the same environment.",
               "properties": {
                 "credentials": {
-                  "description": "Credentials bound to the environment right after it is\nprovisioned, before activation (P127 D5): references to universe\ngrants/providers/secrets, never values. They become ordinary\nenvironment credential bindings; the profile is the initial set,\nnot a live sync. Not available for `existing` environments.",
+                  "description": "Credentials bound to the environment right after it is\nprovisioned before activation: references to universe\ngrants/providers/secrets, never values. They become ordinary\nenvironment credential bindings; the profile is the initial set,\nnot a live sync. Not available for `existing` environments.",
                   "items": {
                     "$ref": "#/definitions/ProfileEnvironmentCredential"
                   },
@@ -6627,7 +6627,7 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                       "type": "null"
                     }
                   ],
-                  "description": "Optional staged idle policy for the provisioned environment\n(P126). Stages the provider cannot realize are skipped."
+                  "description": "Optional staged idle policy for the provisioned environment.\nStages the provider cannot realize are skipped."
                 },
                 "metadata": {
                   "additionalProperties": {

@@ -1,7 +1,7 @@
 //! Minimal live environment control-plane acceptance test.
 //!
 //! This deliberately uses the in-process provider with real Postgres and the
-//! real deployment reconciler. It covers Lightspeed's durable P118/P121 seams
+//! real deployment reconciler. It covers the durable provider and ingress seams
 //! without requiring an Incus installation; the separate Incus live smoke test
 //! owns backend connectivity and topology.
 

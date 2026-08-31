@@ -1,6 +1,6 @@
 use super::*;
 
-pub(super) const P105_ACTIVE_RUN_ROLLOVER_PATCH: &str = "p105_active_run_rollover_v1";
+pub(super) const ACTIVE_RUN_ROLLOVER_PATCH: &str = "p105_active_run_rollover_v1";
 
 pub(super) async fn wait_for_workflow_work(ctx: &mut WorkflowContext<AgentSessionWorkflow>) {
     let now = workflow_time_ms(ctx);
@@ -105,8 +105,8 @@ pub(super) fn history_rollover_due(
     ctx: &WorkflowContext<AgentSessionWorkflow>,
     args: &AgentSessionArgs,
 ) -> bool {
-    let p105_enabled = ctx.patched(P105_ACTIVE_RUN_ROLLOVER_PATCH);
-    (!p105_enabled || ctx.state(|state| state.execution_has_rollover_checkpoint))
+    let rollover_enabled = ctx.patched(ACTIVE_RUN_ROLLOVER_PATCH);
+    (!rollover_enabled || ctx.state(|state| state.execution_has_rollover_checkpoint))
         && should_continue_as_new(
             ctx.continue_as_new_suggested(),
             ctx.history_length(),

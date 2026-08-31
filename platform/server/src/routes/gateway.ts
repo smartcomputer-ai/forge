@@ -182,7 +182,7 @@ const modelKeyPutSchema = z
     "a model provider requires a credential or endpoint",
   );
 
-/// Coding-agent subscription credential paste (P127): parsed and normalised
+/// Coding-agent subscription credential paste: parsed and normalised
 /// here (vendor knowledge stays in Platform), then imported into the engine as
 /// an ordinary bearer grant with metadata. Encrypted on receipt, never read back.
 const subscriptionImportSchema = z.object({
@@ -416,7 +416,7 @@ export function gatewayRoutes(ctx: AppContext) {
     const cursor = c.req.query("cursor") ?? null;
     const limitRaw = Number(c.req.query("limit") ?? 50);
     const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(1, limitRaw), 200) : 50;
-    // Sub-agent lineage filters (P134): children of a root or of a parent.
+    // Sub-agent lineage filters: children of a root or of a parent.
     const rootSessionId = c.req.query("rootSessionId") || null;
     const parentSessionId = c.req.query("parentSessionId") || null;
     return withGateway(c, async () => {

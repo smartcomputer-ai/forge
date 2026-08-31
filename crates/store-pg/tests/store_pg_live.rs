@@ -1103,7 +1103,10 @@ async fn pg_live_universe_environments_are_independent_of_sessions() {
             .fetch_one(store.pool())
             .await
             .expect("inspect removed environment job table");
-        assert!(relation.is_none(), "P104 must remove table {table}");
+        assert!(
+            relation.is_none(),
+            "legacy job table must be removed: {table}"
+        );
     }
     let provider_id = EnvironmentProviderId::new("bridge-local");
     let target_id = ProviderTargetId::new("local-host");
@@ -1180,7 +1183,7 @@ async fn pg_live_universe_environments_are_independent_of_sessions() {
         })
         .await
         .expect("upsert target");
-    // P126: power intent, observed power states, and idle policy round-trip
+    // Power intent, observed power states, and idle policy round-trip
     // and feed the reconcile/reaper queries.
     assert_eq!(instance.desired_power, environments::PowerState::Running);
     assert_eq!(
@@ -1311,7 +1314,7 @@ async fn pg_live_universe_environments_are_independent_of_sessions() {
         .expect("close environment while a session exists");
     assert_eq!(closing.status, EnvironmentStatus::Closing);
 
-    // P125: origin-session provenance round-trips, filters, and feeds the
+    // Origin-session provenance round-trips, filters, and feeds the
     // close-with-session sweep query.
     let owned_id = EnvironmentId::new("environment-owned");
     let owned = store
@@ -1991,8 +1994,8 @@ async fn pg_live_environment_credentials_round_trip() {
         .await
         .expect("create environment");
 
-    // Two stored-secret grants (P127 subscription credentials are ordinary
-    // static_bearer grants carrying metadata).
+    // Subscription credentials are ordinary static_bearer grants carrying
+    // metadata, so exercise two stored-secret grants.
     for (grant_id, kind, provider) in [
         ("authgrant_codex", AuthProviderKind::StaticBearer, "openai"),
         (

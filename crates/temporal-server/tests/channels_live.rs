@@ -1,4 +1,4 @@
-//! Channels live proof (P142): a chat message admitted through
+//! Channels live proof: a chat message admitted through
 //! `channels/inbound/admit` becomes a bot event, the bot's routed session
 //! runs, the delivery receipt reaches the conversation workflow, and the
 //! reply goes out through the connector's task queue — served here by a

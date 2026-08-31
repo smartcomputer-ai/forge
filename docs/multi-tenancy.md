@@ -5,9 +5,7 @@ one Temporal worker pool, one PostgreSQL server, and one object store. A
 universe is the tenant, project, or workspace boundary used throughout the
 runtime. It is not a per-user authorization boundary.
 
-This document describes the current operational contract. The implementation
-history and design rationale remain in
-[P90](roadmap/p90-multi-tenancy.md).
+This document describes the current operational contract.
 
 ## Isolation model
 

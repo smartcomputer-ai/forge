@@ -161,6 +161,11 @@ release boundary with `scripts/release/verify-metadata.sh`.
 ## Maintenance
 
 - Keep changes focused and preserve unrelated work in a dirty worktree.
+- Never cite letter-P numeric roadmap identifiers in source comments, symbols,
+  API documentation, test names/data, or durable documentation.
+  Roadmap numbering is unstable; explain the current invariant or rationale in
+  self-contained domain language instead. Roadmap files may reference one
+  another inside `docs/roadmap/`.
 - Update `README.md` and the relevant design/spec/roadmap document when a
   high-level architecture or public capability changes.
 - Record implementation progress in an active roadmap document, but do not

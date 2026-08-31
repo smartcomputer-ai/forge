@@ -1,7 +1,7 @@
 //! Generic auth registry contracts: grants, secrets, and the token broker.
 //!
 //! This crate owns provider-independent control-plane models and store traits
-//! for the P69 auth substrate. Concrete persistence adapters, such as
+//! for the auth substrate. Concrete persistence adapters, such as
 //! `store-pg`, implement these traits outside this crate; OAuth and provider
 //! drivers arrive in later milestones. Secret values only ever cross these
 //! boundaries wrapped in [`SecretValue`], whose `Debug` output is redacted.

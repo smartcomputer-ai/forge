@@ -1207,7 +1207,7 @@ export type ContextAppendStatus = "applied" | "unchanged" | "failed";
  */
 export type ContextRemoveStatus = "removed" | "absent" | "failed";
 /**
- * Steady power state of a provisioned environment (P126).
+ * Steady power state of a provisioned environment.
  *
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "EnvironmentPowerStateView".
@@ -1434,7 +1434,7 @@ export type ProfileEnvironment =
   | {
       /**
        * Credentials bound to the environment right after it is
-       * provisioned, before activation (P127 D5): references to universe
+       * provisioned before activation: references to universe
        * grants/providers/secrets, never values. They become ordinary
        * environment credential bindings; the profile is the initial set,
        * not a live sync. Not available for `existing` environments.
@@ -1442,8 +1442,8 @@ export type ProfileEnvironment =
       credentials?: ProfileEnvironmentCredential[];
       displayName?: string | null;
       /**
-       * Optional staged idle policy for the provisioned environment
-       * (P126). Stages the provider cannot realize are skipped.
+       * Optional staged idle policy for the provisioned environment.
+       * Stages the provider cannot realize are skipped.
        */
       idlePolicy?: EnvironmentIdlePolicyView | null;
       metadata?: {
@@ -4563,7 +4563,7 @@ export interface ModelView {
   model: string;
   providerId: string;
   /**
-   * Always `provider` in P97: there is no maintained model catalog.
+   * Always `provider`; there is no maintained model catalog.
    */
   source: ModelSource;
 }

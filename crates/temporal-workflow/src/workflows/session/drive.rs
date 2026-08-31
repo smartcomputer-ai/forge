@@ -237,7 +237,7 @@ fn history_boundary_outcome(
     ctx: &WorkflowContext<AgentSessionWorkflow>,
     args: &AgentSessionArgs,
 ) -> Option<DriveOutcome> {
-    if !ctx.patched(wait_loop::P105_ACTIVE_RUN_ROLLOVER_PATCH) {
+    if !ctx.patched(wait_loop::ACTIVE_RUN_ROLLOVER_PATCH) {
         // Old executions did not branch here. The patch marker keeps replay
         // deterministic; once execution reaches new history, the SDK records
         // the marker and active-run rollover becomes eligible.

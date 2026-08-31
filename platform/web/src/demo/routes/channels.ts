@@ -1,4 +1,4 @@
-/// Universe channel accounts and pairings (P142): provider accounts are
+/// Universe channel accounts and pairings: provider accounts are
 /// universe resources in the core, so the demo serves the core response
 /// shapes under `/universes/:id/channel-accounts` and
 /// `/universes/:id/channel-pairings`. The connector-health side effects keep

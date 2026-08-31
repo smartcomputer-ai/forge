@@ -28,7 +28,7 @@ pub(super) async fn generate(
             Ok(result)
         }
         // Transient provider errors become the typed retryable activity
-        // failure; Temporal owns the durable backoff (P116).
+        // failure; Temporal owns the durable backoff.
         Err(CoreAgentIoError::Retryable {
             message,
             retry_after,

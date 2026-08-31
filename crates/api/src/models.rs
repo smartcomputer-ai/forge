@@ -44,7 +44,7 @@ pub struct ModelView {
     /// not expose one; this is distinct from the discovery fetch time.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub created_at_ms: Option<i64>,
-    /// Always `provider` in P97: there is no maintained model catalog.
+    /// Always `provider`; there is no maintained model catalog.
     pub source: ModelSource,
     pub fetched_at_ms: i64,
 }

@@ -19,7 +19,7 @@ pub(super) async fn compact_context(
     match deps.llm.compact_context(request.clone()).await {
         Ok(result) => Ok(result),
         // Transient provider errors become the typed retryable activity
-        // failure; Temporal owns the durable backoff (P116).
+        // failure; Temporal owns the durable backoff.
         Err(CoreAgentIoError::Retryable {
             message,
             retry_after,

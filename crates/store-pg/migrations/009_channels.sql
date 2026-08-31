@@ -1,4 +1,4 @@
--- P142 channels: chat provider accounts served by the connector host and
+-- Channels: chat provider accounts served by the connector host and
 -- the conversation pairings that authorize a chat against a bot's chat
 -- trigger.
 --

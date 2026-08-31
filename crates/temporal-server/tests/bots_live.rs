@@ -1,4 +1,4 @@
-//! Bots live proof (P142): the bot controller, trigger fires, admission, and
+//! Bots live proof: the bot controller, trigger fires, admission, and
 //! the `bots/*` service against the local Temporal + PostgreSQL stack, with
 //! a fake LLM for the mechanics and one real-model scenario for the resolve
 //! round trip.

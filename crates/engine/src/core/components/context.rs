@@ -13,7 +13,7 @@ const RESERVED_RUN_CONTEXT_KEY_PREFIX: &str = "run";
 const INSTRUCTIONS_KEY_PREFIX: &str = "instructions.";
 pub const VFS_CATALOG_CONTEXT_KEY: &str = "environment.vfs_catalog";
 pub const SKILL_CATALOG_CONTEXT_KEY: &str = "skills.catalog.vfs";
-/// The sub-agent catalog (P134): the grant's agent menu with profile
+/// The sub-agent catalog: the grant's agent menu with profile
 /// descriptions, refreshed like the skill catalog.
 pub const SUBAGENT_CATALOG_CONTEXT_KEY: &str = "subagents.catalog";
 /// Superseded catalog versions kept per key before the oldest is removed.

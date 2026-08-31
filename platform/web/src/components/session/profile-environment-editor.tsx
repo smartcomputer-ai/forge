@@ -48,7 +48,7 @@ type Mode = "none" | "existing" | "provision" | "inherit";
 
 const NONE = "__no_profile_environment__";
 
-/// Profile environment intent (P125): leave the session's selection alone,
+/// Profile environment intent: leave the session's selection alone,
 /// activate an existing universe environment, or provision a fresh one for the
 /// session from a provider template.
 export function ProfileEnvironmentEditor({
@@ -413,8 +413,8 @@ function environmentLabel(environment: EnvironmentOption): string {
 
 const NO_SOURCE = "__no_credential_source__";
 
-/// Credentials bound to the provisioned environment right after creation
-/// (P127 D5): references to universe secrets, never values. Suggested env
+/// Credentials bound to the provisioned environment right after creation:
+/// references to universe secrets, never values. Suggested env
 /// names come from the credential (e.g. CLAUDE_CODE_OAUTH_TOKEN).
 function ProvisionCredentialsField({
   credentials,

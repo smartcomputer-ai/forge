@@ -1,4 +1,4 @@
-//! Per-call tool batch execution (P114).
+//! Per-call tool batch execution.
 //!
 //! Ordinary batches schedule one Temporal activity per executable call and
 //! resume the drive progressively: each terminal call result appends durably
@@ -270,7 +270,7 @@ fn call_activity<'a>(
 /// call id does not match the scheduled call is rejected as a boundary
 /// failure. A call that did not execute because its active environment is
 /// still provisioning waits for readiness in a dedicated heartbeated activity
-/// and is re-dispatched once (P125). The drive then appends the durable
+/// and is re-dispatched once. The drive then appends the durable
 /// per-call completion.
 async fn resume_call(
     ctx: &mut WorkflowContext<AgentSessionWorkflow>,

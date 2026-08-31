@@ -205,7 +205,7 @@ impl ProviderController for FakeProviderController {
             templates: vec![EnvironmentTemplate {
                 template_id: "rust-v1".to_owned(),
                 display_name: "Rust development".to_owned(),
-                description: Some("Deterministic P118 fake provider template".to_owned()),
+                description: Some("Deterministic fake provider template".to_owned()),
                 public_ingress: false,
                 deprecated: false,
                 metadata: BTreeMap::new(),

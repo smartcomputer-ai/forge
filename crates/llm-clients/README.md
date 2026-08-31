@@ -14,7 +14,7 @@ backend.
 
 ## Current Status
 
-P45.1 transport is implemented:
+Shared transport is implemented:
 
 - HTTP client wrapper and URL helpers
 - header snapshots and `Retry-After` parsing
@@ -22,7 +22,7 @@ P45.1 transport is implemented:
 - API response and stream event transport envelopes
 - provider HTTP failure classification
 
-P45.2 `openai:responses` is implemented:
+`openai:responses` is implemented:
 
 - native request/response/stream records
 - `Client::create`
@@ -41,7 +41,7 @@ P45.2 `openai:responses` is implemented:
   token counts, delete, cancel, compact, function calls, usage, and provider
   error classification
 
-P45.3 `openai:completions` is implemented:
+`openai:completions` is implemented:
 
 - native chat completions request/response/stream records
 - `Client::create`
@@ -51,7 +51,7 @@ P45.3 `openai:completions` is implemented:
 - ignored live tests for text, streaming, function calls, usage, and provider
   error classification
 
-P45.4 `anthropic:messages` is implemented:
+`anthropic:messages` is implemented:
 
 - native Messages request/response/stream records
 - `Client::create`

@@ -267,7 +267,7 @@ pub(super) async fn read_blob(
 /// Read one run's workflow-tool emissions from this worker state's
 /// universe-scoped session store. Exact receiver authorization is evaluated
 /// against the durable binding facts by the engine projection.
-// P101's work-cycle reconciliation activity is the first production caller.
+// Work-cycle reconciliation is the first production caller.
 #[allow(dead_code)]
 pub(super) async fn read_tool_emissions(
     deps: &StorageActivityDeps,

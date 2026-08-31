@@ -15,7 +15,7 @@ pub fn image_media_type(media_type: Option<&str>) -> Option<&str> {
     }
 }
 
-/// A user-message entry carrying an inbound document (P71 G3).
+/// A user-message entry carrying an inbound document.
 ///
 /// PDFs are unambiguous by media type. Text-based documents share
 /// `text/plain`-family media types with ordinary text turns, so they are

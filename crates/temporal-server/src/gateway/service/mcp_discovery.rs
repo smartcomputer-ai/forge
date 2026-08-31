@@ -976,7 +976,7 @@ mod tests {
                     "result": {
                         "protocolVersion": "2025-11-25",
                         "capabilities": {"tools": {}},
-                        "serverInfo": {"name": "p143-fixture", "version": "1"}
+                        "serverInfo": {"name": "search-fixture", "version": "1"}
                     }
                 }))
                 .into_response();

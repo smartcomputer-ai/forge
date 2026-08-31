@@ -2,7 +2,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, type Environment } from "@/api";
 import { Button } from "@/components/ui/button";
 
-/// Observed steady power state derived from the lifecycle status (P126).
+/// Observed steady power state derived from the lifecycle status.
 export function observedPower(environment: Environment): Environment["desiredPower"] | null {
   switch (environment.status) {
     case "ready":
@@ -46,7 +46,7 @@ export function formatDuration(ms: number): string {
   return `${ms}ms`;
 }
 
-/// Power intent (P126): pause/suspend/stop/resume a provisioned environment.
+/// Power intent: pause/suspend/stop/resume a provisioned environment.
 /// Only the states the provider reported are offered; a powered-down
 /// environment also wakes by itself when a session uses it. `onChanged`
 /// lets a caller refresh its own query on top of the environments list.

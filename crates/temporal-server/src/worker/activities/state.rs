@@ -56,7 +56,7 @@ pub struct ToolActivityDeps {
     pub(super) blobs: Arc<dyn BlobStore>,
     /// The hosted runtime behind `tools` when it is the real `SessionTools`:
     /// grants the per-call not-ready outcome and the environment readiness
-    /// wait (P125). Absent for injected fake runtimes, which never report a
+    /// wait. Absent for injected fake runtimes, which never report a
     /// not-ready environment.
     pub(super) hosted: Option<Arc<SessionTools>>,
     pub(super) native_mcp: Option<Arc<NativeMcpRuntime>>,
@@ -100,7 +100,7 @@ pub struct WorkflowToolExecutionDeps {
     pub(super) client: temporalio_client::Client,
 }
 
-/// Deps for the sub-agent execution activities (P134).
+/// Deps for the sub-agent execution activities.
 #[derive(Clone)]
 pub struct SubagentActivityDeps {
     pub(super) service: SubagentService,
@@ -300,7 +300,7 @@ impl ActivityState {
 
     /// Build a universe's activity state over the deployment's shared HTTP
     /// clients. Marginal per-universe cost is the resolver layers and tool
-    /// registry only; every HTTP client is shared (P90 follow-up).
+    /// registry only; every HTTP client is shared.
     pub fn from_pg_store_with_shared_clients(
         store: Arc<PgStore>,
         subagent_runtime: Option<Arc<dyn SubagentChildRuntime>>,

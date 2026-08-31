@@ -106,7 +106,7 @@ pub struct EnvironmentIngressPutResponse {
     pub environment: EnvironmentView,
 }
 
-/// Steady power state of a provisioned environment (P126).
+/// Steady power state of a provisioned environment.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub enum EnvironmentPowerStateView {
@@ -189,9 +189,9 @@ pub enum EnvironmentLifecycleStatusView {
     Provisioning,
     Booting,
     Ready,
-    /// Execution frozen (P126); wakes on next use.
+    /// Execution frozen; wakes on next use.
     Paused,
-    /// Execution state saved to disk (P126); wakes on next use.
+    /// Execution state saved to disk; wakes on next use.
     Suspended,
     /// Powered off; provisioned environments wake on next use when the
     /// provider supports power control.

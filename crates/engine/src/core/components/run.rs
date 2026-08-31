@@ -235,12 +235,12 @@ pub struct RunRequestCommand {
     pub run_config: RunConfig,
     /// Cross-session notify-intents recorded at admission: on this run's
     /// terminal event, signal each holder workflow with its token (the
-    /// holder-side promise id). The edge event is the subscription (P92 §1).
+    /// holder-side promise id). The edge event is the subscription.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub notify_on_terminal: Vec<RunTerminalNotifyIntent>,
 }
 
-/// One log-backed notify-intent attached to a run. Replaces the P84
+/// One log-backed notify-intent attached to a run. Replaces the former
 /// `subscribe_run` machinery: recorded by the event that creates the edge
 /// (spawn admission), rebuilt with the run at bootstrap, including after the
 /// observed session's own continue-as-new.

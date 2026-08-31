@@ -1,5 +1,5 @@
 //! Bots domain crate: records, validation, store contracts, and the pure
-//! pipeline logic of the bots subsystem (P142).
+//! pipeline logic of the bots subsystem.
 //!
 //! Wire DTOs live in `api`; this crate adds what the runtime needs around
 //! them and nothing that does I/O. The Temporal workflows live in

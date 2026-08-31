@@ -1,4 +1,4 @@
-//! Per-grant token renewal serialization (P69 G3).
+//! Per-grant token renewal serialization.
 //!
 //! Renewal (OAuth refresh, on-demand minting) must be single-flight per
 //! grant: with refresh-token rotation, a double refresh is destructive

@@ -53,7 +53,7 @@ pub(super) async fn cancellable<T>(
 const MAX_TRANSIENT_FAILURE_MESSAGE_BYTES: usize = 8 * 1024;
 
 /// Builds the typed retryable `llm_provider_transient` application failure
-/// for a transient provider error (P116). Temporal owns the durable backoff;
+/// for a transient provider error. Temporal owns the durable backoff;
 /// a provider-suggested delay is honored via `next_retry_delay`, clamped to
 /// the policy's maximum interval so it cannot schedule past the bounded total
 /// budget.

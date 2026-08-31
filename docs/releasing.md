@@ -63,7 +63,7 @@ LIGHTSPEED_PLATFORM_MIGRATION_TEST_URL=postgres://... npm run test:migrations
 The platform ledger was rebased on 2026-08-30 to the single
 `0000_platform_baseline` entry (auth, universes, setup installations): bots,
 triggers, events, channel accounts, and pairings moved into the Rust core
-schema (P142), so the platform database holds people and the universe mapping
+schema, so the platform database holds people and the universe mapping
 and nothing else. Keep that shape: a new area gets its own migration, and its
 tables live in their own `platform/db/src/schema/<area>.ts`. A rebase
 invalidates the Drizzle ledger of every existing database: either reset the

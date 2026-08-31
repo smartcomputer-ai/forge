@@ -1,4 +1,4 @@
-//! GitHub App provider and installation API helpers (P69 G5).
+//! GitHub App provider and installation API helpers.
 //!
 //! The private key in `auth/providers/create` params is the third deliberate
 //! inbound-plaintext path: it is validated (must parse as an RSA PEM) and

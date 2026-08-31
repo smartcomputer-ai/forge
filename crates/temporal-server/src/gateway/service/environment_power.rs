@@ -1,4 +1,4 @@
-//! Idle power policy (P126): the power reaper.
+//! Idle power policy: the power reaper.
 //!
 //! One pass reads the daemon idle report of every `ready` provisioned
 //! environment that carries an idle policy and, when a stage threshold has

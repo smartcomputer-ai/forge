@@ -41,7 +41,7 @@ const MEDIA_TYPE_TEXT: &str = "text/plain";
 #[async_trait]
 pub trait OpenAiResponsesApi: Send + Sync {
     /// `auth` overrides the client's transport-configured key for this
-    /// request (stored provider credentials, P69 G6).
+    /// request when stored provider credentials are used.
     async fn create(
         &self,
         request: oai::CreateResponseRequest,
@@ -152,7 +152,7 @@ impl LlmGenerationAdapter for OpenAiResponsesLlmAdapter {
         }
 
         let mut provider_request = self.materialize_create_request(&request.request).await?;
-        // Route every turn of a session to the same prompt cache (P137).
+        // Route every turn of a session to the same prompt cache.
         provider_request.prompt_cache_key =
             Some(crate::prompt_cache::prompt_cache_key(&request.session_id));
         let (send_request, redacted_request) =
@@ -2878,7 +2878,7 @@ mod tests {
             "status": "completed",
             "action": {
                 "type": "search",
-                "query": "Lightspeed P66 web search",
+                "query": "Lightspeed web search",
                 "sources": [{
                     "url": "https://example.com/source",
                     "title": "Example"

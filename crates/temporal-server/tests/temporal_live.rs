@@ -257,7 +257,7 @@ async fn temporal_live_transient_llm_failures_retry_within_the_turn() -> anyhow:
     require_storage_live_env()?;
 
     // Two scripted transient provider failures precede a normal generation
-    // (P116): the typed retryable activity failure makes Temporal retry the
+    // so the typed retryable activity failure makes Temporal retry the
     // pending `llm_generate` activity with durable backoff, honoring the
     // scripted suggested delay. The run must complete with one successful
     // generation and no transcript trace of the retried attempts.
@@ -272,7 +272,7 @@ async fn temporal_live_exhausted_llm_retries_fail_the_run_not_the_session() -> a
     let _ = dotenvy::dotenv();
     require_storage_live_env()?;
 
-    // Exactly the bounded attempt budget of transient failures (P116): the
+    // Exactly the bounded attempt budget of transient failures: the
     // first run exhausts `llm_generate`'s retry policy and fails at the
     // workflow boundary. The scripted budget is then consumed, so a second
     // run on the same session succeeds — proving exhaustion fails the run
@@ -1358,8 +1358,8 @@ async fn run_agent_run_inline_live_client(
         })
         .await?;
     assert!(parent_view.result.session.origin.is_none());
-    // The grant publishes the sub-agent catalog as a context entry (P134
-    // slice 4); the model reads the menu from there, not from the schema.
+    // The grant publishes the sub-agent catalog as a context entry; the model
+    // reads the menu from there, not from the schema.
     assert!(
         parent_view
             .result
@@ -4075,7 +4075,7 @@ fn expected_configurator_tool_names() -> anyhow::Result<BTreeSet<String>> {
         .collect()
 }
 
-/// P125: a `provision` profile creates one environment for the session it
+/// A `provision` profile creates one environment for the session it
 /// starts, activates it while it is still provisioning, converges on retries
 /// and repeated applies, and closes it with the session (or retains it).
 async fn run_profile_provision_live_client(
@@ -4411,7 +4411,7 @@ async fn run_profile_provision_live_client(
     Ok(())
 }
 
-/// P126: power intent is recorded through the API, converged by the lifecycle
+/// Power intent is recorded through the API, converged by the lifecycle
 /// reconciler against the provider, and a powered-down environment wakes
 /// transparently when a session selects it. Idle policy round-trips and the
 /// power reaper treats an environment without a reachable daemon as
@@ -5241,7 +5241,7 @@ async fn run_openai_completions_live_client(
     Ok(())
 }
 
-/// P90 isolation: two universes served by ONE worker on ONE shared task
+/// Isolation: two universes served by ONE worker on ONE shared task
 /// queue. The same client-chosen session id exists independently in both
 /// universes (distinct composed workflow ids), reads and registry listings
 /// never cross universes, and closing one universe's session leaves the
@@ -5316,12 +5316,15 @@ async fn temporal_live_two_universes_share_one_worker_with_isolation() -> anyhow
 
         // Registry isolation: a profile created in A is invisible in B, and a
         // read through B reports not-found (no existence leak).
-        let profile_id = ProfileId::new(format!("p90.isolation.{}", uuid::Uuid::new_v4().simple()));
+        let profile_id = ProfileId::new(format!(
+            "tenant.isolation.{}",
+            uuid::Uuid::new_v4().simple()
+        ));
         api_a
             .create_profile(ProfileCreateParams {
                 profile: AgentProfileInput {
                     profile_id: profile_id.clone(),
-                    display_name: Some("P90 isolation".to_owned()),
+                    display_name: Some("Tenant isolation".to_owned()),
                     description: None,
                     document: ProfileDocument::default(),
                 },
@@ -5373,7 +5376,7 @@ async fn temporal_live_two_universes_share_one_worker_with_isolation() -> anyhow
             let _ = handle
                 .terminate(
                     WorkflowTerminateOptions::builder()
-                        .reason("p90 isolation live test cleanup")
+                        .reason("tenant isolation live test cleanup")
                         .build(),
                 )
                 .await;
@@ -5399,7 +5402,7 @@ async fn temporal_live_two_universes_share_one_worker_with_isolation() -> anyhow
     client_result
 }
 
-/// P90 Phase 2: `api-key` auth mode end to end over HTTP. Keys resolve to
+/// `api-key` auth mode end to end over HTTP. Keys resolve to
 /// their universe, foreign-universe reads miss, requests without/with bad
 /// credentials fail closed, tenant headers are rejected in api-key mode, and
 /// revocation takes effect immediately.
@@ -5443,13 +5446,13 @@ async fn temporal_live_api_key_mode_scopes_requests() -> anyhow::Result<()> {
             kind: auth::PrincipalKind::ServiceAccount,
             id: Some("live-test".to_owned()),
         },
-        Some("p90 live A".to_owned()),
+        Some("api-key live A".to_owned()),
         now_ms,
     );
     let minted_b = auth::mint_api_key(
         universe_b,
         auth::PrincipalRef::universe_default(),
-        Some("p90 live B".to_owned()),
+        Some("api-key live B".to_owned()),
         now_ms,
     );
     for minted in [&minted_a, &minted_b] {
@@ -5626,7 +5629,7 @@ async fn temporal_live_api_key_mode_scopes_requests() -> anyhow::Result<()> {
             Some(secret_a.clone()),
             rpc(
                 "auth/grants/import",
-                serde_json::json!({ "token": "live-static-token", "displayName": "p90 live" }),
+                serde_json::json!({ "token": "live-static-token", "displayName": "api-key live" }),
             ),
         )
         .await?;
@@ -5684,7 +5687,7 @@ async fn temporal_live_api_key_mode_scopes_requests() -> anyhow::Result<()> {
         let _ = handle
             .terminate(
                 WorkflowTerminateOptions::builder()
-                    .reason("p90 api-key live test cleanup")
+                    .reason("api-key live test cleanup")
                     .build(),
             )
             .await;

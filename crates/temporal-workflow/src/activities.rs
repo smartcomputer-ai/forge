@@ -146,7 +146,7 @@ impl WorkflowActivities {
 
     /// Wait, with heartbeats, until the session's active environment is
     /// reachable or terminally unusable. Runs outside the per-call tool
-    /// activity so tool classes keep their tight deadlines (P125).
+    /// activity so tool classes keep their tight deadlines.
     #[activity(name = ACTIVITY_AWAIT_ENVIRONMENT_READY)]
     pub async fn await_environment_ready(
         _ctx: ActivityContext,

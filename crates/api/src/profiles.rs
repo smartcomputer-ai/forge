@@ -201,8 +201,8 @@ pub enum ProfileEnvironment {
     /// Activate an existing universe environment. The profile never closes
     /// it.
     Existing { environment_id: EnvironmentId },
-    /// Activate the delegating parent's active environment (sub-agents,
-    /// P134). Resolved at spawn, shared not copied, never closed by the
+    /// Activate the delegating parent's active environment. Resolved at
+    /// sub-agent spawn, shared not copied, never closed by the
     /// child; rejected on a session without a delegation origin or whose
     /// parent has no active environment.
     Inherit {},
@@ -220,12 +220,12 @@ pub enum ProfileEnvironment {
         metadata: BTreeMap<String, String>,
         #[serde(default)]
         retention: ProfileEnvironmentRetention,
-        /// Optional staged idle policy for the provisioned environment
-        /// (P126). Stages the provider cannot realize are skipped.
+        /// Optional staged idle policy for the provisioned environment.
+        /// Stages the provider cannot realize are skipped.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         idle_policy: Option<EnvironmentIdlePolicyView>,
         /// Credentials bound to the environment right after it is
-        /// provisioned, before activation (P127 D5): references to universe
+        /// provisioned before activation: references to universe
         /// grants/providers/secrets, never values. They become ordinary
         /// environment credential bindings; the profile is the initial set,
         /// not a live sync. Not available for `existing` environments.

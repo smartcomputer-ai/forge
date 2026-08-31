@@ -188,7 +188,7 @@ impl GatewayAgentApi {
                     .await?;
                 if provisioned {
                     // Initial credential set for a freshly provisioned
-                    // environment (P127 D5): ordinary bindings from here on;
+                    // environment: ordinary bindings from here on;
                     // a re-apply that finds the environment does not resync.
                     self.bind_profile_environment_credentials(
                         environment.environment_id.as_str(),

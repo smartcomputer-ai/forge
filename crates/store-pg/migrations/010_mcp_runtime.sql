@@ -1,5 +1,5 @@
--- P143-P145: current remote MCP transport, rmcp OAuth protocol state,
--- approvals, and native MCP execution.
+-- Current remote MCP transport, rmcp OAuth protocol state, approvals, and
+-- native MCP execution.
 --
 -- Streamable HTTP is the sole public transport. Transport remains an internal
 -- catalog extension point, but legacy SSE and automatic transport selection

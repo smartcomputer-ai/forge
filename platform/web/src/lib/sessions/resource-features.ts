@@ -75,7 +75,7 @@ export function isTerminalEnvironmentStatus(status: string | undefined): boolean
   return status === "closed" || status === "closing";
 }
 
-/// Statuses in which activation is admitted (see P125): ready now, or
+/// Statuses in which activation is admitted: ready now, or
 /// provisioning/booting with tools waiting until the environment is reachable.
 export function isActivatableEnvironmentStatus(status: string | undefined): boolean {
   return status === "ready" || status === "provisioning" || status === "booting";

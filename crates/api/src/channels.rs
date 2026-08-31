@@ -1,5 +1,5 @@
-//! Channels: chat provider accounts, pairings, and the inbound seam the
-//! connector host speaks (P139, hosted in the core runtime by P142).
+//! Channels: chat provider accounts, pairings, and the core-runtime inbound
+//! seam spoken by the connector host.
 //!
 //! A chat connection is a bot trigger of kind `chat` ([`BotTriggerSpec`]);
 //! the records here are what that trigger points at (the universe's

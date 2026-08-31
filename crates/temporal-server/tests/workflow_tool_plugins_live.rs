@@ -1,4 +1,4 @@
-//! P100b B5-B7 live proof: workflow plugins run in their own Temporal worker
+//! Live proof: workflow plugins run in their own Temporal worker
 //! and are reached only through data — an opaque bound endpoint or a
 //! CAS-backed start recipe. The session worker registers no plugin workflow
 //! type (`worker_with_activities` is used unchanged); the plugin workflows
