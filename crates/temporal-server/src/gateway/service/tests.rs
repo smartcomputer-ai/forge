@@ -589,12 +589,13 @@ fn environment_deactivation_lowers_to_clear_active_environment_command() {
 fn declared_mcp_link_materializes_remote_tool() {
     let tool_name = ToolName::new("mcp_crm");
     let active = BTreeMap::new();
-    let mut record = test_mcp_server_record("crm", mcp::McpServerStatus::Active);
+    let mut record = test_mcp_server_record("durable-crm-server", mcp::McpServerStatus::Active);
+    record.default_server_label = "crm".to_owned();
     record.allowed_tools = Some(vec!["lookup_customer".to_owned()]);
     record.approval_default = mcp::McpApprovalPolicy::Never;
     record.defer_loading_default = Some(true);
     let link = engine::McpServerLink {
-        server_id: "crm".to_owned(),
+        server_id: "durable-crm-server".to_owned(),
     };
 
     let tool = mcp_api::mcp_tool_from_config_link(&link, &record, None)
@@ -608,6 +609,7 @@ fn declared_mcp_link_materializes_remote_tool() {
     let engine::ToolKind::RemoteMcp(spec) = &tool.kind else {
         panic!("expected remote MCP tool");
     };
+    assert_eq!(spec.server_id, "durable-crm-server");
     assert_eq!(spec.server_label, "crm");
     assert_eq!(spec.allowed_tools, Some(vec!["lookup_customer".to_owned()]));
     assert_eq!(spec.approval, engine::RemoteMcpApprovalPolicy::Never);

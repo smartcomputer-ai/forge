@@ -771,7 +771,9 @@ async fn materialize_tools(
                             name,
                             description: native_tool.description,
                             parameters: Some(native_tool.input_schema),
-                            strict: Some(true),
+                            // MCP accepts general JSON Schema. OpenAI strict
+                            // functions accept only a narrower subset.
+                            strict: Some(false),
                             extra: Default::default(),
                         },
                     });
@@ -1429,7 +1431,7 @@ mod tests {
         .expect("materialize native MCP");
         let value = serde_json::to_value(tools).expect("tools json");
         assert_eq!(value[0]["function"]["name"], "mcp_internal__lookup");
-        assert_eq!(value[0]["function"]["strict"], true);
+        assert_eq!(value[0]["function"]["strict"], false);
     }
 
     struct FakeOpenAiCompletionsApi {

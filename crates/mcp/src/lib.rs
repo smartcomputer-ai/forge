@@ -244,7 +244,7 @@ impl McpServerRecord {
         validate_nonempty_optional("description", self.description.as_deref())?;
         validate_allowed_tools(self.allowed_tools.as_deref())?;
         validate_execution_policy(
-            &self.server_id,
+            &self.default_server_label,
             self.execution,
             self.exposure,
             self.allowed_tools.as_deref(),
@@ -618,7 +618,7 @@ fn validate_allowed_tools(values: Option<&[String]>) -> Result<(), McpRegistryEr
 }
 
 fn validate_execution_policy(
-    server_id: &McpServerId,
+    server_label: &str,
     execution: McpExecution,
     exposure: McpExposure,
     allowed_tools: Option<&[String]>,
@@ -634,7 +634,7 @@ fn validate_execution_policy(
     let Some(allowed_tools) = allowed_tools else {
         return Ok(());
     };
-    let prefix = native_tool_prefix(server_id);
+    let prefix = native_tool_prefix(server_label);
     for remote_name in allowed_tools {
         validate_mcp_component(
             "native injected MCP tool",
@@ -646,7 +646,7 @@ fn validate_execution_policy(
         if combined.len() > 64 {
             return Err(McpRegistryError::InvalidInput {
                 message: format!(
-                    "native MCP tool name {combined:?} exceeds the 64-byte provider limit; shorten the server id or remote tool name, or use search exposure"
+                    "native MCP tool name {combined:?} exceeds the 64-byte provider limit; shorten the server label or remote tool name, or use search exposure"
                 ),
             });
         }
@@ -654,9 +654,9 @@ fn validate_execution_policy(
     Ok(())
 }
 
-pub fn native_tool_prefix(server_id: &McpServerId) -> String {
+pub fn native_tool_prefix(server_label: &str) -> String {
     let mut prefix = String::from("mcp_");
-    for ch in server_id.as_str().chars() {
+    for ch in server_label.chars() {
         prefix.push(if ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-') {
             ch
         } else {
@@ -849,9 +849,22 @@ mod tests {
 
     #[test]
     fn native_inject_selected_tools_must_fit_provider_function_names() {
-        let mut record = put_request("native", McpServerStatus::Active).into_record();
+        let mut record =
+            put_request("durable-native-server-identifier", McpServerStatus::Active).into_record();
         record.execution = McpExecution::Native;
         record.exposure = McpExposure::Inject;
+        record.default_server_label = "native".to_owned();
+        record.allowed_tools = Some(vec!["lookup_customer".to_owned()]);
+        record
+            .validate()
+            .expect("the compact server label determines the injected tool name");
+
+        record.allowed_tools = Some(vec!["x".repeat(60)]);
+        assert!(matches!(
+            record.validate(),
+            Err(McpRegistryError::InvalidInput { .. })
+        ));
+
         record.allowed_tools = Some(vec!["not/a/function".to_owned()]);
         assert!(matches!(
             record.validate(),

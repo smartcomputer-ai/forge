@@ -32,6 +32,17 @@ describe("generated universe tools", () => {
     );
   });
 
+  it("fits every injected tool name under the first-party server label", () => {
+    const prefix = "mcp_configurator__";
+    for (const tool of GENERATED_TOOLS) {
+      const injectedName = `${prefix}${tool.name}`;
+      expect(
+        new TextEncoder().encode(injectedName).byteLength,
+        injectedName,
+      ).toBeLessThanOrEqual(64);
+    }
+  });
+
   it("emits self-contained object input schemas", () => {
     for (const tool of GENERATED_TOOLS) {
       expect(tool.summary.trim(), `${tool.name} summary`).not.toBe("");

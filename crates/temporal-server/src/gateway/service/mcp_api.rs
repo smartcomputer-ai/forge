@@ -158,7 +158,7 @@ pub(super) fn mcp_tool_from_config_link(
         mcp::McpServerStatus::Active | mcp::McpServerStatus::Unverified => {}
     }
 
-    let tool_name = default_mcp_tool_name(&record.server_id)?;
+    let tool_name = default_mcp_tool_name(&record.default_server_label)?;
     let auth_ref = auth_ref_for_server(record, grant)?;
     Ok(engine::ToolSpec {
         name: tool_name,
@@ -307,7 +307,10 @@ async fn search_meta_tool(
             description_ref: Some(description_ref),
             input_schema_ref,
             output_schema_ref: None,
-            strict: Some(true),
+            // These meta-tools intentionally contain optional fields and, for
+            // `mcp_call`, an open object carrying the remote tool arguments.
+            // OpenAI strict function schemas cannot represent either shape.
+            strict: Some(false),
             provider_options_ref: None,
         }),
         parallelism: if retry_safe {
@@ -340,6 +343,37 @@ fn api_execution(value: mcp::McpExecution) -> api::RemoteMcpExecution {
     match value {
         mcp::McpExecution::Provider => api::RemoteMcpExecution::Provider,
         mcp::McpExecution::Native => api::RemoteMcpExecution::Native,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn search_meta_tools_are_not_strict_functions() {
+        let blobs = engine::storage::InMemoryBlobStore::new();
+        let tool = search_meta_tool(
+            &blobs,
+            "mcp_call",
+            "Call a remote MCP tool".to_owned(),
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "arguments": {"type": "object"}
+                },
+                "required": ["arguments"],
+                "additionalProperties": false
+            }),
+            false,
+        )
+        .await
+        .expect("meta-tool");
+
+        let engine::ToolKind::Function(function) = tool.kind else {
+            panic!("MCP search meta-tool must be a function");
+        };
+        assert_eq!(function.strict, Some(false));
     }
 }
 
@@ -479,9 +513,9 @@ pub(super) fn map_mcp_error(error: mcp::McpRegistryError) -> AgentApiError {
     }
 }
 
-fn default_mcp_tool_name(server_id: &mcp::McpServerId) -> Result<ToolName, AgentApiError> {
+fn default_mcp_tool_name(server_label: &str) -> Result<ToolName, AgentApiError> {
     let mut tool_id = String::from("mcp_");
-    for ch in server_id.as_str().chars() {
+    for ch in server_label.chars() {
         if tool_id.len() >= 64 {
             break;
         }

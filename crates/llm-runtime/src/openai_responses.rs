@@ -581,7 +581,10 @@ async fn materialize_tools(
                     let name = format!("{}__{}", tool.name, native_tool.remote_name);
                     let mut function = oai::FunctionTool::new(name, native_tool.input_schema);
                     function.description = native_tool.description;
-                    function.strict = Some(true);
+                    // MCP accepts general JSON Schema. OpenAI strict functions
+                    // accept only a narrower subset, so a live remote schema
+                    // cannot safely be promoted to strict mode.
+                    function.strict = Some(false);
                     materialized.push(oai::Tool::Function(function));
                 }
             }
@@ -1487,7 +1490,7 @@ mod tests {
         let value = serde_json::to_value(tools).expect("tools json");
         assert_eq!(value.as_array().expect("array").len(), 1);
         assert_eq!(value[0]["name"], "mcp_github__search_issues");
-        assert_eq!(value[0]["strict"], true);
+        assert_eq!(value[0]["strict"], false);
     }
 
     struct FakeOpenAiResponsesApi {
