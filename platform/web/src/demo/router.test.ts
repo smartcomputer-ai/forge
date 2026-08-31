@@ -1,7 +1,14 @@
 import { describe, expect, it } from "vitest";
 import { createDemoStore } from "./fixtures";
 import { createDemoRouter } from "./router";
-import type { Universe, BotListItem, SessionEventsPage, SessionListPage } from "@/api";
+import type {
+  Universe,
+  BotListItem,
+  McpServer,
+  McpToolDiscovery,
+  SessionEventsPage,
+  SessionListPage,
+} from "@/api";
 
 /// Walks the demo router the way the UI does: every read path each page
 /// opens with must answer, and the live paths (a message, its tail, a bot
@@ -95,6 +102,27 @@ describe("demo router", () => {
       "/api/auth/admin/list-users",
     ]) {
       expect((await call("GET", path)).status, path).toBe(200);
+    }
+  });
+
+  it("returns a request-local MCP tool inventory", async () => {
+    const { call } = await boot();
+    const [universe] = (await call("GET", "/api/v1/universes")).json as Universe[];
+    const servers = (await call(
+      "GET",
+      `/api/v1/universes/${universe!.id}/mcp-servers`,
+    )).json as McpServer[];
+    const server = servers.find((candidate) => candidate.status === "active");
+    expect(server).toBeDefined();
+    const discovered = await call(
+      "POST",
+      `/api/v1/universes/${universe!.id}/mcp-servers/${server!.serverId}/tools/discover`,
+    );
+    expect(discovered.status).toBe(200);
+    const inventory = discovered.json as McpToolDiscovery;
+    expect(inventory.status).toBe("success");
+    if (inventory.status === "success") {
+      expect(inventory.tools[0]).toMatchObject({ name: "search" });
     }
   });
 

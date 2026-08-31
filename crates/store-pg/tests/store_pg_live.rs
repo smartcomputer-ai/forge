@@ -2178,7 +2178,7 @@ fn put_mcp_server(server_id: &str, status: McpServerStatus) -> PutMcpServerRecor
         server_id: McpServerId::new(server_id),
         display_name: Some(format!("{server_id} MCP")),
         server_url: format!("https://{server_id}.example.com/mcp"),
-        transport: RemoteMcpTransport::Auto,
+        transport: RemoteMcpTransport::StreamableHttp,
         default_server_label: server_id.to_owned(),
         description: Some(format!("{server_id} remote MCP server")),
         allowed_tools: Some(vec!["lookup_customer".to_owned()]),

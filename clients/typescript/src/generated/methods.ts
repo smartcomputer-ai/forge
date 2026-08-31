@@ -64,6 +64,7 @@ export const METHODS = [
   "vfs/workspaces/delete",
   "mcp/servers/put",
   "mcp/servers/auth/discover",
+  "mcp/servers/tools/discover",
   "mcp/servers/read",
   "mcp/servers/list",
   "mcp/servers/delete",
@@ -422,6 +423,11 @@ export const METHOD_INFO = {
     scope: "universe",
     summary: "Discover MCP server authentication",
     description: "Looks for standards-based OAuth protected-resource metadata without creating a server, OAuth client, flow, or grant. An absent OAuth result is inconclusive and callers must allow manual auth selection.",
+  },
+  "mcp/servers/tools/discover": {
+    scope: "universe",
+    summary: "Discover MCP server tools",
+    description: "Connects directly to the configured MCP server with its current universe credential and returns one bounded live tools/list result. The inventory is never persisted or cached and no tool is invoked.",
   },
   "mcp/servers/read": {
     scope: "universe",
@@ -1273,6 +1279,15 @@ export interface MethodMap {
   "mcp/servers/auth/discover": {
     params: Api.McpServerAuthDiscoverParams;
     result: Api.AgentApiOutcomeOfMcpServerAuthDiscoverResponse;
+  };
+  /**
+   * Discover MCP server tools
+   *
+   * Connects directly to the configured MCP server with its current universe credential and returns one bounded live tools/list result. The inventory is never persisted or cached and no tool is invoked.
+   */
+  "mcp/servers/tools/discover": {
+    params: Api.McpServerToolsDiscoverParams;
+    result: Api.AgentApiOutcomeOfMcpServerToolsDiscoverResponse;
   };
   /**
    * Read an MCP server record
@@ -2304,6 +2319,14 @@ export const rpc = {
    */
   mcpServersAuthDiscover(client: RpcCaller, params: Api.McpServerAuthDiscoverParams): Promise<Api.AgentApiOutcomeOfMcpServerAuthDiscoverResponse> {
     return client.call("mcp/servers/auth/discover", params);
+  },
+  /**
+   * Discover MCP server tools
+   *
+   * Connects directly to the configured MCP server with its current universe credential and returns one bounded live tools/list result. The inventory is never persisted or cached and no tool is invoked.
+   */
+  mcpServersToolsDiscover(client: RpcCaller, params: Api.McpServerToolsDiscoverParams): Promise<Api.AgentApiOutcomeOfMcpServerToolsDiscoverResponse> {
+    return client.call("mcp/servers/tools/discover", params);
   },
   /**
    * Read an MCP server record

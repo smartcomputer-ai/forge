@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   isValidMcpUrl,
+  mcpDiscoveryFailureAction,
   mcpAuthPolicyInput,
   mcpAuthKind,
   mcpGrantCompatible,
@@ -64,5 +65,11 @@ describe("MCP server credential ownership", () => {
     expect(isValidMcpUrl("ftp://mcp.example.com/mcp")).toBe(false);
     expect(isValidMcpUrl("https://user:secret@mcp.example.com/mcp")).toBe(false);
     expect(isValidMcpUrl("https://mcp.example.com/mcp#tools")).toBe(false);
+  });
+
+  it("turns stable discovery failures into actionable guidance", () => {
+    expect(mcpDiscoveryFailureAction("forbidden")).toContain("scopes");
+    expect(mcpDiscoveryFailureAction("grantAudienceMismatch")).toContain("exact server");
+    expect(mcpDiscoveryFailureAction("responseTooLarge")).toContain("safe discovery limits");
   });
 });

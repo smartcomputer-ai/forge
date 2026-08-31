@@ -108,7 +108,6 @@ describe("MCP OAuth completion", () => {
       serverId: "github",
       displayName: "GitHub",
       serverUrl: "https://api.githubcopilot.com/mcp",
-      transport: "auto",
       defaultServerLabel: "github",
       description: "Current description",
       allowedTools: ["search"],

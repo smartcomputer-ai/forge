@@ -1307,6 +1307,23 @@
         ],
         "type": "object"
       },
+      "AgentApiOutcomeOfMcpServerToolsDiscoverResponse": {
+        "properties": {
+          "notifications": {
+            "items": {
+              "$ref": "#/components/schemas/AgentNotification"
+            },
+            "type": "array"
+          },
+          "result": {
+            "$ref": "#/components/schemas/McpServerToolsDiscoverResponse"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "type": "object"
+      },
       "AgentApiOutcomeOfModelListResponse": {
         "properties": {
           "notifications": {
@@ -9166,6 +9183,39 @@
         ],
         "type": "object"
       },
+      "McpAdvertisedToolView": {
+        "properties": {
+          "annotations": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/McpToolAnnotationsView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
       "McpFeature": {
         "additionalProperties": false,
         "description": "Grants remote MCP tools by declaring linked servers from the universe MCP\ncatalog; must link at least one server, with unique server ids.",
@@ -9384,6 +9434,7 @@
         "type": "object"
       },
       "McpServerInput": {
+        "additionalProperties": false,
         "description": "Full MCP server document as submitted by clients.",
         "properties": {
           "allowedTools": {
@@ -9457,14 +9508,6 @@
               }
             ],
             "default": "active"
-          },
-          "transport": {
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/RemoteMcpTransport"
-              }
-            ],
-            "default": "auto"
           }
         },
         "required": [
@@ -9476,33 +9519,8 @@
       },
       "McpServerLink": {
         "additionalProperties": false,
-        "description": "A linked catalog server with optional per-session overrides; absent\nfields defer to the catalog record's defaults.",
+        "description": "A selected universe MCP server. Its catalog record owns all connection and\nbehavior configuration.",
         "properties": {
-          "allowedTools": {
-            "items": {
-              "type": "string"
-            },
-            "type": [
-              "array",
-              "null"
-            ]
-          },
-          "approval": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/RemoteMcpApprovalPolicy"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "deferLoading": {
-            "type": [
-              "boolean",
-              "null"
-            ]
-          },
           "serverId": {
             "type": "string"
           }
@@ -9601,6 +9619,63 @@
         ],
         "type": "string"
       },
+      "McpServerToolsDiscoverParams": {
+        "additionalProperties": false,
+        "description": "Live, non-persisting tool discovery for a configured MCP server.",
+        "properties": {
+          "serverId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "serverId"
+        ],
+        "type": "object"
+      },
+      "McpServerToolsDiscoverResponse": {
+        "description": "The result of one live MCP `tools/list` exchange. Operational connection\nfailures are data so management clients can render stable remediation;\nordinary API admission/not-found/internal failures remain API errors.",
+        "oneOf": [
+          {
+            "properties": {
+              "status": {
+                "const": "success",
+                "type": "string"
+              },
+              "tools": {
+                "items": {
+                  "$ref": "#/components/schemas/McpAdvertisedToolView"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "status",
+              "tools"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "code": {
+                "$ref": "#/components/schemas/McpToolDiscoveryFailureCode"
+              },
+              "message": {
+                "type": "string"
+              },
+              "status": {
+                "const": "failure",
+                "type": "string"
+              }
+            },
+            "required": [
+              "status",
+              "code",
+              "message"
+            ],
+            "type": "object"
+          }
+        ]
+      },
       "McpServerView": {
         "properties": {
           "allowedTools": {
@@ -9667,9 +9742,6 @@
           "status": {
             "$ref": "#/components/schemas/McpServerStatus"
           },
-          "transport": {
-            "$ref": "#/components/schemas/RemoteMcpTransport"
-          },
           "updatedAtMs": {
             "format": "int64",
             "type": "integer"
@@ -9678,7 +9750,6 @@
         "required": [
           "serverId",
           "serverUrl",
-          "transport",
           "defaultServerLabel",
           "approvalDefault",
           "authPolicy",
@@ -9688,6 +9759,53 @@
           "updatedAtMs"
         ],
         "type": "object"
+      },
+      "McpToolAnnotationsView": {
+        "description": "Narrow projection of standard MCP `ToolAnnotations`. All values are\nuntrusted hints and never authorization facts.",
+        "properties": {
+          "destructiveHint": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "idempotentHint": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "openWorldHint": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "readOnlyHint": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "McpToolDiscoveryFailureCode": {
+        "enum": [
+          "credentialAbsent",
+          "grantNeedsReauth",
+          "grantAudienceMismatch",
+          "unauthorized",
+          "forbidden",
+          "remoteRateLimited",
+          "remoteFailure",
+          "unreachable",
+          "invalidResponse",
+          "unsupportedProtocol",
+          "paginationLimit",
+          "responseTooLarge"
+        ],
+        "type": "string"
       },
       "MediaKind": {
         "enum": [
@@ -11446,14 +11564,6 @@
           "providerDefault",
           "always",
           "never"
-        ],
-        "type": "string"
-      },
-      "RemoteMcpTransport": {
-        "enum": [
-          "streamableHttp",
-          "sse",
-          "auto"
         ],
         "type": "string"
       },
@@ -17088,6 +17198,27 @@
         }
       },
       "summary": "Discover MCP server authentication"
+    },
+    {
+      "description": "Connects directly to the configured MCP server with its current universe credential and returns one bounded live tools/list result. The inventory is never persisted or cached and no tool is invoked.",
+      "name": "mcp/servers/tools/discover",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "params",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/McpServerToolsDiscoverParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/AgentApiOutcomeOfMcpServerToolsDiscoverResponse"
+        }
+      },
+      "summary": "Discover MCP server tools"
     },
     {
       "description": "Returns one catalog document with defaults, auth policy, non-secret grant binding, status, and revision; no credential value is exposed.",

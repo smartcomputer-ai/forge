@@ -1063,6 +1063,24 @@
       "summary": "Discover MCP server authentication"
     },
     {
+      "description": "Connects directly to the configured MCP server with its current universe credential and returns one bounded live tools/list result. The inventory is never persisted or cached and no tool is invoked.",
+      "method": "mcp/servers/tools/discover",
+      "params": {
+        "schema": {
+          "$ref": "#/definitions/McpServerToolsDiscoverParams"
+        },
+        "type": "McpServerToolsDiscoverParams"
+      },
+      "result": {
+        "schema": {
+          "$ref": "#/definitions/AgentApiOutcomeOfMcpServerToolsDiscoverResponse"
+        },
+        "type": "AgentApiOutcome<McpServerToolsDiscoverResponse>"
+      },
+      "scope": "universe",
+      "summary": "Discover MCP server tools"
+    },
+    {
       "description": "Returns one catalog document with defaults, auth policy, non-secret grant binding, status, and revision; no credential value is exposed.",
       "method": "mcp/servers/read",
       "params": {

@@ -512,18 +512,12 @@ pub struct McpFeature {
     pub servers: Vec<McpServerLink>,
 }
 
-/// A linked catalog server with optional per-session overrides; absent
-/// fields defer to the catalog record's defaults.
+/// A selected universe MCP server. Its catalog record owns all connection and
+/// behavior configuration.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct McpServerLink {
     pub server_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub allowed_tools: Option<Vec<String>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub approval: Option<RemoteMcpApprovalPolicy>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub defer_loading: Option<bool>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

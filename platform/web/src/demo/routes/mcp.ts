@@ -6,7 +6,6 @@ import type { McpOAuthFlow, McpServer, SecretGrant } from "@/api";
 import type { DemoStore, UniverseState } from "../store";
 import { badRequest, conflict, notFound, readBody, universeFor } from "./common";
 
-const TRANSPORTS = new Set<string>(["streamableHttp", "sse", "auto"]);
 const APPROVALS = new Set<string>(["providerDefault", "always", "never"]);
 const STATUSES = new Set<string>(["active", "needsAuthConfig", "unverified", "disabled"]);
 const OAUTH_POLICIES = new Set<string>(["optionalOAuth", "requiredOAuth"]);
@@ -66,9 +65,6 @@ function materialize(
       serverId,
       displayName: stringOrNull(input.displayName),
       serverUrl,
-      transport: typeof input.transport === "string" && TRANSPORTS.has(input.transport)
-        ? (input.transport as McpServer["transport"])
-        : "auto",
       defaultServerLabel,
       description: stringOrNull(input.description),
       allowedTools: allowedTools.length > 0 ? allowedTools : null,
@@ -142,6 +138,43 @@ export function mcpRoutes(store: DemoStore): Hono {
     const universe = universeFor(store, c);
     if (!universe) return notFound(c);
     return c.json([...universe.mcpServers.values()]);
+  });
+
+  app.post("/:id/mcp-servers/:serverId/tools/discover", (c) => {
+    const universe = universeFor(store, c);
+    const server = universe?.mcpServers.get(c.req.param("serverId"));
+    if (!universe || !server) return notFound(c);
+    if (server.status === "needsAuthConfig" ||
+        (REQUIRED_POLICIES.has(server.authPolicy.type) && !server.credential)) {
+      return c.json({
+        status: "failure" as const,
+        code: "credentialAbsent" as const,
+        message: "This MCP server needs a credential before its tools can be discovered",
+      });
+    }
+    return c.json({
+      status: "success" as const,
+      tools: [
+        {
+          name: "search",
+          title: "Search",
+          description: `Search ${server.displayName ?? server.serverId}`,
+          annotations: { readOnlyHint: true, openWorldHint: true },
+        },
+        {
+          name: "read",
+          title: "Read item",
+          description: "Read one item by identifier",
+          annotations: { readOnlyHint: true, idempotentHint: true },
+        },
+        {
+          name: "update",
+          title: "Update item",
+          description: "Update an existing item",
+          annotations: { destructiveHint: true },
+        },
+      ],
+    });
   });
 
   /// Advisory only: https servers that look like protected MCP endpoints

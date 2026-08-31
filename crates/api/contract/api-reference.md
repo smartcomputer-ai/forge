@@ -535,6 +535,15 @@ Looks for standards-based OAuth protected-resource metadata without creating a s
 - Params: `McpServerAuthDiscoverParams`
 - Result: `AgentApiOutcome<McpServerAuthDiscoverResponse>`
 
+### `mcp/servers/tools/discover`
+
+**Discover MCP server tools**
+
+Connects directly to the configured MCP server with its current universe credential and returns one bounded live tools/list result. The inventory is never persisted or cached and no tool is invoked.
+
+- Params: `McpServerToolsDiscoverParams`
+- Result: `AgentApiOutcome<McpServerToolsDiscoverResponse>`
+
 ### `mcp/servers/read`
 
 **Read an MCP server record**

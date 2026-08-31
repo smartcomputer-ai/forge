@@ -1,6 +1,16 @@
 # Lightspeed Roadmap
 
 ## Work
+- [ ] [P143](p143-mcp-tool-discovery.md) — MCP tool discovery and catalog
+  diagnostics (implementation slices 1–3 and first-party `single`-mode live
+  acceptance complete 2026-08-31; authenticated live acceptance remains): a bounded
+  control-plane MCP client uses the official Rust SDK for current Streamable
+  HTTP `initialize` + paginated `tools/list`, resolves server credentials through
+  the existing broker without exposing them, returns a typed request-local
+  inventory without storing or caching it, and populates the Platform server editor
+  with explicit All/Selected allowlist controls. Model-time MCP execution stays
+  provider-native; sessions/profiles select only a server id, and discovery
+  never invokes a remote tool.
 - [ ] [P142](p142-bots-and-channels-core-in-rust.md) — bots and Channels
   core in the Rust runtime (slices 1–3 implemented 2026-08-30, live-tested
   incl. a real-model resolve; slice 4 Platform cut-over open): `crates/bots` and
@@ -366,8 +376,39 @@ Superseded by [P134](p134-subagents.md); the entries below are history.
   stateless Streamable HTTP, generated from a configurable subset of the
   universe-scoped TypeScript client contract with request-scoped gateway
   authentication and no operator methods
-- [ ] Support MCP tunnels to model providers
-- [ ] MCP orchestration by Lightspeed
+- [ ] [P143b](p143b-rmcp-oauth.md) — MCP OAuth on `rmcp` (proposed
+  2026-08-31): make the official SDK the MCP OAuth protocol engine for
+  protected-resource/authorization-server discovery, registration, PKCE,
+  issuer/resource/scope semantics, challenges, exchange, and refresh while
+  retaining Lightspeed's durable multi-universe flows, encrypted secrets,
+  grant broker, audience enforcement, cross-process single-flight rotation,
+  leases, and audit. Must precede P145; does not replace generic OAuth.
+- [ ] [P144](p144-mcp-approvals.md) — MCP tool-call approvals (proposed
+  2026-08-31): one pending-approval surface over two backends — OpenAI
+  Responses approval request/response continuation and the native-execution
+  dispatch gate — with parked runs, counter approval ids, run-control decide
+  admissions, and the independent fix that opaque provider entries can never
+  become a run's terminal output. Supersedes the `later/` approval sketch.
+- [ ] [P145](p145-native-mcp-execution.md) — native MCP execution (proposed
+  2026-08-31): record-owned `execution: provider | native` and
+  `exposure: inject | search` where Lightspeed is the MCP client — small
+  servers injected as namespaced function tools at request materialization
+  (never into engine toolset state), large ones exposed through the
+  session-global `mcp_find_tools`/`mcp_call` meta-tools with the authored
+  record description as the index and schemas entering context on demand,
+  calls dispatched as ordinary per-call tool activities over `tools/call`
+  with broker-resolved credentials, deployment-scoped private network
+  egress, and MCP on providers without MCP support (`openai:completions`).
+  Configurator MCP in search exposure is the flagship acceptance. Replaces
+  the "MCP tunnels to model providers" idea.
+- [ ] [P146](p146-anthropic-tool-search.md) — Anthropic Tool Search for
+  provider-mode MCP (proposed 2026-08-31): honor the record's
+  `deferLoadingDefault` on Anthropic passthrough via the GA Tool Search Tool
+  (one `tool_search_tool_bm25` entry plus `default_config.defer_loading` on
+  the deferred `mcp_toolset`), fixing the adapter's silent drop and matching
+  the OpenAI Responses behavior; breakpoints move to the last non-deferred
+  tool, unsupported models get a typed error, and native mode stays
+  provider-neutral.
 
 ## Framework/SDK
 - [ ] External Temporal workflow SDK: authenticated access to P100's generic

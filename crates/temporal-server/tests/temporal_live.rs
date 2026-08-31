@@ -1,18 +1,26 @@
 mod support;
 
-use std::{env, future::Future, sync::Arc, time::Duration};
+use std::{
+    collections::BTreeSet,
+    env,
+    future::Future,
+    path::{Path, PathBuf},
+    process::Stdio,
+    sync::Arc,
+    time::Duration,
+};
 
 use api::{
     AgentApiErrorKind, AgentApiService, AgentProfileInput, ContextAppendEntry, ContextAppendParams,
     ContextAppendStatus, ContextEntryKindView, ContextMessageRoleView, FeaturesConfig,
     InitializeParams, InlineAgentProfile, InputItem, McpServerDeleteParams, McpServerInput,
     McpServerListParams, McpServerPutParams, McpServerReadParams, McpServerStatus,
-    ProfileApplyParams, ProfileCreateParams, ProfileDeleteParams, ProfileDocument, ProfileId,
-    ProfileInstructions, ProfileListParams, ProfilePutParams, ProfileReadParams, ProfileSource,
-    RemoteMcpApprovalPolicy, RemoteMcpTransport, RunCancelParams, RunStartParams, RunStartSource,
-    RunSteerParams, SessionConfig, SessionConfigPutParams, SessionDeleteParams,
-    SessionEventsReadParams, SessionLifecycleStatus, SessionListParams, SessionReadParams,
-    SessionStartParams, SessionStatus, TimersFeature,
+    McpServerToolsDiscoverParams, McpServerToolsDiscoverResponse, ProfileApplyParams,
+    ProfileCreateParams, ProfileDeleteParams, ProfileDocument, ProfileId, ProfileInstructions,
+    ProfileListParams, ProfilePutParams, ProfileReadParams, ProfileSource, RemoteMcpApprovalPolicy,
+    RunCancelParams, RunStartParams, RunStartSource, RunSteerParams, SessionConfig,
+    SessionConfigPutParams, SessionDeleteParams, SessionEventsReadParams, SessionLifecycleStatus,
+    SessionListParams, SessionReadParams, SessionStartParams, SessionStatus, TimersFeature,
 };
 use api_projection::model_to_api;
 use async_trait::async_trait;
@@ -33,7 +41,7 @@ use support::live::{
 };
 use temporal_server::{
     DeploymentStores, UniverseRuntime, default_model_from_env,
-    gateway::GatewayAgentApi,
+    gateway::{DEFAULT_MAX_REQUEST_BODY_BYTES, GatewayAgentApi, GatewayState, gateway_router},
     pg_store_from_env,
     subagents::AgentApiSubagentRuntime,
     worker::{ActivityState, SessionTools, WorkerActivities, core_runtime, worker_with_activities},
@@ -3148,22 +3156,25 @@ async fn run_mcp_live_client(
 ) -> anyhow::Result<()> {
     let store = pg_store_from_env().await?;
     let model = default_model_from_env();
-    let api = GatewayAgentApi::builder(client.clone(), store)
-        .with_task_queue(task_queue)
-        .with_default_model(model.clone())
-        .build();
+    let api = Arc::new(
+        GatewayAgentApi::builder(client.clone(), store)
+            .with_task_queue(task_queue)
+            .with_default_model(model.clone())
+            .build(),
+    );
+    let configurator = LiveConfigurator::start(api.clone()).await?;
     let server_id = format!("crm_{}", uuid::Uuid::new_v4().simple());
+    let selected_tool = "lightspeed_models_list".to_owned();
 
     let created = api
         .put_mcp_server(McpServerPutParams {
             server: McpServerInput {
                 server_id: server_id.clone(),
                 display_name: Some("CRM".to_owned()),
-                server_url: format!("https://{server_id}.example.com/mcp"),
-                transport: RemoteMcpTransport::Auto,
+                server_url: configurator.mcp_url.clone(),
                 default_server_label: "crm".to_owned(),
                 description: Some("CRM MCP server".to_owned()),
-                allowed_tools: Some(vec!["lookup_customer".to_owned()]),
+                allowed_tools: Some(vec![selected_tool.clone()]),
                 approval_default: RemoteMcpApprovalPolicy::Never,
                 defer_loading_default: Some(true),
                 auth_policy: api::McpServerAuthPolicy::None,
@@ -3182,6 +3193,25 @@ async fn run_mcp_live_client(
         })
         .await?;
     assert_eq!(read.result.server.default_server_label, "crm");
+
+    let discovered = api
+        .discover_mcp_server_tools(McpServerToolsDiscoverParams {
+            server_id: server_id.clone(),
+        })
+        .await?;
+    let tools = match discovered.result {
+        McpServerToolsDiscoverResponse::Success { tools } => tools,
+        McpServerToolsDiscoverResponse::Failure { code, message } => {
+            anyhow::bail!("Configurator discovery failed with {code:?}: {message}")
+        }
+    };
+    let discovered_names: BTreeSet<_> = tools.into_iter().map(|tool| tool.name).collect();
+    assert_eq!(
+        discovered_names,
+        expected_configurator_tool_names()?,
+        "live discovery must match the generated Configurator registry"
+    );
+    assert!(discovered_names.contains(&selected_tool));
 
     let listed = api
         .list_mcp_servers(McpServerListParams {
@@ -3222,9 +3252,6 @@ async fn run_mcp_live_client(
         version: api::CURRENT_FEATURE_VERSION,
         servers: vec![api::McpServerLink {
             server_id: server_id.clone(),
-            allowed_tools: Some(vec!["lookup_customer".to_owned()]),
-            approval: Some(RemoteMcpApprovalPolicy::Never),
-            defer_loading: Some(true),
         }],
     });
     linked_config.features = Some(features);
@@ -3269,7 +3296,7 @@ async fn run_mcp_live_client(
         panic!("expected remote MCP tool kind");
     };
     assert_eq!(server_label, "crm");
-    assert_eq!(allowed_tools, &Some(vec!["lookup_customer".to_owned()]));
+    assert_eq!(allowed_tools, &Some(vec![selected_tool]));
     assert_eq!(*approval, RemoteMcpApprovalPolicy::Never);
     assert_eq!(*defer_loading, Some(true));
 
@@ -3320,6 +3347,145 @@ async fn run_mcp_live_client(
         )
         .await;
     Ok(())
+}
+
+struct LiveConfigurator {
+    child: tokio::process::Child,
+    gateway_task: tokio::task::JoinHandle<()>,
+    mcp_url: String,
+}
+
+impl LiveConfigurator {
+    async fn start(api: Arc<GatewayAgentApi>) -> anyhow::Result<Self> {
+        let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(Path::parent)
+            .expect("temporal-server crate must be inside the workspace")
+            .to_owned();
+        let tsx = repo_root.join("node_modules/.bin/tsx");
+        if !tsx.is_file() {
+            anyhow::bail!(
+                "Configurator live test requires npm install (missing {})",
+                tsx.display()
+            );
+        }
+
+        let gateway_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let gateway_address = gateway_listener.local_addr()?;
+        let gateway = gateway_router(
+            Arc::new(GatewayState::for_api(api)),
+            DEFAULT_MAX_REQUEST_BODY_BYTES,
+        );
+        let gateway_task = tokio::spawn(async move {
+            let _ = axum::serve(gateway_listener, gateway).await;
+        });
+
+        let configurator_port = reserve_loopback_port()?;
+        let mut child = tokio::process::Command::new(&tsx)
+            .arg("platform/configurator-mcp/src/bin.ts")
+            .current_dir(&repo_root)
+            .env("LIGHTSPEED_AUTH_MODE", "single")
+            .env("LIGHTSPEED_CONFIGURATOR_MCP_BIND_HOST", "127.0.0.1")
+            .env(
+                "LIGHTSPEED_CONFIGURATOR_MCP_BIND_PORT",
+                configurator_port.to_string(),
+            )
+            .env(
+                "LIGHTSPEED_CONFIGURATOR_MCP_RPC_URL",
+                format!("http://{gateway_address}/rpc"),
+            )
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::inherit())
+            .kill_on_drop(true)
+            .spawn()?;
+        let base_url = format!("http://127.0.0.1:{configurator_port}");
+        let health_url = format!("{base_url}/health");
+        let http = reqwest::Client::new();
+        let mut ready = false;
+        for _ in 0..100 {
+            if child.try_wait()?.is_some() {
+                anyhow::bail!("Configurator exited before becoming ready");
+            }
+            if http
+                .get(&health_url)
+                .send()
+                .await
+                .is_ok_and(|response| response.status().is_success())
+            {
+                ready = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        if !ready {
+            anyhow::bail!("Configurator did not become ready at {health_url}");
+        }
+
+        Ok(Self {
+            child,
+            gateway_task,
+            mcp_url: format!("{base_url}/mcp"),
+        })
+    }
+}
+
+impl Drop for LiveConfigurator {
+    fn drop(&mut self) {
+        self.gateway_task.abort();
+        let _ = self.child.start_kill();
+    }
+}
+
+fn reserve_loopback_port() -> anyhow::Result<u16> {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+    Ok(listener.local_addr()?.port())
+}
+
+fn expected_configurator_tool_names() -> anyhow::Result<BTreeSet<String>> {
+    let repo_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .expect("temporal-server crate must be inside the workspace")
+        .to_owned();
+    let manifest: serde_json::Value = serde_json::from_slice(&std::fs::read(
+        repo_root.join("crates/api/contract/methods.json"),
+    )?)?;
+    let filter: serde_json::Value = serde_json::from_slice(&std::fs::read(
+        repo_root.join("platform/configurator-mcp/tool-filter.json"),
+    )?)?;
+    let excluded: BTreeSet<_> = filter["excludeMethods"]
+        .as_array()
+        .ok_or_else(|| anyhow::anyhow!("Configurator filter has no excludeMethods array"))?
+        .iter()
+        .map(|value| {
+            value
+                .as_str()
+                .map(str::to_owned)
+                .ok_or_else(|| anyhow::anyhow!("Configurator filter contains a non-string method"))
+        })
+        .collect::<anyhow::Result<_>>()?;
+    manifest["methods"]
+        .as_array()
+        .ok_or_else(|| anyhow::anyhow!("API method manifest has no methods array"))?
+        .iter()
+        .filter(|entry| entry["scope"].as_str() == Some("universe"))
+        .filter_map(|entry| entry["method"].as_str())
+        .filter(|method| !excluded.contains(*method))
+        .map(|method| {
+            let suffix: String = method
+                .chars()
+                .map(|character| {
+                    if character.is_ascii_alphanumeric() || matches!(character, '_' | '-') {
+                        character
+                    } else {
+                        '_'
+                    }
+                })
+                .collect();
+            Ok(format!("lightspeed_{suffix}"))
+        })
+        .collect()
 }
 
 /// P125: a `provision` profile creates one environment for the session it
@@ -4093,7 +4259,6 @@ async fn run_profiles_live_client(
             server_id: server_id.clone(),
             display_name: Some("Profile CRM".to_owned()),
             server_url: format!("https://{server_id}.example.com/mcp"),
-            transport: RemoteMcpTransport::Auto,
             default_server_label: "profile_crm".to_owned(),
             description: Some("Profile live MCP server".to_owned()),
             allowed_tools: Some(vec!["lookup_customer".to_owned()]),
@@ -4120,9 +4285,6 @@ async fn run_profiles_live_client(
                                 version: api::CURRENT_FEATURE_VERSION,
                                 servers: vec![api::McpServerLink {
                                     server_id: server_id.clone(),
-                                    allowed_tools: Some(vec!["lookup_customer".to_owned()]),
-                                    approval: Some(RemoteMcpApprovalPolicy::Never),
-                                    defer_loading: Some(true),
                                 }],
                             }),
                             timers: Some(api::TimersFeature {

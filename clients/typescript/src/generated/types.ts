@@ -1285,10 +1285,40 @@ export type McpServerCredential = {
  */
 export type McpServerStatus = "active" | "needsAuthConfig" | "unverified" | "disabled";
 /**
+ * The result of one live MCP `tools/list` exchange. Operational connection
+ * failures are data so management clients can render stable remediation;
+ * ordinary API admission/not-found/internal failures remain API errors.
+ *
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "RemoteMcpTransport".
+ * via the `definition` "McpServerToolsDiscoverResponse".
  */
-export type RemoteMcpTransport = "streamableHttp" | "sse" | "auto";
+export type McpServerToolsDiscoverResponse =
+  | {
+      status: "success";
+      tools: McpAdvertisedToolView[];
+    }
+  | {
+      code: McpToolDiscoveryFailureCode;
+      message: string;
+      status: "failure";
+    };
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "McpToolDiscoveryFailureCode".
+ */
+export type McpToolDiscoveryFailureCode =
+  | "credentialAbsent"
+  | "grantNeedsReauth"
+  | "grantAudienceMismatch"
+  | "unauthorized"
+  | "forbidden"
+  | "remoteRateLimited"
+  | "remoteFailure"
+  | "unreachable"
+  | "invalidResponse"
+  | "unsupportedProtocol"
+  | "paginationLimit"
+  | "responseTooLarge";
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "ModelSource".
@@ -1800,16 +1830,13 @@ export interface McpFeature {
   version?: number;
 }
 /**
- * A linked catalog server with optional per-session overrides; absent
- * fields defer to the catalog record's defaults.
+ * A selected universe MCP server. Its catalog record owns all connection and
+ * behavior configuration.
  *
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "McpServerLink".
  */
 export interface McpServerLink {
-  allowedTools?: string[] | null;
-  approval?: RemoteMcpApprovalPolicy | null;
-  deferLoading?: boolean | null;
   serverId: string;
 }
 /**
@@ -4319,7 +4346,6 @@ export interface McpServerView {
   serverId: string;
   serverUrl: string;
   status: McpServerStatus;
-  transport: RemoteMcpTransport;
   updatedAtMs: number;
 }
 /**
@@ -4366,6 +4392,37 @@ export interface AgentApiOutcomeOfMcpServerReadResponse {
  */
 export interface McpServerReadResponse {
   server: McpServerView;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "AgentApiOutcomeOfMcpServerToolsDiscoverResponse".
+ */
+export interface AgentApiOutcomeOfMcpServerToolsDiscoverResponse {
+  notifications?: AgentNotification[];
+  result: McpServerToolsDiscoverResponse;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "McpAdvertisedToolView".
+ */
+export interface McpAdvertisedToolView {
+  annotations?: McpToolAnnotationsView | null;
+  description?: string | null;
+  name: string;
+  title?: string | null;
+}
+/**
+ * Narrow projection of standard MCP `ToolAnnotations`. All values are
+ * untrusted hints and never authorization facts.
+ *
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "McpToolAnnotationsView".
+ */
+export interface McpToolAnnotationsView {
+  destructiveHint?: boolean | null;
+  idempotentHint?: boolean | null;
+  openWorldHint?: boolean | null;
+  readOnlyHint?: boolean | null;
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
@@ -6326,7 +6383,6 @@ export interface McpServerInput {
   serverId: string;
   serverUrl: string;
   status?: McpServerStatus & string;
-  transport?: RemoteMcpTransport & string;
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
@@ -6352,6 +6408,15 @@ export interface McpServerPutParams {
  * via the `definition` "McpServerReadParams".
  */
 export interface McpServerReadParams {
+  serverId: string;
+}
+/**
+ * Live, non-persisting tool discovery for a configured MCP server.
+ *
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "McpServerToolsDiscoverParams".
+ */
+export interface McpServerToolsDiscoverParams {
   serverId: string;
 }
 /**

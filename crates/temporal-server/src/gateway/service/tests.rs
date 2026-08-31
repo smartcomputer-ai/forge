@@ -589,12 +589,12 @@ fn environment_deactivation_lowers_to_clear_active_environment_command() {
 fn declared_mcp_link_materializes_remote_tool() {
     let tool_name = ToolName::new("mcp_crm");
     let active = BTreeMap::new();
-    let record = test_mcp_server_record("crm", mcp::McpServerStatus::Active);
+    let mut record = test_mcp_server_record("crm", mcp::McpServerStatus::Active);
+    record.allowed_tools = Some(vec!["lookup_customer".to_owned()]);
+    record.approval_default = mcp::McpApprovalPolicy::Never;
+    record.defer_loading_default = Some(true);
     let link = engine::McpServerLink {
         server_id: "crm".to_owned(),
-        allowed_tools: Some(vec!["lookup_customer".to_owned()]),
-        approval: Some(engine::RemoteMcpApprovalPolicy::Never),
-        defer_loading: Some(true),
     };
 
     let tool = mcp_api::mcp_tool_from_config_link(&link, &record, None)
@@ -660,9 +660,6 @@ fn grant_leases_require_creation_time_retrievable_exposure() {
 fn mcp_config_link() -> engine::McpServerLink {
     engine::McpServerLink {
         server_id: "crm".to_owned(),
-        allowed_tools: None,
-        approval: None,
-        defer_loading: None,
     }
 }
 
@@ -2160,7 +2157,7 @@ fn test_mcp_server_put(server_id: &str, status: mcp::McpServerStatus) -> mcp::Pu
         server_id: mcp::McpServerId::new(server_id),
         display_name: Some(format!("{server_id} MCP")),
         server_url: format!("https://{server_id}.example.com/mcp"),
-        transport: mcp::RemoteMcpTransport::Auto,
+        transport: mcp::RemoteMcpTransport::StreamableHttp,
         default_server_label: server_id.to_owned(),
         description: None,
         allowed_tools: None,

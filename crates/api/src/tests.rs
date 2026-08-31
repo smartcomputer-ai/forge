@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use serde_json::json;
+use serde_json::{Value, json};
 
 use super::*;
 
@@ -1084,6 +1084,28 @@ async fn dispatch_json_rpc_routes_mcp_server_auth_discovery() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn dispatch_json_rpc_routes_live_mcp_tool_discovery_without_revision() {
+    let response = dispatch_json_rpc(
+        &TestService,
+        JsonRpcRequest {
+            id: RequestId::Number(1),
+            method: METHOD_MCP_SERVERS_TOOLS_DISCOVER.to_owned(),
+            params: Some(json!({ "serverId": "echo" })),
+        },
+    )
+    .await;
+
+    assert!(response.error.is_none());
+    let result = response.result.expect("result");
+    assert_eq!(result["result"]["status"], json!("success"));
+    assert_eq!(result["result"]["tools"][0]["name"], json!("echo_search"));
+    assert_eq!(
+        result["result"]["tools"][0]["annotations"]["readOnlyHint"],
+        json!(true)
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn dispatch_json_rpc_routes_auth_grant_lease() {
     let response = dispatch_json_rpc(
         &TestService,
@@ -1145,14 +1167,37 @@ fn mcp_server_put_decodes_universe_auth_grant_credential() {
 }
 
 #[test]
-fn mcp_session_links_reject_the_removed_auth_grant_field() {
-    let error = serde_json::from_value::<McpServerLink>(json!({
-        "serverId": "echo",
-        "authGrantId": "authgrant_1"
+fn mcp_server_put_rejects_internal_transport_field() {
+    let error = serde_json::from_value::<McpServerPutParams>(json!({
+        "server": {
+            "serverId": "echo",
+            "serverUrl": "https://echo.example.com/mcp",
+            "defaultServerLabel": "echo",
+            "transport": "streamableHttp"
+        }
     }))
-    .expect_err("session MCP links must not accept credential selection");
+    .expect_err("MCP transport is not public configuration");
 
-    assert!(error.to_string().contains("unknown field"));
+    assert!(error.to_string().contains("unknown field `transport`"));
+}
+
+#[test]
+fn mcp_session_links_reject_removed_connection_and_policy_fields() {
+    for (field, value) in [
+        ("authGrantId", json!("authgrant_1")),
+        ("allowedTools", json!(["search"])),
+        ("approval", json!("never")),
+        ("deferLoading", json!(true)),
+    ] {
+        let mut link = serde_json::Map::from_iter([("serverId".to_owned(), json!("echo"))]);
+        link.insert(field.to_owned(), value);
+        let error = serde_json::from_value::<McpServerLink>(Value::Object(link))
+            .expect_err("session MCP links must reject removed fields");
+        assert!(
+            error.to_string().contains("unknown field"),
+            "{field}: {error}"
+        );
+    }
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -2338,6 +2383,25 @@ impl AgentApiService for TestService {
         }))
     }
 
+    async fn discover_mcp_server_tools(
+        &self,
+        params: McpServerToolsDiscoverParams,
+    ) -> Result<AgentApiOutcome<McpServerToolsDiscoverResponse>, AgentApiError> {
+        Ok(AgentApiOutcome::new(
+            McpServerToolsDiscoverResponse::Success {
+                tools: vec![McpAdvertisedToolView {
+                    name: format!("{}_search", params.server_id),
+                    title: Some("Search".to_owned()),
+                    description: Some("Search the configured service".to_owned()),
+                    annotations: Some(McpToolAnnotationsView {
+                        read_only_hint: Some(true),
+                        ..McpToolAnnotationsView::default()
+                    }),
+                }],
+            },
+        ))
+    }
+
     async fn list_mcp_servers(
         &self,
         _params: McpServerListParams,
@@ -3020,7 +3084,6 @@ fn test_mcp_server(server_id: String) -> McpServerView {
         server_url: format!("https://{server_id}.example.com/mcp"),
         server_id,
         display_name: None,
-        transport: RemoteMcpTransport::Auto,
         description: None,
         allowed_tools: None,
         approval_default: RemoteMcpApprovalPolicy::ProviderDefault,

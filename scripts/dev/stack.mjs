@@ -209,6 +209,8 @@ function createPlan(profile, sourceEnv) {
     ...sourceEnv,
     LIGHTSPEED_API_URL: platformApiUrl,
     LIGHTSPEED_AUTH_MODE: runtimeAuthMode,
+    LIGHTSPEED_MCP_DISCOVERY_ALLOW_PRIVATE_NETWORKS:
+      sourceEnv.LIGHTSPEED_MCP_DISCOVERY_ALLOW_PRIVATE_NETWORKS ?? "true",
     LIGHTSPEED_PLATFORM_DATABASE_URL: platformDatabaseUrl,
     LIGHTSPEED_PLATFORM_AUTH_SECRET:
       sourceEnv.LIGHTSPEED_PLATFORM_AUTH_SECRET ??

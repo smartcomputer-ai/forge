@@ -78,7 +78,9 @@ Lightspeed covers the table stakes of a modern agent harness and keeps shipping 
 - [x] **Web access**: fetch, search, and extract tools
 - [x] **Skills**, automatically cataloged and loaded from linked VFS roots
 - [x] **Hosted MCP**, with universe-configured API-key and OAuth identities
-  shared by every session selecting that MCP server id
+  and server-owned tool/approval policy shared by every session selecting that
+  MCP server id; the management UI discovers its current tools live without
+  storing an inventory
 - [x] **Flexible prompt & instruction configuration**
 - [x] **Sub-agents**: `agent_run` / `agent_spawn` over allowlisted profiles, supervised by an execution workflow, with root-scoped limits and typed lineage
 - [x] **Agent profiles**: reusable session setups, shared across clients and sub-agents;

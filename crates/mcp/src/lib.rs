@@ -119,6 +119,83 @@ pub enum McpRegistryError {
     Store { message: String },
 }
 
+/// Sanitized metadata from one live MCP `tools/list` response. This is
+/// request-scoped evidence, never catalog or execution state.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DiscoveredMcpTool {
+    pub name: String,
+    pub title: Option<String>,
+    pub description: Option<String>,
+    pub annotations: Option<McpToolAnnotations>,
+}
+
+/// Standard MCP tool annotation hints. Values are untrusted and must not be
+/// treated as authorization or approval facts.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct McpToolAnnotations {
+    pub read_only_hint: Option<bool>,
+    pub destructive_hint: Option<bool>,
+    pub idempotent_hint: Option<bool>,
+    pub open_world_hint: Option<bool>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum McpToolDiscoveryFailureKind {
+    CredentialAbsent,
+    GrantNeedsReauth,
+    GrantAudienceMismatch,
+    Unauthorized,
+    Forbidden,
+    RemoteRateLimited,
+    RemoteFailure,
+    Unreachable,
+    InvalidResponse,
+    UnsupportedProtocol,
+    PaginationLimit,
+    ResponseTooLarge,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Error)]
+#[error("{message}")]
+pub struct McpToolDiscoveryFailure {
+    pub kind: McpToolDiscoveryFailureKind,
+    pub message: String,
+}
+
+impl McpToolDiscoveryFailure {
+    pub fn new(kind: McpToolDiscoveryFailureKind, message: impl Into<String>) -> Self {
+        Self {
+            kind,
+            message: message.into(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct McpToolDiscoveryLimits {
+    pub max_pages: usize,
+    pub max_tools: usize,
+    pub max_response_bytes: usize,
+    pub max_name_bytes: usize,
+    pub max_text_bytes: usize,
+    pub max_schema_bytes: usize,
+    pub max_schema_depth: usize,
+}
+
+impl Default for McpToolDiscoveryLimits {
+    fn default() -> Self {
+        Self {
+            max_pages: 8,
+            max_tools: 256,
+            max_response_bytes: 2 * 1024 * 1024,
+            max_name_bytes: 128,
+            max_text_bytes: 4 * 1024,
+            max_schema_bytes: 64 * 1024,
+            max_schema_depth: 32,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct McpServerRecord {
     pub server_id: McpServerId,
@@ -261,13 +338,14 @@ pub struct ListMcpServers {
     pub status: Option<McpServerStatus>,
 }
 
+/// Runtime transport selected by the catalog implementation. This is kept out
+/// of the public management API until Lightspeed supports more than the
+/// current Streamable HTTP transport.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RemoteMcpTransport {
-    StreamableHttp,
-    Sse,
     #[default]
-    Auto,
+    StreamableHttp,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -652,7 +730,7 @@ mod tests {
             server_id: McpServerId::new(server_id),
             display_name: Some("Echo".to_owned()),
             server_url: "https://echo.example.com/mcp".to_owned(),
-            transport: RemoteMcpTransport::Auto,
+            transport: RemoteMcpTransport::StreamableHttp,
             default_server_label: "echo".to_owned(),
             description: Some("Echo MCP server".to_owned()),
             allowed_tools: Some(vec!["hello".to_owned()]),

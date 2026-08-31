@@ -98,9 +98,14 @@ pub const MIGRATIONS: &[EmbeddedMigration] = &[
         name: "channels",
         sql: include_str!("../migrations/009_channels.sql"),
     },
+    EmbeddedMigration {
+        version: 10,
+        name: "mcp_streamable_http",
+        sql: include_str!("../migrations/010_mcp_streamable_http.sql"),
+    },
 ];
 
-pub const REQUIRED_SCHEMA_REVISION: i64 = 9;
+pub const REQUIRED_SCHEMA_REVISION: i64 = 10;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SchemaStatus {

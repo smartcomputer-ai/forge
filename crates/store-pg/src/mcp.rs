@@ -546,16 +546,12 @@ fn auth_policy_from_columns(
 fn transport_to_str(value: RemoteMcpTransport) -> &'static str {
     match value {
         RemoteMcpTransport::StreamableHttp => "streamable_http",
-        RemoteMcpTransport::Sse => "sse",
-        RemoteMcpTransport::Auto => "auto",
     }
 }
 
 fn transport_from_str(value: &str) -> Result<RemoteMcpTransport, McpRegistryError> {
     match value {
         "streamable_http" => Ok(RemoteMcpTransport::StreamableHttp),
-        "sse" => Ok(RemoteMcpTransport::Sse),
-        "auto" => Ok(RemoteMcpTransport::Auto),
         other => Err(McpRegistryError::Store {
             message: format!("unsupported MCP transport '{other}'"),
         }),

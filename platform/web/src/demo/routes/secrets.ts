@@ -357,7 +357,6 @@ function finishConfiguratorInstall(store: DemoStore, universe: UniverseState, se
     serverId: CONFIGURATOR_SERVER_ID,
     displayName: "Lightspeed Configurator",
     serverUrl: CONFIGURATOR_MCP_URL,
-    transport: "streamableHttp",
     defaultServerLabel: "configurator",
     description: "Configure and operate this Lightspeed universe through its generated API.",
     allowedTools: null,
@@ -381,7 +380,7 @@ function finishConfiguratorInstall(store: DemoStore, universe: UniverseState, se
       text:
         "Configure and operate the current Lightspeed universe. Read revisioned resources before replacing them, make only the requested changes, and report the resulting resource identifiers.",
     },
-    config: { features: { mcp: { servers: [{ serverId: CONFIGURATOR_SERVER_ID, approval: "never" }] } } },
+    config: { features: { mcp: { servers: [{ serverId: CONFIGURATOR_SERVER_ID }] } } },
     revision: (existingProfile?.revision ?? 0) + 1,
     createdAtMs: existingProfile?.createdAtMs ?? now,
     updatedAtMs: now,

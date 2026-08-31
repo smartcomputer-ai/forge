@@ -82,6 +82,9 @@ session is re-reading its history; this is the lever.
    `cache_control` on its last block, set `cache_control` on the last tool
    definition, and put a moving breakpoint on the last content block of
    the last message — the standard three-breakpoint layout (limit four).
+   ([P146](p146-anthropic-tool-search.md) will change "last tool" to "last
+   non-deferred tool": a tool deferred for tool search cannot carry
+   `cache_control`.)
    Placement is a materialization detail: nothing in the session log or the
    planned request changes. TTL: default `5m`; `1h` behind a runtime config
    knob for sessions that wake rarely (bots), where the higher write price

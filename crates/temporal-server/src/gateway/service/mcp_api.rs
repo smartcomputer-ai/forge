@@ -16,7 +16,7 @@ pub(super) fn put_mcp_server_record(
         server_id: parse_mcp_server_id(server.server_id)?,
         display_name: server.display_name,
         server_url: server.server_url,
-        transport: registry_transport(server.transport),
+        transport: mcp::RemoteMcpTransport::default(),
         default_server_label: server.default_server_label,
         description: server.description,
         allowed_tools: server.allowed_tools,
@@ -34,7 +34,6 @@ pub(super) fn mcp_server_view(record: mcp::McpServerRecord) -> api::McpServerVie
         server_id: record.server_id.as_str().to_owned(),
         display_name: record.display_name,
         server_url: record.server_url,
-        transport: api_transport(record.transport),
         default_server_label: record.default_server_label,
         description: record.description,
         allowed_tools: record.allowed_tools,
@@ -50,6 +49,53 @@ pub(super) fn mcp_server_view(record: mcp::McpServerRecord) -> api::McpServerVie
         revision: record.revision,
         created_at_ms: record.created_at_ms,
         updated_at_ms: record.updated_at_ms,
+    }
+}
+
+pub(super) fn mcp_tool_discovery_success(
+    tools: Vec<mcp::DiscoveredMcpTool>,
+) -> api::McpServerToolsDiscoverResponse {
+    api::McpServerToolsDiscoverResponse::Success {
+        tools: tools
+            .into_iter()
+            .map(|tool| api::McpAdvertisedToolView {
+                name: tool.name,
+                title: tool.title,
+                description: tool.description,
+                annotations: tool
+                    .annotations
+                    .map(|annotations| api::McpToolAnnotationsView {
+                        read_only_hint: annotations.read_only_hint,
+                        destructive_hint: annotations.destructive_hint,
+                        idempotent_hint: annotations.idempotent_hint,
+                        open_world_hint: annotations.open_world_hint,
+                    }),
+            })
+            .collect(),
+    }
+}
+
+pub(super) fn mcp_tool_discovery_failure(
+    failure: mcp::McpToolDiscoveryFailure,
+) -> api::McpServerToolsDiscoverResponse {
+    use mcp::McpToolDiscoveryFailureKind as Source;
+    let code = match failure.kind {
+        Source::CredentialAbsent => api::McpToolDiscoveryFailureCode::CredentialAbsent,
+        Source::GrantNeedsReauth => api::McpToolDiscoveryFailureCode::GrantNeedsReauth,
+        Source::GrantAudienceMismatch => api::McpToolDiscoveryFailureCode::GrantAudienceMismatch,
+        Source::Unauthorized => api::McpToolDiscoveryFailureCode::Unauthorized,
+        Source::Forbidden => api::McpToolDiscoveryFailureCode::Forbidden,
+        Source::RemoteRateLimited => api::McpToolDiscoveryFailureCode::RemoteRateLimited,
+        Source::RemoteFailure => api::McpToolDiscoveryFailureCode::RemoteFailure,
+        Source::Unreachable => api::McpToolDiscoveryFailureCode::Unreachable,
+        Source::InvalidResponse => api::McpToolDiscoveryFailureCode::InvalidResponse,
+        Source::UnsupportedProtocol => api::McpToolDiscoveryFailureCode::UnsupportedProtocol,
+        Source::PaginationLimit => api::McpToolDiscoveryFailureCode::PaginationLimit,
+        Source::ResponseTooLarge => api::McpToolDiscoveryFailureCode::ResponseTooLarge,
+    };
+    api::McpServerToolsDiscoverResponse::Failure {
+        code,
+        message: failure.message,
     }
 }
 
@@ -82,7 +128,7 @@ pub(super) fn validate_mcp_server_credential(
 /// into the remote MCP tool spec. Shared by put-time validation and toolset
 /// reconciliation, so a config put fails fast when a link cannot resolve.
 pub(super) fn mcp_tool_from_config_link(
-    link: &engine::McpServerLink,
+    _link: &engine::McpServerLink,
     record: &mcp::McpServerRecord,
     grant: Option<&auth::AuthGrantRecord>,
 ) -> Result<engine::ToolSpec, AgentApiError> {
@@ -112,15 +158,9 @@ pub(super) fn mcp_tool_from_config_link(
             server_label: record.default_server_label.clone(),
             server_url: record.server_url.clone(),
             description_ref: None,
-            allowed_tools: link
-                .allowed_tools
-                .clone()
-                .or_else(|| record.allowed_tools.clone()),
-            approval: link
-                .approval
-                .clone()
-                .unwrap_or_else(|| engine_approval(api_approval(record.approval_default))),
-            defer_loading: link.defer_loading.or(record.defer_loading_default),
+            allowed_tools: record.allowed_tools.clone(),
+            approval: engine_approval(api_approval(record.approval_default)),
+            defer_loading: record.defer_loading_default,
             auth_ref,
             auth_required: matches!(
                 record.auth_policy,
@@ -164,22 +204,6 @@ impl GatewayAgentApi {
             tools.insert(tool.name.clone(), tool);
         }
         Ok(tools)
-    }
-}
-
-fn registry_transport(value: api::RemoteMcpTransport) -> mcp::RemoteMcpTransport {
-    match value {
-        api::RemoteMcpTransport::StreamableHttp => mcp::RemoteMcpTransport::StreamableHttp,
-        api::RemoteMcpTransport::Sse => mcp::RemoteMcpTransport::Sse,
-        api::RemoteMcpTransport::Auto => mcp::RemoteMcpTransport::Auto,
-    }
-}
-
-fn api_transport(value: mcp::RemoteMcpTransport) -> api::RemoteMcpTransport {
-    match value {
-        mcp::RemoteMcpTransport::StreamableHttp => api::RemoteMcpTransport::StreamableHttp,
-        mcp::RemoteMcpTransport::Sse => api::RemoteMcpTransport::Sse,
-        mcp::RemoteMcpTransport::Auto => api::RemoteMcpTransport::Auto,
     }
 }
 

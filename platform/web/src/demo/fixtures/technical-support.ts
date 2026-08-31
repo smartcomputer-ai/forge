@@ -491,7 +491,7 @@ const SUPPORT_PROFILE: ProfileInit = {
     features: {
       vfs: { tools: "readOnly", workspaceLinks: [KB_LINK] },
       environments: {},
-      mcp: { servers: [{ serverId: MCP.zendesk, approval: "never" }] },
+      mcp: { servers: [{ serverId: MCP.zendesk }] },
     },
   },
   environment: { type: "existing", environmentId: ENV_SUPPORT_TOOLS },
@@ -511,7 +511,7 @@ const TRIAGE_PROFILE: ProfileInit = {
     features: {
       environments: {},
       web: { fetch: {} },
-      mcp: { servers: [{ serverId: MCP.statuspage, deferLoading: true }, { serverId: MCP.pagerduty }] },
+      mcp: { servers: [{ serverId: MCP.statuspage }, { serverId: MCP.pagerduty }] },
     },
     limits: { maxToolRounds: 12 },
   },
@@ -532,7 +532,7 @@ const ESCALATION_PROFILE: ProfileInit = {
     features: {
       vfs: { tools: "readOnly", workspaceLinks: [KB_LINK] },
       mcp: {
-        servers: [{ serverId: MCP.github, allowedTools: ["search_issues", "get_issue", "create_issue", "add_issue_comment"] }],
+        servers: [{ serverId: MCP.github }],
       },
     },
     limits: { maxToolRounds: 8 },
@@ -558,7 +558,7 @@ const DIGEST_PROFILE: ProfileInit = {
           { path: "/postmortems", access: "readOnly", target: { type: "workspace", workspaceId: WORKSPACE.postmortems } },
         ],
       },
-      mcp: { servers: [{ serverId: MCP.zendesk, allowedTools: ["search_tickets", "get_ticket_metrics"] }] },
+      mcp: { servers: [{ serverId: MCP.zendesk }] },
     },
     limits: { maxTurns: 40 },
   },
@@ -805,7 +805,6 @@ function seedIntegrations(universe: UniverseState): void {
       serverId: MCP.statuspage,
       displayName: "Statuspage",
       serverUrl: `${STATUS_PAGE_URL}/mcp`,
-      transport: "auto",
       description: "Incident and component state from the public status page.",
       deferLoadingDefault: true,
       authPolicy: { type: "requiredBearer" },

@@ -304,7 +304,6 @@ async function ensureMcpServer(
     serverId: SERVER_ID,
     displayName: "Lightspeed Configurator",
     serverUrl: mcpUrl,
-    transport: "streamableHttp",
     defaultServerLabel: "configurator",
     description: "Configure and operate this Lightspeed universe through its generated API.",
     approvalDefault: "never",
@@ -344,7 +343,6 @@ async function ensureProfile(
           servers: [
             {
               serverId: SERVER_ID,
-              approval: "never",
             },
           ],
         },

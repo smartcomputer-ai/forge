@@ -712,8 +712,8 @@ const ASSISTANT_CONFIG: Record<string, unknown> = {
     vfs: { tools: "edit", workspaceLinks: [MEMORY_RW, SKILLS_RO, BRIEFS_RW], skills: { roots: ["/skills"] } },
     mcp: {
       servers: [
-        { serverId: MCP.google, approval: "never" },
-        { serverId: MCP.slack, allowedTools: SLACK_TOOLS, approval: "never" },
+        { serverId: MCP.google },
+        { serverId: MCP.slack },
       ],
     },
     environments: { selectionTools: false },
@@ -739,7 +739,7 @@ const METRICS_CONFIG: Record<string, unknown> = {
   generation: { reasoningEffort: "low", maxOutputTokens: 6_000 },
   limits: { maxToolRounds: 10, maxTurns: 8 },
   features: {
-    mcp: { servers: [{ serverId: MCP.stripe, approval: "never" }, { serverId: MCP.hubspot, allowedTools: ["search_deals", "get_pipeline"], approval: "never" }] },
+    mcp: { servers: [{ serverId: MCP.stripe }, { serverId: MCP.hubspot }] },
     vfs: { tools: "readOnly", workspaceLinks: [MEMORY_RO] },
   },
 };
@@ -761,9 +761,9 @@ const HIRING_CONFIG: Record<string, unknown> = {
     ...(ASSISTANT_CONFIG.features as Record<string, unknown>),
     mcp: {
       servers: [
-        { serverId: MCP.google, allowedTools: ["gmail.search", "calendar.list_events"], approval: "never" },
-        { serverId: MCP.hubspot, allowedTools: ["search_deals"], approval: "never" },
-        { serverId: MCP.notion, approval: "never" },
+        { serverId: MCP.google },
+        { serverId: MCP.hubspot },
+        { serverId: MCP.notion },
       ],
     },
   },

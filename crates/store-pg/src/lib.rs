@@ -40,6 +40,8 @@ pub const PROFILE_SCHEMA_SQL: &str = include_str!("../migrations/006_agent_profi
 pub const API_KEYS_SCHEMA_SQL: &str = include_str!("../migrations/007_api_keys.sql");
 pub const BOTS_SCHEMA_SQL: &str = include_str!("../migrations/008_bots.sql");
 pub const CHANNELS_SCHEMA_SQL: &str = include_str!("../migrations/009_channels.sql");
+pub const MCP_STREAMABLE_HTTP_SCHEMA_SQL: &str =
+    include_str!("../migrations/010_mcp_streamable_http.sql");
 
 pub const DEFAULT_INLINE_THRESHOLD_BYTES: usize = 64 * 1024;
 

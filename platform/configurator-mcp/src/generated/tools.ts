@@ -479,33 +479,8 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
           "additionalProperties": {
             "not": {}
           },
-          "description": "A linked catalog server with optional per-session overrides; absent\nfields defer to the catalog record's defaults.",
+          "description": "A selected universe MCP server. Its catalog record owns all connection and\nbehavior configuration.",
           "properties": {
-            "allowedTools": {
-              "items": {
-                "type": "string"
-              },
-              "type": [
-                "array",
-                "null"
-              ]
-            },
-            "approval": {
-              "anyOf": [
-                {
-                  "$ref": "#/definitions/RemoteMcpApprovalPolicy"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "deferLoading": {
-              "type": [
-                "boolean",
-                "null"
-              ]
-            },
             "serverId": {
               "type": "string"
             }
@@ -756,14 +731,6 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
               "type": "object"
             }
           ]
-        },
-        "RemoteMcpApprovalPolicy": {
-          "enum": [
-            "providerDefault",
-            "always",
-            "never"
-          ],
-          "type": "string"
         },
         "SessionConfig": {
           "additionalProperties": {
@@ -1578,33 +1545,8 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
           "additionalProperties": {
             "not": {}
           },
-          "description": "A linked catalog server with optional per-session overrides; absent\nfields defer to the catalog record's defaults.",
+          "description": "A selected universe MCP server. Its catalog record owns all connection and\nbehavior configuration.",
           "properties": {
-            "allowedTools": {
-              "items": {
-                "type": "string"
-              },
-              "type": [
-                "array",
-                "null"
-              ]
-            },
-            "approval": {
-              "anyOf": [
-                {
-                  "$ref": "#/definitions/RemoteMcpApprovalPolicy"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "deferLoading": {
-              "type": [
-                "boolean",
-                "null"
-              ]
-            },
             "serverId": {
               "type": "string"
             }
@@ -1643,14 +1585,6 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
           "type": "string"
         },
         "ProfileId": {
-          "type": "string"
-        },
-        "RemoteMcpApprovalPolicy": {
-          "enum": [
-            "providerDefault",
-            "always",
-            "never"
-          ],
           "type": "string"
         },
         "SessionConfig": {
@@ -3531,33 +3465,8 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
           "additionalProperties": {
             "not": {}
           },
-          "description": "A linked catalog server with optional per-session overrides; absent\nfields defer to the catalog record's defaults.",
+          "description": "A selected universe MCP server. Its catalog record owns all connection and\nbehavior configuration.",
           "properties": {
-            "allowedTools": {
-              "items": {
-                "type": "string"
-              },
-              "type": [
-                "array",
-                "null"
-              ]
-            },
-            "approval": {
-              "anyOf": [
-                {
-                  "$ref": "#/definitions/RemoteMcpApprovalPolicy"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "deferLoading": {
-              "type": [
-                "boolean",
-                "null"
-              ]
-            },
             "serverId": {
               "type": "string"
             }
@@ -3808,14 +3717,6 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
               "type": "object"
             }
           ]
-        },
-        "RemoteMcpApprovalPolicy": {
-          "enum": [
-            "providerDefault",
-            "always",
-            "never"
-          ],
-          "type": "string"
         },
         "SessionConfig": {
           "additionalProperties": {
@@ -5416,33 +5317,8 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
           "additionalProperties": {
             "not": {}
           },
-          "description": "A linked catalog server with optional per-session overrides; absent\nfields defer to the catalog record's defaults.",
+          "description": "A selected universe MCP server. Its catalog record owns all connection and\nbehavior configuration.",
           "properties": {
-            "allowedTools": {
-              "items": {
-                "type": "string"
-              },
-              "type": [
-                "array",
-                "null"
-              ]
-            },
-            "approval": {
-              "anyOf": [
-                {
-                  "$ref": "#/definitions/RemoteMcpApprovalPolicy"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "deferLoading": {
-              "type": [
-                "boolean",
-                "null"
-              ]
-            },
             "serverId": {
               "type": "string"
             }
@@ -5657,14 +5533,6 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
               "type": "object"
             }
           ]
-        },
-        "RemoteMcpApprovalPolicy": {
-          "enum": [
-            "providerDefault",
-            "always",
-            "never"
-          ],
-          "type": "string"
         },
         "SessionConfig": {
           "additionalProperties": {
@@ -6592,33 +6460,8 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
           "additionalProperties": {
             "not": {}
           },
-          "description": "A linked catalog server with optional per-session overrides; absent\nfields defer to the catalog record's defaults.",
+          "description": "A selected universe MCP server. Its catalog record owns all connection and\nbehavior configuration.",
           "properties": {
-            "allowedTools": {
-              "items": {
-                "type": "string"
-              },
-              "type": [
-                "array",
-                "null"
-              ]
-            },
-            "approval": {
-              "anyOf": [
-                {
-                  "$ref": "#/definitions/RemoteMcpApprovalPolicy"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "deferLoading": {
-              "type": [
-                "boolean",
-                "null"
-              ]
-            },
             "serverId": {
               "type": "string"
             }
@@ -6833,14 +6676,6 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
               "type": "object"
             }
           ]
-        },
-        "RemoteMcpApprovalPolicy": {
-          "enum": [
-            "providerDefault",
-            "always",
-            "never"
-          ],
-          "type": "string"
         },
         "SessionConfig": {
           "additionalProperties": {
@@ -7693,6 +7528,9 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
           ]
         },
         "McpServerInput": {
+          "additionalProperties": {
+            "not": {}
+          },
           "description": "Full MCP server document as submitted by clients.",
           "properties": {
             "allowedTools": {
@@ -7766,14 +7604,6 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                 }
               ],
               "default": "active"
-            },
-            "transport": {
-              "allOf": [
-                {
-                  "$ref": "#/definitions/RemoteMcpTransport"
-                }
-              ],
-              "default": "auto"
             }
           },
           "required": [
@@ -7799,14 +7629,6 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
             "never"
           ],
           "type": "string"
-        },
-        "RemoteMcpTransport": {
-          "enum": [
-            "streamableHttp",
-            "sse",
-            "auto"
-          ],
-          "type": "string"
         }
       }
     }
@@ -7828,6 +7650,30 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
       },
       "required": [
         "serverUrl"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "lightspeed_mcp_servers_tools_discover",
+    "method": "mcp/servers/tools/discover",
+    "summary": "Discover MCP server tools",
+    "description": "Connects directly to the configured MCP server with its current universe credential and returns one bounded live tools/list result. The inventory is never persisted or cached and no tool is invoked.",
+    "paramsType": "McpServerToolsDiscoverParams",
+    "resultType": "AgentApiOutcome<McpServerToolsDiscoverResponse>",
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": {
+        "not": {}
+      },
+      "description": "Live, non-persisting tool discovery for a configured MCP server.",
+      "properties": {
+        "serverId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "serverId"
       ],
       "type": "object"
     }

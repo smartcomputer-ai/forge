@@ -318,7 +318,6 @@ export interface McpServer {
   serverId: string;
   displayName?: string | null;
   serverUrl: string;
-  transport: "streamableHttp" | "sse" | "auto";
   defaultServerLabel: string;
   description?: string | null;
   allowedTools?: string[] | null;
@@ -331,6 +330,38 @@ export interface McpServer {
   createdAtMs: number;
   updatedAtMs: number;
 }
+
+export interface McpAdvertisedTool {
+  name: string;
+  title?: string | null;
+  description?: string | null;
+  annotations?: {
+    readOnlyHint?: boolean | null;
+    destructiveHint?: boolean | null;
+    idempotentHint?: boolean | null;
+    openWorldHint?: boolean | null;
+  } | null;
+}
+
+export type McpToolDiscovery =
+  | { status: "success"; tools: McpAdvertisedTool[] }
+  | {
+      status: "failure";
+      code:
+        | "credentialAbsent"
+        | "grantNeedsReauth"
+        | "grantAudienceMismatch"
+        | "unauthorized"
+        | "forbidden"
+        | "remoteRateLimited"
+        | "remoteFailure"
+        | "unreachable"
+        | "invalidResponse"
+        | "unsupportedProtocol"
+        | "paginationLimit"
+        | "responseTooLarge";
+      message: string;
+    };
 
 export interface McpOAuthFlowStart {
   flowId: string;

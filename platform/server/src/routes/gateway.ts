@@ -15,6 +15,7 @@ import {
   type EnvironmentListParams,
   type McpServerInput,
   type McpServerAuthDiscoverParams,
+  type McpServerToolsDiscoverParams,
   type McpServerView,
   type ModelListParams,
   type ProfileSource,
@@ -727,6 +728,23 @@ export function gatewayRoutes(ctx: AppContext) {
       const client = engineClientFor(ctx, access.universe);
       const response = await client.call("mcp/servers/list", {});
       return c.json(response.result.servers ?? []);
+    });
+  });
+
+  /// Live inventory from the configured server. The runtime resolves the
+  /// server's current credential and deliberately does not persist the result.
+  app.post("/:id/mcp-servers/:serverId/tools/discover", async (c) => {
+    const access = await universeForSession(ctx, c, c.req.param("id"), true);
+    if (!access) {
+      return c.json({ error: "not found" }, 404);
+    }
+    return withGateway(c, async () => {
+      const client = engineClientFor(ctx, access.universe);
+      const params: McpServerToolsDiscoverParams = {
+        serverId: c.req.param("serverId"),
+      };
+      const response = await client.call("mcp/servers/tools/discover", params);
+      return c.json(response.result);
     });
   });
 
@@ -1773,7 +1791,6 @@ export function mcpServerInputWithOAuthGrant(
     serverId: server.serverId,
     displayName: server.displayName,
     serverUrl: server.serverUrl,
-    transport: server.transport,
     defaultServerLabel: server.defaultServerLabel,
     description: server.description,
     allowedTools: server.allowedTools,

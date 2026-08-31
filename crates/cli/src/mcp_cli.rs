@@ -120,9 +120,6 @@ struct McpServerPutArgs {
     /// Optional description.
     #[arg(long)]
     description: Option<String>,
-    /// Remote MCP transport.
-    #[arg(long, default_value_t = RemoteMcpTransportArg::Auto)]
-    transport: RemoteMcpTransportArg,
     /// Optional provider-side MCP tool allowlist entry. Repeat to allow multiple.
     #[arg(long = "allowed-tool")]
     allowed_tools: Vec<String>,
@@ -284,18 +281,6 @@ struct McpLinkArgs {
     /// Session id to change.
     #[arg(long)]
     session: String,
-    /// Optional provider-side MCP tool allowlist entry. Repeat to allow multiple.
-    #[arg(long = "allowed-tool")]
-    allowed_tools: Vec<String>,
-    /// Remote MCP approval behavior for this session link.
-    #[arg(long)]
-    approval: Option<RemoteMcpApprovalArg>,
-    /// Enable provider-side deferred MCP tool loading for this session link.
-    #[arg(long = "defer-loading", conflicts_with = "no_defer_loading")]
-    defer_loading: bool,
-    /// Disable provider-side deferred MCP tool loading for this session link.
-    #[arg(long = "no-defer-loading", conflicts_with = "defer_loading")]
-    no_defer_loading: bool,
     /// Registered MCP server id to link.
     server_id: String,
 }
@@ -326,33 +311,6 @@ struct McpListArgs {
     /// Session id to inspect.
     #[arg(long)]
     session: String,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
-enum RemoteMcpTransportArg {
-    Auto,
-    StreamableHttp,
-    Sse,
-}
-
-impl std::fmt::Display for RemoteMcpTransportArg {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Self::Auto => "auto",
-            Self::StreamableHttp => "streamable-http",
-            Self::Sse => "sse",
-        })
-    }
-}
-
-impl From<RemoteMcpTransportArg> for api::RemoteMcpTransport {
-    fn from(value: RemoteMcpTransportArg) -> Self {
-        match value {
-            RemoteMcpTransportArg::Auto => Self::Auto,
-            RemoteMcpTransportArg::StreamableHttp => Self::StreamableHttp,
-            RemoteMcpTransportArg::Sse => Self::Sse,
-        }
-    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
@@ -500,7 +458,6 @@ fn server_input_from_view(server: &api::McpServerView) -> api::McpServerInput {
         server_id: server.server_id.clone(),
         display_name: server.display_name.clone(),
         server_url: server.server_url.clone(),
-        transport: server.transport,
         default_server_label: server.default_server_label.clone(),
         description: server.description.clone(),
         allowed_tools: server.allowed_tools.clone(),
@@ -589,7 +546,6 @@ async fn server_put(args: McpServerPutArgs) -> Result<()> {
                 server_id: args.server_id,
                 display_name: args.display_name,
                 server_url: args.server_url,
-                transport: args.transport.into(),
                 default_server_label: args.default_server_label,
                 description: args.description,
                 allowed_tools: nonempty_vec(args.allowed_tools),
@@ -692,9 +648,6 @@ async fn link(args: McpLinkArgs) -> Result<()> {
     mcp.servers.retain(|link| link.server_id != args.server_id);
     mcp.servers.push(api::McpServerLink {
         server_id: args.server_id.clone(),
-        allowed_tools: nonempty_vec(args.allowed_tools),
-        approval: args.approval.map(Into::into),
-        defer_loading: defer_loading_arg(args.defer_loading, args.no_defer_loading),
     });
     features.mcp = Some(mcp);
     config.features = Some(features);
@@ -826,7 +779,6 @@ fn print_server(server: &api::McpServerView) {
     println!("serverId {}", server.server_id);
     println!("serverUrl {}", server.server_url);
     println!("label {}", server.default_server_label);
-    println!("transport {}", transport_label(server.transport));
     println!(
         "approvalDefault {}",
         approval_label(server.approval_default)
@@ -910,14 +862,6 @@ fn print_link(tool: &api::ToolView) {
         println!("  deferLoading {}", defer_loading);
     }
     println!("  authRequired {auth_required}");
-}
-
-fn transport_label(value: api::RemoteMcpTransport) -> &'static str {
-    match value {
-        api::RemoteMcpTransport::StreamableHttp => "streamable-http",
-        api::RemoteMcpTransport::Sse => "sse",
-        api::RemoteMcpTransport::Auto => "auto",
-    }
 }
 
 fn approval_label(value: api::RemoteMcpApprovalPolicy) -> &'static str {

@@ -1674,9 +1674,6 @@ fn mcp_feature_to_api(mcp: &engine::McpFeature) -> api::McpFeature {
             .iter()
             .map(|link| api::McpServerLink {
                 server_id: link.server_id.clone(),
-                allowed_tools: link.allowed_tools.clone(),
-                approval: link.approval.as_ref().map(remote_mcp_approval_to_api),
-                defer_loading: link.defer_loading,
             })
             .collect(),
     }
@@ -2956,9 +2953,6 @@ mod tests {
                     version: engine::CURRENT_FEATURE_VERSION,
                     servers: vec![engine::McpServerLink {
                         server_id: "linear".to_owned(),
-                        allowed_tools: Some(vec!["search_issues".to_owned()]),
-                        approval: Some(engine::RemoteMcpApprovalPolicy::Never),
-                        defer_loading: Some(true),
                     }],
                 }),
             },
@@ -3035,9 +3029,6 @@ mod tests {
                         version: api::CURRENT_FEATURE_VERSION,
                         servers: vec![api::McpServerLink {
                             server_id: "linear".to_owned(),
-                            allowed_tools: Some(vec!["search_issues".to_owned()]),
-                            approval: Some(api::RemoteMcpApprovalPolicy::Never),
-                            defer_loading: Some(true),
                         }],
                     }),
                 }),

@@ -342,7 +342,7 @@ mod tests {
                     server_id: McpServerId::new("crm"),
                     display_name: None,
                     server_url: "https://crm.example.com/mcp".to_owned(),
-                    transport: RemoteMcpTransport::Auto,
+                    transport: RemoteMcpTransport::StreamableHttp,
                     default_server_label: "crm".to_owned(),
                     description: None,
                     allowed_tools: None,

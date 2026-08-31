@@ -3,6 +3,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { afterEach, describe, expect, it } from "vitest";
 import type { ConfiguratorConfig } from "../src/config.js";
+import { GENERATED_TOOLS } from "../src/generated/tools.js";
 import { startConfigurator, type RunningConfigurator } from "../src/transport.js";
 
 interface UpstreamRequest {
@@ -25,7 +26,7 @@ describe("Streamable HTTP configurator", () => {
 
     await client.connect(transport as Parameters<typeof client.connect>[0]);
     const listed = await client.listTools();
-    expect(listed.tools).toHaveLength(98);
+    expect(listed.tools).toHaveLength(GENERATED_TOOLS.length);
     expect(listed.tools.some((tool) => tool.name.startsWith("lightspeed_operator_"))).toBe(false);
     expect(listed.tools.find((tool) => tool.name === "lightspeed_session_config_put")?.description)
       .toContain("omitted features are revoked");

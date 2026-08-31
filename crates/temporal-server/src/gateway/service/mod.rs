@@ -17,6 +17,7 @@ mod github_api;
 mod input;
 mod instructions;
 mod mcp_api;
+mod mcp_discovery;
 mod models_api;
 mod oauth_api;
 mod parse;
@@ -52,6 +53,7 @@ use github_api::{
 };
 use input::{context_entry_input_from_api, run_input_from_api};
 use mcp_api::{map_mcp_error, mcp_server_view, parse_mcp_server_id, put_mcp_server_record};
+use mcp_discovery::{HttpMcpToolDiscoverer, McpDiscoveryGate, McpToolDiscoverer};
 use models_api::{ModelDiscoveryService, stored_provider_key_resolver};
 use oauth_api::{
     auth_client_create_draft, auth_flow_view, cimd_config, map_mcp_oauth_error,
@@ -170,6 +172,12 @@ const MAX_RUN_TERMINAL_NOTIFICATION_TOKEN_BYTES: usize = 512;
 /// Default public base URL for the gateway-hosted OAuth callback; matches
 /// `DEFAULT_GATEWAY_BIND`. Hosted deployments must set the real public URL.
 pub const DEFAULT_PUBLIC_BASE_URL: &str = "http://127.0.0.1:18080";
+
+fn env_flag(name: &str) -> bool {
+    env::var(name)
+        .ok()
+        .is_some_and(|value| matches!(value.to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
+}
 
 fn session_summary_view(record: engine::storage::SessionRecord) -> SessionSummaryView {
     SessionSummaryView {
@@ -618,6 +626,10 @@ impl GatewayAgentApiBuilder {
             self.store.clone() as Arc<dyn SecretStore>,
             metadata_client,
         );
+        let mcp_tool_discoverer: Arc<dyn McpToolDiscoverer> = Arc::new(HttpMcpToolDiscoverer::new(
+            env_flag("LIGHTSPEED_MCP_DISCOVERY_ALLOW_PRIVATE_NETWORKS"),
+        ));
+        let mcp_discovery_gate = Arc::new(McpDiscoveryGate::new(Duration::from_secs(2)));
         let github_api = self.github_api_client.unwrap_or_else(|| {
             Arc::new(HttpGitHubApiClient::new().expect("construct GitHub REST HTTP client"))
         });
@@ -681,6 +693,8 @@ impl GatewayAgentApiBuilder {
             oauth_flows,
             auth_token_broker,
             mcp_oauth,
+            mcp_tool_discoverer,
+            mcp_discovery_gate,
             github_api,
             model_discovery,
             provider_controller_connector: self.provider_controller_connector,
@@ -704,6 +718,8 @@ pub struct GatewayAgentApi {
     oauth_flows: OAuthFlowService,
     auth_token_broker: Arc<dyn AuthTokenBroker>,
     mcp_oauth: McpOAuthDriver,
+    mcp_tool_discoverer: Arc<dyn McpToolDiscoverer>,
+    mcp_discovery_gate: Arc<McpDiscoveryGate>,
     github_api: Arc<dyn GitHubApiClient>,
     model_discovery: ModelDiscoveryService,
     provider_controller_connector: Arc<dyn ProviderControllerConnector>,
@@ -3691,6 +3707,108 @@ impl AgentApiService for GatewayAgentApi {
         Ok(AgentApiOutcome::new(McpServerAuthDiscoverResponse {
             oauth,
         }))
+    }
+
+    async fn discover_mcp_server_tools(
+        &self,
+        params: McpServerToolsDiscoverParams,
+    ) -> Result<AgentApiOutcome<McpServerToolsDiscoverResponse>, AgentApiError> {
+        let server_id = parse_mcp_server_id(params.server_id)?;
+        let record = self
+            .store
+            .read_server(&server_id)
+            .await
+            .map_err(map_mcp_error)?;
+        if record.status == mcp::McpServerStatus::Disabled {
+            return Err(AgentApiError::rejected(format!(
+                "MCP server is disabled: {server_id}"
+            )));
+        }
+        if record.status == mcp::McpServerStatus::NeedsAuthConfig
+            || (record.auth_grant_id.is_none()
+                && matches!(
+                    record.auth_policy,
+                    mcp::McpServerAuthPolicy::RequiredBearer
+                        | mcp::McpServerAuthPolicy::RequiredOAuth { .. }
+                ))
+        {
+            return Ok(AgentApiOutcome::new(mcp_api::mcp_tool_discovery_failure(
+                mcp::McpToolDiscoveryFailure::new(
+                    mcp::McpToolDiscoveryFailureKind::CredentialAbsent,
+                    "This MCP server needs a credential before its tools can be discovered",
+                ),
+            )));
+        }
+
+        let _discovery_permit = self
+            .mcp_discovery_gate
+            .try_start(server_id.as_str())
+            .map_err(AgentApiError::rejected)?;
+        let discovery_started = Instant::now();
+
+        let bearer = match record.auth_grant_id.as_ref() {
+            Some(grant_id) => match self
+                .auth_token_broker
+                .bearer_token(
+                    grant_id,
+                    &TokenAudience::McpResource(record.server_url.clone()),
+                )
+                .await
+            {
+                Ok(token) => Some(token),
+                Err(auth::AuthBrokerError::AudienceMismatch { .. }) => {
+                    return Ok(AgentApiOutcome::new(mcp_api::mcp_tool_discovery_failure(
+                        mcp::McpToolDiscoveryFailure::new(
+                            mcp::McpToolDiscoveryFailureKind::GrantAudienceMismatch,
+                            "The configured credential does not cover this MCP server",
+                        ),
+                    )));
+                }
+                Err(auth::AuthBrokerError::Store { message }) => {
+                    return Err(AgentApiError::internal(message));
+                }
+                Err(_) => {
+                    return Ok(AgentApiOutcome::new(mcp_api::mcp_tool_discovery_failure(
+                        mcp::McpToolDiscoveryFailure::new(
+                            mcp::McpToolDiscoveryFailureKind::GrantNeedsReauth,
+                            "The configured credential must be reconnected",
+                        ),
+                    )));
+                }
+            },
+            None => None,
+        };
+        let response = match self
+            .mcp_tool_discoverer
+            .discover_tools(
+                &record.server_url,
+                bearer.as_ref(),
+                mcp::McpToolDiscoveryLimits::default(),
+            )
+            .await
+        {
+            Ok(tools) => {
+                tracing::info!(
+                    server_id = %server_id,
+                    outcome = "success",
+                    tool_count = tools.len(),
+                    duration_ms = discovery_started.elapsed().as_millis(),
+                    "completed live MCP tool discovery"
+                );
+                mcp_api::mcp_tool_discovery_success(tools)
+            }
+            Err(failure) => {
+                tracing::info!(
+                    server_id = %server_id,
+                    outcome = ?failure.kind,
+                    tool_count = 0,
+                    duration_ms = discovery_started.elapsed().as_millis(),
+                    "completed live MCP tool discovery"
+                );
+                mcp_api::mcp_tool_discovery_failure(failure)
+            }
+        };
+        Ok(AgentApiOutcome::new(response))
     }
 
     async fn list_mcp_servers(

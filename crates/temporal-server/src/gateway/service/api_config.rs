@@ -228,23 +228,10 @@ fn features_from_api(
                 .into_iter()
                 .map(|link| engine::McpServerLink {
                     server_id: link.server_id,
-                    allowed_tools: link.allowed_tools,
-                    approval: link.approval.map(engine_mcp_approval),
-                    defer_loading: link.defer_loading,
                 })
                 .collect(),
         }),
     })
-}
-
-fn engine_mcp_approval(policy: api::RemoteMcpApprovalPolicy) -> engine::RemoteMcpApprovalPolicy {
-    match policy {
-        api::RemoteMcpApprovalPolicy::ProviderDefault => {
-            engine::RemoteMcpApprovalPolicy::ProviderDefault
-        }
-        api::RemoteMcpApprovalPolicy::Always => engine::RemoteMcpApprovalPolicy::Always,
-        api::RemoteMcpApprovalPolicy::Never => engine::RemoteMcpApprovalPolicy::Never,
-    }
 }
 
 pub(super) fn apply_run_start_config(

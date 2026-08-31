@@ -463,7 +463,6 @@ export type McpServerInit = Partial<McpServer> &
 export function mcpServer(init: McpServerInit): McpServer {
   return {
     displayName: null,
-    transport: "streamableHttp",
     defaultServerLabel: init.serverId,
     description: null,
     allowedTools: null,

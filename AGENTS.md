@@ -437,9 +437,15 @@ Release construction, snapshots, and tagged publication are documented in
   `features.mcp` — is derived from config and never written directly by
   clients. See `docs/roadmap/p95-config-redesign.md`.
 - MCP authentication belongs to the universe MCP server record. Sessions and
-  profiles select only `serverId`; they never select or retain an auth grant.
-  Resolve the server's current grant immediately before provider I/O. See
-  `docs/roadmap/p110-universe-owned-mcp-auth.md`.
+  profiles select only `serverId`; they never select or retain an auth grant,
+  tool allowlist, approval policy, or deferred-loading policy. Those policies
+  belong exclusively to the server record. Resolve the server's current grant
+  immediately before provider I/O. Obtain management tool inventories through
+  the official Rust MCP SDK over current Streamable HTTP, live from the server
+  without storing or caching them. The catalog's internal transport defaults
+  to Streamable HTTP and is not public configuration while it is the only
+  supported value. See
+  `docs/roadmap/p110-universe-owned-mcp-auth.md` and P143.
 - VFS session topology is declared only by
   `features.vfs.workspaceLinks`. Snapshots and mutable workspace heads remain
   catalog resources; resolved links are transient, and no session-link or
