@@ -100,27 +100,12 @@ pub const MIGRATIONS: &[EmbeddedMigration] = &[
     },
     EmbeddedMigration {
         version: 10,
-        name: "mcp_streamable_http",
-        sql: include_str!("../migrations/010_mcp_streamable_http.sql"),
-    },
-    EmbeddedMigration {
-        version: 11,
-        name: "mcp_rmcp_oauth",
-        sql: include_str!("../migrations/011_mcp_rmcp_oauth.sql"),
-    },
-    EmbeddedMigration {
-        version: 12,
-        name: "mcp_approvals",
-        sql: include_str!("../migrations/012_mcp_approvals.sql"),
-    },
-    EmbeddedMigration {
-        version: 13,
-        name: "native_mcp_execution",
-        sql: include_str!("../migrations/013_native_mcp_execution.sql"),
+        name: "mcp_runtime",
+        sql: include_str!("../migrations/010_mcp_runtime.sql"),
     },
 ];
 
-pub const REQUIRED_SCHEMA_REVISION: i64 = 13;
+pub const REQUIRED_SCHEMA_REVISION: i64 = 10;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SchemaStatus {

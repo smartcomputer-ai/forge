@@ -174,6 +174,10 @@ developer command surface.
 The server never migrates PostgreSQL implicitly. Before starting it against a
 new or upgraded database, run `cargo run -p temporal-server -- migrate`; use
 `cargo run -p temporal-server -- schema-version` for a non-mutating diagnostic.
+When adding, removing, or renumbering Rust schema migrations, keep
+`REQUIRED_SCHEMA_REVISION` and `LIGHTSPEED_SCHEMA_REVISION` in
+`release/metadata.env` aligned; `scripts/release/verify-metadata.sh` checks the
+release boundary.
 Release construction, snapshots, and tagged publication are documented in
 `docs/releasing.md`.
 

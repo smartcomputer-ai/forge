@@ -40,12 +40,7 @@ pub const PROFILE_SCHEMA_SQL: &str = include_str!("../migrations/006_agent_profi
 pub const API_KEYS_SCHEMA_SQL: &str = include_str!("../migrations/007_api_keys.sql");
 pub const BOTS_SCHEMA_SQL: &str = include_str!("../migrations/008_bots.sql");
 pub const CHANNELS_SCHEMA_SQL: &str = include_str!("../migrations/009_channels.sql");
-pub const MCP_STREAMABLE_HTTP_SCHEMA_SQL: &str =
-    include_str!("../migrations/010_mcp_streamable_http.sql");
-pub const MCP_RMCP_OAUTH_SCHEMA_SQL: &str = include_str!("../migrations/011_mcp_rmcp_oauth.sql");
-pub const MCP_APPROVALS_SCHEMA_SQL: &str = include_str!("../migrations/012_mcp_approvals.sql");
-pub const NATIVE_MCP_EXECUTION_SCHEMA_SQL: &str =
-    include_str!("../migrations/013_native_mcp_execution.sql");
+pub const MCP_RUNTIME_SCHEMA_SQL: &str = include_str!("../migrations/010_mcp_runtime.sql");
 
 pub const DEFAULT_INLINE_THRESHOLD_BYTES: usize = 64 * 1024;
 
