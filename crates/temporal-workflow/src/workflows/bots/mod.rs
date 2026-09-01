@@ -1,4 +1,4 @@
-//! Bot workflows (P142): the controller that owns a bot's managed sessions
+//! Bot workflows: the controller that owns a bot's managed sessions
 //! and the trigger fire started by Temporal Schedules. Both run in the
 //! `bots` worker role on its own task queue; their activities are defined in
 //! [`activities`] and implemented in `temporal-server`.

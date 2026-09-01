@@ -1,4 +1,4 @@
-//! Generic OAuth substrate (P69 G2): client records, authorization flows,
+//! Generic OAuth substrate: client records, authorization flows,
 //! PKCE helpers, and the token-endpoint client used for code exchange and
 //! refresh.
 //!
@@ -13,10 +13,10 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::{
-    AuthFlowId, AuthGrantExposure, AuthGrantId, AuthProviderKind, AuthRegistryError, OAuthClientId,
-    PrincipalRef, SecretId, SecretValue, validate_audience_url, validate_nonempty_optional,
-    validate_nonnegative_i64, validate_oauth_endpoint_url, validate_scopes,
-    validate_token_component,
+    AuthFlowId, AuthGrantExposure, AuthGrantId, AuthProviderKind, AuthRegistryError,
+    McpOAuthTokenContext, OAuthClientId, PrincipalRef, SecretId, SecretValue,
+    validate_audience_url, validate_nonempty_optional, validate_nonnegative_i64,
+    validate_oauth_endpoint_url, validate_scopes, validate_token_component,
 };
 
 pub const SECRET_KIND_OAUTH_ACCESS_TOKEN: &str = "auth.oauth.access_token";
@@ -45,7 +45,7 @@ pub(crate) fn is_oauth_provider_kind(kind: AuthProviderKind) -> bool {
 
 /// A manually configured OAuth client: authorization/token endpoint metadata
 /// plus the AS-issued client identifier. Discovery, DCR, and CIMD arrive with
-/// the MCP OAuth driver (P69 G4). The client secret, when present, lives in
+/// the MCP OAuth driver. The client secret, when present, lives in
 /// the secret store and is referenced here by id.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OAuthClientRecord {
@@ -64,6 +64,18 @@ pub struct OAuthClientRecord {
     pub scopes_default: Vec<String>,
     /// Default resource grants are bound to (RFC 8707 resource).
     pub audience: Option<String>,
+    /// Authorization-server issuer selected during MCP discovery. Frozen on
+    /// the client so authorization callbacks can validate RFC 9207 `iss`
+    /// after a restart or on another gateway instance.
+    #[serde(default)]
+    pub authorization_server_issuer: Option<String>,
+    /// Whether the AS advertises the RFC 9207 response issuer parameter.
+    #[serde(default)]
+    pub authorization_response_iss_parameter_supported: bool,
+    /// AS-advertised scopes retained as diagnostics and for SDK-owned scope
+    /// and refresh behavior. Authored defaults remain the consent authority.
+    #[serde(default)]
+    pub authorization_server_scopes_supported: Vec<String>,
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
 }
@@ -87,6 +99,23 @@ impl OAuthClientRecord {
         if let Some(audience) = &self.audience {
             validate_audience_url(audience)?;
         }
+        if let Some(issuer) = &self.authorization_server_issuer {
+            validate_audience_url(issuer).map_err(|error| match error {
+                AuthRegistryError::InvalidInput { message } => AuthRegistryError::InvalidInput {
+                    message: format!("authorization server issuer: {message}"),
+                },
+                other => other,
+            })?;
+        }
+        if self.authorization_response_iss_parameter_supported
+            && self.authorization_server_issuer.is_none()
+        {
+            return Err(AuthRegistryError::InvalidInput {
+                message: "authorization server issuer is required when RFC 9207 issuer validation is enabled"
+                    .to_owned(),
+            });
+        }
+        validate_scopes(&self.authorization_server_scopes_supported)?;
         if self.provider_kind == AuthProviderKind::McpOAuth && self.audience.is_none() {
             return Err(AuthRegistryError::InvalidInput {
                 message: "mcp_oauth clients require an audience (the MCP server resource URL)"
@@ -128,6 +157,9 @@ pub struct CreateOAuthClientRecord {
     pub token_endpoint_auth_method: TokenEndpointAuthMethod,
     pub scopes_default: Vec<String>,
     pub audience: Option<String>,
+    pub authorization_server_issuer: Option<String>,
+    pub authorization_response_iss_parameter_supported: bool,
+    pub authorization_server_scopes_supported: Vec<String>,
     pub created_at_ms: i64,
 }
 
@@ -145,6 +177,10 @@ impl CreateOAuthClientRecord {
             token_endpoint_auth_method: self.token_endpoint_auth_method,
             scopes_default: self.scopes_default,
             audience: self.audience,
+            authorization_server_issuer: self.authorization_server_issuer,
+            authorization_response_iss_parameter_supported: self
+                .authorization_response_iss_parameter_supported,
+            authorization_server_scopes_supported: self.authorization_server_scopes_supported,
             created_at_ms: self.created_at_ms,
             updated_at_ms: self.created_at_ms,
         }
@@ -200,6 +236,12 @@ pub struct AuthFlowRecord {
     pub redirect_uri: String,
     pub scopes: Vec<String>,
     pub audience: Option<String>,
+    /// Issuer expectation captured when the authorization URL was created.
+    #[serde(default)]
+    pub expected_issuer: Option<String>,
+    /// A missing callback `iss` is an error when the AS advertised RFC 9207.
+    #[serde(default)]
+    pub require_issuer: bool,
     /// Set when the flow completed successfully.
     pub grant_id: Option<AuthGrantId>,
     /// Set when the flow completed with a failure.
@@ -248,6 +290,20 @@ impl AuthFlowRecord {
         if let Some(audience) = &self.audience {
             validate_audience_url(audience)?;
         }
+        if let Some(issuer) = &self.expected_issuer {
+            validate_audience_url(issuer).map_err(|error| match error {
+                AuthRegistryError::InvalidInput { message } => AuthRegistryError::InvalidInput {
+                    message: format!("expected issuer: {message}"),
+                },
+                other => other,
+            })?;
+        }
+        if self.require_issuer && self.expected_issuer.is_none() {
+            return Err(AuthRegistryError::InvalidInput {
+                message: "expected issuer is required when callback issuer validation is enabled"
+                    .to_owned(),
+            });
+        }
         if self.grant_id.is_some() && self.error.is_some() {
             return Err(AuthRegistryError::InvalidInput {
                 message: "auth flow cannot carry both a grant id and an error".to_owned(),
@@ -279,6 +335,8 @@ pub struct CreateAuthFlowRecord {
     pub redirect_uri: String,
     pub scopes: Vec<String>,
     pub audience: Option<String>,
+    pub expected_issuer: Option<String>,
+    pub require_issuer: bool,
     pub expires_at_ms: i64,
     pub created_at_ms: i64,
 }
@@ -297,6 +355,8 @@ impl CreateAuthFlowRecord {
             redirect_uri: self.redirect_uri,
             scopes: self.scopes,
             audience: self.audience,
+            expected_issuer: self.expected_issuer,
+            require_issuer: self.require_issuer,
             grant_id: None,
             error: None,
             expires_at_ms: self.expires_at_ms,
@@ -460,6 +520,9 @@ pub struct OAuthTokenRequest {
     pub grant: OAuthTokenGrant,
     /// RFC 8707 resource indicator, sent when the grant is audience-bound.
     pub resource: Option<String>,
+    /// Present only for MCP OAuth. The official SDK owns these protocol facts
+    /// while the surrounding request remains the generic broker contract.
+    pub mcp: Option<McpOAuthTokenContext>,
 }
 
 #[derive(Clone, Debug)]
@@ -668,10 +731,24 @@ pub(crate) fn parse_token_error_body(status: u16, body: &str) -> OAuthTokenError
 /// application/json`, follows no redirects, and never logs request bodies.
 pub struct HttpOAuthTokenClient {
     http: reqwest::Client,
+    mcp_http: std::sync::Arc<dyn crate::OAuthMetadataClient>,
 }
 
 impl HttpOAuthTokenClient {
     pub fn new() -> Result<Self, OAuthTokenError> {
+        let mcp_http =
+            std::sync::Arc::new(crate::HttpOAuthMetadataClient::new().map_err(|_| {
+                OAuthTokenError::Http {
+                    status: None,
+                    message: "build MCP OAuth HTTP client".to_owned(),
+                }
+            })?);
+        Self::new_with_mcp_http(mcp_http)
+    }
+
+    pub fn new_with_mcp_http(
+        mcp_http: std::sync::Arc<dyn crate::OAuthMetadataClient>,
+    ) -> Result<Self, OAuthTokenError> {
         let http = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .timeout(std::time::Duration::from_secs(30))
@@ -680,7 +757,7 @@ impl HttpOAuthTokenClient {
                 status: None,
                 message: format!("build http client: {error}"),
             })?;
-        Ok(Self { http })
+        Ok(Self { http, mcp_http })
     }
 }
 
@@ -690,6 +767,10 @@ impl OAuthTokenClient for HttpOAuthTokenClient {
         &self,
         request: &OAuthTokenRequest,
     ) -> Result<OAuthTokenResponse, OAuthTokenError> {
+        if let Some(context) = &request.mcp {
+            return crate::mcp_oauth::request_rmcp_token(self.mcp_http.clone(), request, context)
+                .await;
+        }
         let wire = token_request_wire(request)?;
         let mut builder = self
             .http
@@ -738,6 +819,9 @@ mod tests {
             token_endpoint_auth_method: TokenEndpointAuthMethod::ClientSecretBasic,
             scopes_default: vec!["repo".to_owned()],
             audience: None,
+            authorization_server_issuer: None,
+            authorization_response_iss_parameter_supported: false,
+            authorization_server_scopes_supported: Vec::new(),
             created_at_ms: 10,
             updated_at_ms: 10,
         }
@@ -880,6 +964,8 @@ mod tests {
             redirect_uri: "https://lightspeed.example.com/auth/callback".to_owned(),
             scopes: Vec::new(),
             audience: None,
+            expected_issuer: None,
+            require_issuer: false,
             expires_at_ms: 100,
             created_at_ms: 10,
         }
@@ -910,6 +996,7 @@ mod tests {
                 code_verifier: SecretValue::new("verifier-1"),
             },
             resource: Some("https://crm.example.com/mcp".to_owned()),
+            mcp: None,
         };
 
         let wire = token_request_wire(&request).expect("wire form");
@@ -946,6 +1033,7 @@ mod tests {
                 refresh_token: SecretValue::new("refresh-1"),
             },
             resource: None,
+            mcp: None,
         };
 
         let wire = token_request_wire(&request).expect("wire form");
@@ -1022,6 +1110,7 @@ mod tests {
                 refresh_token: SecretValue::new("refresh-1"),
             },
             resource: None,
+            mcp: None,
         };
 
         let debug = format!("{request:?}");

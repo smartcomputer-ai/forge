@@ -395,7 +395,7 @@ impl GatewayAgentApi {
     }
 
     /// Resolve the environment through the shared status-aware resolver so
-    /// job calls participate in wake-on-use (P126): a powered-down
+    /// job calls participate in wake-on-use: a powered-down
     /// provisioned environment gets its desired power set to `running` and
     /// the call fails typed `environment_not_ready` for the caller to retry
     /// — the shape polling automations lean on. Plain record reads would

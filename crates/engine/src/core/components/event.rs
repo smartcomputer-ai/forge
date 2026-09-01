@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    ContextEvent, CoreAgentLifecycleEvent, EnvironmentEvent, PromiseEvent, RunEvent,
+    ApprovalEvent, ContextEvent, CoreAgentLifecycleEvent, EnvironmentEvent, PromiseEvent, RunEvent,
     ToolConfigEvent, ToolEvent, TurnEvent, WorkflowToolConfigEvent, WorkflowToolEvent,
 };
 
@@ -10,6 +10,7 @@ use crate::{
 pub enum CoreAgentEvent {
     Lifecycle(CoreAgentLifecycleEvent),
     Run(RunEvent),
+    Approval(ApprovalEvent),
     Turn(TurnEvent),
     Context(ContextEvent),
     Environment(EnvironmentEvent),

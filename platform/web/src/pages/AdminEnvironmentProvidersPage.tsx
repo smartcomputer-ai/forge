@@ -65,7 +65,7 @@ type UniverseBindings = {
 
 type TransportKind = "webSocket" | "http" | "provider";
 
-/// Deployment-scoped environment provider administration (P118): physical
+/// Deployment-scoped environment provider administration: physical
 /// providers are registered once by a platform admin and shared with
 /// universes through revisioned bindings. Universe owners consume enabled
 /// bindings from their Environments page; only admins mutate them here.

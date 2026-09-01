@@ -320,13 +320,7 @@ export function normalizeSessionConfig(value: unknown): SessionConfig | undefine
         ? feature.servers.map((item) => {
               const server = record(item);
               const serverId = string(server.serverId).trim();
-              if (!serverId) return { serverId: "" };
-              const link: RecordValue = { serverId };
-              const tools = stringList(server.allowedTools).filter(Boolean);
-              if (tools.length) link.allowedTools = tools;
-              if (["always", "never"].includes(string(server.approval))) link.approval = server.approval;
-              if (typeof server.deferLoading === "boolean") link.deferLoading = server.deferLoading;
-              return link;
+              return { serverId };
             })
         : [];
       // Keep an incomplete row while it is being edited. Validation prevents
@@ -1586,7 +1580,7 @@ function McpFields({
           key={index}
           className="grid gap-3 border-t pt-3 sm:grid-cols-[minmax(0,1fr)_auto]"
         >
-          <div className="grid gap-3 sm:grid-cols-3">
+          <div>
             <Field>
               <FieldLabel>Server</FieldLabel>
               {serverOptions.length ? (
@@ -1614,35 +1608,6 @@ function McpFields({
                   onChange={(e) => updateLink(index, (next) => { next.serverId = e.target.value; })}
                 />
               )}
-            </Field>
-            <Field>
-              <FieldLabel>Allowed tools</FieldLabel>
-              <Input
-                value={commaList(link.allowedTools)}
-                onChange={(e) => updateLink(index, (next) => {
-                  const tools = listFromInput(e.target.value);
-                  if (tools.length) next.allowedTools = tools;
-                  else delete next.allowedTools;
-                })}
-                placeholder="All tools"
-              />
-            </Field>
-            <Field>
-              <FieldLabel>Approval</FieldLabel>
-              <Select
-                value={string(link.approval) || "providerDefault"}
-                onValueChange={(value) => updateLink(index, (next) => {
-                  if (value === "providerDefault") delete next.approval;
-                  else next.approval = value;
-                })}
-              >
-                <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="providerDefault">Server default</SelectItem>
-                  <SelectItem value="always">Always approve</SelectItem>
-                  <SelectItem value="never">Never approve</SelectItem>
-                </SelectContent>
-              </Select>
             </Field>
           </div>
           <Button

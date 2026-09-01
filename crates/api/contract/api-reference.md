@@ -35,7 +35,7 @@ Creates a session with an immutable lifecycle controller and/or workflow tools u
 
 **Read a session**
 
-Returns the current projected session, including sparse config and revisions, lifecycle/run state, active context, and derived tools.
+Returns current state plus a bounded newest-first run-summary page. Follow nextRunCursor with session/runs/list when hasOlderRuns is true; use session/events/read for the transcript.
 
 - Params: `SessionReadParams`
 - Result: `AgentApiOutcome<SessionReadResponse>`
@@ -130,6 +130,24 @@ Accepts input or existing context keys and returns once the run is accepted — 
 - Params: `RunStartParams`
 - Result: `AgentApiOutcome<RunStartResponse>`
 
+### `session/runs/list`
+
+**List session runs**
+
+Returns a newest-first keyset page of bounded run summaries projected from current reducer state.
+
+- Params: `RunListParams`
+- Result: `AgentApiOutcome<RunListResponse>`
+
+### `session/runs/read`
+
+**Read one session run**
+
+Reads and projects one run from its bounded event interval, paged by event sequence.
+
+- Params: `RunReadParams`
+- Result: `AgentApiOutcome<RunReadResponse>`
+
 ### `session/runs/cancel`
 
 **Cancel a run**
@@ -138,6 +156,15 @@ Requests cancellation of the named queued or active run and returns its current 
 
 - Params: `RunCancelParams`
 - Result: `AgentApiOutcome<RunCancelResponse>`
+
+### `session/runs/approvals/decide`
+
+**Decide pending run approvals**
+
+Approves or rejects pending MCP tool calls on the named active run. Valid decisions apply independently; the run resumes only after every pending approval has a decision.
+
+- Params: `RunApprovalsDecideParams`
+- Result: `AgentApiOutcome<RunApprovalsDecideResponse>`
 
 ### `session/runs/steer`
 
@@ -534,6 +561,15 @@ Looks for standards-based OAuth protected-resource metadata without creating a s
 
 - Params: `McpServerAuthDiscoverParams`
 - Result: `AgentApiOutcome<McpServerAuthDiscoverResponse>`
+
+### `mcp/servers/tools/discover`
+
+**Discover MCP server tools**
+
+Connects directly to the configured MCP server with its current universe credential and returns one bounded live tools/list result. The inventory is never persisted or cached and no tool is invoked.
+
+- Params: `McpServerToolsDiscoverParams`
+- Result: `AgentApiOutcome<McpServerToolsDiscoverResponse>`
 
 ### `mcp/servers/read`
 

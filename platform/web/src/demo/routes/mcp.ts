@@ -6,8 +6,7 @@ import type { McpOAuthFlow, McpServer, SecretGrant } from "@/api";
 import type { DemoStore, UniverseState } from "../store";
 import { badRequest, conflict, notFound, readBody, universeFor } from "./common";
 
-const TRANSPORTS = new Set<string>(["streamableHttp", "sse", "auto"]);
-const APPROVALS = new Set<string>(["providerDefault", "always", "never"]);
+const APPROVALS = new Set<string>(["always", "never"]);
 const STATUSES = new Set<string>(["active", "needsAuthConfig", "unverified", "disabled"]);
 const OAUTH_POLICIES = new Set<string>(["optionalOAuth", "requiredOAuth"]);
 const REQUIRED_POLICIES = new Set<string>(["requiredBearer", "requiredOAuth"]);
@@ -66,18 +65,18 @@ function materialize(
       serverId,
       displayName: stringOrNull(input.displayName),
       serverUrl,
-      transport: typeof input.transport === "string" && TRANSPORTS.has(input.transport)
-        ? (input.transport as McpServer["transport"])
-        : "auto",
       defaultServerLabel,
       description: stringOrNull(input.description),
       allowedTools: allowedTools.length > 0 ? allowedTools : null,
+      execution: input.execution === "native" ? "native" : "provider",
+      exposure: input.execution === "native" && input.exposure === "search" ? "search" : "inject",
       approvalDefault: typeof input.approvalDefault === "string" && APPROVALS.has(input.approvalDefault)
         ? (input.approvalDefault as McpServer["approvalDefault"])
-        : "providerDefault",
+        : "never",
       deferLoadingDefault: typeof input.deferLoadingDefault === "boolean"
         ? input.deferLoadingDefault
         : null,
+      allowPrivateNetwork: input.allowPrivateNetwork === true,
       authPolicy,
       credential,
       status,
@@ -144,6 +143,43 @@ export function mcpRoutes(store: DemoStore): Hono {
     return c.json([...universe.mcpServers.values()]);
   });
 
+  app.post("/:id/mcp-servers/:serverId/tools/discover", (c) => {
+    const universe = universeFor(store, c);
+    const server = universe?.mcpServers.get(c.req.param("serverId"));
+    if (!universe || !server) return notFound(c);
+    if (server.status === "needsAuthConfig" ||
+        (REQUIRED_POLICIES.has(server.authPolicy.type) && !server.credential)) {
+      return c.json({
+        status: "failure" as const,
+        code: "credentialAbsent" as const,
+        message: "This MCP server needs a credential before its tools can be discovered",
+      });
+    }
+    return c.json({
+      status: "success" as const,
+      tools: [
+        {
+          name: "search",
+          title: "Search",
+          description: `Search ${server.displayName ?? server.serverId}`,
+          annotations: { readOnlyHint: true, openWorldHint: true },
+        },
+        {
+          name: "read",
+          title: "Read item",
+          description: "Read one item by identifier",
+          annotations: { readOnlyHint: true, idempotentHint: true },
+        },
+        {
+          name: "update",
+          title: "Update item",
+          description: "Update an existing item",
+          annotations: { destructiveHint: true },
+        },
+      ],
+    });
+  });
+
   /// Advisory only: https servers that look like protected MCP endpoints
   /// count as OAuth-protected, everything else stays for the user to decide.
   app.post("/:id/mcp-servers/discover-auth", async (c) => {
@@ -158,7 +194,13 @@ export function mcpRoutes(store: DemoStore): Hono {
     const protectedLooking = url.protocol === "https:" && /oauth|mcp/i.test(url.href);
     return c.json(
       protectedLooking
-        ? { oauth: { resource: url.href, authorizationServers: [url.origin] } }
+        ? {
+            oauth: {
+              resource: url.href,
+              authorizationServers: [url.origin],
+              scopesSupported: ["mcp:tools"],
+            },
+          }
         : { oauth: null },
     );
   });

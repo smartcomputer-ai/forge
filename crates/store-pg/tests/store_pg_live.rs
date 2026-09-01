@@ -13,8 +13,9 @@ use engine::{
         EventSeq, SessionId, SessionPosition, StoredEvent, StoredJoins, UncommittedStoredEvent,
     },
     storage::{
-        AppendSessionEvents, BlobEdge, BlobGraphStore, BlobStore, CreateClonedSession,
-        CreateForkedSession, CreateSession, ListSessions, ReadSessionEvents, SessionBlobRoot,
+        AdvanceSessionCheckpoint, AppendSessionEvents, BlobEdge, BlobGraphStore, BlobStore,
+        CreateClonedSession, CreateForkedSession, CreateSession, ListSessions,
+        ReadSessionEventRange, ReadSessionEvents, SessionBlobRoot, SessionCheckpoint,
         SessionOrigin, SessionOriginKind, SessionStore, SessionStoreError,
     },
 };
@@ -99,6 +100,123 @@ async fn pg_live_sessions_are_isolated_by_universe() {
         .await
         .expect("read right events");
     assert!(right_page.entries.is_empty());
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires ./dev.sh infra or compatible Postgres + MinIO env"]
+async fn pg_live_session_ranges_are_fenced_and_checkpoint_pointers_only_advance() {
+    let store = live_store("session-checkpoints", 64).await;
+    let session_id = SessionId::new("checkpoint-session");
+    store
+        .create_session(CreateSession {
+            session_id: session_id.clone(),
+            display_name: None,
+            origin: None,
+            created_at_ms: 1,
+        })
+        .await
+        .expect("create checkpoint session");
+    store
+        .append(AppendSessionEvents {
+            session_id: session_id.clone(),
+            expected_head: None,
+            events: (1..=5).map(open_event).collect(),
+        })
+        .await
+        .expect("append checkpoint session events");
+
+    let first = store
+        .read_range(ReadSessionEventRange {
+            session_id: session_id.clone(),
+            after: EventSeq::new(1),
+            through: EventSeq::new(4),
+            limit: 2,
+        })
+        .await
+        .expect("read first fenced range page");
+    assert_eq!(
+        first
+            .entries
+            .iter()
+            .map(|entry| entry.position.seq.as_u64())
+            .collect::<Vec<_>>(),
+        vec![2, 3]
+    );
+    assert_eq!(first.next_after, Some(EventSeq::new(3)));
+    assert!(!first.complete);
+
+    let second = store
+        .read_range(ReadSessionEventRange {
+            session_id: session_id.clone(),
+            after: first.next_after.expect("first range cursor"),
+            through: EventSeq::new(4),
+            limit: 2,
+        })
+        .await
+        .expect("read second fenced range page");
+    assert_eq!(
+        second
+            .entries
+            .iter()
+            .map(|entry| entry.position.seq.as_u64())
+            .collect::<Vec<_>>(),
+        vec![4]
+    );
+    assert!(second.complete);
+
+    let newest_bytes = b"newest checkpoint".to_vec();
+    let newest_ref = store
+        .put_bytes(newest_bytes.clone())
+        .await
+        .expect("put newest checkpoint blob");
+    let newest = SessionCheckpoint {
+        session_id: session_id.clone(),
+        through_seq: EventSeq::new(4),
+        format_version: 1,
+        state_ref: newest_ref.clone(),
+        lineage_source_session_id: None,
+        lineage_source_seq: None,
+        byte_len: newest_bytes.len() as u64,
+        created_at_ms: 20,
+    };
+    assert!(
+        store
+            .advance_checkpoint(AdvanceSessionCheckpoint {
+                checkpoint: newest.clone(),
+            })
+            .await
+            .expect("advance checkpoint")
+    );
+
+    let stale_bytes = b"stale checkpoint".to_vec();
+    let stale_ref = store
+        .put_bytes(stale_bytes.clone())
+        .await
+        .expect("put stale checkpoint blob");
+    assert!(
+        !store
+            .advance_checkpoint(AdvanceSessionCheckpoint {
+                checkpoint: SessionCheckpoint {
+                    session_id: session_id.clone(),
+                    through_seq: EventSeq::new(2),
+                    format_version: 1,
+                    state_ref: stale_ref,
+                    lineage_source_session_id: None,
+                    lineage_source_seq: None,
+                    byte_len: stale_bytes.len() as u64,
+                    created_at_ms: 30,
+                },
+            })
+            .await
+            .expect("reject stale checkpoint")
+    );
+    assert_eq!(
+        store
+            .load_checkpoint(&session_id)
+            .await
+            .expect("load checkpoint"),
+        Some(newest)
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -1103,7 +1221,10 @@ async fn pg_live_universe_environments_are_independent_of_sessions() {
             .fetch_one(store.pool())
             .await
             .expect("inspect removed environment job table");
-        assert!(relation.is_none(), "P104 must remove table {table}");
+        assert!(
+            relation.is_none(),
+            "legacy job table must be removed: {table}"
+        );
     }
     let provider_id = EnvironmentProviderId::new("bridge-local");
     let target_id = ProviderTargetId::new("local-host");
@@ -1180,7 +1301,7 @@ async fn pg_live_universe_environments_are_independent_of_sessions() {
         })
         .await
         .expect("upsert target");
-    // P126: power intent, observed power states, and idle policy round-trip
+    // Power intent, observed power states, and idle policy round-trip
     // and feed the reconcile/reaper queries.
     assert_eq!(instance.desired_power, environments::PowerState::Running);
     assert_eq!(
@@ -1311,7 +1432,7 @@ async fn pg_live_universe_environments_are_independent_of_sessions() {
         .expect("close environment while a session exists");
     assert_eq!(closing.status, EnvironmentStatus::Closing);
 
-    // P125: origin-session provenance round-trips, filters, and feeds the
+    // Origin-session provenance round-trips, filters, and feeds the
     // close-with-session sweep query.
     let owned_id = EnvironmentId::new("environment-owned");
     let owned = store
@@ -1618,6 +1739,8 @@ async fn pg_live_auth_flows_are_one_time_use() {
             redirect_uri: "https://lightspeed.example.com/auth/callback".to_owned(),
             scopes: vec!["contacts.read".to_owned()],
             audience: Some("https://crm.example.com/mcp".to_owned()),
+            expected_issuer: Some("https://as.example.com".to_owned()),
+            require_issuer: true,
             expires_at_ms: 10_000,
             created_at_ms: 10,
         })
@@ -1690,6 +1813,8 @@ async fn pg_live_auth_flows_are_one_time_use() {
             redirect_uri: "https://lightspeed.example.com/auth/callback".to_owned(),
             scopes: Vec::new(),
             audience: Some("https://crm.example.com/mcp".to_owned()),
+            expected_issuer: None,
+            require_issuer: false,
             expires_at_ms: 50,
             created_at_ms: 10,
         })
@@ -1928,6 +2053,9 @@ fn create_oauth_client_record(client_id: &OAuthClientId) -> CreateOAuthClientRec
         token_endpoint_auth_method: TokenEndpointAuthMethod::None,
         scopes_default: vec!["contacts.read".to_owned()],
         audience: Some("https://crm.example.com/mcp".to_owned()),
+        authorization_server_issuer: Some("https://as.example.com".to_owned()),
+        authorization_response_iss_parameter_supported: true,
+        authorization_server_scopes_supported: vec!["contacts.read".to_owned()],
         created_at_ms: 10,
     }
 }
@@ -1984,8 +2112,8 @@ async fn pg_live_environment_credentials_round_trip() {
         .await
         .expect("create environment");
 
-    // Two stored-secret grants (P127 subscription credentials are ordinary
-    // static_bearer grants carrying metadata).
+    // Subscription credentials are ordinary static_bearer grants carrying
+    // metadata, so exercise two stored-secret grants.
     for (grant_id, kind, provider) in [
         ("authgrant_codex", AuthProviderKind::StaticBearer, "openai"),
         (
@@ -2178,12 +2306,15 @@ fn put_mcp_server(server_id: &str, status: McpServerStatus) -> PutMcpServerRecor
         server_id: McpServerId::new(server_id),
         display_name: Some(format!("{server_id} MCP")),
         server_url: format!("https://{server_id}.example.com/mcp"),
-        transport: RemoteMcpTransport::Auto,
+        transport: RemoteMcpTransport::StreamableHttp,
         default_server_label: server_id.to_owned(),
         description: Some(format!("{server_id} remote MCP server")),
         allowed_tools: Some(vec!["lookup_customer".to_owned()]),
+        execution: mcp::McpExecution::Provider,
+        exposure: mcp::McpExposure::Inject,
         approval_default: McpApprovalPolicy::Never,
         defer_loading_default: Some(true),
+        allow_private_network: false,
         auth_policy: McpServerAuthPolicy::None,
         auth_grant_id: None,
         status,

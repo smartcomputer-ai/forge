@@ -15,6 +15,7 @@ import {
   type EnvironmentListParams,
   type McpServerInput,
   type McpServerAuthDiscoverParams,
+  type McpServerToolsDiscoverParams,
   type McpServerView,
   type ModelListParams,
   type ProfileSource,
@@ -181,7 +182,7 @@ const modelKeyPutSchema = z
     "a model provider requires a credential or endpoint",
   );
 
-/// Coding-agent subscription credential paste (P127): parsed and normalised
+/// Coding-agent subscription credential paste: parsed and normalised
 /// here (vendor knowledge stays in Platform), then imported into the engine as
 /// an ordinary bearer grant with metadata. Encrypted on receipt, never read back.
 const subscriptionImportSchema = z.object({
@@ -255,6 +256,19 @@ const sessionMessageSchema = z.object({
 
 const sessionSteerSchema = z.object({
   text: z.string().min(1).max(100_000),
+});
+
+const sessionApprovalDecideSchema = z.object({
+  decisions: z
+    .array(
+      z.object({
+        approvalId: z.string().regex(/^approval_[1-9][0-9]*$/),
+        decision: z.enum(["approve", "reject"]),
+        note: z.string().trim().min(1).max(2_000).optional(),
+      }),
+    )
+    .min(1)
+    .max(64),
 });
 
 /// Loose validation (required identifiers only): the engine is the
@@ -402,7 +416,7 @@ export function gatewayRoutes(ctx: AppContext) {
     const cursor = c.req.query("cursor") ?? null;
     const limitRaw = Number(c.req.query("limit") ?? 50);
     const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(1, limitRaw), 200) : 50;
-    // Sub-agent lineage filters (P134): children of a root or of a parent.
+    // Sub-agent lineage filters: children of a root or of a parent.
     const rootSessionId = c.req.query("rootSessionId") || null;
     const parentSessionId = c.req.query("parentSessionId") || null;
     return withGateway(c, async () => {
@@ -451,7 +465,10 @@ export function gatewayRoutes(ctx: AppContext) {
         sessionId: c.req.param("sessionId"),
         force: body.data.force ?? false,
       });
-      return c.json(response.result.session);
+      const current = await client.call("session/read", {
+        sessionId: response.result.session.id,
+      });
+      return c.json(current.result.session);
     });
   });
 
@@ -518,7 +535,10 @@ export function gatewayRoutes(ctx: AppContext) {
         ...(input.displayName ? { displayName: input.displayName } : {}),
         profile: input.profile as ProfileSource,
       });
-      return c.json(response.result.session);
+      const current = await client.call("session/read", {
+        sessionId: response.result.session.id,
+      });
+      return c.json(current.result.session);
     });
   });
 
@@ -539,7 +559,10 @@ export function gatewayRoutes(ctx: AppContext) {
         config: body.data.config as SessionConfig,
         expectedConfigRevision: body.data.expectedConfigRevision,
       });
-      return c.json(response.result.session);
+      const current = await client.call("session/read", {
+        sessionId: response.result.session.id,
+      });
+      return c.json(current.result.session);
     });
   });
 
@@ -705,6 +728,26 @@ export function gatewayRoutes(ctx: AppContext) {
     });
   });
 
+  app.post("/:id/sessions/:sessionId/runs/:runId/approvals", async (c) => {
+    const access = await universeForSession(ctx, c, c.req.param("id"), true);
+    if (!access) {
+      return c.json({ error: "not found" }, 404);
+    }
+    const body = await parseBody(c, sessionApprovalDecideSchema);
+    if (!body.ok) {
+      return body.response;
+    }
+    return withGateway(c, async () => {
+      const client = engineClientFor(ctx, access.universe);
+      const response = await client.call("session/runs/approvals/decide", {
+        sessionId: c.req.param("sessionId"),
+        runId: c.req.param("runId"),
+        decisions: body.data.decisions,
+      });
+      return c.json(response.result);
+    });
+  });
+
   app.get("/:id/workspaces", async (c) => {
     const access = await universeForSession(ctx, c, c.req.param("id"), true);
     if (!access) {
@@ -727,6 +770,23 @@ export function gatewayRoutes(ctx: AppContext) {
       const client = engineClientFor(ctx, access.universe);
       const response = await client.call("mcp/servers/list", {});
       return c.json(response.result.servers ?? []);
+    });
+  });
+
+  /// Live inventory from the configured server. The runtime resolves the
+  /// server's current credential and deliberately does not persist the result.
+  app.post("/:id/mcp-servers/:serverId/tools/discover", async (c) => {
+    const access = await universeForSession(ctx, c, c.req.param("id"), true);
+    if (!access) {
+      return c.json({ error: "not found" }, 404);
+    }
+    return withGateway(c, async () => {
+      const client = engineClientFor(ctx, access.universe);
+      const params: McpServerToolsDiscoverParams = {
+        serverId: c.req.param("serverId"),
+      };
+      const response = await client.call("mcp/servers/tools/discover", params);
+      return c.json(response.result);
     });
   });
 
@@ -1773,12 +1833,14 @@ export function mcpServerInputWithOAuthGrant(
     serverId: server.serverId,
     displayName: server.displayName,
     serverUrl: server.serverUrl,
-    transport: server.transport,
     defaultServerLabel: server.defaultServerLabel,
     description: server.description,
     allowedTools: server.allowedTools,
+    execution: server.execution,
+    exposure: server.exposure,
     approvalDefault: server.approvalDefault,
     deferLoadingDefault: server.deferLoadingDefault,
+    allowPrivateNetwork: server.allowPrivateNetwork,
     authPolicy: server.authPolicy,
     credential: { type: "authGrant", grantId },
     status: server.status === "needsAuthConfig" ? "active" : server.status,

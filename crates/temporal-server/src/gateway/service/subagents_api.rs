@@ -1,7 +1,7 @@
 use super::*;
 
 impl GatewayAgentApi {
-    /// Sub-agent catalog refresh for an idle session (P134): the same
+    /// Sub-agent catalog refresh for an idle session: the same
     /// publish-if-changed shape as the skill catalog, computed from the
     /// admitted grant and the current profile records.
     pub(super) async fn refresh_subagent_catalog_for_idle_session(
@@ -71,7 +71,7 @@ impl GatewayAgentApi {
         }
     }
 
-    /// `ProfileEnvironment::Inherit` (P134): the delegating parent's active
+    /// `ProfileEnvironment::Inherit`: the delegating parent's active
     /// environment, resolved at apply time from the child's origin.
     pub(super) async fn resolve_inherited_environment(
         &self,

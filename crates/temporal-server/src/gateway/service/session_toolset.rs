@@ -5,6 +5,7 @@ impl GatewayAgentApi {
         &self,
         session_id: &SessionId,
         loaded: &LoadedSession,
+        wait_for_reconciliation: bool,
     ) -> Result<SessionView, AgentApiError> {
         let session_config = loaded.state.lifecycle.config.as_ref().ok_or_else(|| {
             AgentApiError::invalid_request(format!("session is missing config: {session_id}"))
@@ -75,8 +76,12 @@ impl GatewayAgentApi {
                 "workflow tool tool name {colliding} collides with a remote MCP tool"
             )));
         }
-        let mut expected_tools = toolset.tools.keys().cloned().collect::<BTreeSet<_>>();
-        expected_tools.extend(desired_mcp.keys().cloned());
+        let expected_tools = toolset
+            .tools
+            .iter()
+            .chain(desired_mcp.iter())
+            .map(|(name, tool)| (name.clone(), tool.clone()))
+            .collect::<BTreeMap<_, _>>();
         let patch = toolset_reconcile_patch(&loaded.state.tooling.tools, toolset, desired_mcp);
 
         let baseline_failures = self
@@ -94,6 +99,9 @@ impl GatewayAgentApi {
             )
             .await?;
         }
+        if !wait_for_reconciliation {
+            return self.project_session_by_id(session_id).await;
+        }
         self.wait_for_session_toolset(session_id, expected_tools, baseline_failures)
             .await
     }
@@ -101,7 +109,7 @@ impl GatewayAgentApi {
     pub(super) async fn wait_for_session_toolset(
         &self,
         session_id: &SessionId,
-        expected_tools: BTreeSet<ToolName>,
+        expected_tools: BTreeMap<ToolName, engine::ToolSpec>,
         baseline_failures: usize,
     ) -> Result<SessionView, AgentApiError> {
         let started = Instant::now();
@@ -124,14 +132,7 @@ impl GatewayAgentApi {
                 }
             }
             let loaded = self.load_session_state(session_id).await?;
-            let actual_tools = loaded
-                .state
-                .tooling
-                .tools
-                .keys()
-                .cloned()
-                .collect::<BTreeSet<_>>();
-            if actual_tools == expected_tools {
+            if loaded.state.tooling.tools == expected_tools {
                 return self.project_session_by_id(session_id).await;
             }
             tokio::time::sleep(self.poll_interval).await;

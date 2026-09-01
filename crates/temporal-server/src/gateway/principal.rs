@@ -1,12 +1,12 @@
 //! Request-scoped caller principal.
 //!
-//! The JSON-RPC method surface carries no caller identity (P90: the universe
+//! The JSON-RPC method surface carries no caller identity: the universe
 //! and principal live in the credential, never in request parameters), so the
 //! HTTP edge propagates the resolved principal to service methods through a
 //! task-local scope around dispatch — the same shape as tracing spans. Service
 //! code reads [`request_principal`] where it stamps `PrincipalRef` onto
 //! grants and flows; outside a request scope (worker activities, startup,
-//! tests) it falls back to `universe_default`, the pre-P90 behavior.
+//! tests) it falls back to the legacy `universe_default` principal.
 
 use auth::PrincipalRef;
 

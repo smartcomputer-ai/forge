@@ -77,8 +77,12 @@ Lightspeed covers the table stakes of a modern agent harness and keeps shipping 
   snapshots/workspaces without an OS attached
 - [x] **Web access**: fetch, search, and extract tools
 - [x] **Skills**, automatically cataloged and loaded from linked VFS roots
-- [x] **Hosted MCP**, with universe-configured API-key and OAuth identities
-  shared by every session selecting that MCP server id
+- [x] **Hosted and native MCP**, with universe-configured API-key and OAuth
+  identities and server-owned execution, exposure, tool, network, and approval
+  policy shared by every session selecting that MCP server id. Native servers
+  work across all model APIs through injected function tools or bounded
+  search-on-demand; inventories stay live and worker-local, never persisted.
+  Approval requests park the run and can be decided from the web console or CLI
 - [x] **Flexible prompt & instruction configuration**
 - [x] **Sub-agents**: `agent_run` / `agent_spawn` over allowlisted profiles, supervised by an execution workflow, with root-scoped limits and typed lineage
 - [x] **Agent profiles**: reusable session setups, shared across clients and sub-agents;

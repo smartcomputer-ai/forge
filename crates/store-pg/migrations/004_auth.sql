@@ -1,5 +1,5 @@
 -- Generic auth substrate: encrypted secrets, grants, OAuth clients/flows, and
--- provider configuration (P69 G1-G5).
+-- provider configuration.
 --
 -- Design notes:
 -- - auth_secrets stores AEAD-encrypted values only. Plaintext never touches

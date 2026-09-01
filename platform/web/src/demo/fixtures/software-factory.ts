@@ -393,7 +393,7 @@ const INTAKE_CONFIG: Record<string, unknown> = {
   generation: { reasoningEffort: "medium", maxOutputTokens: 12_000 },
   limits: { maxTurns: 12, maxToolRounds: 20 },
   features: {
-    mcp: { servers: [{ serverId: "linear", allowedTools: ["get_issue", "list_issues", "create_comment", "update_issue"], approval: "never" }] },
+    mcp: { servers: [{ serverId: "linear" }] },
     vfs: { tools: "edit", workspaceLinks: [link(WORKSPACE.specs, "readWrite"), link(WORKSPACE.web, "readOnly")] },
   },
 };
@@ -413,7 +413,7 @@ const IMPLEMENTER_CONFIG: Record<string, unknown> = {
   limits: { maxTurns: 40, maxToolRounds: 120 },
   features: {
     environments: { selectionTools: false },
-    mcp: { servers: [{ serverId: "github", allowedTools: GITHUB_IMPLEMENT_TOOLS, approval: "never" }] },
+    mcp: { servers: [{ serverId: "github" }] },
     subagents: { agents: [{ profileId: PROFILE.explorer }, { profileId: PROFILE.tests }], ...SUBAGENT_LIMITS },
     vfs: { tools: "readOnly", workspaceLinks: [link(WORKSPACE.specs, "readOnly")] },
   },
@@ -456,7 +456,7 @@ const REVIEWER_CONFIG: Record<string, unknown> = {
   limits: { maxTurns: 24, maxToolRounds: 40 },
   features: {
     environments: {},
-    mcp: { servers: [{ serverId: "github", allowedTools: GITHUB_REVIEW_TOOLS, approval: "never" }] },
+    mcp: { servers: [{ serverId: "github" }] },
     subagents: { agents: [{ profileId: PROFILE.explorer }], maxDepth: 1, maxDescendants: 4, maxConcurrent: 2, deadlineMs: 15 * MINUTE_MS },
     web: { fetch: {} },
   },
@@ -467,7 +467,7 @@ const SCRIBE_CONFIG: Record<string, unknown> = {
   generation: { reasoningEffort: "medium" },
   limits: { maxTurns: 12 },
   features: {
-    mcp: { servers: [{ serverId: "github", allowedTools: GITHUB_SCRIBE_TOOLS }] },
+    mcp: { servers: [{ serverId: "github" }] },
     vfs: { tools: "edit", workspaceLinks: [link(WORKSPACE.web, "readWrite")] },
     web: { fetch: {} },
   },
@@ -478,7 +478,7 @@ const CI_CONFIG: Record<string, unknown> = {
   generation: { reasoningEffort: "low", maxOutputTokens: 6_000 },
   limits: { maxTurns: 6, maxToolRounds: 12 },
   features: {
-    mcp: { servers: [{ serverId: "github", allowedTools: GITHUB_CI_TOOLS, approval: "never" }] },
+    mcp: { servers: [{ serverId: "github" }] },
   },
 };
 
@@ -1544,10 +1544,10 @@ function seedIntegrations(universe: UniverseState): void {
     id: "configurator",
     name: "Configurator",
     description: "An MCP server that lets coding agents configure this universe: profiles, MCP servers, environments, and bots, with an API key scoped to it.",
-    version: 3,
+    version: 4,
     available: true,
     status: "ready",
-    installedVersion: 3,
+    installedVersion: 4,
     resources: { keyPrefix: "lsk_acme_cfg_9b21", serverId: "configurator" },
   };
   universe.setups.push(configurator);

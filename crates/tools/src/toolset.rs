@@ -360,7 +360,7 @@ pub struct ResolvedToolset {
     pub provider_params_patch: ProviderParamsPatch,
 }
 
-/// Explicit-Promise workflow tools create model-owned P92 promises, so their
+/// Explicit-Promise workflow tools create model-owned completion promises, so their
 /// admission pulls concurrency tools into the model toolset. Joined tools use
 /// runtime-owned Promises and must not grant await/cancel/detach.
 pub fn enable_concurrency_for_workflow_tools<'a>(

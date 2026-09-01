@@ -107,10 +107,25 @@ pub trait AgentApiService: Send + Sync {
         params: RunStartParams,
     ) -> Result<AgentApiOutcome<RunStartResponse>, AgentApiError>;
 
+    async fn list_runs(
+        &self,
+        params: RunListParams,
+    ) -> Result<AgentApiOutcome<RunListResponse>, AgentApiError>;
+
+    async fn read_run(
+        &self,
+        params: RunReadParams,
+    ) -> Result<AgentApiOutcome<RunReadResponse>, AgentApiError>;
+
     async fn cancel_run(
         &self,
         params: RunCancelParams,
     ) -> Result<AgentApiOutcome<RunCancelResponse>, AgentApiError>;
+
+    async fn decide_run_approvals(
+        &self,
+        params: RunApprovalsDecideParams,
+    ) -> Result<AgentApiOutcome<RunApprovalsDecideResponse>, AgentApiError>;
 
     async fn steer_run(
         &self,
@@ -314,6 +329,11 @@ pub trait AgentApiService: Send + Sync {
         &self,
         params: McpServerAuthDiscoverParams,
     ) -> Result<AgentApiOutcome<McpServerAuthDiscoverResponse>, AgentApiError>;
+
+    async fn discover_mcp_server_tools(
+        &self,
+        params: McpServerToolsDiscoverParams,
+    ) -> Result<AgentApiOutcome<McpServerToolsDiscoverResponse>, AgentApiError>;
 
     async fn list_mcp_servers(
         &self,

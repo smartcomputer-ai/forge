@@ -8,8 +8,7 @@ use std::sync::{Arc, Mutex};
 use anyhow::{Context, Result, anyhow, bail};
 use api::{ContextEntryKindView, ContextEntryView, ContextMessageRoleView, RunStatus};
 use api_projection::{
-    CoreAgentProjector, MAX_EVENT_PAGE_LIMIT, ProjectSession, read_all_session_entries,
-    started_run_id,
+    CoreAgentProjector, MAX_EVENT_PAGE_LIMIT, ProjectRun, read_all_session_entries, started_run_id,
 };
 use async_trait::async_trait;
 use casefile::{EvalCase, FileExpectation, SetupFile, load_cases};
@@ -502,17 +501,11 @@ async fn run_attempt(
     runtime.start_session(&session_id).await?;
     let run = runtime.start_run(&session_id, &case.prompt).await?;
 
-    let session = runtime.project_session(&session_id).await?;
-    let run_view = session
-        .runs
-        .iter()
-        .find(|candidate| candidate.id == run.id)
-        .unwrap_or(&run);
-    let observations = collect_observations(&run_view.entries, &runtime.tool_id_by_name);
+    let observations = collect_observations(&run.entries, &runtime.tool_id_by_name);
     let mut failures = Vec::new();
 
-    if !matches!(run_view.status, RunStatus::Completed) {
-        failures.push(format!("run status was {:?}", run_view.status));
+    if !matches!(run.status, RunStatus::Completed) {
+        failures.push(format!("run status was {:?}", run.status));
         if let Some(summary) = runtime.diagnostics.summary() {
             failures.push(summary);
         }
@@ -581,6 +574,15 @@ struct EvalRuntime {
     tool_set: BTreeMap<ToolName, ToolSpec>,
     tool_id_by_name: BTreeMap<String, String>,
     diagnostics: Arc<LlmDiagnostics>,
+}
+
+struct EvalRunProjection<'a> {
+    run_id: engine::RunId,
+    status: engine::RunStatus,
+    source: &'a engine::RunSource,
+    started_at_ms: Option<u64>,
+    completed_at_ms: Option<u64>,
+    usage: Option<&'a engine::LlmUsage>,
 }
 
 impl EvalRuntime {
@@ -652,16 +654,40 @@ impl EvalRuntime {
             .or_else(|| outcome.state.runs.completed.last().map(|run| run.run_id))
             .or_else(|| outcome.state.runs.active.as_ref().map(|run| run.run_id))
             .ok_or_else(|| anyhow!("eval request did not start a run"))?;
-        let status = outcome
+        let projection = if let Some(run) = outcome
             .state
             .runs
             .completed
             .iter()
             .find(|run| run.run_id == run_id)
-            .map(|run| run.status)
-            .or_else(|| outcome.state.runs.active.as_ref().map(|run| run.status))
-            .unwrap_or(engine::RunStatus::Active);
-        self.project_run(session_id, run_id, status).await
+        {
+            EvalRunProjection {
+                run_id,
+                status: run.status,
+                source: &run.source,
+                started_at_ms: run.started_at_ms,
+                completed_at_ms: Some(run.completed_at_ms),
+                usage: run.usage.as_ref(),
+            }
+        } else if let Some(run) = outcome
+            .state
+            .runs
+            .active
+            .as_ref()
+            .filter(|run| run.run_id == run_id)
+        {
+            EvalRunProjection {
+                run_id,
+                status: run.status,
+                source: &run.source,
+                started_at_ms: run.started_at_ms,
+                completed_at_ms: None,
+                usage: run.usage.as_ref(),
+            }
+        } else {
+            bail!("eval run {run_id} has no reducer metadata");
+        };
+        self.project_run(session_id, projection).await
     }
 
     async fn drive(
@@ -713,41 +739,10 @@ impl EvalRuntime {
         Ok(outcome)
     }
 
-    async fn project_session(&self, session_id: &SessionId) -> Result<api::SessionView> {
-        let record = self
-            .sessions
-            .load_session(session_id)
-            .await
-            .context("load eval session")?
-            .ok_or_else(|| anyhow!("eval session not found: {session_id}"))?;
-        let entries = read_all_session_entries(
-            self.sessions.as_ref(),
-            session_id,
-            MAX_EVENT_PAGE_LIMIT as usize,
-        )
-        .await
-        .map_err(api_error)?;
-        let state = self
-            .runner
-            .load_state(session_id)
-            .await
-            .context("load eval state")?;
-        CoreAgentProjector::new(self.blobs.as_ref())
-            .project_session(ProjectSession {
-                session_id,
-                state: &state,
-                record: &record,
-                entries: &entries,
-            })
-            .await
-            .map_err(api_error)
-    }
-
     async fn project_run(
         &self,
         session_id: &SessionId,
-        run_id: engine::RunId,
-        status: engine::RunStatus,
+        projection: EvalRunProjection<'_>,
     ) -> Result<api::RunView> {
         let entries = read_all_session_entries(
             self.sessions.as_ref(),
@@ -757,7 +752,15 @@ impl EvalRuntime {
         .await
         .map_err(api_error)?;
         CoreAgentProjector::new(self.blobs.as_ref())
-            .project_run(&entries, run_id, status)
+            .project_run_with_metadata(ProjectRun {
+                entries: &entries,
+                run_id: projection.run_id,
+                status: api_projection::core_run_status_to_api_status(projection.status),
+                source: projection.source,
+                started_at_ms: projection.started_at_ms,
+                completed_at_ms: projection.completed_at_ms,
+                usage: projection.usage,
+            })
             .await
             .map_err(api_error)
     }
@@ -1357,6 +1360,7 @@ mod tests {
             provider_item_id: None,
             token_estimate: None,
             text: text.map(str::to_owned),
+            text_truncated: false,
             display: None,
             source: None,
             supersedes: None,

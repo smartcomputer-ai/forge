@@ -1,4 +1,4 @@
-//! P100b B5-B7 live proof: workflow plugins run in their own Temporal worker
+//! Live proof: workflow plugins run in their own Temporal worker
 //! and are reached only through data — an opaque bound endpoint or a
 //! CAS-backed start recipe. The session worker registers no plugin workflow
 //! type (`worker_with_activities` is used unchanged); the plugin workflows
@@ -564,6 +564,7 @@ impl WorkflowToolScriptedLlm {
                     arguments_ref,
                     native_call_ref: None,
                 }],
+                approval_requests: Vec::new(),
                 context_token_estimate: None,
             },
         })
@@ -603,6 +604,7 @@ impl WorkflowToolScriptedLlm {
                 finish: LlmFinish::Stop,
                 usage: None,
                 tool_calls: Vec::new(),
+                approval_requests: Vec::new(),
                 context_token_estimate: None,
             },
         })
@@ -2298,6 +2300,7 @@ async fn workflow_tool_start_survives_continue_as_new() -> anyhow::Result<()> {
             let session = api
                 .read_session(SessionReadParams {
                     session_id: session_id.as_str().to_owned(),
+                    run_limit: None,
                 })
                 .await
                 .map_err(|error| anyhow::anyhow!("read continued Joined session: {error:?}"))?;

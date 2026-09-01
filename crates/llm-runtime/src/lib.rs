@@ -10,6 +10,7 @@ mod catalog_prompts;
 mod environment_prompts;
 pub mod error;
 pub mod executor;
+pub mod mcp;
 pub mod openai_completions;
 pub mod openai_responses;
 pub mod params;
@@ -27,6 +28,7 @@ pub use anthropic_messages::{
 };
 pub use error::{LlmAdapterError, LlmAdapterResult};
 pub use executor::{LlmAdapterRegistry, LlmCompactionAdapter, LlmGenerationAdapter, LlmRuntime};
+pub use mcp::{McpInventoryError, McpInventoryResolver, NativeMcpTool};
 pub use openai_completions::{OpenAiCompletionsApi, OpenAiCompletionsLlmAdapter};
 pub use openai_responses::{OpenAiResponsesApi, OpenAiResponsesLlmAdapter};
 pub use params::{

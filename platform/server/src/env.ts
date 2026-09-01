@@ -15,6 +15,12 @@ export interface ServerEnv {
   lightspeedApiUrl: string | null;
   /// Public Streamable HTTP endpoint installed by the Configurator setup.
   configuratorMcpUrl: string | null;
+  /// Permit the installed Configurator MCP record to reach a private network.
+  /// This is intended for explicit local/internal deployments only.
+  configuratorMcpAllowPrivateNetwork: boolean;
+  /// Use the Runtime's loopback-only trusted-header MCP path. Development and
+  /// tests may enable this; deployed configuration leaves it disabled.
+  configuratorMcpInternalTrustedHeader: boolean;
   /// Internal connector health endpoints aggregated for platform admins.
   channelsHealthUrls: string[];
   /// Development convenience: a directly attached `lightspeed-envd` endpoint
@@ -51,9 +57,25 @@ export function loadEnv(): ServerEnv {
     github,
     lightspeedApiUrl: process.env.LIGHTSPEED_API_URL ?? null,
     configuratorMcpUrl: process.env.LIGHTSPEED_PLATFORM_CONFIGURATOR_MCP_URL ?? null,
+    configuratorMcpAllowPrivateNetwork: booleanEnv(
+      "LIGHTSPEED_PLATFORM_CONFIGURATOR_MCP_ALLOW_PRIVATE_NETWORK",
+      false,
+    ),
+    configuratorMcpInternalTrustedHeader: booleanEnv(
+      "LIGHTSPEED_PLATFORM_CONFIGURATOR_MCP_INTERNAL_TRUSTED_HEADER",
+      false,
+    ),
     channelsHealthUrls: csv(process.env.LIGHTSPEED_PLATFORM_CHANNELS_HEALTH_URLS),
     devEnvdEndpoint: process.env.LIGHTSPEED_PLATFORM_DEV_ENVD_ENDPOINT ?? null,
   };
+}
+
+function booleanEnv(name: string, fallback: boolean): boolean {
+  const value = process.env[name]?.trim().toLowerCase();
+  if (!value) return fallback;
+  if (value === "true") return true;
+  if (value === "false") return false;
+  throw new Error(`${name} must be true or false`);
 }
 
 function csv(value: string | undefined): string[] {

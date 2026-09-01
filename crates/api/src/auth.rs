@@ -238,6 +238,12 @@ pub struct OAuthClientView {
     pub scopes_default: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audience: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authorization_server_issuer: Option<String>,
+    #[serde(default)]
+    pub authorization_response_iss_parameter_supported: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub authorization_server_scopes_supported: Vec<String>,
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
 }
@@ -267,6 +273,12 @@ pub struct AuthClientCreateParams {
     pub scopes_default: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub audience: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authorization_server_issuer: Option<String>,
+    #[serde(default)]
+    pub authorization_response_iss_parameter_supported: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub authorization_server_scopes_supported: Vec<String>,
 }
 
 impl std::fmt::Debug for AuthClientCreateParams {
@@ -289,6 +301,18 @@ impl std::fmt::Debug for AuthClientCreateParams {
             )
             .field("scopes_default", &self.scopes_default)
             .field("audience", &self.audience)
+            .field(
+                "authorization_server_issuer",
+                &self.authorization_server_issuer,
+            )
+            .field(
+                "authorization_response_iss_parameter_supported",
+                &self.authorization_response_iss_parameter_supported,
+            )
+            .field(
+                "authorization_server_scopes_supported",
+                &self.authorization_server_scopes_supported,
+            )
             .finish()
     }
 }

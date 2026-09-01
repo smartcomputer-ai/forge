@@ -15,7 +15,7 @@ Before starting the provider:
    placement. Local storage is supported but does not imply failover.
 4. Configure the OVN control plane and create the physical or bridge uplink
    named by `incus.clusterNetworkUplink` on every member.
-5. Ensure the provider and P121 edge can route to the resulting guest address
+5. Ensure the provider and application edge can route to the resulting guest address
    ranges.
 6. Assign members to any cluster groups referenced by template
    `clusterGroup` values.

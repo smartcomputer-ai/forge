@@ -1,10 +1,22 @@
 import { describe, expect, it } from "vitest";
+import { METHOD_INFO } from "@lightspeed/agent-client";
 import { GENERATED_TOOLS } from "../src/generated/tools.js";
 
 describe("generated universe tools", () => {
-  it("contains the configured 98-method surface and no operator methods", () => {
-    expect(GENERATED_TOOLS).toHaveLength(98);
-    expect(new Set(GENERATED_TOOLS.map((tool) => tool.name)).size).toBe(98);
+  it("contains the configured universe-method surface and no operator methods", () => {
+    const excluded = new Set([
+      "initialize",
+      "session/managed/start",
+      "environments/jobs/create",
+      "environments/jobs/read",
+      "environments/jobs/cancel",
+    ]);
+    const expectedMethods = Object.entries(METHOD_INFO)
+      .filter(([method, info]) => info.scope === "universe" && !excluded.has(method))
+      .map(([method]) => method)
+      .sort();
+    expect(GENERATED_TOOLS.map((tool) => tool.method).sort()).toEqual(expectedMethods);
+    expect(new Set(GENERATED_TOOLS.map((tool) => tool.name)).size).toBe(expectedMethods.length);
     expect(GENERATED_TOOLS.some((tool) => tool.method.startsWith("operator/"))).toBe(false);
     expect(GENERATED_TOOLS.find((tool) => tool.method === "session/config/put")?.name).toBe(
       "lightspeed_session_config_put",
@@ -18,6 +30,17 @@ describe("generated universe tools", () => {
         "environments/jobs/cancel",
       ]),
     );
+  });
+
+  it("fits every injected tool name under the first-party server label", () => {
+    const prefix = "mcp_configurator__";
+    for (const tool of GENERATED_TOOLS) {
+      const injectedName = `${prefix}${tool.name}`;
+      expect(
+        new TextEncoder().encode(injectedName).byteLength,
+        injectedName,
+      ).toBeLessThanOrEqual(64);
+    }
   });
 
   it("emits self-contained object input schemas", () => {

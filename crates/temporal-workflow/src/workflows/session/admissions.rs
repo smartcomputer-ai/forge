@@ -117,6 +117,7 @@ fn admissible_during_turn(command: &CoreAgentCommand) -> bool {
         CoreAgentCommand::CancelRun { .. }
             | CoreAgentCommand::ForceCancelRun { .. }
             | CoreAgentCommand::RequestRunSteering { .. }
+            | CoreAgentCommand::DecideApproval(_)
             | CoreAgentCommand::RequestRun(_)
             | CoreAgentCommand::ResolvePromise { .. }
             | CoreAgentCommand::FailWorkflowToolDelivery { .. }
@@ -153,8 +154,9 @@ async fn preprocess_input_entries(
     command: CoreAgentCommand,
 ) -> anyhow::Result<RunInputPreprocessResult> {
     let (submission_id, input, rebuild) = match command {
-        CoreAgentCommand::RequestRun(request) => match request.source {
-            engine::RunRequestSource::Input { input } => (
+        CoreAgentCommand::RequestRun(request) => {
+            let engine::RunRequestSource::Input { input } = request.source;
+            (
                 request.submission_id.clone(),
                 input,
                 InputPreprocessRebuild::RequestRun {
@@ -162,13 +164,8 @@ async fn preprocess_input_entries(
                     run_config: request.run_config,
                     notify_on_terminal: request.notify_on_terminal,
                 },
-            ),
-            engine::RunRequestSource::Context { .. } => {
-                return Ok(RunInputPreprocessResult::Succeeded {
-                    command: Box::new(CoreAgentCommand::RequestRun(request)),
-                });
-            }
-        },
+            )
+        }
         CoreAgentCommand::UpsertContext {
             expected_revision,
             key,

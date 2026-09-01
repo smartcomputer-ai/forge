@@ -118,7 +118,7 @@ impl EnvironmentResolver {
     /// be reachable yet) and reported as `NotReady`; `failed`, `closing`, and
     /// `closed` are rejected with typed errors; a powered-down provisioned
     /// environment whose provider supports power control is woken (desired
-    /// power set to `running`) and reported as `NotReady` (P126); everything
+    /// power set to `running`) and reported as `NotReady`; everything
     /// else must prove the full data-plane route.
     pub(crate) async fn selectable(
         &self,

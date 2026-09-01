@@ -1,8 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    CoreAgentState, DomainError, ModelSelection, ProviderApiKind, ProviderParams,
-    RemoteMcpApprovalPolicy, ToolChoice,
+    CoreAgentState, DomainError, ModelSelection, ProviderApiKind, ProviderParams, ToolChoice,
 };
 
 const MIN_OPENAI_RESPONSES_COMPACT_THRESHOLD: u32 = 1000;
@@ -446,17 +445,11 @@ impl Default for McpFeature {
     }
 }
 
-/// A linked catalog server with optional per-session overrides; `None`
-/// fields defer to the catalog record's defaults.
+/// A selected universe MCP server. Its catalog record owns all connection and
+/// behavior configuration.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct McpServerLink {
     pub server_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub allowed_tools: Option<Vec<String>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub approval: Option<RemoteMcpApprovalPolicy>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub defer_loading: Option<bool>,
 }
 
 fn default_feature_version() -> u32 {
@@ -1259,9 +1252,6 @@ mod tests {
 
         let link = McpServerLink {
             server_id: "linear".to_owned(),
-            allowed_tools: None,
-            approval: None,
-            defer_loading: None,
         };
         let mut duplicated = config;
         duplicated.features.mcp = Some(McpFeature {

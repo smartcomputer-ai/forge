@@ -36,6 +36,13 @@ The authoritative configuration reference is
 Platform server, connector host, Configurator MCP, and development-only
 settings.
 
+Platform admins manage invite-only user accounts under **Admin → Users**. They
+can update a user's name, verified sign-in email, platform role, and password;
+password resets revoke that user's active sessions. Signed-in users can update
+their own display name and password under **Account**. Self-service email
+changes stay disabled until the deployment provides an email-verification
+sender.
+
 ## Development
 
 Install all Node workspace dependencies and run the complete check:
@@ -99,7 +106,8 @@ The server accepts the following primary configuration names:
   `LIGHTSPEED_PLATFORM_ADMIN_PASSWORD`;
 - `LIGHTSPEED_PLATFORM_GITHUB_CLIENT_ID` and
   `LIGHTSPEED_PLATFORM_GITHUB_CLIENT_SECRET`;
-- `LIGHTSPEED_PLATFORM_CONFIGURATOR_MCP_URL`; and
+- `LIGHTSPEED_PLATFORM_CONFIGURATOR_MCP_URL` and the optional
+  `LIGHTSPEED_PLATFORM_CONFIGURATOR_MCP_ALLOW_PRIVATE_NETWORK`; and
 - `LIGHTSPEED_PLATFORM_CHANNELS_HEALTH_URLS`.
 
 Imported pre-release aliases were removed as part of the greenfield

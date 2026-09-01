@@ -99,9 +99,9 @@ a parked `await` woken by an inbound reply. P134 slice 7 removed the fleet
 mailbox (`await { mailbox }`); this adapter would reintroduce that wake as an
 opt-in await field (P129's note). The run parks, the adapter projects the
 pending question to the editor, the user's answer enters as `SubmitMessage`,
-and the engine validates the wake. This dovetails with the pending
-[MCP approval flow](pNNN-mcp-approval-flow.md) and needs no new engine
-vocabulary. If the editor disconnects, the run stays parked; reconnecting via
+and the engine validates the wake. This dovetails with the
+[P144 MCP approvals](../p144-mcp-approvals.md) parked-run model and needs no
+new engine vocabulary. If the editor disconnects, the run stays parked; reconnecting via
 `session/load` re-projects the pending permission.
 
 ### Client-side fs/terminal vs the environment protocol

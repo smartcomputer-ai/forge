@@ -1,6 +1,6 @@
 # auth
 
-Generic auth grant, secret, and token-broker substrate for Lightspeed (P69).
+Generic auth grant, secret, and token-broker substrate for Lightspeed.
 
 The crate defines the provider-independent records and traits; persistence and
 encryption live in store adapters (`store-pg` stores secrets AES-256-GCM
@@ -36,7 +36,7 @@ execution — never in the engine or the session log.
 - `flow` — `OAuthFlowService`: start builds the authorization URL and
   persists the encrypted PKCE verifier; the callback atomically consumes the
   flow, exchanges the code, stores encrypted tokens, and mints the grant.
-- `mcp_oauth` — the MCP OAuth driver (P69 G4): discovers protected resource
+- `mcp_oauth` — the MCP OAuth driver: discovers protected resource
   metadata (RFC 9728, path-inserted URL with root fallback) and
   authorization server metadata (RFC 8414/OIDC), requires PKCE S256,
   identifies the client via CIMD (when the AS supports client-id metadata
@@ -50,7 +50,7 @@ execution — never in the engine or the session log.
   `AuthProviderConfig` enum (GitHub Apps first) and the credential reference
   as a typed field (`store-pg` backs it with a foreign key into
   `auth_secrets`).
-- `github` — the GitHub App driver (P69 G5): RS256 app JWT signing,
+- `github` — the GitHub App driver: RS256 app JWT signing,
   installation listing, and the `GitHubAppRuntime` token source (on-demand
   installation token minting via the `GitHubApiClient` trait). Installation
   grants store no tokens; minting happens per call with a process-local
@@ -77,8 +77,7 @@ modelled in core: they are ordinary `static_bearer` grants imported through
 `auth/grants/import` with caller-defined `metadata`, and injected verbatim
 into environments through credential bindings. Parsing, validation, and any
 vendor login flow live in the client that imports them (Platform), and
-grant kinds only grow when core itself must *behave* differently (see
-`docs/roadmap/p127-openai-oauth-login.md`).
+grant kinds only grow when core itself must *behave* differently.
 
 ## Build & test
 
@@ -249,7 +248,7 @@ its status is `active`, and its audience
 automatically when it expires, as long as the authorization server issued a
 refresh token.
 
-## GitHub App installation access (G5)
+## GitHub App installation access
 
 Unlike OAuth there is no flow and no stored access token: Lightspeed holds the
 app's private key encrypted and the broker mints ~1 hour installation tokens

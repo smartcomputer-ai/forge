@@ -1,4 +1,4 @@
-//! Per-call tool batch execution (P114).
+//! Per-call tool batch execution.
 //!
 //! Ordinary batches schedule one Temporal activity per executable call and
 //! resume the drive progressively: each terminal call result appends durably
@@ -245,9 +245,15 @@ fn call_activity<'a>(
     request: &ToolInvocationBatchRequest,
     index: usize,
 ) -> impl CancellableFuture<CallActivityOutcome> + use<'a> {
-    let execution = call_execution_spec(state, &request.calls[index].tool_name);
+    let call = &request.calls[index];
+    let remote_mcp = engine::remote_mcp_call_runtime(state, &call.tool_name, &call.call_id);
+    let execution = if remote_mcp.is_some() {
+        ToolExecutionSpec::new(engine::ToolExecutionClass::RemoteInteractive, false)
+    } else {
+        call_execution_spec(state, &call.tool_name)
+    };
     let call_request = request
-        .call_request(index, execution)
+        .call_request(index, execution, remote_mcp)
         .expect("group indices come from this batch request");
     activity_ctx.start_activity(
         WorkflowActivities::tool_invoke_call,
@@ -264,7 +270,7 @@ fn call_activity<'a>(
 /// call id does not match the scheduled call is rejected as a boundary
 /// failure. A call that did not execute because its active environment is
 /// still provisioning waits for readiness in a dedicated heartbeated activity
-/// and is re-dispatched once (P125). The drive then appends the durable
+/// and is re-dispatched once. The drive then appends the durable
 /// per-call completion.
 async fn resume_call(
     ctx: &mut WorkflowContext<AgentSessionWorkflow>,
@@ -273,6 +279,25 @@ async fn resume_call(
     index: usize,
     outcome: Result<ToolInvokeCallActivityResult, ActivityExecutionError>,
 ) -> anyhow::Result<()> {
+    if let Ok(ToolInvokeCallActivityResult::NeedsApproval { subject }) = &outcome {
+        let action = drive.request_native_mcp_approval(
+            request.batch_id,
+            request.calls[index].call_id.clone(),
+            subject.clone(),
+            workflow_time_ms(ctx),
+        )?;
+        return match action {
+            CoreAgentAction::AppendEvents {
+                expected_head,
+                events,
+            } => drive::append_events(ctx, drive, expected_head, events)
+                .await
+                .map(|_| ()),
+            other => {
+                anyhow::bail!("native MCP approval request emitted unexpected action: {other:?}")
+            }
+        };
+    }
     let outcome = match outcome {
         Ok(ToolInvokeCallActivityResult::EnvironmentNotReady { environment_id }) => {
             match await_environment_then_redispatch(ctx, drive, request, index, environment_id)
@@ -285,6 +310,9 @@ async fn resume_call(
             }
         }
         Ok(ToolInvokeCallActivityResult::Completed { result }) => CallOutcome::Completed(result),
+        Ok(ToolInvokeCallActivityResult::NeedsApproval { .. }) => {
+            unreachable!("handled above")
+        }
         Err(error) => CallOutcome::ActivityFailed(Box::new(error)),
     };
     let scheduled_call_id = &request.calls[index].call_id;
@@ -383,6 +411,12 @@ async fn await_environment_then_redispatch(
                     CallOutcome::EnvironmentUnusable(format!(
                         "active environment {environment_id} was still not ready after the readiness wait"
                     ))
+                }
+                Ok(ToolInvokeCallActivityResult::NeedsApproval { .. }) => {
+                    CallOutcome::EnvironmentUnusable(
+                        "unexpected native MCP approval after environment readiness wait"
+                            .to_owned(),
+                    )
                 }
                 Err(error) => CallOutcome::ActivityFailed(Box::new(error)),
             }

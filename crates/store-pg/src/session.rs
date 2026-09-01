@@ -2,11 +2,12 @@ use async_trait::async_trait;
 use engine::{
     session::{EventSeq, SessionId, SessionPosition, StoredSessionEntry, UncommittedStoredEvent},
     storage::{
-        AppendSessionEvents, AppendSessionEventsResult, CreateClonedSession, CreateForkedSession,
-        CreateSession, ListSessions, ReadSessionEvents, SessionLifecycleStatus, SessionListCursor,
-        SessionListPage, SessionOrigin, SessionOriginCounts, SessionPage, SessionRecord,
-        SessionStore, SessionStoreError, apply_lifecycle_projection, check_origin_limits,
-        largest_safe_fork_seq, lifecycle_at_fork, validate_fork_point,
+        AdvanceSessionCheckpoint, AppendSessionEvents, AppendSessionEventsResult,
+        CreateClonedSession, CreateForkedSession, CreateSession, ListSessions,
+        ReadSessionEventRange, ReadSessionEvents, SessionCheckpoint, SessionLifecycleStatus,
+        SessionListCursor, SessionListPage, SessionOrigin, SessionOriginCounts, SessionPage,
+        SessionRecord, SessionStore, SessionStoreError, apply_lifecycle_projection,
+        check_origin_limits, largest_safe_fork_seq, lifecycle_at_fork, validate_fork_point,
     },
 };
 use sqlx::{Postgres, Row, Transaction};
@@ -191,16 +192,27 @@ impl PgStore {
         after: u64,
         limit: usize,
     ) -> Result<Vec<StoredSessionEntry>, SessionStoreError> {
-        if limit == 0 {
-            return Ok(Vec::new());
-        }
         let record = self.load_session(session_id).await?.ok_or_else(|| {
             SessionStoreError::SessionNotFound {
                 session_id: session_id.clone(),
             }
         })?;
-        let head = record.head.as_ref().map_or(0, |head| head.seq.as_u64());
-        let segments = self.resolve_segments(&record.session_id, head).await?;
+        let through = record.head.as_ref().map_or(0, |head| head.seq.as_u64());
+        self.read_effective_window_through(session_id, after, through, limit)
+            .await
+    }
+
+    async fn read_effective_window_through(
+        &self,
+        session_id: &SessionId,
+        after: u64,
+        through: u64,
+        limit: usize,
+    ) -> Result<Vec<StoredSessionEntry>, SessionStoreError> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let segments = self.resolve_segments(session_id, through).await?;
         let mut selected = Vec::with_capacity(limit);
         for segment in segments {
             if selected.len() >= limit {
@@ -823,6 +835,180 @@ impl SessionStore for PgStore {
             next_after,
             complete,
         })
+    }
+
+    async fn read_range(
+        &self,
+        request: ReadSessionEventRange,
+    ) -> Result<SessionPage, SessionStoreError> {
+        if request.limit == 0 {
+            return Err(SessionStoreError::InvalidLimit { limit: 0 });
+        }
+        if request.after >= request.through {
+            return Ok(SessionPage {
+                entries: Vec::new(),
+                next_after: Some(request.after),
+                complete: true,
+            });
+        }
+        let mut selected = self
+            .read_effective_window_through(
+                &request.session_id,
+                request.after.as_u64(),
+                request.through.as_u64(),
+                request.limit.saturating_add(1),
+            )
+            .await?;
+        let complete = selected.len() <= request.limit;
+        if !complete {
+            selected.truncate(request.limit);
+        }
+        let next_after = selected.last().map(|entry| entry.position.seq);
+        Ok(SessionPage {
+            entries: selected,
+            next_after,
+            complete,
+        })
+    }
+
+    async fn load_checkpoint(
+        &self,
+        session_id: &SessionId,
+    ) -> Result<Option<SessionCheckpoint>, SessionStoreError> {
+        let row = sqlx::query(
+            r#"
+            SELECT through_seq, format_version, state_digest,
+                   lineage_source_session_id, lineage_source_seq,
+                   byte_len, created_at_ms
+            FROM session_checkpoints
+            WHERE universe_id = $1 AND session_id = $2
+            "#,
+        )
+        .bind(self.config.universe_id)
+        .bind(session_id.as_str())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|error| session_sql_error("load session checkpoint", error))?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let state_digest: String = row
+            .try_get("state_digest")
+            .map_err(|error| session_sql_error("decode checkpoint digest", error))?;
+        let state_ref =
+            engine::BlobRef::parse(format!("sha256:{state_digest}")).map_err(|error| {
+                SessionStoreError::Store {
+                    message: format!("decode checkpoint blob ref: {error}"),
+                }
+            })?;
+        let through_seq: i64 = row
+            .try_get("through_seq")
+            .map_err(|error| session_sql_error("decode checkpoint sequence", error))?;
+        let format_version: i32 = row
+            .try_get("format_version")
+            .map_err(|error| session_sql_error("decode checkpoint format", error))?;
+        let lineage_source_session_id = row
+            .try_get::<Option<String>, _>("lineage_source_session_id")
+            .map_err(|error| session_sql_error("decode checkpoint lineage session", error))?
+            .map(SessionId::try_new)
+            .transpose()
+            .map_err(|error| SessionStoreError::Store {
+                message: format!("decode checkpoint lineage session: {error}"),
+            })?;
+        let lineage_source_seq = row
+            .try_get::<Option<i64>, _>("lineage_source_seq")
+            .map_err(|error| session_sql_error("decode checkpoint lineage sequence", error))?
+            .map(|seq| i64_to_u64(seq, "checkpoint lineage sequence").map(EventSeq::new))
+            .transpose()
+            .map_err(|message| SessionStoreError::Store { message })?;
+        let byte_len: i64 = row
+            .try_get("byte_len")
+            .map_err(|error| session_sql_error("decode checkpoint byte length", error))?;
+        let created_at_ms: i64 = row
+            .try_get("created_at_ms")
+            .map_err(|error| session_sql_error("decode checkpoint created time", error))?;
+        Ok(Some(SessionCheckpoint {
+            session_id: session_id.clone(),
+            through_seq: EventSeq::new(
+                i64_to_u64(through_seq, "checkpoint sequence")
+                    .map_err(|message| SessionStoreError::Store { message })?,
+            ),
+            format_version: u32::try_from(format_version).map_err(|_| {
+                SessionStoreError::Store {
+                    message: format!("checkpoint format version is invalid: {format_version}"),
+                }
+            })?,
+            state_ref,
+            lineage_source_session_id,
+            lineage_source_seq,
+            byte_len: i64_to_u64(byte_len, "checkpoint byte length")
+                .map_err(|message| SessionStoreError::Store { message })?,
+            created_at_ms: i64_to_u64(created_at_ms, "checkpoint created time")
+                .map_err(|message| SessionStoreError::Store { message })?,
+        }))
+    }
+
+    async fn advance_checkpoint(
+        &self,
+        request: AdvanceSessionCheckpoint,
+    ) -> Result<bool, SessionStoreError> {
+        let checkpoint = request.checkpoint;
+        let digest = checkpoint
+            .state_ref
+            .as_str()
+            .strip_prefix("sha256:")
+            .ok_or_else(|| SessionStoreError::Store {
+                message: format!("unsupported checkpoint blob ref: {}", checkpoint.state_ref),
+            })?;
+        let result = sqlx::query(
+            r#"
+            INSERT INTO session_checkpoints (
+                universe_id, session_id, through_seq, format_version,
+                state_digest, lineage_source_session_id, lineage_source_seq,
+                byte_len, created_at_ms
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            ON CONFLICT (universe_id, session_id) DO UPDATE SET
+                through_seq = excluded.through_seq,
+                format_version = excluded.format_version,
+                state_digest = excluded.state_digest,
+                lineage_source_session_id = excluded.lineage_source_session_id,
+                lineage_source_seq = excluded.lineage_source_seq,
+                byte_len = excluded.byte_len,
+                created_at_ms = excluded.created_at_ms
+            WHERE session_checkpoints.through_seq < excluded.through_seq
+            "#,
+        )
+        .bind(self.config.universe_id)
+        .bind(checkpoint.session_id.as_str())
+        .bind(event_seq_to_i64(checkpoint.through_seq)?)
+        .bind(
+            i32::try_from(checkpoint.format_version).map_err(|_| SessionStoreError::Store {
+                message: "checkpoint format version exceeds Postgres integer".to_owned(),
+            })?,
+        )
+        .bind(digest)
+        .bind(
+            checkpoint
+                .lineage_source_session_id
+                .as_ref()
+                .map(SessionId::as_str),
+        )
+        .bind(
+            checkpoint
+                .lineage_source_seq
+                .map(event_seq_to_i64)
+                .transpose()?,
+        )
+        .bind(u64_to_i64(checkpoint.byte_len, "checkpoint byte length")?)
+        .bind(u64_to_i64(
+            checkpoint.created_at_ms,
+            "checkpoint created time",
+        )?)
+        .execute(&self.pool)
+        .await
+        .map_err(|error| session_sql_error("advance session checkpoint", error))?;
+        Ok(result.rows_affected() == 1)
     }
 
     async fn head(

@@ -1,5 +1,5 @@
 use crate::{
-    CodecError, ContextEvent, CoreAgentEntry, CoreAgentEvent, CoreAgentJoins,
+    ApprovalEvent, CodecError, ContextEvent, CoreAgentEntry, CoreAgentEvent, CoreAgentJoins,
     CoreAgentLifecycleEvent, CorrelationId, PromiseEvent, RunEvent, RunId, StoredEvent,
     SubmissionId, ToolBatchId, ToolCallId, ToolConfigEvent, ToolEvent, TurnEvent, TurnId,
     UncommittedCoreAgentEvent, WorkflowToolConfigEvent,
@@ -121,6 +121,12 @@ fn core_agent_event_envelope_kind(event: &CoreAgentEvent) -> &'static str {
             RunEvent::Cancelled { .. } => "lightspeed.core.run.cancelled",
             RunEvent::ForceCancelled { .. } => "lightspeed.core.run.force_cancelled",
             RunEvent::QueuedCancelled { .. } => "lightspeed.core.run.queued_cancelled",
+        },
+        CoreAgentEvent::Approval(event) => match event {
+            ApprovalEvent::Requested { .. } => "lightspeed.core.approval.requested",
+            ApprovalEvent::RunParked { .. } => "lightspeed.core.approval.run_parked",
+            ApprovalEvent::Decided { .. } => "lightspeed.core.approval.decided",
+            ApprovalEvent::Cancelled { .. } => "lightspeed.core.approval.cancelled",
         },
         CoreAgentEvent::Turn(event) => match event {
             TurnEvent::Started { .. } => "lightspeed.core.turn.started",

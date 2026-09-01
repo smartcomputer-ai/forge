@@ -296,11 +296,13 @@ fn active_tools(
                     .into());
                 }
             }
-            ToolKind::RemoteMcp(_) => {
-                if !remote_mcp_supported_by_provider(api_kind) {
+            ToolKind::RemoteMcp(remote) => {
+                if remote.execution == crate::RemoteMcpExecution::Provider
+                    && !remote_mcp_supported_by_provider(api_kind)
+                {
                     return Err(DomainError::ProviderCompatibility(format!(
-                        "remote MCP tool {} is not supported by request api kind {:?}",
-                        tool.name, api_kind
+                        "provider-executed MCP tool {} is not supported by request api kind {:?}; switch the server record to native execution or register a native twin",
+                        tool.name, api_kind,
                     ))
                     .into());
                 }
@@ -467,10 +469,13 @@ mod tests {
             execution: Default::default(),
             kind: ToolKind::RemoteMcp(crate::RemoteMcpToolSpec {
                 server_id: auth_ref_id.to_owned(),
+                record_revision: 1,
                 server_label: "echo".to_owned(),
                 server_url: "https://echo.example.com/mcp".to_owned(),
                 description_ref: None,
                 allowed_tools: Some(vec!["hello".to_owned()]),
+                execution: crate::RemoteMcpExecution::Provider,
+                exposure: crate::RemoteMcpExposure::Inject,
                 approval: crate::RemoteMcpApprovalPolicy::Never,
                 defer_loading: Some(true),
                 auth_ref: Some(crate::SecretRef {
@@ -478,6 +483,7 @@ mod tests {
                     id: auth_ref_id.to_owned(),
                 }),
                 auth_required: true,
+                allow_private_network: false,
             }),
             parallelism: crate::ToolParallelism::ParallelSafe,
         }
@@ -517,8 +523,27 @@ mod tests {
         let PlanningError::Domain(DomainError::ProviderCompatibility(message)) = error else {
             panic!("expected provider compatibility error, got {error:?}");
         };
-        assert!(message.contains("remote MCP tool mcp_echo"));
+        assert!(message.contains("provider-executed MCP tool mcp_echo"));
         assert!(message.contains("OpenAiCompletions"));
+    }
+
+    #[test]
+    fn native_mcp_tool_selection_accepts_openai_completions() {
+        let mut state = state_with_remote_mcp_tool();
+        let ToolKind::RemoteMcp(spec) = &mut state
+            .tooling
+            .tools
+            .get_mut(&crate::ToolName::new("mcp_echo"))
+            .expect("remote MCP tool")
+            .kind
+        else {
+            unreachable!("fixture is remote MCP")
+        };
+        spec.execution = crate::RemoteMcpExecution::Native;
+
+        let tools = active_tools(&state, &ProviderApiKind::OpenAiCompletions)
+            .expect("native MCP should work on OpenAI-compatible completions");
+        assert_eq!(tools.len(), 1);
     }
 
     #[test]

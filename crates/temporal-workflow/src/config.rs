@@ -47,7 +47,7 @@ pub fn activity_options() -> ActivityOptions {
     ActivityOptions::start_to_close_timeout(DEFAULT_ACTIVITY_START_TO_CLOSE_TIMEOUT)
 }
 
-// Tool execution classes (P114). Every tool activity carries a bounded
+// Tool execution classes. Every tool activity carries a bounded
 // operation deadline, a Temporal start-to-close, a schedule-to-close total
 // deadline, and a bounded retry policy:
 //
@@ -83,7 +83,7 @@ pub const TOOL_PROCESS_GRACE: Duration = Duration::from_secs(60);
 pub const TOOL_RETRY_SAFE_MAX_ATTEMPTS: i32 = 3;
 
 /// Bounded wait for a session's active environment to become reachable
-/// before an environment-dependent call is re-dispatched (P125). The wait is
+/// before an environment-dependent call is re-dispatched. The wait is
 /// a separate heartbeated activity so tool classes keep their own deadlines.
 pub const ENVIRONMENT_READY_WAIT: Duration = Duration::from_secs(10 * 60);
 /// Heartbeat interval budget for the readiness wait; the worker heartbeats
@@ -113,7 +113,7 @@ pub fn boundary_error_blob_activity_options() -> ActivityOptions {
     .build()
 }
 
-// LLM provider activity policy (P116). Generation and compaction execute one
+// LLM provider activity policy. Generation and compaction execute one
 // bounded provider call per attempt; Temporal owns durable backoff between
 // attempts. Only the typed `llm_provider_transient` application failure is
 // retryable — terminal provider errors complete the activity with a failed

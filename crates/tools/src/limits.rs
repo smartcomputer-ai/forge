@@ -11,7 +11,7 @@ pub struct ToolLimits {
     /// the hosted runtime derives its process activity deadline from the same
     /// ceiling (asserted by a temporal-server test).
     pub max_process_timeout_ms: u64,
-    /// Deployment-owned bounds on recursive text search (P114). The same
+    /// Deployment-owned bounds on recursive text search. The same
     /// bounds are sent to a native host search and enforced by the generic
     /// fallback; a caller may request fewer matches but can never raise any
     /// bound.

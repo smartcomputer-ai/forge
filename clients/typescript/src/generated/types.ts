@@ -42,7 +42,7 @@ export type ProviderNativeToolExecutionView = "providerHosted" | "clientEffect";
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "RemoteMcpApprovalPolicy".
  */
-export type RemoteMcpApprovalPolicy = "providerDefault" | "always" | "never";
+export type RemoteMcpApprovalPolicy = "never" | "always";
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "ToolParallelismView".
@@ -67,7 +67,8 @@ export type AgentApiErrorKind =
       | "internal"
     )
   | "session_bootstrap_failed"
-  | "environment_not_ready";
+  | "environment_not_ready"
+  | "response_too_large";
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "AgentNotification".
@@ -169,6 +170,10 @@ export type ContextEntryKindView =
     }
   | {
       type: "providerOpaque";
+    }
+  | {
+      approve: boolean;
+      type: "mcpApprovalResponse";
     };
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
@@ -200,6 +205,11 @@ export type ContextEntrySourceView =
       type: "assistantOutput";
     }
   | {
+      approvalId: string;
+      runId: string;
+      type: "approvalDecision";
+    }
+  | {
       batchId?: string | null;
       runId: string;
       turnId: string;
@@ -219,6 +229,34 @@ export type ContextEntrySourceView =
  * via the `definition` "TokenEstimateQualityView".
  */
 export type TokenEstimateQualityView = "exact" | "providerCounted" | "estimated";
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "ApprovalSubjectView".
+ */
+export type ApprovalSubjectView = {
+  argumentsPreview: string;
+  argumentsRef: string;
+  kind: "mcpToolCall";
+  serverId: string;
+  serverLabel: string;
+  toolName: string;
+};
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "RunSummarySourceView".
+ */
+export type RunSummarySourceView = {
+  contentRef?: string | null;
+  preview?: string | null;
+  previewTruncated?: boolean;
+  type: "input";
+};
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "RunStatus".
+ */
+export type RunStatus =
+  "queued" | "running" | "parked" | "cancelling" | "completed" | "failed" | "cancelled";
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "CompactionPolicy".
@@ -381,60 +419,6 @@ export type BoundWorkflowToolDispatchInput = "pull" | "push";
 export type SessionOriginKind = "subagent";
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "RunViewSource".
- */
-export type RunViewSource =
-  | {
-      items: InputItem[];
-      type: "input";
-    }
-  | {
-      keys: string[];
-      type: "context";
-    };
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "InputItem".
- */
-export type InputItem =
-  | {
-      text: string;
-      type: "text";
-    }
-  | {
-      blobRef: string;
-      type: "textRef";
-    }
-  | {
-      blobRef: string;
-      kind: MediaKind;
-      mime: string;
-      name?: string | null;
-      type: "media";
-    }
-  | {
-      /**
-       * The catalog body, plain text or Markdown.
-       */
-      text: string;
-      /**
-       * Short name shown as the catalog's heading, e.g. "Bot directory".
-       */
-      title: string;
-      type: "catalog";
-    };
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "MediaKind".
- */
-export type MediaKind = "image" | "audio" | "document";
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "RunStatus".
- */
-export type RunStatus = "queued" | "running" | "cancelling" | "completed" | "failed" | "cancelled";
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "SessionStatus".
  */
 export type SessionStatus = "notLoaded" | "idle" | "active" | "closed" | "error";
@@ -540,6 +524,29 @@ export type SessionEventKindView =
   | {
       runId: string;
       type: "runCancellationRequested";
+    }
+  | {
+      approvalId: string;
+      runId: string;
+      subject: ApprovalSubjectView;
+      type: "approvalRequested";
+    }
+  | {
+      runId: string;
+      type: "approvalRunParked";
+    }
+  | {
+      approvalId: string;
+      decidedBy?: PrincipalRefView | null;
+      decision: ApprovalDecisionKind;
+      note?: string | null;
+      runId: string;
+      type: "approvalDecided";
+    }
+  | {
+      approvalId: string;
+      runId: string;
+      type: "approvalCancelled";
     }
   | {
       outputRef?: string | null;
@@ -728,15 +735,64 @@ export type SessionEventKindView =
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "RunAcceptedSourceView".
  */
-export type RunAcceptedSourceView =
+export type RunAcceptedSourceView = {
+  entries: ContextEntryInputView[];
+  type: "input";
+};
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "PrincipalKind".
+ */
+export type PrincipalKind = "user" | "serviceAccount" | "universeDefault";
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "ApprovalDecisionKind".
+ */
+export type ApprovalDecisionKind = "approve" | "reject";
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "RunViewSource".
+ */
+export type RunViewSource = {
+  items: InputItem[];
+  type: "input";
+};
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "InputItem".
+ */
+export type InputItem =
   | {
-      entries: ContextEntryInputView[];
-      type: "input";
+      text: string;
+      type: "text";
     }
   | {
-      keys: string[];
-      type: "context";
+      blobRef: string;
+      type: "textRef";
+    }
+  | {
+      blobRef: string;
+      kind: MediaKind;
+      mime: string;
+      name?: string | null;
+      type: "media";
+    }
+  | {
+      /**
+       * The catalog body, plain text or Markdown.
+       */
+      text: string;
+      /**
+       * Short name shown as the catalog's heading, e.g. "Bot directory".
+       */
+      title: string;
+      type: "catalog";
     };
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "MediaKind".
+ */
+export type MediaKind = "image" | "audio" | "document";
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "AuthProviderKind".
@@ -764,11 +820,6 @@ export type AuthFlowStatus = "pending" | "completed" | "failed" | "expired";
  * via the `definition` "AuthGrantExposure".
  */
 export type AuthGrantExposure = "brokered" | "retrievable";
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "PrincipalKind".
- */
-export type PrincipalKind = "user" | "serviceAccount" | "universeDefault";
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "AuthGrantStatus".
@@ -1157,7 +1208,7 @@ export type ContextAppendStatus = "applied" | "unchanged" | "failed";
  */
 export type ContextRemoveStatus = "removed" | "absent" | "failed";
 /**
- * Steady power state of a provisioned environment (P126).
+ * Steady power state of a provisioned environment.
  *
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "EnvironmentPowerStateView".
@@ -1281,14 +1332,56 @@ export type McpServerCredential = {
 };
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "RemoteMcpExecution".
+ */
+export type RemoteMcpExecution = "provider" | "native";
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "RemoteMcpExposure".
+ */
+export type RemoteMcpExposure = "inject" | "search";
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "McpServerStatus".
  */
 export type McpServerStatus = "active" | "needsAuthConfig" | "unverified" | "disabled";
 /**
+ * The result of one live MCP `tools/list` exchange. Operational connection
+ * failures are data so management clients can render stable remediation;
+ * ordinary API admission/not-found/internal failures remain API errors.
+ *
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "RemoteMcpTransport".
+ * via the `definition` "McpServerToolsDiscoverResponse".
  */
-export type RemoteMcpTransport = "streamableHttp" | "sse" | "auto";
+export type McpServerToolsDiscoverResponse =
+  | {
+      status: "success";
+      tools: McpAdvertisedToolView[];
+    }
+  | {
+      code: McpToolDiscoveryFailureCode;
+      message: string;
+      required_scopes?: string[];
+      status: "failure";
+    };
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "McpToolDiscoveryFailureCode".
+ */
+export type McpToolDiscoveryFailureCode =
+  | "credentialAbsent"
+  | "grantNeedsReauth"
+  | "grantAudienceMismatch"
+  | "unauthorized"
+  | "forbidden"
+  | "additionalConsentRequired"
+  | "remoteRateLimited"
+  | "remoteFailure"
+  | "unreachable"
+  | "invalidResponse"
+  | "unsupportedProtocol"
+  | "paginationLimit"
+  | "responseTooLarge";
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "ModelSource".
@@ -1342,7 +1435,7 @@ export type ProfileEnvironment =
   | {
       /**
        * Credentials bound to the environment right after it is
-       * provisioned, before activation (P127 D5): references to universe
+       * provisioned before activation: references to universe
        * grants/providers/secrets, never values. They become ordinary
        * environment credential bindings; the profile is the initial set,
        * not a live sync. Not available for `existing` environments.
@@ -1350,8 +1443,8 @@ export type ProfileEnvironment =
       credentials?: ProfileEnvironmentCredential[];
       displayName?: string | null;
       /**
-       * Optional staged idle policy for the provisioned environment
-       * (P126). Stages the provider cannot realize are skipped.
+       * Optional staged idle policy for the provisioned environment.
+       * Stages the provider cannot realize are skipped.
        */
       idlePolicy?: EnvironmentIdlePolicyView | null;
       metadata?: {
@@ -1386,6 +1479,24 @@ export type ProfileInstructions =
       blobRef: string;
       type: "textRef";
     };
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "ApprovalDecisionFailureKind".
+ */
+export type ApprovalDecisionFailureKind =
+  | "invalidId"
+  | "unknown"
+  | "foreignRun"
+  | "alreadyDecided"
+  | "cancelled"
+  | "duplicate"
+  | "invalidNote"
+  | "rejected";
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "ApprovalDecisionStatus".
+ */
+export type ApprovalDecisionStatus = "decided" | "failed";
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "SkillActivationScope".
@@ -1546,15 +1657,10 @@ export type ProfileSource =
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "RunStartSource".
  */
-export type RunStartSource =
-  | {
-      items: InputItem[];
-      type: "input";
-    }
-  | {
-      keys: string[];
-      type: "context";
-    };
+export type RunStartSource = {
+  items: InputItem[];
+  type: "input";
+};
 
 /**
  * All JSON-RPC wire types of the Lightspeed agent API.
@@ -1605,6 +1711,12 @@ export interface SessionView {
    * The universe environment selected by the session event log.
    */
   activeEnvironmentId?: string | null;
+  /**
+   * The currently executing run, always present when one exists — the
+   * paged `runs` window can omit it behind newer queued runs, so control
+   * surfaces (steering, status) must read it from here.
+   */
+  activeRun?: RunSummaryView | null;
   activeTools?: ActiveToolsView;
   /**
    * The stored sparse config document, exactly as last put (model and
@@ -1630,7 +1742,7 @@ export interface SessionView {
    * Sub-agent lineage; absent for root sessions.
    */
   origin?: SessionOriginView | null;
-  runs?: RunView[];
+  runs?: RunSummaryView[];
   status: SessionStatus;
   updatedAtMs: number;
 }
@@ -1682,6 +1794,11 @@ export interface ContextEntryView {
    */
   supersedes?: string | null;
   text?: string | null;
+  /**
+   * True when `text` is a bounded prefix of the blob body; fetch
+   * `contentRef` for the complete content.
+   */
+  textTruncated?: boolean;
   tokenEstimate?: TokenEstimateView | null;
 }
 /**
@@ -1714,6 +1831,57 @@ export interface ToolCallDisplayView {
 export interface TokenEstimateView {
   quality: TokenEstimateQualityView;
   tokens: number;
+}
+/**
+ * Bounded run metadata projected from reducer state. Transcript entries and
+ * tool payloads are available only from `session/runs/read` or the event
+ * stream.
+ *
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "RunSummaryView".
+ */
+export interface RunSummaryView {
+  acceptedAtMs: number;
+  completedAtMs?: number | null;
+  id: string;
+  pendingApprovals?: PendingApprovalView[];
+  source: RunSummarySourceView;
+  startedAtMs?: number | null;
+  status: RunStatus;
+  usage?: LlmUsageView | null;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "PendingApprovalView".
+ */
+export interface PendingApprovalView {
+  approvalId: string;
+  requestedAtMs: number;
+  subject: ApprovalSubjectView;
+}
+/**
+ * Provider-reported token usage for one generation or a sum of them. Every
+ * field is optional because providers report different subsets; counts
+ * that a provider reports separately (Anthropic's cache read/write) are
+ * folded into `input_tokens` so the field always means "prompt tokens
+ * billed on this request, cached or not".
+ *
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "LlmUsageView".
+ */
+export interface LlmUsageView {
+  /**
+   * Prompt tokens written into the provider's prompt cache (Anthropic).
+   */
+  cacheWriteInputTokens?: number | null;
+  /**
+   * Prompt tokens served from the provider's prompt cache.
+   */
+  cachedInputTokens?: number | null;
+  inputTokens?: number | null;
+  outputTokens?: number | null;
+  reasoningTokens?: number | null;
+  totalTokens?: number | null;
 }
 /**
  * Declared session configuration document.
@@ -1800,16 +1968,13 @@ export interface McpFeature {
   version?: number;
 }
 /**
- * A linked catalog server with optional per-session overrides; absent
- * fields defer to the catalog record's defaults.
+ * A selected universe MCP server. Its catalog record owns all connection and
+ * behavior configuration.
  *
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "McpServerLink".
  */
 export interface McpServerLink {
-  allowedTools?: string[] | null;
-  approval?: RemoteMcpApprovalPolicy | null;
-  deferLoading?: boolean | null;
   serverId: string;
 }
 /**
@@ -2110,92 +2275,6 @@ export interface SubagentLimitsView {
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "RunView".
- */
-export interface RunView {
-  /**
-   * When the run reached a terminal state, derived from its committed
-   * completed, failed, or cancelled event. Absent for non-terminal runs.
-   */
-  completedAtMs?: number | null;
-  entries?: ContextEntryView[];
-  id: string;
-  source: RunViewSource;
-  /**
-   * When the run left the queue and began executing, derived from the
-   * committed `runStarted` event. Absent while the run is queued.
-   */
-  startedAtMs?: number | null;
-  status: RunStatus;
-  toolBatches?: ToolBatchView[];
-  /**
-   * Provider token usage summed over the run's completed generations;
-   * absent until the first generation reports usage. The cached share
-   * (`cachedInputTokens / inputTokens`) is the prompt-cache hit rate.
-   */
-  usage?: LlmUsageView | null;
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "ToolBatchView".
- */
-export interface ToolBatchView {
-  calls?: ToolCallView[];
-  id: string;
-  status: ToolItemStatus;
-  turnId: string;
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "ToolCallView".
- */
-export interface ToolCallView {
-  arguments?: string | null;
-  argumentsRef: string;
-  callId: string;
-  display?: ToolCallDisplayView | null;
-  effects?: ToolEffectView[];
-  isError?: boolean;
-  output?: string | null;
-  status: ToolItemStatus;
-  toolName: string;
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "ToolEffectView".
- */
-export interface ToolEffectView {
-  data?: {
-    [k: string]: string;
-  };
-  kind: string;
-}
-/**
- * Provider-reported token usage for one generation or a sum of them. Every
- * field is optional because providers report different subsets; counts
- * that a provider reports separately (Anthropic's cache read/write) are
- * folded into `input_tokens` so the field always means "prompt tokens
- * billed on this request, cached or not".
- *
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "LlmUsageView".
- */
-export interface LlmUsageView {
-  /**
-   * Prompt tokens written into the provider's prompt cache (Anthropic).
-   */
-  cacheWriteInputTokens?: number | null;
-  /**
-   * Prompt tokens served from the provider's prompt cache.
-   */
-  cachedInputTokens?: number | null;
-  inputTokens?: number | null;
-  outputTokens?: number | null;
-  reasoningTokens?: number | null;
-  totalTokens?: number | null;
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "SessionEventView".
  */
 export interface SessionEventView {
@@ -2239,6 +2318,14 @@ export interface ContextEntryInputView {
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "PrincipalRefView".
+ */
+export interface PrincipalRefView {
+  id?: string | null;
+  kind?: PrincipalKind & string;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "ToolCallEventView".
  */
 export interface ToolCallEventView {
@@ -2246,6 +2333,69 @@ export interface ToolCallEventView {
   argumentsRef: string;
   callId: string;
   display?: ToolCallDisplayView | null;
+  toolName: string;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "ToolEffectView".
+ */
+export interface ToolEffectView {
+  data?: {
+    [k: string]: string;
+  };
+  kind: string;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "RunView".
+ */
+export interface RunView {
+  /**
+   * When the run reached a terminal state, derived from its committed
+   * completed, failed, or cancelled event. Absent for non-terminal runs.
+   */
+  completedAtMs?: number | null;
+  entries?: ContextEntryView[];
+  id: string;
+  pendingApprovals?: PendingApprovalView[];
+  source: RunViewSource;
+  /**
+   * When the run left the queue and began executing, derived from the
+   * committed `runStarted` event. Absent while the run is queued.
+   */
+  startedAtMs?: number | null;
+  status: RunStatus;
+  toolBatches?: ToolBatchView[];
+  /**
+   * Provider token usage summed over the run's completed generations;
+   * absent until the first generation reports usage. The cached share
+   * (`cachedInputTokens / inputTokens`) is the prompt-cache hit rate.
+   */
+  usage?: LlmUsageView | null;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "ToolBatchView".
+ */
+export interface ToolBatchView {
+  calls?: ToolCallView[];
+  id: string;
+  status: ToolItemStatus;
+  turnId: string;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "ToolCallView".
+ */
+export interface ToolCallView {
+  arguments?: string | null;
+  argumentsRef: string;
+  callId: string;
+  display?: ToolCallDisplayView | null;
+  effects?: ToolEffectView[];
+  isError?: boolean;
+  output?: string | null;
+  status: ToolItemStatus;
   toolName: string;
 }
 /**
@@ -2262,6 +2412,9 @@ export interface AuthClientCreateResponse {
 export interface OAuthClientView {
   audience?: string | null;
   authorizationEndpoint: string;
+  authorizationResponseIssParameterSupported?: boolean;
+  authorizationServerIssuer?: string | null;
+  authorizationServerScopesSupported?: string[];
   clientId: string;
   createdAtMs: number;
   displayName?: string | null;
@@ -2414,14 +2567,6 @@ export interface AuthGrantView {
   status: AuthGrantStatus;
   subjectHint?: string | null;
   updatedAtMs: number;
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "PrincipalRefView".
- */
-export interface PrincipalRefView {
-  id?: string | null;
-  kind?: PrincipalKind & string;
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
@@ -3720,7 +3865,21 @@ export interface AgentApiOutcomeOfContextCompactResponse {
  * via the `definition` "ContextCompactResponse".
  */
 export interface ContextCompactResponse {
-  session: SessionView;
+  session: SessionMutationView;
+}
+/**
+ * Compact acknowledgement returned by session mutations. Call
+ * `session/read` when the complete current-state summary is needed.
+ *
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "SessionMutationView".
+ */
+export interface SessionMutationView {
+  configRevision: number;
+  contextRevision: number;
+  headCursor?: EventCursor | null;
+  id: string;
+  status: SessionStatus;
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
@@ -4285,6 +4444,11 @@ export interface McpServerAuthDiscoverResponse {
 export interface McpOAuthDiscoveryView {
   authorizationServers?: string[];
   resource: string;
+  /**
+   * Scopes advertised by current protected-resource/authorization-server
+   * metadata. Advisory only; clients must not silently expand consent.
+   */
+  scopesSupported?: string[];
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
@@ -4306,6 +4470,7 @@ export interface McpServerDeleteResponse {
  * via the `definition` "McpServerView".
  */
 export interface McpServerView {
+  allowPrivateNetwork: boolean;
   allowedTools?: string[] | null;
   approvalDefault: RemoteMcpApprovalPolicy;
   authPolicy: McpServerAuthPolicy;
@@ -4315,11 +4480,12 @@ export interface McpServerView {
   deferLoadingDefault?: boolean | null;
   description?: string | null;
   displayName?: string | null;
+  execution: RemoteMcpExecution;
+  exposure: RemoteMcpExposure;
   revision: number;
   serverId: string;
   serverUrl: string;
   status: McpServerStatus;
-  transport: RemoteMcpTransport;
   updatedAtMs: number;
 }
 /**
@@ -4369,6 +4535,37 @@ export interface McpServerReadResponse {
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "AgentApiOutcomeOfMcpServerToolsDiscoverResponse".
+ */
+export interface AgentApiOutcomeOfMcpServerToolsDiscoverResponse {
+  notifications?: AgentNotification[];
+  result: McpServerToolsDiscoverResponse;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "McpAdvertisedToolView".
+ */
+export interface McpAdvertisedToolView {
+  annotations?: McpToolAnnotationsView | null;
+  description?: string | null;
+  name: string;
+  title?: string | null;
+}
+/**
+ * Narrow projection of standard MCP `ToolAnnotations`. All values are
+ * untrusted hints and never authorization facts.
+ *
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "McpToolAnnotationsView".
+ */
+export interface McpToolAnnotationsView {
+  destructiveHint?: boolean | null;
+  idempotentHint?: boolean | null;
+  openWorldHint?: boolean | null;
+  readOnlyHint?: boolean | null;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "AgentApiOutcomeOfModelListResponse".
  */
 export interface AgentApiOutcomeOfModelListResponse {
@@ -4405,7 +4602,7 @@ export interface ModelView {
   model: string;
   providerId: string;
   /**
-   * Always `provider` in P97: there is no maintained model catalog.
+   * Always `provider`; there is no maintained model catalog.
    */
   source: ModelSource;
 }
@@ -4940,6 +5137,39 @@ export interface ProfileReadResponse {
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "AgentApiOutcomeOfRunApprovalsDecideResponse".
+ */
+export interface AgentApiOutcomeOfRunApprovalsDecideResponse {
+  notifications?: AgentNotification[];
+  result: RunApprovalsDecideResponse;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "RunApprovalsDecideResponse".
+ */
+export interface RunApprovalsDecideResponse {
+  results: ApprovalDecisionResult[];
+  run: RunView;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "ApprovalDecisionResult".
+ */
+export interface ApprovalDecisionResult {
+  approvalId: string;
+  failure?: ApprovalDecisionFailure | null;
+  status: ApprovalDecisionStatus;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "ApprovalDecisionFailure".
+ */
+export interface ApprovalDecisionFailure {
+  kind: ApprovalDecisionFailureKind;
+  message: string;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "AgentApiOutcomeOfRunCancelResponse".
  */
 export interface AgentApiOutcomeOfRunCancelResponse {
@@ -4951,6 +5181,44 @@ export interface AgentApiOutcomeOfRunCancelResponse {
  * via the `definition` "RunCancelResponse".
  */
 export interface RunCancelResponse {
+  run: RunView;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "AgentApiOutcomeOfRunListResponse".
+ */
+export interface AgentApiOutcomeOfRunListResponse {
+  notifications?: AgentNotification[];
+  result: RunListResponse;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "RunListResponse".
+ */
+export interface RunListResponse {
+  hasOlderRuns: boolean;
+  nextCursor?: string | null;
+  runs?: RunSummaryView[];
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "AgentApiOutcomeOfRunReadResponse".
+ */
+export interface AgentApiOutcomeOfRunReadResponse {
+  notifications?: AgentNotification[];
+  result: RunReadResponse;
+}
+/**
+ * The complete projection of one run. Run projection is stateful across the
+ * run's events, so partial pages would silently lose cross-event state; a
+ * run whose interval exceeds the server's detail ceiling is rejected with a
+ * typed error and remains readable through `session/events/read`. Inline
+ * entry text is bounded; full bodies stay blob-addressed via `contentRef`.
+ *
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "RunReadResponse".
+ */
+export interface RunReadResponse {
   run: RunView;
 }
 /**
@@ -5000,7 +5268,7 @@ export interface AgentApiOutcomeOfSessionCloseResponse {
  * via the `definition` "SessionCloseResponse".
  */
 export interface SessionCloseResponse {
-  session: SessionView;
+  session: SessionMutationView;
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
@@ -5015,7 +5283,7 @@ export interface AgentApiOutcomeOfSessionConfigPutResponse {
  * via the `definition` "SessionConfigPutResponse".
  */
 export interface SessionConfigPutResponse {
-  session: SessionView;
+  session: SessionMutationView;
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
@@ -5123,6 +5391,11 @@ export interface AgentApiOutcomeOfSessionReadResponse {
  * via the `definition` "SessionReadResponse".
  */
 export interface SessionReadResponse {
+  hasOlderRuns: boolean;
+  /**
+   * Exclusive upper run-id bound for `session/runs/list`.
+   */
+  nextRunCursor?: string | null;
   session: SessionView;
 }
 /**
@@ -5153,7 +5426,7 @@ export interface AgentApiOutcomeOfSessionStartResponse {
  * via the `definition` "SessionStartResponse".
  */
 export interface SessionStartResponse {
-  session: SessionView;
+  session: SessionMutationView;
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
@@ -5395,6 +5668,15 @@ export interface AgentProfileInput {
   profileId: ProfileId;
 }
 /**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "ApprovalDecisionInput".
+ */
+export interface ApprovalDecisionInput {
+  approvalId: string;
+  decision: ApprovalDecisionKind;
+  note?: string | null;
+}
+/**
  * Register an OAuth client configuration. `client_secret` is the second
  * deliberate inbound-plaintext path after `auth/grants/import`: it is
  * encrypted on receipt and never returned by any method. `Debug` output
@@ -5406,6 +5688,9 @@ export interface AgentProfileInput {
 export interface AuthClientCreateParams {
   audience?: string | null;
   authorizationEndpoint: string;
+  authorizationResponseIssParameterSupported?: boolean;
+  authorizationServerIssuer?: string | null;
+  authorizationServerScopesSupported?: string[];
   clientId?: string | null;
   clientSecret?: string | null;
   displayName?: string | null;
@@ -6315,6 +6600,7 @@ export interface McpServerDeleteParams {
  * via the `definition` "McpServerInput".
  */
 export interface McpServerInput {
+  allowPrivateNetwork?: boolean;
   allowedTools?: string[] | null;
   approvalDefault?: RemoteMcpApprovalPolicy & string;
   authPolicy?: McpServerAuthPolicy;
@@ -6323,10 +6609,11 @@ export interface McpServerInput {
   deferLoadingDefault?: boolean | null;
   description?: string | null;
   displayName?: string | null;
+  execution?: RemoteMcpExecution & string;
+  exposure?: RemoteMcpExposure & string;
   serverId: string;
   serverUrl: string;
   status?: McpServerStatus & string;
-  transport?: RemoteMcpTransport & string;
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
@@ -6352,6 +6639,15 @@ export interface McpServerPutParams {
  * via the `definition` "McpServerReadParams".
  */
 export interface McpServerReadParams {
+  serverId: string;
+}
+/**
+ * Live, non-persisting tool discovery for a configured MCP server.
+ *
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "McpServerToolsDiscoverParams".
+ */
+export interface McpServerToolsDiscoverParams {
   serverId: string;
 }
 /**
@@ -6567,6 +6863,15 @@ export interface ProfileReadParams {
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "RunApprovalsDecideParams".
+ */
+export interface RunApprovalsDecideParams {
+  decisions: ApprovalDecisionInput[];
+  runId: string;
+  sessionId: string;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "RunCancelParams".
  */
 export interface RunCancelParams {
@@ -6580,6 +6885,26 @@ export interface RunCancelParams {
 export interface RunLimitsConfig {
   maxToolRounds?: number | null;
   maxTurns?: number | null;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "RunListParams".
+ */
+export interface RunListParams {
+  /**
+   * Exclusive upper run-id bound from a previous page.
+   */
+  cursor?: string | null;
+  limit?: number | null;
+  sessionId: string;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "RunReadParams".
+ */
+export interface RunReadParams {
+  runId: string;
+  sessionId: string;
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
@@ -6732,6 +7057,11 @@ export interface SessionListParams {
  * via the `definition` "SessionReadParams".
  */
 export interface SessionReadParams {
+  /**
+   * Newest run summaries to include. Values above the server maximum are
+   * clamped.
+   */
+  runLimit?: number | null;
   sessionId: string;
 }
 /**

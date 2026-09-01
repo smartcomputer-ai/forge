@@ -235,7 +235,7 @@ describe("sub-agent feature config", () => {
 });
 
 describe("MCP feature config", () => {
-  it("keeps only server selection and behavioral overrides", () => {
+  it("keeps only server selection", () => {
     expect(normalizeSessionConfig({
       features: {
         mcp: {
@@ -252,9 +252,6 @@ describe("MCP feature config", () => {
         mcp: {
           servers: [{
             serverId: "github",
-            allowedTools: ["search"],
-            approval: "never",
-            deferLoading: true,
           }],
         },
       },

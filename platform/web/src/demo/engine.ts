@@ -8,6 +8,7 @@ import type {
   EventJoinsView,
   ModelConfig,
   RunAcceptedSourceView,
+  RunSummaryView,
   RunView,
   SessionEventKindView,
   SessionEventView,
@@ -195,6 +196,7 @@ export function newSession(
     activeContext: { revision: 0, entries: [] },
     instructions: null,
     submissions: new Map(),
+    runs: new Map(),
     queue: [],
     steering: [],
     timers: new Set(),
@@ -254,14 +256,13 @@ export function inputSource(store: DemoStore, text: string): RunAcceptedSourceVi
 }
 
 export function findRun(session: SessionRecord, runId: string): RunView | null {
-  return session.view.runs?.find((run) => run.id === runId) ?? null;
+  return session.runs.get(runId) ?? null;
 }
 
 export function activeRun(session: SessionRecord): RunView | null {
-  return (
-    session.view.runs?.find((run) => run.status === "running" || run.status === "cancelling") ??
-    null
-  );
+  return [...session.runs.values()].find(
+    (run) => run.status === "running" || run.status === "cancelling",
+  ) ?? null;
 }
 
 // ---------------------------------------------------------------------------
@@ -278,6 +279,8 @@ export interface RunInput {
   onFinished?: (run: RunView) => void;
 }
 
+type DemoRun = RunView & RunSummaryView;
+
 /// Accepts a run: `running` at once when the session is idle, else `queued`
 /// behind the active run (mirrors the hosted acceptance boundary).
 export function startRun(
@@ -290,12 +293,20 @@ export function startRun(
     const existing = session.submissions.get(input.submissionId);
     if (existing) return existing;
   }
-  const run: RunView = {
+  const source = {
+    type: "input" as const,
+    items: input.source?.items ?? [{ type: "text" as const, text: input.text }],
+    preview: input.text,
+    previewTruncated: false,
+  };
+  const run: DemoRun = {
     id: store.nextId("run"),
     status: "queued",
-    source: input.source ?? { type: "input", items: [{ type: "text", text: input.text }] },
+    acceptedAtMs: Date.now(),
+    source,
   };
   session.view.runs = [...(session.view.runs ?? []), run];
+  session.runs.set(run.id, run);
   if (input.submissionId) session.submissions.set(input.submissionId, run);
   const joins: EventJoinsView = { runId: run.id, submissionId: input.submissionId ?? null };
   pushEvent(
@@ -639,13 +650,20 @@ export function appendExchange(
   session: SessionRecord,
   exchange: Exchange,
 ): RunView {
-  const run: RunView = {
+  const run: DemoRun = {
     id: store.nextId("run"),
     status: "running",
-    source: { type: "input", items: [{ type: "text", text: exchange.user }] },
+    acceptedAtMs: exchange.at,
+    source: {
+      type: "input",
+      items: [{ type: "text", text: exchange.user }],
+      preview: exchange.user,
+      previewTruncated: false,
+    },
     startedAtMs: exchange.at,
   };
   session.view.runs = [...(session.view.runs ?? []), run];
+  session.runs.set(run.id, run);
   const joins = { runId: run.id };
   let at = exchange.at;
   pushEvent(session, { type: "runAccepted", runId: run.id, source: inputSource(store, exchange.user) }, joins, at);
@@ -702,13 +720,20 @@ function entryChars(entries: ContextEntryView[]): number {
 /// every `turnGenerationCompleted`. Timestamps advance a few seconds per
 /// step from `script.at`.
 export function appendScriptedRun(store: DemoStore, session: SessionRecord, script: ScriptedRun): RunView {
-  const run: RunView = {
+  const run: DemoRun = {
     id: store.nextId("run"),
     status: "running",
-    source: { type: "input", items: [{ type: "text", text: script.user }] },
+    acceptedAtMs: script.at,
+    source: {
+      type: "input",
+      items: [{ type: "text", text: script.user }],
+      preview: script.user,
+      previewTruncated: false,
+    },
     startedAtMs: script.at,
   };
   session.view.runs = [...(session.view.runs ?? []), run];
+  session.runs.set(run.id, run);
   const runJoins: EventJoinsView = { runId: run.id };
   let clock = script.at;
   pushEvent(session, { type: "runAccepted", runId: run.id, source: inputSource(store, script.user) }, runJoins, clock);

@@ -15,12 +15,14 @@ use llm_clients::{
     openai::{completions as oai_completions, responses as oai},
 };
 use llm_runtime::{
-    AnthropicMessagesLlmAdapter, LlmAdapterRegistry, LlmRuntime, ModelProviderResolver,
-    OpenAiCompletionsLlmAdapter, OpenAiResponsesLlmAdapter, secrets::SecretResolver,
+    AnthropicMessagesLlmAdapter, LlmAdapterRegistry, LlmRuntime, McpInventoryResolver,
+    ModelProviderResolver, OpenAiCompletionsLlmAdapter, OpenAiResponsesLlmAdapter,
+    secrets::SecretResolver,
 };
 use store_pg::PgStore;
 use vfs::VfsWorkspaceStore;
 
+use crate::worker::mcp::{McpPrivateNetworkPolicy, NativeMcpInventoryResolver, NativeMcpRuntime};
 use crate::{
     config::pg_store_from_env,
     credential_injection::EnvironmentCredentialResolver,
@@ -54,9 +56,10 @@ pub struct ToolActivityDeps {
     pub(super) blobs: Arc<dyn BlobStore>,
     /// The hosted runtime behind `tools` when it is the real `SessionTools`:
     /// grants the per-call not-ready outcome and the environment readiness
-    /// wait (P125). Absent for injected fake runtimes, which never report a
+    /// wait. Absent for injected fake runtimes, which never report a
     /// not-ready environment.
     pub(super) hosted: Option<Arc<SessionTools>>,
+    pub(super) native_mcp: Option<Arc<NativeMcpRuntime>>,
 }
 
 #[derive(Clone)]
@@ -97,7 +100,7 @@ pub struct WorkflowToolExecutionDeps {
     pub(super) client: temporalio_client::Client,
 }
 
-/// Deps for the sub-agent execution activities (P134).
+/// Deps for the sub-agent execution activities.
 #[derive(Clone)]
 pub struct SubagentActivityDeps {
     pub(super) service: SubagentService,
@@ -136,6 +139,7 @@ impl ActivityState {
                 tools,
                 blobs: blobs.clone(),
                 hosted: None,
+                native_mcp: None,
             },
             runtime_projection: None,
             preprocess: PreprocessActivityDeps {
@@ -231,20 +235,78 @@ impl ActivityState {
         self
     }
 
+    pub fn with_native_mcp(mut self, native_mcp: Arc<NativeMcpRuntime>) -> Self {
+        self.tools.native_mcp = Some(native_mcp);
+        self
+    }
+
+    /// Attach the production native MCP executor while retaining explicitly
+    /// supplied LLM/tool doubles. Used by end-to-end workflow tests and
+    /// specialized deployments that wrap the standard runtime boundaries.
+    pub fn with_native_mcp_from_pg_store(mut self, store: Arc<PgStore>) -> anyhow::Result<Self> {
+        let broker = registry_token_broker(store.clone())?;
+        let mcp_servers: Arc<dyn mcp::McpRegistryStore> = store.clone();
+        let secrets: Arc<dyn SecretResolver> =
+            Arc::new(BrokerSecretResolver::new(broker, mcp_servers.clone()));
+        let private_networks = McpPrivateNetworkPolicy::from_env().map_err(anyhow::Error::msg)?;
+        let trusted_header =
+            crate::gateway::service::mcp_discovery::ConfiguratorTrustedHeaderPolicy::from_env()
+                .map_err(anyhow::Error::msg)?;
+        let universe_id = store.config().universe_id;
+        let inventory = Arc::new(NativeMcpInventoryResolver::new(
+            secrets.clone(),
+            private_networks.clone(),
+            trusted_header.clone(),
+            universe_id,
+        ));
+        self.tools.native_mcp = Some(Arc::new(NativeMcpRuntime::new(
+            mcp_servers,
+            secrets,
+            inventory,
+            private_networks,
+            trusted_header,
+            universe_id,
+        )));
+        Ok(self)
+    }
+
     pub fn from_pg_store_with_default_runtime(store: Arc<PgStore>) -> anyhow::Result<Self> {
         let blobs: Arc<dyn BlobStore> = store.clone();
         let broker = registry_token_broker(store.clone())?;
         let mcp_servers: Arc<dyn mcp::McpRegistryStore> = store.clone();
-        let secrets: Arc<dyn SecretResolver> =
-            Arc::new(BrokerSecretResolver::new(broker.clone(), mcp_servers));
+        let secrets: Arc<dyn SecretResolver> = Arc::new(BrokerSecretResolver::new(
+            broker.clone(),
+            mcp_servers.clone(),
+        ));
+        let private_networks = McpPrivateNetworkPolicy::from_env().map_err(anyhow::Error::msg)?;
+        let trusted_header =
+            crate::gateway::service::mcp_discovery::ConfiguratorTrustedHeaderPolicy::from_env()
+                .map_err(anyhow::Error::msg)?;
+        let universe_id = store.config().universe_id;
+        let native_inventory = Arc::new(NativeMcpInventoryResolver::new(
+            secrets.clone(),
+            private_networks.clone(),
+            trusted_header.clone(),
+            universe_id,
+        ));
+        let inventory: Arc<dyn McpInventoryResolver> = native_inventory.clone();
+        let native_mcp = Arc::new(NativeMcpRuntime::new(
+            mcp_servers,
+            secrets.clone(),
+            native_inventory,
+            private_networks,
+            trusted_header,
+            universe_id,
+        ));
         let provider_keys = stored_provider_key_resolver(store.clone(), broker);
         let transcriber = default_audio_transcriber(provider_keys.clone())?;
         let transcoder = default_audio_transcoder_from_env()?;
-        let llm = default_llm_runtime(blobs, Some(secrets), Some(provider_keys))?;
+        let llm = default_llm_runtime(blobs, Some(secrets), Some(provider_keys), Some(inventory))?;
         let hosted = Arc::new(SessionTools::from_pg_store(store.clone()));
         let tools: Arc<dyn CoreAgentTools> = hosted.clone();
         let mut state = Self::from_pg_store(store, llm, tools)
             .with_hosted_tools(hosted)
+            .with_native_mcp(native_mcp)
             .with_audio_transcriber(transcriber);
         if let Some(transcoder) = transcoder {
             state = state.with_audio_transcoder(transcoder);
@@ -254,7 +316,7 @@ impl ActivityState {
 
     /// Build a universe's activity state over the deployment's shared HTTP
     /// clients. Marginal per-universe cost is the resolver layers and tool
-    /// registry only; every HTTP client is shared (P90 follow-up).
+    /// registry only; every HTTP client is shared.
     pub fn from_pg_store_with_shared_clients(
         store: Arc<PgStore>,
         subagent_runtime: Option<Arc<dyn SubagentChildRuntime>>,
@@ -269,8 +331,30 @@ impl ActivityState {
             clients.github.clone(),
         );
         let mcp_servers: Arc<dyn mcp::McpRegistryStore> = store.clone();
-        let secrets: Arc<dyn SecretResolver> =
-            Arc::new(BrokerSecretResolver::new(broker.clone(), mcp_servers));
+        let secrets: Arc<dyn SecretResolver> = Arc::new(BrokerSecretResolver::new(
+            broker.clone(),
+            mcp_servers.clone(),
+        ));
+        let private_networks = McpPrivateNetworkPolicy::from_env().map_err(anyhow::Error::msg)?;
+        let trusted_header =
+            crate::gateway::service::mcp_discovery::ConfiguratorTrustedHeaderPolicy::from_env()
+                .map_err(anyhow::Error::msg)?;
+        let universe_id = store.config().universe_id;
+        let native_inventory = Arc::new(NativeMcpInventoryResolver::new(
+            secrets.clone(),
+            private_networks.clone(),
+            trusted_header.clone(),
+            universe_id,
+        ));
+        let inventory: Arc<dyn McpInventoryResolver> = native_inventory.clone();
+        let native_mcp = Arc::new(NativeMcpRuntime::new(
+            mcp_servers,
+            secrets.clone(),
+            native_inventory,
+            private_networks,
+            trusted_header,
+            universe_id,
+        ));
         let provider_keys = stored_provider_key_resolver(store.clone(), broker);
         let transcriber: Arc<dyn AudioTranscriber> = Arc::new(OpenAiAudioTranscriber::new(
             clients.openai_audio.clone(),
@@ -280,6 +364,7 @@ impl ActivityState {
             blobs,
             Some(secrets),
             Some(provider_keys),
+            Some(inventory),
             clients.openai.clone(),
             clients.openai_completions.clone(),
             clients.anthropic.clone(),
@@ -291,6 +376,7 @@ impl ActivityState {
         let tools: Arc<dyn CoreAgentTools> = hosted.clone();
         let mut state = Self::from_pg_store(store, llm, tools)
             .with_hosted_tools(hosted)
+            .with_native_mcp(native_mcp)
             .with_audio_transcriber(transcriber)
             .with_workflow_tool_executions(temporal_client_for_workflow_tools);
         if let Some(subagent_runtime) = subagent_runtime {
@@ -398,6 +484,7 @@ fn default_llm_runtime(
     blobs: Arc<dyn BlobStore>,
     secrets: Option<Arc<dyn SecretResolver>>,
     provider_keys: Option<Arc<dyn ModelProviderResolver>>,
+    inventory: Option<Arc<dyn McpInventoryResolver>>,
 ) -> anyhow::Result<Arc<dyn CoreAgentLlm>> {
     let openai = Arc::new(oai::Client::new(oai::Config::from_env_allow_missing_key())?);
     let openai_completions = Arc::new(oai_completions::Client::new(
@@ -408,6 +495,7 @@ fn default_llm_runtime(
         blobs,
         secrets,
         provider_keys,
+        inventory,
         openai,
         openai_completions,
         anthropic,
@@ -418,6 +506,7 @@ fn llm_runtime_with_clients(
     blobs: Arc<dyn BlobStore>,
     secrets: Option<Arc<dyn SecretResolver>>,
     provider_keys: Option<Arc<dyn ModelProviderResolver>>,
+    inventory: Option<Arc<dyn McpInventoryResolver>>,
     openai: Arc<oai::Client>,
     openai_completions: Arc<oai_completions::Client>,
     anthropic: Arc<am::Client>,
@@ -431,6 +520,9 @@ fn llm_runtime_with_clients(
     if let Some(provider_keys) = &provider_keys {
         adapter = adapter.with_provider_key_resolver(provider_keys.clone());
     }
+    if let Some(inventory) = &inventory {
+        adapter = adapter.with_mcp_inventory_resolver(inventory.clone());
+    }
     let adapter = Arc::new(adapter);
     registry.insert_generation_adapter(ProviderApiKind::OpenAiResponses, adapter.clone());
     registry.insert_compaction_adapter(ProviderApiKind::OpenAiResponses, adapter);
@@ -438,6 +530,9 @@ fn llm_runtime_with_clients(
     let mut adapter = OpenAiCompletionsLlmAdapter::new(openai_completions, blobs.clone());
     if let Some(provider_keys) = &provider_keys {
         adapter = adapter.with_provider_key_resolver(provider_keys.clone());
+    }
+    if let Some(inventory) = &inventory {
+        adapter = adapter.with_mcp_inventory_resolver(inventory.clone());
     }
     let adapter = Arc::new(adapter);
     registry.insert_generation_adapter(ProviderApiKind::OpenAiCompletions, adapter.clone());
@@ -449,6 +544,9 @@ fn llm_runtime_with_clients(
     }
     if let Some(provider_keys) = &provider_keys {
         adapter = adapter.with_provider_key_resolver(provider_keys.clone());
+    }
+    if let Some(inventory) = &inventory {
+        adapter = adapter.with_mcp_inventory_resolver(inventory.clone());
     }
     let adapter = Arc::new(adapter);
     registry.insert_generation_adapter(ProviderApiKind::AnthropicMessages, adapter.clone());

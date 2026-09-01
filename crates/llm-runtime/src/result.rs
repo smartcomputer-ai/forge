@@ -21,6 +21,7 @@ pub fn failed_generation_result(run_id: RunId, turn_id: TurnId) -> LlmGeneration
             finish: LlmFinish::Failed,
             usage: None,
             tool_calls: Vec::new(),
+            approval_requests: Vec::new(),
             context_token_estimate: None,
         },
     }

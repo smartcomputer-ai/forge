@@ -58,6 +58,7 @@ pub(super) async fn call_llm_generate(
                         finish: engine::LlmFinish::Failed,
                         usage: None,
                         tool_calls: Vec::new(),
+                        approval_requests: Vec::new(),
                         context_token_estimate: None,
                     },
                 }))

@@ -1,4 +1,4 @@
-//! Hosted sub-agent delegation service (P134): the activities behind
+//! Hosted sub-agent delegation service: the activities behind
 //! `SubagentExecutionWorkflow`. Prepare validates the pinned grant, reserves
 //! the root-scoped tree slot by creating the child session row, creates the
 //! child from the pinned profile, and starts its run with a notify intent

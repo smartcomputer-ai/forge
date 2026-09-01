@@ -87,6 +87,12 @@ LIGHTSPEED_CHANNELS_CONNECTORS=telegram ./dev.sh
 LIGHTSPEED_CHANNELS_CONNECTORS=telegram,whatsapp ./dev.sh
 ```
 
+The supervisor's local Configurator uses a default-off internal authentication
+path: the Runtime sends `x-lightspeed-universe` only to the exact loopback MCP
+URL it started, and the setup does not create a bearer credential. Supplying an
+external Configurator URL disables that path unless both development variables
+are explicitly enabled; the Runtime rejects non-loopback trusted-header URLs.
+
 Use `./dev.sh --plan full` to inspect a profile without starting
 anything. Pressing Ctrl-C or running `stop` from another terminal stops the
 tracked host supervisor and its children while leaving Docker infrastructure
@@ -221,7 +227,7 @@ Run the fake hosted-agent live integration test against the same stack:
 
 ```bash
 source scripts/dev/env.sh
-cargo test -p temporal-server --test temporal_live temporal_live_session_start_then_run_start_completes_fake_runs -- --ignored --nocapture
+cargo test -p temporal-server --test sessions_live temporal_live_session_start_then_run_start_completes_fake_runs -- --ignored --test-threads=1 --nocapture
 ```
 
 Run the minimal live environment control-plane acceptance test. This uses real
@@ -239,7 +245,7 @@ Run only the OpenAI-backed hosted-agent live test:
 ```bash
 source scripts/dev/env.sh
 export OPENAI_API_KEY=...
-cargo test -p temporal-server --test temporal_live temporal_live_session_start_then_run_start_completes_openai_run -- --ignored --nocapture
+cargo test -p temporal-server --test sessions_live temporal_live_session_start_then_run_start_completes_openai_run -- --ignored --test-threads=1 --nocapture
 ```
 
 Set `LIGHTSPEED_OPENAI_MODEL`, `OPENAI_RESPONSES_MODEL`, or

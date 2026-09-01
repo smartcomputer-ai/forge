@@ -30,7 +30,7 @@ pub fn universe_id_from_env() -> anyhow::Result<Uuid> {
 ///
 /// Lightspeed requires a resolved universe per request but is unopinionated
 /// about how it is produced. `Single` pins the whole deployment to one
-/// configured universe (the pre-P90 behavior). `TrustedHeader` reads
+/// configured universe (the legacy single-universe behavior). `TrustedHeader` reads
 /// `x-lightspeed-universe` (and optionally `x-lightspeed-principal`) injected
 /// by an upstream gateway that owns authentication; requests without the
 /// header are rejected (fail closed), and unknown universes are never

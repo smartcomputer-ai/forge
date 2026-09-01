@@ -1,6 +1,6 @@
 use engine::{
     PromiseControlArgumentCallFacts, PromiseControlArgumentFacts, PromiseControlArgumentRequest,
-    PromiseControlKind, ToolBatchOutcome, storage::BlobStore,
+    PromiseControlKind, ToolBatchOutcome, ToolCallStatus, ToolInvocationResult, storage::BlobStore,
 };
 use temporalio_sdk::activities::ActivityError;
 use tools::concurrency::{CancelArgs, DetachArgs};
@@ -73,7 +73,7 @@ pub(super) async fn invoke_batch(
 /// ordinary terminal failed result; only blob-store failures fail the
 /// activity. A call whose active environment is still provisioning does not
 /// run and reports `EnvironmentNotReady` so the workflow can wait outside
-/// this deadline (P125).
+/// this deadline.
 pub(super) async fn invoke_call(
     deps: &ToolActivityDeps,
     request: crate::worker::ToolInvokeCallActivityRequest,
@@ -81,6 +81,91 @@ pub(super) async fn invoke_call(
     let request = request.request;
     let deadline = temporal_workflow::tool_call_operation_timeout(request.execution.class);
     let execution = async {
+        if request.remote_mcp.is_some() {
+            let native =
+                deps.native_mcp
+                    .as_ref()
+                    .ok_or_else(|| engine::CoreAgentIoError::Failed {
+                        message: "native MCP execution is unavailable on this worker".to_owned(),
+                    })?;
+            let argument_bytes = deps
+                .blobs
+                .read_bytes(&request.call.arguments_ref)
+                .await
+                .map_err(|error| engine::CoreAgentIoError::Failed {
+                    message: format!("read native MCP arguments: {error}"),
+                })?;
+            let arguments = serde_json::from_slice(&argument_bytes).map_err(|error| {
+                engine::CoreAgentIoError::Failed {
+                    message: format!("native MCP arguments are invalid JSON: {error}"),
+                }
+            })?;
+            return match native.execute(&request, arguments).await {
+                Ok(crate::worker::mcp::NativeMcpExecutionOutcome::NeedsApproval { subject }) => {
+                    Ok(ToolCallExecution::NeedsApproval { subject })
+                }
+                Ok(crate::worker::mcp::NativeMcpExecutionOutcome::Completed {
+                    mut output,
+                    visible,
+                    is_error,
+                    assets,
+                }) => {
+                    let mut asset_refs = Vec::with_capacity(assets.len());
+                    for asset in assets {
+                        let blob_ref =
+                            deps.blobs.put_bytes(asset.bytes).await.map_err(|error| {
+                                engine::CoreAgentIoError::Failed {
+                                    message: format!(
+                                        "store native MCP {} asset ({}): {error}",
+                                        asset.kind,
+                                        asset.media_type.as_deref().unwrap_or("unknown media type")
+                                    ),
+                                }
+                            })?;
+                        asset_refs.push(blob_ref);
+                    }
+                    crate::worker::mcp::attach_mcp_asset_refs(&mut output, &asset_refs);
+                    let output_ref = deps
+                        .blobs
+                        .put_bytes(serde_json::to_vec(&output).map_err(|error| {
+                            engine::CoreAgentIoError::Failed {
+                                message: format!("encode native MCP result: {error}"),
+                            }
+                        })?)
+                        .await
+                        .map_err(|error| engine::CoreAgentIoError::Failed {
+                            message: format!("store native MCP result: {error}"),
+                        })?;
+                    let visible_ref =
+                        deps.blobs
+                            .put_bytes(visible.into_bytes())
+                            .await
+                            .map_err(|error| engine::CoreAgentIoError::Failed {
+                                message: format!("store native MCP visible result: {error}"),
+                            })?;
+                    let status = if is_error {
+                        ToolCallStatus::Failed
+                    } else {
+                        ToolCallStatus::Succeeded
+                    };
+                    Ok(ToolCallExecution::Completed(ToolInvocationResult {
+                        call_id: request.call.call_id.clone(),
+                        status,
+                        output_ref: Some(output_ref),
+                        model_visible_context_entries: vec![
+                            ToolInvocationResult::tool_result_context_entry(
+                                &request.call.call_id,
+                                status,
+                                visible_ref.clone(),
+                            ),
+                        ],
+                        error_ref: is_error.then_some(visible_ref),
+                        effects: Vec::new(),
+                    }))
+                }
+                Err(message) => Err(engine::CoreAgentIoError::Failed { message }),
+            };
+        }
         match deps.hosted.as_ref() {
             Some(hosted) => hosted.invoke_call_execution(request.clone()).await,
             None => deps
@@ -96,6 +181,9 @@ pub(super) async fn invoke_call(
         }
         Ok(Ok(ToolCallExecution::EnvironmentNotReady { environment_id, .. })) => {
             Ok(ToolInvokeCallActivityResult::EnvironmentNotReady { environment_id })
+        }
+        Ok(Ok(ToolCallExecution::NeedsApproval { subject })) => {
+            Ok(ToolInvokeCallActivityResult::NeedsApproval { subject })
         }
         Ok(Err(error)) => {
             super::common::failed_tool_call_result(deps.blobs.as_ref(), &request, error.to_string())

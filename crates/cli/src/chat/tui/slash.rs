@@ -14,6 +14,13 @@ pub(crate) enum SlashCommand {
     MaxTokens(SlashMaxTokens),
     Interrupt(Option<String>),
     Steer(String),
+    Approve {
+        approval_id: String,
+    },
+    Reject {
+        approval_id: String,
+        note: Option<String>,
+    },
     SkillsList,
     SkillsActive,
     SkillPick {
@@ -39,6 +46,8 @@ pub(crate) enum SlashCommandKind {
     MaxTokens,
     Interrupt,
     Steer,
+    Approve,
+    Reject,
     SkillsList,
     SkillsActive,
     SkillActivate,
@@ -117,6 +126,8 @@ impl SlashCommandKind {
             SlashCommandKind::SkillDeactivate,
             SlashCommandKind::Interrupt,
             SlashCommandKind::Steer,
+            SlashCommandKind::Approve,
+            SlashCommandKind::Reject,
             SlashCommandKind::Help,
             SlashCommandKind::Quit,
         ]
@@ -133,6 +144,8 @@ impl SlashCommandKind {
             SlashCommandKind::MaxTokens => "max-tokens",
             SlashCommandKind::Interrupt => "interrupt",
             SlashCommandKind::Steer => "steer",
+            SlashCommandKind::Approve => "approve",
+            SlashCommandKind::Reject => "reject",
             SlashCommandKind::SkillsList => "skills",
             SlashCommandKind::SkillsActive => "skills-active",
             SlashCommandKind::SkillActivate => "skill",
@@ -152,6 +165,8 @@ impl SlashCommandKind {
             SlashCommandKind::MaxTokens => "choose max output tokens",
             SlashCommandKind::Interrupt => "interrupt the active run",
             SlashCommandKind::Steer => "send guidance to the active run",
+            SlashCommandKind::Approve => "approve one pending tool call",
+            SlashCommandKind::Reject => "reject one pending tool call",
             SlashCommandKind::SkillsList => "list available session skills",
             SlashCommandKind::SkillsActive => "show active session skills",
             SlashCommandKind::SkillActivate => "activate a skill by id",
@@ -171,6 +186,13 @@ impl SlashCommandKind {
             SlashCommandKind::MaxTokens => SlashCommand::MaxTokens(SlashMaxTokens::Pick),
             SlashCommandKind::Interrupt => SlashCommand::Interrupt(None),
             SlashCommandKind::Steer => SlashCommand::Steer(String::new()),
+            SlashCommandKind::Approve => SlashCommand::Approve {
+                approval_id: String::new(),
+            },
+            SlashCommandKind::Reject => SlashCommand::Reject {
+                approval_id: String::new(),
+                note: None,
+            },
             SlashCommandKind::SkillsList => SlashCommand::SkillsList,
             SlashCommandKind::SkillsActive => SlashCommand::SkillsActive,
             SlashCommandKind::SkillActivate => SlashCommand::SkillPick {
@@ -212,6 +234,19 @@ impl SlashCommandKind {
                 }
                 SlashCommand::Steer(args.to_string())
             }
+            SlashCommandKind::Approve => SlashCommand::Approve {
+                approval_id: required_single_value(args, "/approve")?,
+            },
+            SlashCommandKind::Reject => {
+                let (approval_id, note) = split_command(args);
+                if approval_id.is_empty() {
+                    anyhow::bail!("slash command /reject requires an approval id");
+                }
+                SlashCommand::Reject {
+                    approval_id: approval_id.to_owned(),
+                    note: optional_value(note),
+                }
+            }
             SlashCommandKind::SkillsList => SlashCommand::SkillsList,
             SlashCommandKind::SkillsActive => SlashCommand::SkillsActive,
             SlashCommandKind::SkillActivate => parse_skill_activate(args)?,
@@ -234,6 +269,8 @@ impl SlashCommandKind {
             "max-tokens" | "tokens" => SlashCommandKind::MaxTokens,
             "interrupt" | "stop" | "cancel" => SlashCommandKind::Interrupt,
             "steer" => SlashCommandKind::Steer,
+            "approve" => SlashCommandKind::Approve,
+            "reject" => SlashCommandKind::Reject,
             "skills" | "skills-list" => SlashCommandKind::SkillsList,
             "skills-active" | "active-skills" => SlashCommandKind::SkillsActive,
             "skill" | "skill-activate" => SlashCommandKind::SkillActivate,
@@ -358,6 +395,25 @@ mod tests {
             parse_slash_command("/steer focus on tests").unwrap(),
             Some(SlashCommand::Steer("focus on tests".into()))
         );
+    }
+
+    #[test]
+    fn parses_single_use_approval_commands() {
+        assert_eq!(
+            parse_slash_command("/approve approval_7").unwrap(),
+            Some(SlashCommand::Approve {
+                approval_id: "approval_7".to_owned(),
+            })
+        );
+        assert_eq!(
+            parse_slash_command("/reject approval_8 duplicate message").unwrap(),
+            Some(SlashCommand::Reject {
+                approval_id: "approval_8".to_owned(),
+                note: Some("duplicate message".to_owned()),
+            })
+        );
+        assert!(parse_slash_command("/approve").is_err());
+        assert!(parse_slash_command("/reject").is_err());
     }
 
     #[test]

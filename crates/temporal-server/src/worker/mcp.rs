@@ -1,0 +1,971 @@
+use std::{
+    collections::HashMap,
+    net::IpAddr,
+    str::FromStr,
+    sync::Arc,
+    time::{Duration, Instant},
+};
+
+use async_trait::async_trait;
+use auth::SecretValue;
+use base64::Engine;
+use engine::RemoteMcpToolSpec;
+use ipnet::IpNet;
+use llm_runtime::{
+    McpInventoryError, McpInventoryResolver, NativeMcpTool,
+    secrets::{SecretResolveError, SecretResolver},
+};
+use mcp::search::McpToolSearchQuery;
+use tokio::sync::Mutex;
+use url::Url;
+
+use crate::gateway::service::mcp_discovery::{
+    ConfiguratorTrustedHeaderPolicy, DiscoveredMcpInventory, HttpMcpToolDiscoverer,
+    McpToolCallRequest, McpToolDiscoverer,
+};
+
+pub enum NativeMcpExecutionOutcome {
+    Completed {
+        output: serde_json::Value,
+        visible: String,
+        is_error: bool,
+        assets: Vec<NativeMcpAsset>,
+    },
+    NeedsApproval {
+        subject: engine::ApprovalSubject,
+    },
+}
+
+pub struct NativeMcpAsset {
+    pub bytes: Vec<u8>,
+    pub media_type: Option<String>,
+    pub kind: String,
+}
+
+#[derive(Clone)]
+pub struct NativeMcpRuntime {
+    servers: Arc<dyn mcp::McpRegistryStore>,
+    secrets: Arc<dyn SecretResolver>,
+    inventory: Arc<NativeMcpInventoryResolver>,
+    transport: HttpMcpToolDiscoverer,
+    private_networks: McpPrivateNetworkPolicy,
+    trusted_header: ConfiguratorTrustedHeaderPolicy,
+    universe_id: uuid::Uuid,
+}
+
+/// Demand-driven inventory TTL for servers without a tool-list change signal.
+pub const MCP_INVENTORY_CACHE_TTL: Duration = Duration::from_secs(300);
+/// Short fallback while Lightspeed does not maintain notification subscriptions.
+pub const MCP_LIST_CHANGED_CACHE_TTL: Duration = Duration::from_secs(60);
+
+type InventoryCacheKey = (String, u64);
+type InventoryLocks = HashMap<InventoryCacheKey, Arc<Mutex<()>>>;
+
+#[derive(Clone, Debug, Default)]
+pub struct McpPrivateNetworkPolicy {
+    hosts: Arc<Vec<String>>,
+    networks: Arc<Vec<IpNet>>,
+}
+
+impl McpPrivateNetworkPolicy {
+    pub fn from_env() -> Result<Self, String> {
+        Self::parse(
+            std::env::var("LIGHTSPEED_MCP_PRIVATE_NETWORKS")
+                .ok()
+                .as_deref(),
+        )
+    }
+
+    pub fn parse(value: Option<&str>) -> Result<Self, String> {
+        let mut hosts = Vec::new();
+        let mut networks = Vec::new();
+        for item in value
+            .unwrap_or_default()
+            .split(',')
+            .map(str::trim)
+            .filter(|item| !item.is_empty())
+        {
+            if let Ok(network) = IpNet::from_str(item) {
+                networks.push(network);
+            } else if item.contains('/') {
+                return Err(format!(
+                    "invalid CIDR in LIGHTSPEED_MCP_PRIVATE_NETWORKS: {item}"
+                ));
+            } else {
+                hosts.push(item.to_ascii_lowercase());
+            }
+        }
+        Ok(Self {
+            hosts: Arc::new(hosts),
+            networks: Arc::new(networks),
+        })
+    }
+
+    pub fn permits(&self, server_url: &str, record_opt_in: bool) -> bool {
+        if !record_opt_in {
+            return false;
+        }
+        let Ok(url) = Url::parse(server_url) else {
+            return false;
+        };
+        let Some(host) = url.host_str() else {
+            return false;
+        };
+        if self
+            .hosts
+            .iter()
+            .any(|allowed| allowed == &host.to_ascii_lowercase())
+        {
+            return true;
+        }
+        host.parse::<IpAddr>().is_ok_and(|address| {
+            self.networks
+                .iter()
+                .any(|network| network.contains(&address))
+        })
+    }
+}
+
+#[derive(Clone)]
+pub struct NativeMcpInventoryResolver {
+    discoverer: Arc<dyn McpToolDiscoverer>,
+    secrets: Arc<dyn SecretResolver>,
+    private_networks: McpPrivateNetworkPolicy,
+    trusted_header: ConfiguratorTrustedHeaderPolicy,
+    universe_id: uuid::Uuid,
+    cache: Arc<Mutex<HashMap<InventoryCacheKey, CachedInventory>>>,
+    locks: Arc<Mutex<InventoryLocks>>,
+    ttl: Duration,
+    list_changed_ttl: Duration,
+}
+
+#[derive(Clone)]
+struct CachedInventory {
+    fetched_at: Instant,
+    ttl: Duration,
+    tools: Vec<NativeMcpTool>,
+}
+
+impl NativeMcpInventoryResolver {
+    pub(crate) fn new(
+        secrets: Arc<dyn SecretResolver>,
+        private_networks: McpPrivateNetworkPolicy,
+        trusted_header: ConfiguratorTrustedHeaderPolicy,
+        universe_id: uuid::Uuid,
+    ) -> Self {
+        Self {
+            discoverer: Arc::new(HttpMcpToolDiscoverer::new()),
+            secrets,
+            private_networks,
+            trusted_header,
+            universe_id,
+            cache: Arc::new(Mutex::new(HashMap::new())),
+            locks: Arc::new(Mutex::new(HashMap::new())),
+            ttl: MCP_INVENTORY_CACHE_TTL,
+            list_changed_ttl: MCP_LIST_CHANGED_CACHE_TTL,
+        }
+    }
+
+    #[cfg(test)]
+    fn for_test(
+        discoverer: Arc<dyn McpToolDiscoverer>,
+        ttl: Duration,
+        list_changed_ttl: Duration,
+    ) -> Self {
+        Self {
+            discoverer,
+            secrets: Arc::new(llm_runtime::secrets::AbsentSecretResolver),
+            private_networks: McpPrivateNetworkPolicy::parse(Some("127.0.0.1"))
+                .expect("test private policy"),
+            trusted_header: ConfiguratorTrustedHeaderPolicy::default(),
+            universe_id: uuid::Uuid::nil(),
+            cache: Arc::new(Mutex::new(HashMap::new())),
+            locks: Arc::new(Mutex::new(HashMap::new())),
+            ttl,
+            list_changed_ttl,
+        }
+    }
+
+    async fn bearer(
+        &self,
+        spec: &RemoteMcpToolSpec,
+    ) -> Result<Option<SecretValue>, McpInventoryError> {
+        let Some(secret_ref) = spec.auth_ref.as_ref() else {
+            return Ok(None);
+        };
+        match self
+            .secrets
+            .resolve(secret_ref, Some(spec.server_url.as_str()))
+            .await
+        {
+            Ok(value) => Ok(Some(SecretValue::new(value.expose()))),
+            Err(SecretResolveError::CredentialAbsent { .. }) if !spec.auth_required => Ok(None),
+            Err(error) => Err(McpInventoryError::new(format!(
+                "resolve MCP credential: {error}"
+            ))),
+        }
+    }
+
+    async fn uncached(
+        &self,
+        spec: &RemoteMcpToolSpec,
+    ) -> Result<(Vec<NativeMcpTool>, bool, Option<Duration>), McpInventoryError> {
+        let trusted_universe = self
+            .trusted_header
+            .permits(&spec.server_id, &spec.server_url)
+            .then_some(self.universe_id);
+        let bearer = if trusted_universe.is_some() {
+            None
+        } else {
+            self.bearer(spec).await?
+        };
+        let allow_private = self
+            .private_networks
+            .permits(&spec.server_url, spec.allow_private_network);
+        let discovered = self
+            .discoverer
+            .discover_tools(
+                &spec.server_url,
+                bearer.as_ref(),
+                trusted_universe,
+                allow_private,
+                mcp::McpToolDiscoveryLimits::default(),
+            )
+            .await
+            .map_err(|error| McpInventoryError::new(error.to_string()))?;
+        let DiscoveredMcpInventory {
+            tools: discovered,
+            tools_list_changed,
+            ttl_ms,
+        } = discovered;
+        let mut tools = discovered
+            .into_iter()
+            .filter(|tool| {
+                spec.allowed_tools
+                    .as_ref()
+                    .is_none_or(|allowed| allowed.iter().any(|candidate| candidate == &tool.name))
+            })
+            .map(|tool| NativeMcpTool {
+                remote_name: tool.name,
+                description: tool.description,
+                input_schema: tool.input_schema,
+            })
+            .collect::<Vec<_>>();
+        tools.sort_by(|left, right| left.remote_name.cmp(&right.remote_name));
+        Ok((tools, tools_list_changed, ttl_ms.map(Duration::from_millis)))
+    }
+}
+
+impl NativeMcpRuntime {
+    pub(crate) fn new(
+        servers: Arc<dyn mcp::McpRegistryStore>,
+        secrets: Arc<dyn SecretResolver>,
+        inventory: Arc<NativeMcpInventoryResolver>,
+        private_networks: McpPrivateNetworkPolicy,
+        trusted_header: ConfiguratorTrustedHeaderPolicy,
+        universe_id: uuid::Uuid,
+    ) -> Self {
+        Self {
+            servers,
+            secrets,
+            inventory,
+            transport: HttpMcpToolDiscoverer::new(),
+            private_networks,
+            trusted_header,
+            universe_id,
+        }
+    }
+
+    pub async fn execute(
+        &self,
+        request: &engine::ToolInvocationCallRequest,
+        arguments: serde_json::Value,
+    ) -> Result<NativeMcpExecutionOutcome, String> {
+        let runtime = request
+            .remote_mcp
+            .as_ref()
+            .ok_or_else(|| "native MCP runtime facts are missing".to_owned())?;
+        match runtime {
+            engine::RemoteMcpCallRuntime::Injected {
+                target,
+                remote_tool_name,
+                approval_decision,
+            } => {
+                let arguments = arguments
+                    .as_object()
+                    .cloned()
+                    .ok_or_else(|| "native MCP tool arguments must be a JSON object".to_owned())?;
+                self.call(
+                    request,
+                    target,
+                    remote_tool_name,
+                    arguments,
+                    *approval_decision,
+                )
+                .await
+            }
+            engine::RemoteMcpCallRuntime::Search {
+                targets,
+                approval_decision,
+            } if request.call.tool_name.as_str() == "mcp_find_tools" => {
+                self.find_tools(targets, arguments).await
+            }
+            engine::RemoteMcpCallRuntime::Search {
+                targets,
+                approval_decision,
+            } if request.call.tool_name.as_str() == "mcp_call" => {
+                let object = arguments
+                    .as_object()
+                    .ok_or_else(|| "mcp_call arguments must be a JSON object".to_owned())?;
+                let server = object
+                    .get("server")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or_else(|| "mcp_call requires string server".to_owned())?;
+                let tool = object
+                    .get("tool")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or_else(|| "mcp_call requires string tool".to_owned())?;
+                let inner = object
+                    .get("arguments")
+                    .and_then(serde_json::Value::as_object)
+                    .cloned()
+                    .ok_or_else(|| "mcp_call requires object arguments".to_owned())?;
+                let target = targets
+                    .iter()
+                    .find(|target| target.server_id == server)
+                    .ok_or_else(|| format!("unknown active search-exposure MCP server {server}"))?;
+                self.validate_search_call(target, tool, &inner).await?;
+                self.call(request, target, tool, inner, *approval_decision)
+                    .await
+            }
+            engine::RemoteMcpCallRuntime::Search { .. } => {
+                Err("unknown native MCP search meta-tool".to_owned())
+            }
+        }
+    }
+
+    async fn find_tools(
+        &self,
+        targets: &[engine::RemoteMcpCallTarget],
+        arguments: serde_json::Value,
+    ) -> Result<NativeMcpExecutionOutcome, String> {
+        let object = arguments
+            .as_object()
+            .ok_or_else(|| "mcp_find_tools arguments must be a JSON object".to_owned())?;
+        let selected_server = object.get("server").and_then(serde_json::Value::as_str);
+        let query = object
+            .get("query")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|query| !query.is_empty())
+            .map(McpToolSearchQuery::new);
+        let cursor = object
+            .get("cursor")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or(0) as usize;
+        let mut matches = Vec::new();
+        for target in targets
+            .iter()
+            .filter(|target| selected_server.is_none_or(|server| server == target.server_id))
+        {
+            let spec = spec_from_target(target, engine::RemoteMcpExposure::Search);
+            for tool in self
+                .inventory
+                .list_tools(&spec)
+                .await
+                .map_err(|error| error.to_string())?
+            {
+                let rank = match query.as_ref() {
+                    Some(query) => {
+                        let Some(rank) =
+                            query.score(&tool.remote_name, tool.description.as_deref())
+                        else {
+                            continue;
+                        };
+                        Some(rank)
+                    }
+                    None => None,
+                };
+                matches.push((rank, target.server_id.clone(), tool));
+            }
+        }
+        if matches.is_empty()
+            && let Some(selected_server) = selected_server
+            && !targets
+                .iter()
+                .any(|target| target.server_id == selected_server)
+        {
+            return Err(format!(
+                "unknown active search-exposure MCP server {selected_server}"
+            ));
+        }
+        matches.sort_by(|left, right| {
+            right
+                .0
+                .cmp(&left.0)
+                .then_with(|| left.1.cmp(&right.1))
+                .then_with(|| left.2.remote_name.cmp(&right.2.remote_name))
+        });
+        const PAGE_SIZE: usize = 20;
+        let page = matches
+            .iter()
+            .skip(cursor)
+            .take(PAGE_SIZE)
+            .map(|(_, server, tool)| {
+                let mut value = serde_json::json!({
+                    "server": server,
+                    "name": tool.remote_name,
+                    "description": tool.description,
+                });
+                if query.is_some() {
+                    value
+                        .as_object_mut()
+                        .expect("tool result object")
+                        .insert("inputSchema".to_owned(), tool.input_schema.clone());
+                }
+                value
+            })
+            .collect::<Vec<_>>();
+        let next_cursor = (cursor + page.len() < matches.len()).then_some(cursor + page.len());
+        let output = serde_json::json!({"tools": page, "nextCursor": next_cursor});
+        Ok(NativeMcpExecutionOutcome::Completed {
+            visible: serde_json::to_string_pretty(&output).map_err(|error| error.to_string())?,
+            output,
+            is_error: false,
+            assets: Vec::new(),
+        })
+    }
+
+    async fn validate_search_call(
+        &self,
+        target: &engine::RemoteMcpCallTarget,
+        tool_name: &str,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<(), String> {
+        if target
+            .allowed_tools
+            .as_ref()
+            .is_some_and(|allowed| !allowed.iter().any(|candidate| candidate == tool_name))
+        {
+            return Err(format!(
+                "MCP tool {tool_name} is not allowed on {}",
+                target.server_id
+            ));
+        }
+        let spec = spec_from_target(target, engine::RemoteMcpExposure::Search);
+        let tools = self
+            .inventory
+            .list_tools(&spec)
+            .await
+            .map_err(|error| error.to_string())?;
+        let tool = tools
+            .iter()
+            .find(|tool| tool.remote_name == tool_name)
+            .ok_or_else(|| {
+                format!(
+                    "MCP server {} does not advertise tool {tool_name}",
+                    target.server_id
+                )
+            })?;
+        let validator = jsonschema::validator_for(&tool.input_schema).map_err(|error| {
+            format!("MCP tool {tool_name} has an invalid input schema: {error}")
+        })?;
+        validator
+            .validate(&serde_json::Value::Object(arguments.clone()))
+            .map_err(|error| {
+                format!("arguments for MCP tool {tool_name} do not match its schema: {error}")
+            })
+    }
+
+    async fn call(
+        &self,
+        request: &engine::ToolInvocationCallRequest,
+        target: &engine::RemoteMcpCallTarget,
+        tool_name: &str,
+        arguments: serde_json::Map<String, serde_json::Value>,
+        approval_decision: Option<bool>,
+    ) -> Result<NativeMcpExecutionOutcome, String> {
+        if target.approval == engine::RemoteMcpApprovalPolicy::Always {
+            match approval_decision {
+                None => {
+                    return Ok(NativeMcpExecutionOutcome::NeedsApproval {
+                        subject: engine::ApprovalSubject::McpToolCall {
+                            server_id: target.server_id.clone(),
+                            server_label: target.server_label.clone(),
+                            tool_name: tool_name.to_owned(),
+                            arguments_ref: request.call.arguments_ref.clone(),
+                        },
+                    });
+                }
+                Some(false) => {
+                    let output = serde_json::json!({
+                        "error": "MCP tool call was rejected",
+                        "server": target.server_id,
+                        "tool": tool_name,
+                    });
+                    return Ok(NativeMcpExecutionOutcome::Completed {
+                        visible: serde_json::to_string(&output)
+                            .map_err(|error| error.to_string())?,
+                        output,
+                        is_error: true,
+                        assets: Vec::new(),
+                    });
+                }
+                Some(true) => {}
+            }
+        }
+        self.validate_current_record(target).await?;
+        let trusted_universe = self
+            .trusted_header
+            .permits(&target.server_id, &target.server_url)
+            .then_some(self.universe_id);
+        let bearer = if trusted_universe.is_some() {
+            None
+        } else {
+            self.bearer_for_target(target).await?
+        };
+        let allow_private = self
+            .private_networks
+            .permits(&target.server_url, target.allow_private_network);
+        let result = self
+            .transport
+            .call_tool(
+                &target.server_url,
+                bearer.as_ref(),
+                trusted_universe,
+                allow_private,
+                mcp::McpToolDiscoveryLimits::default(),
+                McpToolCallRequest {
+                    tool_name: tool_name.to_owned(),
+                    arguments,
+                },
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+        let raw = serde_json::to_value(&result).map_err(|error| error.to_string())?;
+        let mut output = serde_json::json!({
+            "content": raw.get("content").cloned().unwrap_or_default(),
+        });
+        if let Some(structured) = result.structured_content {
+            output
+                .as_object_mut()
+                .expect("native MCP output object")
+                .insert("structuredContent".to_owned(), structured);
+        }
+        let mut assets = Vec::new();
+        extract_mcp_assets(&mut output, &mut assets)?;
+        let visible = visible_mcp_result(&raw, &output);
+        Ok(NativeMcpExecutionOutcome::Completed {
+            output,
+            visible,
+            is_error: result.is_error.unwrap_or(false),
+            assets,
+        })
+    }
+
+    async fn validate_current_record(
+        &self,
+        target: &engine::RemoteMcpCallTarget,
+    ) -> Result<(), String> {
+        let id = mcp::McpServerId::try_new(target.server_id.clone())
+            .map_err(|error| format!("invalid MCP server id: {error}"))?;
+        let record = self
+            .servers
+            .read_server(&id)
+            .await
+            .map_err(|error| error.to_string())?;
+        if record.server_url != target.server_url {
+            return Err(format!(
+                "MCP server URL changed from admitted audience {} to {}",
+                target.server_url, record.server_url
+            ));
+        }
+        if record.status != mcp::McpServerStatus::Active
+            && record.status != mcp::McpServerStatus::Unverified
+        {
+            return Err(format!("MCP server {} is not active", target.server_id));
+        }
+        if record.execution != mcp::McpExecution::Native {
+            return Err(format!(
+                "MCP server {} is no longer configured for native execution",
+                target.server_id
+            ));
+        }
+        Ok(())
+    }
+
+    async fn bearer_for_target(
+        &self,
+        target: &engine::RemoteMcpCallTarget,
+    ) -> Result<Option<SecretValue>, String> {
+        let Some(secret_ref) = target.auth_ref.as_ref() else {
+            return Ok(None);
+        };
+        match self
+            .secrets
+            .resolve(secret_ref, Some(&target.server_url))
+            .await
+        {
+            Ok(value) => Ok(Some(SecretValue::new(value.expose()))),
+            Err(SecretResolveError::CredentialAbsent { .. }) if !target.auth_required => Ok(None),
+            Err(error) => Err(format!("resolve MCP credential: {error}")),
+        }
+    }
+}
+
+fn extract_mcp_assets(
+    value: &mut serde_json::Value,
+    assets: &mut Vec<NativeMcpAsset>,
+) -> Result<(), String> {
+    match value {
+        serde_json::Value::Array(values) => {
+            for value in values {
+                extract_mcp_assets(value, assets)?;
+            }
+        }
+        serde_json::Value::Object(object) => {
+            let kind = object
+                .get("type")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned);
+            if matches!(kind.as_deref(), Some("image" | "audio"))
+                && let Some(encoded) = object
+                    .remove("data")
+                    .and_then(|value| value.as_str().map(str::to_owned))
+            {
+                let bytes = base64::engine::general_purpose::STANDARD
+                    .decode(encoded)
+                    .map_err(|error| format!("MCP {kind:?} content is invalid base64: {error}"))?;
+                let index = assets.len();
+                assets.push(NativeMcpAsset {
+                    bytes,
+                    media_type: object
+                        .get("mimeType")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_owned),
+                    kind: kind.clone().expect("matched content kind"),
+                });
+                object.insert("blobIndex".to_owned(), serde_json::json!(index));
+            }
+            if kind.as_deref() == Some("resource")
+                && let Some(resource) = object
+                    .get_mut("resource")
+                    .and_then(serde_json::Value::as_object_mut)
+                && let Some(encoded) = resource
+                    .remove("blob")
+                    .and_then(|value| value.as_str().map(str::to_owned))
+            {
+                let bytes = base64::engine::general_purpose::STANDARD
+                    .decode(encoded)
+                    .map_err(|error| format!("MCP resource content is invalid base64: {error}"))?;
+                let index = assets.len();
+                assets.push(NativeMcpAsset {
+                    bytes,
+                    media_type: resource
+                        .get("mimeType")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_owned),
+                    kind: "resource".to_owned(),
+                });
+                resource.insert("blobIndex".to_owned(), serde_json::json!(index));
+            }
+            for value in object.values_mut() {
+                extract_mcp_assets(value, assets)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+pub fn attach_mcp_asset_refs(value: &mut serde_json::Value, refs: &[engine::BlobRef]) {
+    match value {
+        serde_json::Value::Array(values) => {
+            for value in values {
+                attach_mcp_asset_refs(value, refs);
+            }
+        }
+        serde_json::Value::Object(object) => {
+            if let Some(index) = object.remove("blobIndex").and_then(|value| value.as_u64())
+                && let Some(blob_ref) = refs.get(index as usize)
+            {
+                object.insert(
+                    "blobRef".to_owned(),
+                    serde_json::Value::String(blob_ref.as_str().to_owned()),
+                );
+            }
+            for value in object.values_mut() {
+                attach_mcp_asset_refs(value, refs);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn spec_from_target(
+    target: &engine::RemoteMcpCallTarget,
+    exposure: engine::RemoteMcpExposure,
+) -> RemoteMcpToolSpec {
+    RemoteMcpToolSpec {
+        server_id: target.server_id.clone(),
+        record_revision: target.record_revision,
+        server_label: target.server_label.clone(),
+        server_url: target.server_url.clone(),
+        description_ref: None,
+        allowed_tools: target.allowed_tools.clone(),
+        execution: engine::RemoteMcpExecution::Native,
+        exposure,
+        approval: target.approval.clone(),
+        defer_loading: None,
+        auth_ref: target.auth_ref.clone(),
+        auth_required: target.auth_required,
+        allow_private_network: target.allow_private_network,
+    }
+}
+
+fn visible_mcp_result(raw: &serde_json::Value, fallback: &serde_json::Value) -> String {
+    let texts = raw
+        .get("content")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|block| {
+            if block.get("type").and_then(serde_json::Value::as_str) == Some("text") {
+                block
+                    .get("text")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned)
+            } else {
+                block
+                    .get("type")
+                    .and_then(serde_json::Value::as_str)
+                    .map(|kind| format!("[MCP {kind} content stored as structured output]"))
+            }
+        })
+        .collect::<Vec<_>>();
+    if texts.is_empty() {
+        serde_json::to_string(fallback).unwrap_or_else(|_| "MCP tool returned a result".to_owned())
+    } else {
+        texts.join("\n")
+    }
+}
+
+#[async_trait]
+impl McpInventoryResolver for NativeMcpInventoryResolver {
+    async fn list_tools(
+        &self,
+        spec: &RemoteMcpToolSpec,
+    ) -> Result<Vec<NativeMcpTool>, McpInventoryError> {
+        let key = (spec.server_id.clone(), spec.record_revision);
+        if let Some(cached) = self.cache.lock().await.get(&key)
+            && cached.fetched_at.elapsed() < cached.ttl
+        {
+            return Ok(cached.tools.clone());
+        }
+        let lock = {
+            let mut locks = self.locks.lock().await;
+            locks
+                .entry(key.clone())
+                .or_insert_with(|| Arc::new(Mutex::new(())))
+                .clone()
+        };
+        let _permit = lock.lock().await;
+        if let Some(cached) = self.cache.lock().await.get(&key)
+            && cached.fetched_at.elapsed() < cached.ttl
+        {
+            return Ok(cached.tools.clone());
+        }
+        let (tools, tools_list_changed, advertised_ttl) = self.uncached(spec).await?;
+        let ttl = advertised_ttl.unwrap_or(if tools_list_changed {
+            self.list_changed_ttl
+        } else {
+            self.ttl
+        });
+        let mut cache = self.cache.lock().await;
+        cache.retain(|(server_id, revision), _| {
+            server_id != &spec.server_id || *revision == spec.record_revision
+        });
+        cache.insert(
+            key,
+            CachedInventory {
+                fetched_at: Instant::now(),
+                ttl,
+                tools: tools.clone(),
+            },
+        );
+        Ok(tools)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use super::*;
+
+    struct CountingDiscoverer {
+        calls: AtomicUsize,
+        tools_list_changed: bool,
+        ttl_ms: Option<u64>,
+    }
+
+    #[async_trait]
+    impl McpToolDiscoverer for CountingDiscoverer {
+        async fn discover_tools(
+            &self,
+            _server_url: &str,
+            _bearer: Option<&SecretValue>,
+            _trusted_universe: Option<uuid::Uuid>,
+            _allow_private_network: bool,
+            _limits: mcp::McpToolDiscoveryLimits,
+        ) -> Result<DiscoveredMcpInventory, mcp::McpToolDiscoveryFailure> {
+            let call = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            Ok(DiscoveredMcpInventory {
+                tools: vec![mcp::DiscoveredMcpTool {
+                    name: format!("tool_{call}"),
+                    title: None,
+                    description: Some("test tool".to_owned()),
+                    input_schema: serde_json::json!({"type": "object"}),
+                    annotations: None,
+                }],
+                tools_list_changed: self.tools_list_changed,
+                ttl_ms: self.ttl_ms,
+            })
+        }
+    }
+
+    fn spec(revision: u64) -> RemoteMcpToolSpec {
+        RemoteMcpToolSpec {
+            server_id: "test".to_owned(),
+            record_revision: revision,
+            server_label: "test".to_owned(),
+            server_url: "http://127.0.0.1/mcp".to_owned(),
+            description_ref: None,
+            allowed_tools: None,
+            execution: engine::RemoteMcpExecution::Native,
+            exposure: engine::RemoteMcpExposure::Inject,
+            approval: engine::RemoteMcpApprovalPolicy::Never,
+            defer_loading: None,
+            auth_ref: None,
+            auth_required: false,
+            allow_private_network: true,
+        }
+    }
+
+    #[test]
+    fn private_policy_requires_record_opt_in_and_matching_host_or_cidr() {
+        let policy = McpPrivateNetworkPolicy::parse(Some("mcp.internal,10.20.0.0/16,fd00::/8"))
+            .expect("policy");
+        assert!(policy.permits("https://mcp.internal/mcp", true));
+        assert!(policy.permits("http://10.20.4.8/mcp", true));
+        assert!(!policy.permits("http://10.20.4.8/mcp", false));
+        assert!(!policy.permits("http://10.21.4.8/mcp", true));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn inventory_cache_singleflights_and_invalidates_on_revision() {
+        let discoverer = Arc::new(CountingDiscoverer {
+            calls: AtomicUsize::new(0),
+            tools_list_changed: false,
+            ttl_ms: None,
+        });
+        let resolver = Arc::new(NativeMcpInventoryResolver::for_test(
+            discoverer.clone(),
+            Duration::from_secs(60),
+            Duration::from_secs(60),
+        ));
+        let mut tasks = Vec::new();
+        for _ in 0..8 {
+            let resolver = resolver.clone();
+            tasks.push(tokio::spawn(async move {
+                resolver.list_tools(&spec(1)).await.expect("inventory")
+            }));
+        }
+        for task in tasks {
+            assert_eq!(task.await.expect("join")[0].remote_name, "tool_1");
+        }
+        assert_eq!(discoverer.calls.load(Ordering::SeqCst), 1);
+
+        resolver.list_tools(&spec(2)).await.expect("new revision");
+        resolver
+            .list_tools(&spec(1))
+            .await
+            .expect("old revision evicted");
+        assert_eq!(discoverer.calls.load(Ordering::SeqCst), 3);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn inventory_cache_refreshes_after_ttl() {
+        let discoverer = Arc::new(CountingDiscoverer {
+            calls: AtomicUsize::new(0),
+            tools_list_changed: false,
+            ttl_ms: None,
+        });
+        let resolver = NativeMcpInventoryResolver::for_test(
+            discoverer.clone(),
+            Duration::from_millis(1),
+            Duration::from_secs(60),
+        );
+        resolver.list_tools(&spec(1)).await.expect("first");
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        resolver.list_tools(&spec(1)).await.expect("refreshed");
+        assert_eq!(discoverer.calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn inventory_cache_uses_shorter_ttl_when_list_changes_are_advertised() {
+        let discoverer = Arc::new(CountingDiscoverer {
+            calls: AtomicUsize::new(0),
+            tools_list_changed: true,
+            ttl_ms: None,
+        });
+        let resolver = NativeMcpInventoryResolver::for_test(
+            discoverer.clone(),
+            Duration::from_secs(60),
+            Duration::from_millis(1),
+        );
+        resolver.list_tools(&spec(1)).await.expect("first");
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        resolver
+            .list_tools(&spec(1))
+            .await
+            .expect("short TTL refresh");
+        assert_eq!(discoverer.calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn inventory_cache_honors_advertised_ttl_before_fallbacks() {
+        let discoverer = Arc::new(CountingDiscoverer {
+            calls: AtomicUsize::new(0),
+            tools_list_changed: true,
+            ttl_ms: Some(60_000),
+        });
+        let resolver = NativeMcpInventoryResolver::for_test(
+            discoverer.clone(),
+            Duration::from_millis(1),
+            Duration::from_millis(1),
+        );
+        resolver.list_tools(&spec(1)).await.expect("first");
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        resolver
+            .list_tools(&spec(1))
+            .await
+            .expect("server TTL cache hit");
+        assert_eq!(discoverer.calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn binary_content_is_extracted_and_referenced_without_inline_base64() {
+        let mut value = serde_json::json!({
+            "content": [{"type": "image", "mimeType": "image/png", "data": "aGVsbG8="}]
+        });
+        let mut assets = Vec::new();
+        extract_mcp_assets(&mut value, &mut assets).expect("extract");
+        assert_eq!(assets.len(), 1);
+        assert_eq!(assets[0].bytes, b"hello");
+        assert!(!value.to_string().contains("aGVsbG8="));
+        attach_mcp_asset_refs(&mut value, &[engine::BlobRef::from_bytes(b"hello")]);
+        assert!(value.to_string().contains("sha256:"));
+    }
+}

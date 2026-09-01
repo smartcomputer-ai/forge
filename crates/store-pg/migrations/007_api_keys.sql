@@ -1,4 +1,4 @@
--- Deployment-scoped API keys for inbound gateway authentication (P90 Phase 2).
+-- Deployment-scoped API keys for inbound gateway authentication.
 --
 -- Design notes:
 -- - This is the second deployment-level table after `universes`, and the

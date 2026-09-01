@@ -1,4 +1,4 @@
-//! Generic auth provider configurations (P69 G5).
+//! Generic auth provider configurations.
 //!
 //! One table serves every provider kind. Non-secret config is stored as
 //! tagged JSON and decoded into the typed `AuthProviderConfig` enum on read;

@@ -1,4 +1,4 @@
-//! Bots runtime (P142): the admission pipeline every event path shares,
+//! Bots runtime: the admission pipeline every event path shares,
 //! Temporal Schedule reconciliation for schedule/poll triggers, the
 //! controller-facing session operations, tool execution, receipts, and the
 //! trigger fires. Everything here runs in-process against the universe's

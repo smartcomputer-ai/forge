@@ -1,18 +1,19 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow};
 use api::{
-    AgentApiOutcome, ContextEntryKindView, ContextEntryView, ContextMessageRoleView, EventCursor,
-    FeaturesConfig, GenerationConfig, InlineAgentProfile, InputItem, ModelConfig, ProfileId,
-    ProfileSource, RunStartConfig, RunStartParams, RunStartResponse, RunStartSource,
-    SessionEventKindView, SessionEventView, SessionEventsReadParams, SessionReadParams,
-    SessionStartParams, SessionView, TimersFeature, ToolBatchView, ToolCallEventView, ToolCallView,
-    ToolItemStatus, VfsFeature, VfsPromptsConfig, VfsSkillsConfig, VfsToolSurface, WebFeature,
-    WebFetchFeature, WebSearchFeature,
+    AgentApiOutcome, EventCursor, FeaturesConfig, GenerationConfig, InlineAgentProfile, InputItem,
+    ModelConfig, ProfileId, ProfileSource, RunStartConfig, RunStartParams, RunStartResponse,
+    RunStartSource, SessionEventKindView, SessionEventView, SessionEventsReadParams,
+    SessionReadParams, SessionStartParams, SessionView, TimersFeature, ToolCallEventView,
+    VfsFeature, VfsPromptsConfig, VfsSkillsConfig, VfsToolSurface, WebFeature, WebFetchFeature,
+    WebSearchFeature,
 };
+#[cfg(test)]
+use api::{ContextEntryKindView, ContextEntryView, ToolBatchView, ToolCallView, ToolItemStatus};
 use clap::Args;
 use serde_json::Value;
 use tokio::task::JoinHandle;
@@ -21,10 +22,9 @@ use crate::api_client::{HttpAgentApi, api_error};
 use crate::chat::preview::compact_preview;
 use crate::chat::protocol::{
     ChatCommand, ChatConnectionInfo, ChatDelta, ChatDraftSettings, ChatErrorView, ChatEvent,
-    ChatMessageView, ChatProgressStatus, ChatReasoningView, ChatRunView, ChatSessionSummary,
-    ChatSettingsView, ChatStatus, ChatToolCallDisplayView, ChatToolCallView, ChatToolChainView,
-    ChatToolDisplayGroup, ChatTurn, DEFAULT_CHAT_REASONING_EFFORT, GATEWAY_WORLD_ID, run_status,
-    session_lifecycle,
+    ChatMessageView, ChatProgressStatus, ChatRunView, ChatSessionSummary, ChatSettingsView,
+    ChatStatus, ChatToolCallDisplayView, ChatToolCallView, ChatToolChainView, ChatToolDisplayGroup,
+    ChatTurn, DEFAULT_CHAT_REASONING_EFFORT, GATEWAY_WORLD_ID, run_status, session_lifecycle,
 };
 use crate::chat::session::{new_session_id, new_submission_id, validate_session_id};
 
@@ -210,9 +210,19 @@ pub(crate) struct ChatSessionDriver {
     event_cursor: Option<EventCursor>,
     turns: Vec<ChatTurn>,
     active_tool_chains: Vec<ChatToolChainView>,
+    /// Run lifecycle facts keyed by run sequence, fed by the event tail and
+    /// reconciled against `session/read`; `/steer`, `/interrupt`, and the
+    /// model lock derive the active run from this, not the transcript.
+    run_states: BTreeMap<u64, TrackedRun>,
     sessions: BTreeSet<String>,
     pending_run: Option<PendingRunHandle>,
     notice_seq: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TrackedRun {
+    id: String,
+    status: api::RunStatus,
 }
 
 type PendingRunHandle =
@@ -241,6 +251,7 @@ impl ChatSessionDriver {
             event_cursor: None,
             turns: Vec::new(),
             active_tool_chains: Vec::new(),
+            run_states: BTreeMap::new(),
             sessions: BTreeSet::from([session_id.clone()]),
             pending_run: None,
             notice_seq: 0,
@@ -251,7 +262,7 @@ impl ChatSessionDriver {
             journal_next_from: None,
             settings: driver.settings_view(),
         })];
-        events.push(ChatEvent::SessionSelected(summary_from_session(
+        events.push(ChatEvent::SessionSelected(summary_from_mutation(
             &started.result.session,
         )));
         events.extend(driver.refresh().await?);
@@ -347,6 +358,11 @@ impl ChatSessionDriver {
             ChatCommand::NewSession => self.new_session().await,
             ChatCommand::SteerRun { text } => self.steer_active_run(text).await,
             ChatCommand::InterruptRun { .. } => self.cancel_active_run().await,
+            ChatCommand::DecideApproval {
+                approval_id,
+                decision,
+                note,
+            } => self.decide_approval(approval_id, decision, note).await,
             ChatCommand::PauseSession | ChatCommand::ResumeSession => {
                 Ok(vec![ChatEvent::Error(ChatErrorView {
                     message: "pause/resume is not implemented for Lightspeed API sessions".into(),
@@ -475,14 +491,9 @@ impl ChatSessionDriver {
     /// The run currently executing (running or parked), if any. Queued runs
     /// do not count: they cannot be steered yet and are cancelled by id.
     fn active_run_id(&self) -> Option<String> {
-        self.turns.iter().rev().find_map(|turn| {
-            turn.run.as_ref().and_then(|run| {
-                matches!(
-                    run.status,
-                    ChatProgressStatus::Running | ChatProgressStatus::Waiting
-                )
+        self.run_states.values().rev().find_map(|run| {
+            matches!(run.status, api::RunStatus::Running | api::RunStatus::Parked)
                 .then(|| run.id.clone())
-            })
         })
     }
 
@@ -490,14 +501,10 @@ impl ChatSessionDriver {
     /// stops. Queued runs are cancelled first so a stop never lets the next
     /// message start behind the one being stopped.
     fn interruptible_run_id(&self) -> Option<String> {
-        self.turns
-            .iter()
+        self.run_states
+            .values()
             .rev()
-            .find_map(|turn| {
-                turn.run.as_ref().and_then(|run| {
-                    (run.status == ChatProgressStatus::Queued).then(|| run.id.clone())
-                })
-            })
+            .find_map(|run| (run.status == api::RunStatus::Queued).then(|| run.id.clone()))
             .or_else(|| self.active_run_id())
     }
 
@@ -548,6 +555,67 @@ impl ChatSessionDriver {
                 "steering {} accepted; the model sees it at the next turn",
                 response.steering_id
             ),
+        )];
+        events.extend(self.drain_event_log().await?);
+        Ok(events)
+    }
+
+    async fn decide_approval(
+        &mut self,
+        approval_id: String,
+        decision: api::ApprovalDecisionKind,
+        note: Option<String>,
+    ) -> Result<Vec<ChatEvent>> {
+        let session = self
+            .api
+            .read_session(SessionReadParams {
+                session_id: self.session_id.clone(),
+                run_limit: None,
+            })
+            .await
+            .map_err(api_error)?
+            .result
+            .session;
+        let run = session
+            .runs
+            .iter()
+            .find(|run| {
+                run.pending_approvals
+                    .iter()
+                    .any(|approval| approval.approval_id == approval_id)
+            })
+            .ok_or_else(|| anyhow!("pending approval not found: {approval_id}"))?;
+        let response = self
+            .api
+            .decide_run_approvals(api::RunApprovalsDecideParams {
+                session_id: self.session_id.clone(),
+                run_id: run.id.clone(),
+                decisions: vec![api::ApprovalDecisionInput {
+                    approval_id: approval_id.clone(),
+                    decision,
+                    note,
+                }],
+            })
+            .await
+            .map_err(api_error)?
+            .result;
+        let result = response
+            .results
+            .first()
+            .ok_or_else(|| anyhow!("approval decision returned no result"))?;
+        if result.status == api::ApprovalDecisionStatus::Failed {
+            return Err(anyhow!(
+                "approval decision failed: {}",
+                result
+                    .failure
+                    .as_ref()
+                    .map(|failure| failure.message.as_str())
+                    .unwrap_or("unknown failure")
+            ));
+        }
+        let mut events = vec![self.notice_event(
+            "approval",
+            format!("{} {approval_id}", approval_decision_label(decision)),
         )];
         events.extend(self.drain_event_log().await?);
         Ok(events)
@@ -688,14 +756,29 @@ impl ChatSessionDriver {
             .api
             .read_session(SessionReadParams {
                 session_id: self.session_id.clone(),
+                run_limit: None,
             })
             .await
             .map_err(api_error)?;
         let session = read.result.session;
         let old_turns = self.turns.clone();
         let old_active_tool_chains = self.active_tool_chains.clone();
-        self.turns = project_turns(&session, &self.settings);
-        self.active_tool_chains = project_active_tool_chains(&session, &self.settings);
+        // Detailed transcript and tool state are maintained from the bounded
+        // event tail. `session/read` reconciles current state and run summaries.
+        self.run_states = session
+            .runs
+            .iter()
+            .chain(session.active_run.as_ref())
+            .map(|run| {
+                (
+                    run_seq_from_id(&run.id),
+                    TrackedRun {
+                        id: run.id.clone(),
+                        status: run.status,
+                    },
+                )
+            })
+            .collect();
 
         let mut events = Vec::new();
         events.push(ChatEvent::SessionSelected(summary_from_session(&session)));
@@ -712,15 +795,26 @@ impl ChatSessionDriver {
             });
         }
         if let Some(active_run) = session
-            .runs
-            .iter()
-            .find(|run| matches!(run.status, api::RunStatus::Running))
+            .active_run
+            .as_ref()
+            .filter(|run| matches!(run.status, api::RunStatus::Running | api::RunStatus::Parked))
         {
-            events.push(run_event_from_view(
+            events.push(run_event_from_summary(
                 active_run,
                 &self.settings,
                 run_seq_from_id(&active_run.id),
             ));
+        }
+        for run in session
+            .runs
+            .iter()
+            .filter(|run| !run.pending_approvals.is_empty())
+        {
+            events.push(ChatEvent::ApprovalsPending {
+                session_id: self.session_id.clone(),
+                run_id: run.id.clone(),
+                approvals: run.pending_approvals.clone(),
+            });
         }
         events.push(ChatEvent::StatusChanged(ChatStatus {
             session_id: self.session_id.clone(),
@@ -873,6 +967,14 @@ impl ChatSessionDriver {
             SessionEventKindView::RunCancellationRequested { .. } => {
                 events.push(self.status_event("cancelling"));
             }
+            SessionEventKindView::ApprovalRequested { .. }
+            | SessionEventKindView::ApprovalRunParked { .. } => {
+                events.push(self.status_event("waiting for approval"));
+            }
+            SessionEventKindView::ApprovalDecided { .. }
+            | SessionEventKindView::ApprovalCancelled { .. } => {
+                events.push(self.status_event("approval resolved"));
+            }
             SessionEventKindView::SessionOpened { .. }
             | SessionEventKindView::SessionConfigChanged { .. }
             | SessionEventKindView::WorkflowToolsConfigured { .. }
@@ -903,11 +1005,21 @@ impl ChatSessionDriver {
     }
 
     fn run_view_from_status(
-        &self,
+        &mut self,
         run_id: &str,
         status: api::RunStatus,
         observed_at_ms: u64,
     ) -> ChatRunView {
+        // Every run lifecycle event routes through here, so this is the one
+        // event-tail write into the run-state index behind /steer,
+        // /interrupt, and the model lock.
+        self.run_states.insert(
+            run_seq_from_id(run_id),
+            TrackedRun {
+                id: run_id.to_string(),
+                status,
+            },
+        );
         ChatRunView {
             id: run_id.to_string(),
             run_seq: run_seq_from_id(run_id),
@@ -976,6 +1088,7 @@ impl ChatSessionDriver {
         self.event_cursor = None;
         self.turns.clear();
         self.active_tool_chains.clear();
+        self.run_states.clear();
         self.api
             .start_session(SessionStartParams {
                 session_id: Some(session_id.clone()),
@@ -1008,6 +1121,7 @@ impl ChatSessionDriver {
         self.event_cursor = None;
         self.turns.clear();
         self.active_tool_chains.clear();
+        self.run_states.clear();
         let mut events = vec![ChatEvent::HistoryReset { session_id }];
         events.extend(self.refresh().await?);
         Ok(events)
@@ -1091,15 +1205,11 @@ impl ChatSessionDriver {
     }
 
     fn run_active(&self) -> bool {
-        self.turns.iter().any(|turn| {
-            turn.run.as_ref().is_some_and(|run| {
-                matches!(
-                    run.status,
-                    ChatProgressStatus::Queued
-                        | ChatProgressStatus::Running
-                        | ChatProgressStatus::Waiting
-                )
-            })
+        self.run_states.values().any(|run| {
+            matches!(
+                run.status,
+                api::RunStatus::Queued | api::RunStatus::Running | api::RunStatus::Parked
+            )
         })
     }
 
@@ -1134,103 +1244,7 @@ async fn build_chat_api(options: &ChatSessionDriverOptions) -> Result<ChatAgentA
     Ok(Arc::new(HttpAgentApi::new(options.api_url.clone())))
 }
 
-fn project_turns(session: &SessionView, settings: &ChatDraftSettings) -> Vec<ChatTurn> {
-    session
-        .runs
-        .iter()
-        .map(|run| {
-            let input_items = match &run.source {
-                api::RunViewSource::Input { items } => items.as_slice(),
-                api::RunViewSource::Context { .. } => &[] as &[InputItem],
-            };
-            let user = input_items
-                .iter()
-                .enumerate()
-                .next()
-                .map(|(index, item)| match item {
-                    InputItem::Text { text } => ChatMessageView {
-                        id: format!("{}:input:{index}", run.id),
-                        role: "user".into(),
-                        content: text.clone(),
-                        ref_: None,
-                    },
-                    // Context-only; never valid run input, shown defensively.
-                    InputItem::Catalog { title, .. } => ChatMessageView {
-                        id: format!("{}:input:{index}", run.id),
-                        role: "user".into(),
-                        content: format!("catalog: {title}"),
-                        ref_: None,
-                    },
-                    InputItem::TextRef { blob_ref } => ChatMessageView {
-                        id: format!("{}:input:{index}", run.id),
-                        role: "user".into(),
-                        content: format!("text input ref {blob_ref}"),
-                        ref_: Some(blob_ref.clone()),
-                    },
-                    InputItem::Media {
-                        blob_ref,
-                        mime,
-                        name,
-                        ..
-                    } => ChatMessageView {
-                        id: format!("{}:input:{index}", run.id),
-                        role: "user".into(),
-                        content: match name {
-                            Some(name) => format!("media input {name} ({mime})"),
-                            None => format!("media input ({mime})"),
-                        },
-                        ref_: Some(blob_ref.clone()),
-                    },
-                });
-            let assistant = run.entries.iter().rev().find_map(|entry| match entry.kind {
-                ContextEntryKindView::Message {
-                    role: ContextMessageRoleView::Assistant,
-                } => Some(ChatMessageView {
-                    id: entry.id.clone(),
-                    role: "assistant".into(),
-                    content: entry
-                        .text
-                        .clone()
-                        .or_else(|| entry.preview.clone())
-                        .unwrap_or_else(|| "[media]".to_owned()),
-                    ref_: None,
-                }),
-                _ => None,
-            });
-            let assistant_reasoning = run.entries.iter().rev().find_map(|entry| {
-                let text = system_note_text(entry)?;
-                displayable_reasoning_text(&text).then(|| ChatReasoningView {
-                    id: entry.id.clone(),
-                    content: text,
-                    ref_: None,
-                    output_ref: None,
-                })
-            });
-            ChatTurn {
-                turn_id: run.id.clone(),
-                user,
-                assistant_reasoning,
-                assistant,
-                run: Some(run_event_from_view(run, settings, run_seq_from_id(&run.id)).run()),
-                tool_chains: project_tool_chains(run),
-            }
-        })
-        .collect()
-}
-
-fn project_active_tool_chains(
-    session: &SessionView,
-    _settings: &ChatDraftSettings,
-) -> Vec<ChatToolChainView> {
-    session
-        .runs
-        .iter()
-        .filter(|run| matches!(run.status, api::RunStatus::Running))
-        .flat_map(project_tool_chains)
-        .filter(|chain| !tool_chain_terminal(chain))
-        .collect()
-}
-
+#[cfg(test)]
 fn project_tool_chains(run: &api::RunView) -> Vec<ChatToolChainView> {
     let mut chains = run
         .tool_batches
@@ -1241,6 +1255,7 @@ fn project_tool_chains(run: &api::RunView) -> Vec<ChatToolChainView> {
     chains
 }
 
+#[cfg(test)]
 fn project_tool_batch(run_id: &str, batch: &ToolBatchView) -> ChatToolChainView {
     let calls = batch
         .calls
@@ -1258,6 +1273,7 @@ fn project_tool_batch(run_id: &str, batch: &ToolBatchView) -> ChatToolChainView 
     }
 }
 
+#[cfg(test)]
 fn project_provider_tool_chains(
     run_id: &str,
     entries: &[ContextEntryView],
@@ -1273,6 +1289,7 @@ fn project_provider_tool_chains(
         .collect()
 }
 
+#[cfg(test)]
 fn project_provider_tool_chain(
     run_id: &str,
     item_id: &str,
@@ -1318,8 +1335,18 @@ fn event_needs_snapshot(kind: &SessionEventKindView) -> bool {
             | SessionEventKindView::RunCompleted { .. }
             | SessionEventKindView::RunFailed { .. }
             | SessionEventKindView::RunCancelled { .. }
+            | SessionEventKindView::ApprovalRequested { .. }
+            | SessionEventKindView::ApprovalDecided { .. }
+            | SessionEventKindView::ApprovalCancelled { .. }
             | SessionEventKindView::ToolBatchCompleted { .. }
     )
+}
+
+fn approval_decision_label(decision: api::ApprovalDecisionKind) -> &'static str {
+    match decision {
+        api::ApprovalDecisionKind::Approve => "approved",
+        api::ApprovalDecisionKind::Reject => "rejected",
+    }
 }
 
 fn tool_call_from_event(index: usize, call: &ToolCallEventView) -> ChatToolCallView {
@@ -1341,6 +1368,7 @@ fn tool_call_from_event(index: usize, call: &ToolCallEventView) -> ChatToolCallV
     }
 }
 
+#[cfg(test)]
 fn tool_call_from_batch(index: usize, call: &ToolCallView) -> ChatToolCallView {
     ChatToolCallView {
         id: call.call_id.clone(),
@@ -1396,6 +1424,7 @@ fn tool_activity_summary(calls: &[ChatToolCallView]) -> Option<String> {
     )
 }
 
+#[cfg(test)]
 fn tool_status(status: ToolItemStatus) -> ChatProgressStatus {
     match status {
         ToolItemStatus::Requested | ToolItemStatus::Running => ChatProgressStatus::Running,
@@ -1403,16 +1432,6 @@ fn tool_status(status: ToolItemStatus) -> ChatProgressStatus {
         ToolItemStatus::Cancelled => ChatProgressStatus::Cancelled,
         ToolItemStatus::Failed | ToolItemStatus::Unavailable => ChatProgressStatus::Failed,
     }
-}
-
-fn tool_chain_terminal(chain: &ChatToolChainView) -> bool {
-    matches!(
-        chain.status,
-        ChatProgressStatus::Succeeded
-            | ChatProgressStatus::Failed
-            | ChatProgressStatus::Cancelled
-            | ChatProgressStatus::Stale
-    )
 }
 
 fn summary_from_session(session: &SessionView) -> ChatSessionSummary {
@@ -1435,13 +1454,26 @@ fn summary_from_session(session: &SessionView) -> ChatSessionSummary {
         active_run: session
             .runs
             .iter()
-            .find(|run| matches!(run.status, api::RunStatus::Running))
+            .find(|run| matches!(run.status, api::RunStatus::Running | api::RunStatus::Parked))
             .map(|run| run.id.clone()),
     }
 }
 
-fn run_event_from_view(
-    run: &api::RunView,
+fn summary_from_mutation(session: &api::SessionMutationView) -> ChatSessionSummary {
+    ChatSessionSummary {
+        session_id: session.id.clone(),
+        status: Some(session.status),
+        lifecycle: Some(session_lifecycle(session.status)),
+        updated_at_ns: None,
+        run_count: 0,
+        provider: None,
+        model: None,
+        active_run: None,
+    }
+}
+
+fn run_event_from_summary(
+    run: &api::RunSummaryView,
     settings: &ChatDraftSettings,
     fallback_seq: u64,
 ) -> ChatEvent {
@@ -1455,22 +1487,13 @@ fn run_event_from_view(
         reasoning_effort: settings.reasoning_effort,
         input_refs: Vec::new(),
         output_ref: None,
-        started_at_ns: 0,
-        updated_at_ns: 0,
+        started_at_ns: run.started_at_ms.unwrap_or(0).saturating_mul(1_000_000),
+        updated_at_ns: run
+            .completed_at_ms
+            .or(run.started_at_ms)
+            .unwrap_or(run.accepted_at_ms)
+            .saturating_mul(1_000_000),
     })
-}
-
-trait ChatRunEventExt {
-    fn run(self) -> ChatRunView;
-}
-
-impl ChatRunEventExt for ChatEvent {
-    fn run(self) -> ChatRunView {
-        match self {
-            ChatEvent::RunChanged(run) => run,
-            _ => unreachable!("run_event_from_view always returns RunChanged"),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1671,6 +1694,28 @@ fn print_event(event: &ChatEvent) -> Result<()> {
         ChatEvent::RunChanged(run) => {
             println!("run {} {}", run.id, progress_label(run.status));
         }
+        ChatEvent::ApprovalsPending {
+            run_id, approvals, ..
+        } => {
+            for approval in approvals {
+                let api::ApprovalSubjectView::McpToolCall {
+                    server_label,
+                    tool_name,
+                    arguments_preview,
+                    ..
+                } = &approval.subject;
+                println!(
+                    "approval {} pending for run {}: {} on {}\n{}\n  /approve {}\n  /reject {} [note]",
+                    approval.approval_id,
+                    run_id,
+                    tool_name,
+                    server_label,
+                    arguments_preview,
+                    approval.approval_id,
+                    approval.approval_id
+                );
+            }
+        }
         ChatEvent::ToolChainsChanged { .. }
         | ChatEvent::CompactionsChanged { .. }
         | ChatEvent::GapObserved { .. }
@@ -1813,56 +1858,8 @@ fn run_seq_from_id(id: &str) -> u64 {
         .unwrap_or_default()
 }
 
-fn system_note_text(entry: &ContextEntryView) -> Option<String> {
-    let fallback = match &entry.kind {
-        ContextEntryKindView::Instructions => "instructions",
-        ContextEntryKindView::VfsCatalog => "VFS catalog",
-        ContextEntryKindView::SkillCatalog => "skills catalog",
-        ContextEntryKindView::SkillActivation { .. } => "skill activated",
-        ContextEntryKindView::ReasoningState => "context item",
-        _ => return None,
-    };
-    Some(entry.preview.clone().unwrap_or_else(|| fallback.to_owned()))
-}
-
-fn displayable_reasoning_text(text: &str) -> bool {
-    let text = text.trim();
-    if text.is_empty() {
-        return false;
-    }
-    let lower = text.to_ascii_lowercase();
-    if lower == "context item"
-        || lower == "reasoning state"
-        || lower.starts_with("reasoning state rs_")
-        || lower == "compaction state"
-        || lower.starts_with("compaction state ")
-    {
-        return false;
-    }
-    true
-}
-
 #[cfg(test)]
 mod tests {
-    fn reasoning_state_entry(id: &str, preview: &str) -> ContextEntryView {
-        ContextEntryView {
-            id: id.to_owned(),
-            key: None,
-            kind: ContextEntryKindView::ReasoningState,
-            content_ref: "sha256:reasoning".to_owned(),
-            media_type: None,
-            preview: Some(preview.to_owned()),
-            provider_kind: None,
-            provider_item_id: None,
-            token_estimate: None,
-            text: None,
-            display: None,
-            source: None,
-            supersedes: None,
-            superseded_by: None,
-        }
-    }
-
     use super::*;
 
     #[test]
@@ -1904,6 +1901,7 @@ mod tests {
                 }],
             }],
             usage: None,
+            pending_approvals: Vec::new(),
         };
 
         let chains = project_tool_chains(&run);
@@ -1949,6 +1947,7 @@ mod tests {
                 provider_item_id: Some("mcp_1".into()),
                 token_estimate: None,
                 text: None,
+                text_truncated: false,
                 display: Some(api::ProviderContextDisplayView {
                     summary: api::ToolCallDisplayView {
                         group: api::ToolCallDisplayGroup::Other,
@@ -1969,6 +1968,7 @@ mod tests {
             }],
             tool_batches: Vec::new(),
             usage: None,
+            pending_approvals: Vec::new(),
         };
 
         let chains = project_tool_chains(&run);
@@ -1995,80 +1995,6 @@ mod tests {
                 .map(|display| (display.verb.as_str(), display.target.as_deref())),
             Some(("MCP", Some("echo.echo")))
         );
-    }
-
-    #[test]
-    fn project_active_tool_chains_ignores_terminal_batches() {
-        fn call(call_id: &str, status: ToolItemStatus) -> ToolCallView {
-            ToolCallView {
-                call_id: call_id.into(),
-                tool_name: "read_file".into(),
-                arguments_ref: "sha256:args".into(),
-                arguments: Some(r#"{"path":"README.md"}"#.into()),
-                output: None,
-                is_error: false,
-                status,
-                effects: Vec::new(),
-                display: None,
-            }
-        }
-
-        let session = SessionView {
-            id: "session_1".into(),
-            status: api::SessionStatus::Active,
-            display_name: None,
-            managed: false,
-            config_revision: 0,
-            config: None,
-            active_environment_id: None,
-            created_at_ms: 0,
-            updated_at_ms: 0,
-            runs: vec![api::RunView {
-                id: "run_1".into(),
-                status: api::RunStatus::Running,
-                started_at_ms: None,
-                completed_at_ms: None,
-                source: api::RunViewSource::Input { items: Vec::new() },
-                entries: Vec::new(),
-                tool_batches: vec![
-                    ToolBatchView {
-                        id: "tool_batch_1".into(),
-                        turn_id: "turn_1".into(),
-                        status: ToolItemStatus::Succeeded,
-                        calls: vec![call("call_1", ToolItemStatus::Succeeded)],
-                    },
-                    ToolBatchView {
-                        id: "tool_batch_2".into(),
-                        turn_id: "turn_2".into(),
-                        status: ToolItemStatus::Running,
-                        calls: vec![call("call_2", ToolItemStatus::Running)],
-                    },
-                ],
-                usage: None,
-            }],
-            active_context: api::ContextView::default(),
-            active_tools: api::ActiveToolsView::default(),
-            management: None,
-            origin: None,
-        };
-
-        let settings = ChatDraftSettings {
-            provider: "openai".into(),
-            api_kind: "openai:responses".into(),
-            model: "gpt-5.5".into(),
-            reasoning_effort: None,
-            max_tokens: None,
-            web_search: None,
-            web_fetch: None,
-            filesystem_tools: None,
-            bare: false,
-        };
-
-        let chains = project_active_tool_chains(&session, &settings);
-
-        assert_eq!(chains.len(), 1);
-        assert_eq!(chains[0].id, "run_1:tool_batch_2");
-        assert_eq!(chains[0].status, ChatProgressStatus::Running);
     }
 
     #[test]
@@ -2119,103 +2045,6 @@ mod tests {
                 .contains("- lightspeed:review [session directContext:sha256:skill-doc] Review")
         );
         assert!(rendered.contains("catalogRef sha256:catalog"));
-    }
-
-    #[test]
-    fn project_turns_prefers_visible_reasoning_summary_over_opaque_state() {
-        let session = SessionView {
-            id: "session_1".into(),
-            status: api::SessionStatus::Idle,
-            display_name: None,
-            managed: false,
-            config_revision: 0,
-            config: None,
-            active_environment_id: None,
-            created_at_ms: 0,
-            updated_at_ms: 0,
-            runs: vec![api::RunView {
-                id: "run_1".into(),
-                status: api::RunStatus::Completed,
-                started_at_ms: None,
-                completed_at_ms: None,
-                source: api::RunViewSource::Input { items: Vec::new() },
-                entries: vec![
-                    reasoning_state_entry("item_1", "I should inspect the crate layout first."),
-                    reasoning_state_entry("item_2", "reasoning state rs_abc123"),
-                ],
-                tool_batches: Vec::new(),
-                usage: None,
-            }],
-            active_context: api::ContextView::default(),
-            active_tools: api::ActiveToolsView::default(),
-            management: None,
-            origin: None,
-        };
-        let settings = ChatDraftSettings {
-            provider: "openai".into(),
-            api_kind: "openai:responses".into(),
-            model: "gpt-5.5".into(),
-            reasoning_effort: None,
-            max_tokens: None,
-            web_search: None,
-            web_fetch: None,
-            filesystem_tools: None,
-            bare: false,
-        };
-
-        let turns = project_turns(&session, &settings);
-
-        assert_eq!(
-            turns[0]
-                .assistant_reasoning
-                .as_ref()
-                .map(|reasoning| reasoning.content.as_str()),
-            Some("I should inspect the crate layout first.")
-        );
-    }
-
-    #[test]
-    fn project_turns_hides_opaque_reasoning_state_markers() {
-        let session = SessionView {
-            id: "session_1".into(),
-            status: api::SessionStatus::Idle,
-            display_name: None,
-            managed: false,
-            config_revision: 0,
-            config: None,
-            active_environment_id: None,
-            created_at_ms: 0,
-            updated_at_ms: 0,
-            runs: vec![api::RunView {
-                id: "run_1".into(),
-                status: api::RunStatus::Completed,
-                started_at_ms: None,
-                completed_at_ms: None,
-                source: api::RunViewSource::Input { items: Vec::new() },
-                entries: vec![reasoning_state_entry("item_1", "reasoning state rs_abc123")],
-                tool_batches: Vec::new(),
-                usage: None,
-            }],
-            active_context: api::ContextView::default(),
-            active_tools: api::ActiveToolsView::default(),
-            management: None,
-            origin: None,
-        };
-        let settings = ChatDraftSettings {
-            provider: "openai".into(),
-            api_kind: "openai:responses".into(),
-            model: "gpt-5.5".into(),
-            reasoning_effort: None,
-            max_tokens: None,
-            web_search: None,
-            web_fetch: None,
-            filesystem_tools: None,
-            bare: false,
-        };
-
-        let turns = project_turns(&session, &settings);
-
-        assert!(turns[0].assistant_reasoning.is_none());
     }
 
     #[test]

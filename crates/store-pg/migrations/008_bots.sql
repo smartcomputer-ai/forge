@@ -1,4 +1,4 @@
--- P142 bots: the bot registry, its triggers, and the per-bot event log.
+-- Bots: the bot registry, its triggers, and the per-bot event log.
 --
 -- Design notes:
 -- - Bot decisions live in the controller's Temporal history; these tables

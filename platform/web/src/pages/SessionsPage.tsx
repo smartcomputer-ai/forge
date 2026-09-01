@@ -18,6 +18,7 @@ import {
   type SessionListPage,
   type SessionOrigin,
   type SessionRunAccepted,
+  type SessionRunApprovalsDecided,
   SessionRunCancelled,
   SessionRunSteered,
   SessionRunView,
@@ -82,6 +83,7 @@ import { SessionComposer, type ComposerMode } from "@/components/session/compose
 import { Switch } from "@/components/ui/switch";
 import {
   ActiveRunMarker,
+  ApprovalCards,
   QueuedRunsBar,
   TranscriptEntryView,
   UserBand,
@@ -285,7 +287,7 @@ function SessionList({
 type SessionNode = { session: SessionSummary; children: SessionNode[] };
 
 /// Group sub-agent sessions under their parent when the parent is in the
-/// loaded page set (P134 lineage). Children whose parent is not loaded stay
+/// loaded page set. Children whose parent is not loaded stay
 /// at the top level and still carry their sub-agent badge; list order (most
 /// recently updated first) is preserved at every level.
 function buildSessionTree(sessions: SessionSummary[]): SessionNode[] {
@@ -767,6 +769,14 @@ export function SessionDetail({
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [decidingApproval, setDecidingApproval] = useState<{
+    approvalId: string;
+    decision: "approve" | "reject";
+  } | null>(null);
+  const [approvalError, setApprovalError] = useState<{
+    approvalId: string;
+    message: string;
+  } | null>(null);
 
   const entries = tail.transcript.entries;
   const activeRun = tail.transcript.activeRun;
@@ -782,6 +792,7 @@ export function SessionDetail({
   // statuses stay current.
   const reconcileRuns = tail.reconcileRuns;
   const sessionRuns = session.data?.runs;
+  const approvalRun = sessionRuns?.find((run) => (run.pendingApprovals?.length ?? 0) > 0);
   useEffect(() => {
     if (sessionRuns && tail.phase === "live") {
       reconcileRuns(sessionRuns);
@@ -1104,6 +1115,45 @@ export function SessionDetail({
     void session.refetch();
   };
 
+  const decideApproval = async (
+    approvalId: string,
+    decision: "approve" | "reject",
+  ) => {
+    if (!approvalRun) return;
+    setApprovalError(null);
+    setDecidingApproval({ approvalId, decision });
+    try {
+      const response = await api<SessionRunApprovalsDecided>(
+        "POST",
+        `/api/v1/universes/${universeId}/sessions/${sessionId}/runs/${approvalRun.id}/approvals`,
+        { decisions: [{ approvalId, decision }] },
+      );
+      const result = response.results[0];
+      if (!result || result.status === "failed") {
+        throw new Error(result?.failure?.message ?? "The approval decision was not accepted");
+      }
+      queryClient.setQueryData<SessionView>(
+        ["session", universeId, sessionId],
+        (current) => current
+          ? {
+              ...current,
+              runs: current.runs?.map((run) =>
+                run.id === response.run.id ? response.run : run,
+              ),
+            }
+          : current,
+      );
+      await session.refetch();
+    } catch (error) {
+      setApprovalError({
+        approvalId,
+        message: error instanceof Error ? error.message : String(error),
+      });
+    } finally {
+      setDecidingApproval(null);
+    }
+  };
+
   const closeSession = useMutation({
     mutationFn: () =>
       api<SessionView>(
@@ -1369,6 +1419,17 @@ export function SessionDetail({
                   />
                 </MessageScrollerItem>
               ))}
+              {approvalRun && (
+                <MessageScrollerItem messageId={`approvals-${approvalRun.id}`}>
+                  <ApprovalCards
+                    approvals={approvalRun.pendingApprovals ?? []}
+                    deciding={decidingApproval}
+                    error={approvalError}
+                    onDecide={(approvalId, decision) =>
+                      void decideApproval(approvalId, decision)}
+                  />
+                </MessageScrollerItem>
+              )}
               {activeRun && !activeToolGroup && (
                 <MessageScrollerItem messageId="active-run">
                   <ActiveRunMarker run={activeRun} />
@@ -1468,10 +1529,7 @@ function queuedRunText(
 ): string {
   const run = runs?.find((candidate) => String(candidate.id) === runId);
   if (run?.source.type === "input") {
-    const text = run.source.items
-      .map((item) => (item.type === "text" ? item.text : `[${item.type}]`))
-      .join("\n")
-      .trim();
+    const text = run.source.preview?.trim();
     if (text) {
       return text;
     }
@@ -1511,7 +1569,7 @@ function SessionScrollFollower({
   return null;
 }
 
-/// Sub-agent lineage strip (P134): where this session came from and the
+/// Sub-agent lineage strip: where this session came from and the
 /// children it delegated to. Children are re-read whenever the run revision
 /// moves, since delegations appear and close mid-run.
 function SessionLineage({

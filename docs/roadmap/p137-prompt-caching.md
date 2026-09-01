@@ -7,7 +7,7 @@
 - **Implemented 2026-08-26**, one pass, live-proven the same day:
   - Anthropic: `materialize_create_request` places the three-breakpoint
     layout on every request — system prompt as one cached block, the last
-    custom tool definition, the last cacheable block of the last message
+    non-deferred tool definition, the last cacheable block of the last message
     (thinking blocks are skipped; a marker a tool brought through provider
     options is kept) — with `prompt_cache_ttl: "5m" | "1h"` on
     `AnthropicMessagesParams` (validated; default 5m). Markers are
@@ -79,9 +79,11 @@ session is re-reading its history; this is the lever.
 
 1. **Anthropic breakpoints, placed by the adapter.** In
    `anthropic_messages.rs`, materialize the system prompt as `Blocks` with
-   `cache_control` on its last block, set `cache_control` on the last tool
-   definition, and put a moving breakpoint on the last content block of
-   the last message — the standard three-breakpoint layout (limit four).
+   `cache_control` on its last block, set `cache_control` on the last
+   non-deferred tool definition, and put a moving breakpoint on the last
+   content block of the last message — the standard three-breakpoint layout
+   (limit four). A tool deferred for tool search cannot carry `cache_control`;
+   [P146](p146-anthropic-tool-search.md) made the placement defer-aware.
    Placement is a materialization detail: nothing in the session log or the
    planned request changes. TTL: default `5m`; `1h` behind a runtime config
    knob for sessions that wake rarely (bots), where the higher write price

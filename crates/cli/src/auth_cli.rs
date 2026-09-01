@@ -487,6 +487,15 @@ struct AuthClientAddArgs {
     /// Default audience grants are bound to (for MCP: the server URL).
     #[arg(long)]
     audience: Option<String>,
+    /// Authorization-server issuer discovered for this MCP client.
+    #[arg(long = "authorization-server-issuer")]
+    authorization_server_issuer: Option<String>,
+    /// Require the RFC 9207 `iss` parameter on authorization callbacks.
+    #[arg(long = "require-callback-issuer")]
+    authorization_response_iss_parameter_supported: bool,
+    /// Authorization-server-advertised scope. Repeat to record multiple.
+    #[arg(long = "authorization-server-scope")]
+    authorization_server_scopes_supported: Vec<String>,
 }
 
 impl std::fmt::Debug for AuthClientAddArgs {
@@ -503,6 +512,18 @@ impl std::fmt::Debug for AuthClientAddArgs {
             .field("client_secret_env", &self.client_secret_env)
             .field("client_secret_stdin", &self.client_secret_stdin)
             .field("audience", &self.audience)
+            .field(
+                "authorization_server_issuer",
+                &self.authorization_server_issuer,
+            )
+            .field(
+                "authorization_response_iss_parameter_supported",
+                &self.authorization_response_iss_parameter_supported,
+            )
+            .field(
+                "authorization_server_scopes_supported",
+                &self.authorization_server_scopes_supported,
+            )
             .finish_non_exhaustive()
     }
 }
@@ -801,6 +822,12 @@ async fn client_add(args: AuthClientAddArgs) -> Result<()> {
             token_endpoint_auth_method: args.auth_method.map(Into::into),
             scopes_default: args.scopes.clone(),
             audience: args.audience.clone(),
+            authorization_server_issuer: args.authorization_server_issuer.clone(),
+            authorization_response_iss_parameter_supported: args
+                .authorization_response_iss_parameter_supported,
+            authorization_server_scopes_supported: args
+                .authorization_server_scopes_supported
+                .clone(),
         })
         .await
         .map_err(crate::api_client::api_error)?
@@ -1284,6 +1311,19 @@ fn print_client(client: &api::OAuthClientView) {
     }
     if let Some(audience) = &client.audience {
         println!("audience {audience}");
+    }
+    if let Some(issuer) = &client.authorization_server_issuer {
+        println!("authorizationServerIssuer {issuer}");
+    }
+    println!(
+        "requireCallbackIssuer {}",
+        client.authorization_response_iss_parameter_supported
+    );
+    if !client.authorization_server_scopes_supported.is_empty() {
+        println!(
+            "authorizationServerScopesSupported {}",
+            client.authorization_server_scopes_supported.join(" ")
+        );
     }
     println!("createdAtMs {}", client.created_at_ms);
     println!("updatedAtMs {}", client.updated_at_ms);

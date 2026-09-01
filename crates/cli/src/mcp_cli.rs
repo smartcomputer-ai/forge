@@ -120,12 +120,15 @@ struct McpServerPutArgs {
     /// Optional description.
     #[arg(long)]
     description: Option<String>,
-    /// Remote MCP transport.
-    #[arg(long, default_value_t = RemoteMcpTransportArg::Auto)]
-    transport: RemoteMcpTransportArg,
     /// Optional provider-side MCP tool allowlist entry. Repeat to allow multiple.
     #[arg(long = "allowed-tool")]
     allowed_tools: Vec<String>,
+    /// Who connects to and executes this MCP server's tools.
+    #[arg(long, default_value_t = RemoteMcpExecutionArg::Provider)]
+    execution: RemoteMcpExecutionArg,
+    /// How native tools are exposed to the model.
+    #[arg(long, default_value_t = RemoteMcpExposureArg::Inject)]
+    exposure: RemoteMcpExposureArg,
     /// Default remote MCP approval behavior.
     #[arg(long, default_value_t = RemoteMcpApprovalArg::Never)]
     approval: RemoteMcpApprovalArg,
@@ -135,6 +138,9 @@ struct McpServerPutArgs {
     /// Disable provider-side deferred MCP tool loading by default.
     #[arg(long = "no-defer-loading", conflicts_with = "defer_loading")]
     no_defer_loading: bool,
+    /// Permit this record to use the deployment's private MCP egress allowlist.
+    #[arg(long)]
+    allow_private_network: bool,
     /// Server status to record.
     #[arg(long, default_value_t = McpServerStatusArg::Active)]
     status: McpServerStatusArg,
@@ -284,18 +290,6 @@ struct McpLinkArgs {
     /// Session id to change.
     #[arg(long)]
     session: String,
-    /// Optional provider-side MCP tool allowlist entry. Repeat to allow multiple.
-    #[arg(long = "allowed-tool")]
-    allowed_tools: Vec<String>,
-    /// Remote MCP approval behavior for this session link.
-    #[arg(long)]
-    approval: Option<RemoteMcpApprovalArg>,
-    /// Enable provider-side deferred MCP tool loading for this session link.
-    #[arg(long = "defer-loading", conflicts_with = "no_defer_loading")]
-    defer_loading: bool,
-    /// Disable provider-side deferred MCP tool loading for this session link.
-    #[arg(long = "no-defer-loading", conflicts_with = "defer_loading")]
-    no_defer_loading: bool,
     /// Registered MCP server id to link.
     server_id: String,
 }
@@ -329,43 +323,64 @@ struct McpListArgs {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
-enum RemoteMcpTransportArg {
-    Auto,
-    StreamableHttp,
-    Sse,
+enum RemoteMcpApprovalArg {
+    Always,
+    Never,
 }
 
-impl std::fmt::Display for RemoteMcpTransportArg {
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+enum RemoteMcpExecutionArg {
+    #[default]
+    Provider,
+    Native,
+}
+
+impl std::fmt::Display for RemoteMcpExecutionArg {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
-            Self::Auto => "auto",
-            Self::StreamableHttp => "streamable-http",
-            Self::Sse => "sse",
+            Self::Provider => "provider",
+            Self::Native => "native",
         })
     }
 }
 
-impl From<RemoteMcpTransportArg> for api::RemoteMcpTransport {
-    fn from(value: RemoteMcpTransportArg) -> Self {
+impl From<RemoteMcpExecutionArg> for api::RemoteMcpExecution {
+    fn from(value: RemoteMcpExecutionArg) -> Self {
         match value {
-            RemoteMcpTransportArg::Auto => Self::Auto,
-            RemoteMcpTransportArg::StreamableHttp => Self::StreamableHttp,
-            RemoteMcpTransportArg::Sse => Self::Sse,
+            RemoteMcpExecutionArg::Provider => Self::Provider,
+            RemoteMcpExecutionArg::Native => Self::Native,
         }
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
-enum RemoteMcpApprovalArg {
-    ProviderDefault,
-    Always,
-    Never,
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, ValueEnum)]
+enum RemoteMcpExposureArg {
+    #[default]
+    Inject,
+    Search,
+}
+
+impl std::fmt::Display for RemoteMcpExposureArg {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Inject => "inject",
+            Self::Search => "search",
+        })
+    }
+}
+
+impl From<RemoteMcpExposureArg> for api::RemoteMcpExposure {
+    fn from(value: RemoteMcpExposureArg) -> Self {
+        match value {
+            RemoteMcpExposureArg::Inject => Self::Inject,
+            RemoteMcpExposureArg::Search => Self::Search,
+        }
+    }
 }
 
 impl std::fmt::Display for RemoteMcpApprovalArg {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(match self {
-            Self::ProviderDefault => "provider-default",
             Self::Always => "always",
             Self::Never => "never",
         })
@@ -375,7 +390,6 @@ impl std::fmt::Display for RemoteMcpApprovalArg {
 impl From<RemoteMcpApprovalArg> for api::RemoteMcpApprovalPolicy {
     fn from(value: RemoteMcpApprovalArg) -> Self {
         match value {
-            RemoteMcpApprovalArg::ProviderDefault => Self::ProviderDefault,
             RemoteMcpApprovalArg::Always => Self::Always,
             RemoteMcpApprovalArg::Never => Self::Never,
         }
@@ -500,12 +514,14 @@ fn server_input_from_view(server: &api::McpServerView) -> api::McpServerInput {
         server_id: server.server_id.clone(),
         display_name: server.display_name.clone(),
         server_url: server.server_url.clone(),
-        transport: server.transport,
         default_server_label: server.default_server_label.clone(),
         description: server.description.clone(),
         allowed_tools: server.allowed_tools.clone(),
+        execution: server.execution,
+        exposure: server.exposure,
         approval_default: server.approval_default,
         defer_loading_default: server.defer_loading_default,
+        allow_private_network: server.allow_private_network,
         auth_policy: server.auth_policy.clone(),
         credential: server.credential.clone(),
         status: server.status,
@@ -589,12 +605,14 @@ async fn server_put(args: McpServerPutArgs) -> Result<()> {
                 server_id: args.server_id,
                 display_name: args.display_name,
                 server_url: args.server_url,
-                transport: args.transport.into(),
                 default_server_label: args.default_server_label,
                 description: args.description,
                 allowed_tools: nonempty_vec(args.allowed_tools),
+                execution: args.execution.into(),
+                exposure: args.exposure.into(),
                 approval_default: args.approval.into(),
                 defer_loading_default: defer_loading_arg(args.defer_loading, args.no_defer_loading),
+                allow_private_network: args.allow_private_network,
                 auth_policy,
                 credential: args
                     .auth_grant_id
@@ -678,6 +696,7 @@ async fn link(args: McpLinkArgs) -> Result<()> {
     let session = api
         .read_session(api::SessionReadParams {
             session_id: args.session.clone(),
+            run_limit: None,
         })
         .await
         .map_err(crate::api_client::api_error)?
@@ -692,9 +711,6 @@ async fn link(args: McpLinkArgs) -> Result<()> {
     mcp.servers.retain(|link| link.server_id != args.server_id);
     mcp.servers.push(api::McpServerLink {
         server_id: args.server_id.clone(),
-        allowed_tools: nonempty_vec(args.allowed_tools),
-        approval: args.approval.map(Into::into),
-        defer_loading: defer_loading_arg(args.defer_loading, args.no_defer_loading),
     });
     features.mcp = Some(mcp);
     config.features = Some(features);
@@ -720,6 +736,7 @@ async fn unlink(args: McpUnlinkArgs) -> Result<()> {
     let session = api
         .read_session(api::SessionReadParams {
             session_id: args.session.clone(),
+            run_limit: None,
         })
         .await
         .map_err(crate::api_client::api_error)?
@@ -757,6 +774,7 @@ async fn session_mcp_tools(api: &HttpAgentApi, session_id: &str) -> Result<Vec<a
     let session = api
         .read_session(api::SessionReadParams {
             session_id: session_id.to_owned(),
+            run_limit: None,
         })
         .await
         .map_err(crate::api_client::api_error)?
@@ -826,7 +844,6 @@ fn print_server(server: &api::McpServerView) {
     println!("serverId {}", server.server_id);
     println!("serverUrl {}", server.server_url);
     println!("label {}", server.default_server_label);
-    println!("transport {}", transport_label(server.transport));
     println!(
         "approvalDefault {}",
         approval_label(server.approval_default)
@@ -912,17 +929,8 @@ fn print_link(tool: &api::ToolView) {
     println!("  authRequired {auth_required}");
 }
 
-fn transport_label(value: api::RemoteMcpTransport) -> &'static str {
-    match value {
-        api::RemoteMcpTransport::StreamableHttp => "streamable-http",
-        api::RemoteMcpTransport::Sse => "sse",
-        api::RemoteMcpTransport::Auto => "auto",
-    }
-}
-
 fn approval_label(value: api::RemoteMcpApprovalPolicy) -> &'static str {
     match value {
-        api::RemoteMcpApprovalPolicy::ProviderDefault => "provider-default",
         api::RemoteMcpApprovalPolicy::Always => "always",
         api::RemoteMcpApprovalPolicy::Never => "never",
     }

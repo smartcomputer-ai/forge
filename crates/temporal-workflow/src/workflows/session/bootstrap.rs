@@ -26,7 +26,8 @@ pub(super) async fn initialize(
     let observed_at_ms = workflow_time_ms(ctx);
     // the activity reduces the durable log internally and returns compact
     // state. The full event log no longer crosses the activity boundary, so this
-    // bootstrap path is bounded by active context size, not total log length.
+    // bootstrap path is bounded by active context plus retained run metadata,
+    // rather than transcript-sized event history.
     let loaded = ctx
         .start_activity(
             WorkflowActivities::create_or_load_session,
@@ -40,7 +41,7 @@ pub(super) async fn initialize(
         .await
         .map_err(|error| anyhow::anyhow!("{error}"))?;
 
-    let is_fresh_session = loaded.replayed_event_count == 0;
+    let is_fresh_session = loaded.fresh_session;
     let core_state = loaded.core_state.unwrap_or_else(CoreAgentState::new);
     validate_session_creation_identity(
         args.universe_id,

@@ -1,4 +1,4 @@
-/// Coding-agent subscription credentials (P127): vendor-specific parsing and
+/// Coding-agent subscription credentials: vendor-specific parsing and
 /// normalisation for credentials that tools *inside environments* consume
 /// (Claude Code `setup-token`, Codex `auth.json`). Core stores them as
 /// ordinary `static_bearer` grants with metadata and injects them verbatim;

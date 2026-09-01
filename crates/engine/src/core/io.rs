@@ -148,6 +148,33 @@ pub struct ToolInvocationRequest {
     pub promise_control: Option<PromiseControlCallRuntime>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteMcpCallTarget {
+    pub server_id: String,
+    pub record_revision: u64,
+    pub server_label: String,
+    pub server_url: String,
+    pub allowed_tools: Option<Vec<String>>,
+    pub approval: crate::RemoteMcpApprovalPolicy,
+    pub auth_ref: Option<crate::SecretRef>,
+    pub auth_required: bool,
+    pub allow_private_network: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum RemoteMcpCallRuntime {
+    Injected {
+        target: RemoteMcpCallTarget,
+        remote_tool_name: String,
+        approval_decision: Option<bool>,
+    },
+    Search {
+        targets: Vec<RemoteMcpCallTarget>,
+        approval_decision: Option<bool>,
+    },
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PromiseControlKind {
@@ -297,6 +324,8 @@ pub struct ToolInvocationCallRequest {
     /// Execution policy facts selected from the admitted tool binding.
     #[serde(default)]
     pub execution: ToolExecutionSpec,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_mcp: Option<RemoteMcpCallRuntime>,
 }
 
 /// Bounded summary of one sibling call in the same tool batch.
@@ -333,6 +362,7 @@ impl ToolInvocationBatchRequest {
         &self,
         index: usize,
         execution: ToolExecutionSpec,
+        remote_mcp: Option<RemoteMcpCallRuntime>,
     ) -> Option<ToolInvocationCallRequest> {
         let call = self.calls.get(index)?.clone();
         let sibling_calls = self
@@ -359,6 +389,7 @@ impl ToolInvocationBatchRequest {
             call,
             sibling_calls,
             execution,
+            remote_mcp,
         })
     }
 }
@@ -540,7 +571,7 @@ mod tests {
         let batch = batch_request_with_calls(&["call_a", "call_b", "call_c"]);
 
         let request = batch
-            .call_request(1, ToolExecutionSpec::default())
+            .call_request(1, ToolExecutionSpec::default(), None)
             .expect("call request");
 
         assert_eq!(request.call.call_id, ToolCallId::new("call_b"));
@@ -556,7 +587,7 @@ mod tests {
         );
         assert!(
             batch
-                .call_request(3, ToolExecutionSpec::default())
+                .call_request(3, ToolExecutionSpec::default(), None)
                 .is_none()
         );
 
@@ -599,7 +630,7 @@ mod tests {
     async fn default_invoke_call_adapts_through_batch_execution() {
         let batch = batch_request_with_calls(&["call_a", "call_b"]);
         let request = batch
-            .call_request(0, ToolExecutionSpec::default())
+            .call_request(0, ToolExecutionSpec::default(), None)
             .expect("call request");
 
         let result = BatchOnlyTools
@@ -641,13 +672,13 @@ mod promise_base_tests {
             calls: vec![call("a"), call("b"), call("c")],
         };
         let third = batch
-            .call_request(2, ToolExecutionSpec::default())
+            .call_request(2, ToolExecutionSpec::default(), None)
             .expect("third call");
         assert_eq!(third.promise_id_base, 9);
         assert_eq!(third.into_batch_request().promise_id_base, 9);
         assert!(
             batch
-                .call_request(3, ToolExecutionSpec::default())
+                .call_request(3, ToolExecutionSpec::default(), None)
                 .is_none()
         );
     }

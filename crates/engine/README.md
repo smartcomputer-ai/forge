@@ -9,11 +9,10 @@ The crate intentionally does not execute provider calls, runtime tools, shell
 commands, Temporal workflows, or production persistence. Those belong to local
 runtimes, workflow activities, adapter crates, and storage packages.
 
-Current architecture direction:
+Current architecture:
 
 - `../../docs/spec/01-agent-idea.md`
-- `../../docs/roadmap/p53-async-agent-workflow.md`
-- `../../docs/roadmap/p54-composable-agent-kernel.md`
+- `../../docs/design.md`
 
 Local verification:
 

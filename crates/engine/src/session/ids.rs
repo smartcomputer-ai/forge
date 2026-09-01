@@ -85,7 +85,17 @@ macro_rules! string_id {
 macro_rules! numeric_id {
     ($name:ident) => {
         #[derive(
-            Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+            Clone,
+            Copy,
+            Debug,
+            Default,
+            PartialEq,
+            Eq,
+            PartialOrd,
+            Ord,
+            Hash,
+            Serialize,
+            Deserialize,
         )]
         #[serde(transparent)]
         #[cfg_attr(feature = "contract", derive(schemars::JsonSchema))]

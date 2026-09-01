@@ -1,7 +1,7 @@
 //! Generic auth registry contracts: grants, secrets, and the token broker.
 //!
 //! This crate owns provider-independent control-plane models and store traits
-//! for the P69 auth substrate. Concrete persistence adapters, such as
+//! for the auth substrate. Concrete persistence adapters, such as
 //! `store-pg`, implement these traits outside this crate; OAuth and provider
 //! drivers arrive in later milestones. Secret values only ever cross these
 //! boundaries wrapped in [`SecretValue`], whose `Debug` output is redacted.
@@ -106,6 +106,7 @@ mod mcp_oauth;
 mod memory;
 mod oauth;
 mod providers;
+mod safe_http;
 mod secrets;
 
 pub use api_keys::{
@@ -131,10 +132,9 @@ pub use grants::{
 };
 pub use locks::{GrantLockGuard, GrantRefreshLock, InMemoryGrantLocks};
 pub use mcp_oauth::{
-    AuthorizationServerMetadata, CimdConfig, HttpOAuthMetadataClient, McpOAuthDriver,
-    McpOAuthError, McpOAuthTarget, OAuthMetadataClient, ProtectedResourceMetadata,
-    authorization_server_metadata_urls, mcp_oauth_client_id, protected_resource_metadata_urls,
-    select_authorization_server,
+    CimdConfig, HttpOAuthMetadataClient, McpOAuthChallenge, McpOAuthDriver, McpOAuthError,
+    McpOAuthTarget, McpOAuthTokenContext, OAuthMetadataClient, ProtectedResourceMetadata,
+    mcp_oauth_client_id, parse_mcp_oauth_challenge,
 };
 pub use memory::{
     InMemoryAuthFlowStore, InMemoryAuthGrantStore, InMemoryAuthProviderStore,
@@ -153,6 +153,10 @@ pub use providers::{
     AuthProviderConfig, AuthProviderRecord, AuthProviderStatus, AuthProviderStore,
     CreateAuthProviderRecord, GitHubAppConfig, ModelApiKeyConfig, ModelEndpointConfig,
     ModelEndpointOnlyConfig, ModelOAuthConfig, model_auth_provider_id,
+};
+pub use safe_http::{
+    DEFAULT_OAUTH_HTTP_MAX_BODY_BYTES, DEFAULT_OAUTH_HTTP_MAX_HEADER_BYTES,
+    DEFAULT_OAUTH_HTTP_MAX_REDIRECTS, PinnedHttpError, PinnedHttpPolicy, is_public_network_ip,
 };
 pub use secrets::{
     PutSecretRecord, SECRET_KIND_MODEL_API_KEY, SECRET_KIND_STATIC_BEARER, SecretRecordMeta,

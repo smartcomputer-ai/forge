@@ -1,4 +1,4 @@
-//! Channels workflows (P142): one conversation workflow per chat, the
+//! Channels workflows: one conversation workflow per chat, the
 //! source of that conversation's bot events and the receiver of its
 //! `message_*` tools. Runs in the `channels` worker role on its own task
 //! queue; its core-side activities are implemented in `temporal-server`,

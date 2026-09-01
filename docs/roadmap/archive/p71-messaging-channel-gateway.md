@@ -356,7 +356,7 @@ rejected. The gateway adds `context/append` (`crates/api` method +
 `temporal-server` handler with CAS materialization, unchanged-key pre-check,
 and `wait_for_context_entries_applied`). Contract artifacts and the TS
 client are regenerated. End-to-end coverage in
-`crates/temporal-server/tests/temporal_live.rs`
+`crates/temporal-server/tests/sessions_live.rs`
 (`temporal_live_context_append_is_idempotent_and_projected`); the bridge
 batches room events per chat (flush every 30s / 20 events, budget 50 with
 drop reporting) and drains the buffer before an activating turn.

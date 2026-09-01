@@ -20,8 +20,8 @@ use engine::{
     ContextEntryInput, ContextEntryKind, ContextMessageRole, LlmFinish, LlmGenerationFacts,
     LlmGenerationRequest, LlmGenerationResult, LlmGenerationStatus, LlmRequest, LlmUsage,
     ObservedToolCall, ProviderApiKind, ProviderNativeToolExecution, RemoteMcpApprovalPolicy,
-    RemoteMcpToolSpec, TokenEstimate, TokenEstimateQuality, ToolCallId, ToolChoice, ToolKind,
-    ToolName, ToolSpec, storage::BlobStore,
+    RemoteMcpExecution, RemoteMcpExposure, RemoteMcpToolSpec, TokenEstimate, TokenEstimateQuality,
+    ToolCallId, ToolChoice, ToolKind, ToolName, ToolSpec, storage::BlobStore,
 };
 use llm_clients::{ApiResponse, anthropic::messages as am};
 use serde_json::{Value, json};
@@ -30,6 +30,9 @@ use crate::{
     blob_io::{put_json, put_text, read_json, read_text},
     error::{LlmAdapterError, LlmAdapterResult},
     executor::{LlmCompactionAdapter, LlmGenerationAdapter},
+    mcp::{
+        MAX_NATIVE_MCP_TOOLS_PER_REQUEST, McpInventoryResolver, UnconfiguredMcpInventoryResolver,
+    },
     params::{
         anthropic_messages_params, anthropic_thinking_from_effort,
         default_anthropic_thinking_display,
@@ -45,6 +48,9 @@ const PROVIDER_KIND_TEXT: &str = "anthropic.messages.text";
 const PROVIDER_KIND_TOOL_USE: &str = "anthropic.messages.tool_use";
 const PROVIDER_KIND_THINKING: &str = "anthropic.messages.thinking";
 const PROVIDER_KIND_BLOCK: &str = "anthropic.messages.block";
+const TOOL_SEARCH_TOOL_TYPE: &str = "tool_search_tool_bm25_20251119";
+const TOOL_SEARCH_TOOL_NAME: &str = "tool_search_tool_bm25";
+const MCP_TOOLSET_TYPE: &str = "mcp_toolset";
 /// Client-seeded raw input message: a `ProviderOpaque` entry tagged with this
 /// provider kind carries a complete Anthropic `{role, content}` message JSON
 /// and lowers as that message instead of an assistant content block.
@@ -82,7 +88,7 @@ to continue seamlessly. Reply with the summary only.";
 #[async_trait]
 pub trait AnthropicMessagesApi: Send + Sync {
     /// `auth` overrides the client's transport-configured key for this
-    /// request (stored provider credentials, P69 G6).
+    /// request when stored provider credentials are used.
     async fn create(
         &self,
         request: am::CreateMessageRequest,
@@ -107,6 +113,7 @@ pub struct AnthropicMessagesLlmAdapter {
     blobs: Arc<dyn BlobStore>,
     secrets: Arc<dyn SecretResolver>,
     provider_keys: Arc<dyn ModelProviderResolver>,
+    inventory: Arc<dyn McpInventoryResolver>,
 }
 
 impl AnthropicMessagesLlmAdapter {
@@ -116,6 +123,7 @@ impl AnthropicMessagesLlmAdapter {
             blobs,
             secrets: Arc::new(UnconfiguredSecretResolver),
             provider_keys: Arc::new(NoStoredModelProviders),
+            inventory: Arc::new(UnconfiguredMcpInventoryResolver),
         }
     }
 
@@ -132,11 +140,21 @@ impl AnthropicMessagesLlmAdapter {
         self
     }
 
+    pub fn with_mcp_inventory_resolver(mut self, inventory: Arc<dyn McpInventoryResolver>) -> Self {
+        self.inventory = inventory;
+        self
+    }
+
     pub async fn materialize_create_request(
         &self,
         request: &LlmRequest,
     ) -> LlmAdapterResult<am::CreateMessageRequest> {
-        materialize_create_request(self.blobs.as_ref(), request).await
+        materialize_create_request_with_inventory(
+            self.blobs.as_ref(),
+            self.inventory.as_ref(),
+            request,
+        )
+        .await
     }
 
     pub async fn materialize_compact_request(
@@ -221,6 +239,15 @@ pub async fn materialize_create_request(
     blobs: &dyn BlobStore,
     request: &LlmRequest,
 ) -> LlmAdapterResult<am::CreateMessageRequest> {
+    materialize_create_request_with_inventory(blobs, &UnconfiguredMcpInventoryResolver, request)
+        .await
+}
+
+async fn materialize_create_request_with_inventory(
+    blobs: &dyn BlobStore,
+    inventory: &dyn McpInventoryResolver,
+    request: &LlmRequest,
+) -> LlmAdapterResult<am::CreateMessageRequest> {
     if request.processing_tier.is_some() {
         return Err(LlmAdapterError::InvalidProviderRequest {
             message: "processing tier is not supported by Anthropic Messages".to_owned(),
@@ -275,12 +302,12 @@ pub async fn materialize_create_request(
         });
     }
 
-    // Prompt-cache breakpoints (P137): Anthropic caches only at explicit
+    // Prompt-cache breakpoints: Anthropic caches only at explicit
     // `cache_control` markers, so the adapter places the standard layout on
-    // every request — end of the system prompt, last tool definition, last
-    // block of the last message (a moving marker that keeps the whole prefix
-    // warm turn after turn). Placement is a materialization detail; nothing
-    // in the planned request or the session log changes.
+    // every request — end of the system prompt, last non-deferred tool
+    // definition, last block of the last message (a moving marker that keeps
+    // the whole prefix warm turn after turn). Placement is a materialization
+    // detail; nothing in the planned request or the session log changes.
     let cache_control = prompt_cache_control(params.prompt_cache_ttl.as_deref());
     let system = materialize_system(blobs, &request.context.entries, &cache_control).await?;
     let message_entries = request
@@ -292,7 +319,8 @@ pub async fn materialize_create_request(
         .collect::<Vec<_>>();
     let mut messages = materialize_messages(blobs, &message_entries).await?;
     place_message_breakpoint(&mut messages, &cache_control);
-    let (mut tools, mcp_servers) = materialize_tools(blobs, &request.tools).await?;
+    let (mut tools, mcp_servers) =
+        materialize_tools(blobs, inventory, &request.model.model, &request.tools).await?;
     place_tool_breakpoint(&mut tools, &cache_control);
 
     Ok(am::CreateMessageRequest {
@@ -404,17 +432,52 @@ fn prompt_cache_control(ttl: Option<&str>) -> Value {
     }
 }
 
-/// Mark the last tool definition so the whole tool list is cached. Raw
-/// provider-native tools are left alone: their JSON is the operator's.
+/// Mark the last non-deferred tool definition so the visible tool prefix is
+/// cached. Adapter-owned raw tools may carry the marker; other raw
+/// provider-native tools are left alone because their JSON is the operator's.
 fn place_tool_breakpoint(tools: &mut [am::Tool], cache_control: &Value) {
-    if let Some(am::Tool::Custom(definition)) = tools
-        .iter_mut()
-        .rev()
-        .find(|tool| matches!(tool, am::Tool::Custom(_)))
-        && definition.cache_control.is_none()
-    {
-        definition.cache_control = Some(cache_control.clone());
+    for tool in tools.iter_mut().rev() {
+        if tool_is_deferred(tool) {
+            continue;
+        }
+        match tool {
+            am::Tool::Custom(definition) => {
+                if definition.cache_control.is_none() {
+                    definition.cache_control = Some(cache_control.clone());
+                }
+                return;
+            }
+            am::Tool::Raw(value) if adapter_owned_raw_tool(value) => {
+                let object = value.as_object_mut().expect("adapter-owned tool object");
+                object
+                    .entry("cache_control".to_owned())
+                    .or_insert_with(|| cache_control.clone());
+                return;
+            }
+            am::Tool::Raw(_) => {}
+        }
     }
+}
+
+fn tool_is_deferred(tool: &am::Tool) -> bool {
+    let value = match tool {
+        am::Tool::Custom(definition) => {
+            return definition.extra.get("defer_loading") == Some(&Value::Bool(true));
+        }
+        am::Tool::Raw(value) => value,
+    };
+    value.get("defer_loading") == Some(&Value::Bool(true))
+        || value
+            .get("default_config")
+            .and_then(|config| config.get("defer_loading"))
+            == Some(&Value::Bool(true))
+}
+
+fn adapter_owned_raw_tool(value: &Value) -> bool {
+    matches!(
+        value.get("type").and_then(Value::as_str),
+        Some(MCP_TOOLSET_TYPE | TOOL_SEARCH_TOOL_TYPE)
+    )
 }
 
 /// Mark the last block of the last message that can carry `cache_control`
@@ -646,15 +709,25 @@ async fn materialize_block(
             let raw = read_json(blobs, &entry.content_ref).await?;
             Ok((am::MessageRole::Assistant, am::ContentBlockParam::Raw(raw)))
         }
+        ContextEntryKind::McpApprovalResponse { .. } => {
+            Err(LlmAdapterError::InvalidProviderRequest {
+                message: "Anthropic provider-hosted MCP does not support approval responses; use native MCP execution or an OpenAI Responses model".to_owned(),
+            })
+        }
     }
 }
 
 async fn materialize_tools(
     blobs: &dyn BlobStore,
+    inventory: &dyn McpInventoryResolver,
+    model: &str,
     tools: &[ToolSpec],
 ) -> LlmAdapterResult<(Vec<am::Tool>, Vec<Value>)> {
     let mut materialized = Vec::new();
+    let mut mcp_toolsets = Vec::new();
     let mut mcp_servers = Vec::new();
+    let mut has_deferred_mcp = false;
+    let mut native_mcp_tool_count = 0usize;
     for tool in tools {
         match &tool.kind {
             ToolKind::Function(function) => {
@@ -702,19 +775,73 @@ async fn materialize_tools(
                     }
                 }
             }
-            ToolKind::RemoteMcp(remote_mcp) => {
-                mcp_servers.push(materialize_remote_mcp_server(blobs, tool, remote_mcp).await?);
-            }
+            ToolKind::RemoteMcp(remote_mcp) => match (remote_mcp.execution, remote_mcp.exposure) {
+                (RemoteMcpExecution::Provider, _) => {
+                    let (server, toolset) = materialize_remote_mcp_server(tool, remote_mcp)?;
+                    has_deferred_mcp |= remote_mcp.defer_loading == Some(true);
+                    mcp_servers.push(server);
+                    mcp_toolsets.push(toolset);
+                }
+                (RemoteMcpExecution::Native, RemoteMcpExposure::Search) => {}
+                (RemoteMcpExecution::Native, RemoteMcpExposure::Inject) => {
+                    let mut native = inventory.list_tools(remote_mcp).await.map_err(|error| {
+                        LlmAdapterError::McpInventory {
+                            server: remote_mcp.server_id.clone(),
+                            message: error.to_string(),
+                        }
+                    })?;
+                    native.sort_by(|left, right| left.remote_name.cmp(&right.remote_name));
+                    let advertised_count = native.len();
+                    native.retain(|native_tool| {
+                        let name = format!("{}__{}", tool.name, native_tool.remote_name);
+                        name.len() <= 64 && ToolName::try_new(name).is_ok()
+                    });
+                    let omitted_count = advertised_count - native.len();
+                    if omitted_count != 0 {
+                        tracing::warn!(
+                            server_id = %remote_mcp.server_id,
+                            omitted_tool_count = omitted_count,
+                            "omitted native MCP tools with provider-incompatible names"
+                        );
+                    }
+                    if native_mcp_tool_count.saturating_add(native.len())
+                        > MAX_NATIVE_MCP_TOOLS_PER_REQUEST
+                    {
+                        return Err(LlmAdapterError::McpInventory {
+                            server: remote_mcp.server_id.clone(),
+                            message: "native MCP inventory exceeds the per-request tool cap; author a Selected allowlist or switch the record to search exposure".to_owned(),
+                        });
+                    }
+                    native_mcp_tool_count += native.len();
+                    for native_tool in native {
+                        let name = format!("{}__{}", tool.name, native_tool.remote_name);
+                        materialized.push(am::Tool::Custom(am::ToolDefinition {
+                            name,
+                            description: native_tool.description,
+                            input_schema: native_tool.input_schema,
+                            cache_control: None,
+                            extra: Default::default(),
+                        }));
+                    }
+                }
+            },
         }
     }
+    if has_deferred_mcp {
+        ensure_anthropic_tool_search_model(model)?;
+        materialized.push(am::Tool::Raw(json!({
+            "type": TOOL_SEARCH_TOOL_TYPE,
+            "name": TOOL_SEARCH_TOOL_NAME,
+        })));
+    }
+    materialized.extend(mcp_toolsets.into_iter().map(am::Tool::Raw));
     Ok((materialized, mcp_servers))
 }
 
-async fn materialize_remote_mcp_server(
-    _blobs: &dyn BlobStore,
+fn materialize_remote_mcp_server(
     tool: &ToolSpec,
     remote_mcp: &RemoteMcpToolSpec,
-) -> LlmAdapterResult<Value> {
+) -> LlmAdapterResult<(Value, Value)> {
     // Materialized requests never contain auth values; `inject_remote_mcp_auth`
     // adds `authorization_token` to the send request immediately before
     // provider I/O.
@@ -727,19 +854,68 @@ async fn materialize_remote_mcp_server(
         });
     }
 
-    let mut value = json!({
+    let server = json!({
         "type": "url",
         "url": remote_mcp.server_url,
         "name": remote_mcp.server_label,
     });
-    let object = value.as_object_mut().expect("mcp server object");
+
+    let mut toolset = json!({
+        "type": MCP_TOOLSET_TYPE,
+        "mcp_server_name": remote_mcp.server_label,
+    });
+    let object = toolset.as_object_mut().expect("mcp toolset object");
+    let mut default_config = serde_json::Map::new();
     if let Some(allowed_tools) = &remote_mcp.allowed_tools {
+        default_config.insert("enabled".to_owned(), Value::Bool(false));
         object.insert(
-            "tool_configuration".to_owned(),
-            json!({ "allowed_tools": allowed_tools }),
+            "configs".to_owned(),
+            Value::Object(
+                allowed_tools
+                    .iter()
+                    .map(|name| (name.clone(), json!({ "enabled": true })))
+                    .collect(),
+            ),
         );
     }
-    Ok(value)
+    if remote_mcp.defer_loading == Some(true) {
+        default_config.insert("defer_loading".to_owned(), Value::Bool(true));
+    }
+    if !default_config.is_empty() {
+        object.insert("default_config".to_owned(), Value::Object(default_config));
+    }
+    Ok((server, toolset))
+}
+
+fn ensure_anthropic_tool_search_model(model: &str) -> LlmAdapterResult<()> {
+    if anthropic_tool_search_model_support(model) != Some(false) {
+        return Ok(());
+    }
+    Err(LlmAdapterError::UnsupportedModelFeature {
+        model: model.to_owned(),
+        feature: "Anthropic tool search",
+        message: "tool_search_tool_bm25_20251119 requires Claude 4.5 or later".to_owned(),
+    })
+}
+
+/// Return a definite answer for recognizable Claude model IDs. Unknown IDs
+/// are left to the provider so Anthropic-compatible endpoints and future
+/// naming schemes are not rejected speculatively.
+fn anthropic_tool_search_model_support(model: &str) -> Option<bool> {
+    let normalized = model.to_ascii_lowercase();
+    if !normalized.contains("claude") {
+        return None;
+    }
+    let versions = normalized
+        .split(|character: char| !character.is_ascii_alphanumeric())
+        .filter_map(|part| {
+            let value = part.parse::<u16>().ok()?;
+            (value < 100).then_some(value)
+        })
+        .collect::<Vec<_>>();
+    let major = *versions.first()?;
+    let minor = versions.get(1).copied().unwrap_or(0);
+    Some(major > 4 || (major == 4 && minor >= 5))
 }
 
 /// Produce the request pair `generate` actually uses: the send request with
@@ -755,7 +931,10 @@ async fn inject_remote_mcp_auth(
         .tools
         .iter()
         .filter_map(|tool| match &tool.kind {
-            ToolKind::RemoteMcp(remote_mcp) if remote_mcp.auth_ref.is_some() => {
+            ToolKind::RemoteMcp(remote_mcp)
+                if remote_mcp.execution == RemoteMcpExecution::Provider
+                    && remote_mcp.auth_ref.is_some() =>
+            {
                 Some((tool, remote_mcp))
             }
             _ => None,
@@ -968,6 +1147,7 @@ pub async fn result_from_response(
             finish,
             usage,
             tool_calls,
+            approval_requests: Vec::new(),
             context_token_estimate,
         },
     })
@@ -1011,6 +1191,7 @@ async fn refused_generation_result(
             finish: LlmFinish::ContentFilter,
             usage: response.parsed.usage.as_ref().map(llm_usage),
             tool_calls: Vec::new(),
+            approval_requests: Vec::new(),
             context_token_estimate: None,
         },
     })
@@ -1292,6 +1473,57 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    struct StaticMcpInventory;
+
+    #[async_trait]
+    impl McpInventoryResolver for StaticMcpInventory {
+        async fn list_tools(
+            &self,
+            _spec: &RemoteMcpToolSpec,
+        ) -> Result<Vec<crate::NativeMcpTool>, crate::McpInventoryError> {
+            Ok(vec![crate::NativeMcpTool {
+                remote_name: "read".to_owned(),
+                description: Some("Read".to_owned()),
+                input_schema: json!({"type": "object"}),
+            }])
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn native_mcp_lowers_to_anthropic_custom_function_tools() {
+        let blobs = InMemoryBlobStore::new();
+        let (tools, servers) = materialize_tools(
+            &blobs,
+            &StaticMcpInventory,
+            "claude-opus-4-8",
+            &[ToolSpec {
+                name: ToolName::try_new("mcp_docs").expect("name"),
+                kind: ToolKind::RemoteMcp(RemoteMcpToolSpec {
+                    server_id: "docs".to_owned(),
+                    record_revision: 1,
+                    server_label: "docs".to_owned(),
+                    server_url: "https://example.com/mcp".to_owned(),
+                    description_ref: None,
+                    allowed_tools: None,
+                    execution: RemoteMcpExecution::Native,
+                    exposure: RemoteMcpExposure::Inject,
+                    approval: RemoteMcpApprovalPolicy::Never,
+                    defer_loading: None,
+                    auth_ref: None,
+                    auth_required: false,
+                    allow_private_network: false,
+                }),
+                execution: Default::default(),
+                parallelism: ToolParallelism::ParallelSafe,
+            }],
+        )
+        .await
+        .expect("materialize native MCP");
+        assert!(servers.is_empty());
+        let value = serde_json::to_value(tools).expect("tools json");
+        assert_eq!(value[0]["name"], "mcp_docs__read");
+    }
     use crate::executor::{LlmAdapterRegistry, LlmRuntime};
     use crate::params::{AnthropicMessagesParams, AnthropicThinkingConfig};
 
@@ -1953,14 +2185,18 @@ mod tests {
             execution: Default::default(),
             kind: ToolKind::RemoteMcp(RemoteMcpToolSpec {
                 server_id: "echo".to_string(),
+                record_revision: 1,
                 server_label: "echo".to_string(),
                 server_url: "https://echo.example.com/mcp".to_string(),
                 description_ref: None,
                 allowed_tools: Some(vec!["echo".to_string()]),
+                execution: RemoteMcpExecution::Provider,
+                exposure: RemoteMcpExposure::Inject,
                 approval: RemoteMcpApprovalPolicy::Never,
                 defer_loading: None,
                 auth_ref: None,
                 auth_required: false,
+                allow_private_network: false,
             }),
             parallelism: ToolParallelism::ParallelSafe,
         }];
@@ -1975,11 +2211,172 @@ mod tests {
             json!([{
                 "type": "url",
                 "url": "https://echo.example.com/mcp",
-                "name": "echo",
-                "tool_configuration": { "allowed_tools": ["echo"] }
+                "name": "echo"
             }])
         );
-        assert_eq!(value.get("tools"), None);
+        assert_eq!(
+            without_cache_control(value["tools"].clone()),
+            json!([{
+                "type": "mcp_toolset",
+                "mcp_server_name": "echo",
+                "default_config": { "enabled": false },
+                "configs": { "echo": { "enabled": true } }
+            }])
+        );
+        assert_eq!(
+            value["tools"][0]["cache_control"],
+            json!({ "type": "ephemeral" })
+        );
+    }
+
+    fn provider_mcp_tool(
+        server_id: &str,
+        allowed_tools: Option<Vec<&str>>,
+        defer_loading: Option<bool>,
+    ) -> ToolSpec {
+        ToolSpec {
+            name: ToolName::try_new(format!("mcp_{server_id}")).expect("tool name"),
+            execution: Default::default(),
+            kind: ToolKind::RemoteMcp(RemoteMcpToolSpec {
+                server_id: server_id.to_owned(),
+                record_revision: 1,
+                server_label: server_id.to_owned(),
+                server_url: format!("https://{server_id}.example.com/mcp"),
+                description_ref: None,
+                allowed_tools: allowed_tools
+                    .map(|tools| tools.into_iter().map(ToOwned::to_owned).collect::<Vec<_>>()),
+                execution: RemoteMcpExecution::Provider,
+                exposure: RemoteMcpExposure::Inject,
+                approval: RemoteMcpApprovalPolicy::Never,
+                defer_loading,
+                auth_ref: None,
+                auth_required: false,
+                allow_private_network: false,
+            }),
+            parallelism: ToolParallelism::ParallelSafe,
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn deferred_provider_mcp_lowers_to_bm25_search_and_deferred_toolset() {
+        let blobs = InMemoryBlobStore::new();
+        let mut request = intent_request(Vec::new());
+        request.tools = vec![provider_mcp_tool(
+            "github",
+            Some(vec!["search_issues", "read_issue"]),
+            Some(true),
+        )];
+
+        let value = serde_json::to_value(
+            materialize_create_request(&blobs, &request)
+                .await
+                .expect("materialize"),
+        )
+        .expect("json");
+
+        assert_eq!(
+            without_cache_control(value["tools"].clone()),
+            json!([
+                {
+                    "type": "tool_search_tool_bm25_20251119",
+                    "name": "tool_search_tool_bm25"
+                },
+                {
+                    "type": "mcp_toolset",
+                    "mcp_server_name": "github",
+                    "default_config": {
+                        "enabled": false,
+                        "defer_loading": true
+                    },
+                    "configs": {
+                        "search_issues": { "enabled": true },
+                        "read_issue": { "enabled": true }
+                    }
+                }
+            ])
+        );
+        assert_eq!(
+            value["tools"][0]["cache_control"],
+            json!({ "type": "ephemeral" }),
+            "the search tool is the final non-deferred tool"
+        );
+        assert!(
+            value["tools"][1].get("cache_control").is_none(),
+            "a deferred toolset cannot carry a cache breakpoint"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn multiple_provider_mcp_toolsets_emit_one_search_and_preserve_non_deferred_server() {
+        let blobs = InMemoryBlobStore::new();
+        let mut request = intent_request(Vec::new());
+        request.tools = vec![
+            provider_mcp_tool("github", None, Some(true)),
+            provider_mcp_tool("linear", None, Some(true)),
+            provider_mcp_tool("calendar", None, None),
+        ];
+
+        let value = serde_json::to_value(
+            materialize_create_request(&blobs, &request)
+                .await
+                .expect("materialize"),
+        )
+        .expect("json");
+        let tools = value["tools"].as_array().expect("tools");
+        assert_eq!(
+            tools
+                .iter()
+                .filter(|tool| tool["type"] == TOOL_SEARCH_TOOL_TYPE)
+                .count(),
+            1
+        );
+        assert_eq!(tools[1]["default_config"]["defer_loading"], true);
+        assert_eq!(tools[2]["default_config"]["defer_loading"], true);
+        assert!(tools[3].get("default_config").is_none());
+        assert_eq!(
+            tools[3]["cache_control"],
+            json!({ "type": "ephemeral" }),
+            "the last non-deferred toolset owns the breakpoint"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn deferred_provider_mcp_rejects_known_unsupported_anthropic_model() {
+        let blobs = InMemoryBlobStore::new();
+        let mut request = intent_request(Vec::new());
+        request.model.model = "claude-3-7-sonnet-20250219".to_owned();
+        request.tools = vec![provider_mcp_tool("github", None, Some(true))];
+
+        let error = materialize_create_request(&blobs, &request)
+            .await
+            .expect_err("Claude 3.7 must reject tool search");
+        assert!(matches!(
+            error,
+            LlmAdapterError::UnsupportedModelFeature {
+                feature: "Anthropic tool search",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn anthropic_tool_search_model_gate_handles_current_old_and_unknown_ids() {
+        assert_eq!(
+            anthropic_tool_search_model_support("claude-sonnet-4-5-20250929"),
+            Some(true)
+        );
+        assert_eq!(
+            anthropic_tool_search_model_support("claude-opus-5"),
+            Some(true)
+        );
+        assert_eq!(
+            anthropic_tool_search_model_support("claude-3-7-sonnet-20250219"),
+            Some(false)
+        );
+        assert_eq!(
+            anthropic_tool_search_model_support("custom-anthropic-compatible"),
+            None
+        );
     }
 
     fn auth_remote_mcp_tool() -> ToolSpec {
@@ -1988,10 +2385,13 @@ mod tests {
             execution: Default::default(),
             kind: ToolKind::RemoteMcp(RemoteMcpToolSpec {
                 server_id: "echo".to_string(),
+                record_revision: 1,
                 server_label: "echo".to_string(),
                 server_url: "https://echo.example.com/mcp".to_string(),
                 description_ref: None,
                 allowed_tools: None,
+                execution: RemoteMcpExecution::Provider,
+                exposure: RemoteMcpExposure::Inject,
                 approval: RemoteMcpApprovalPolicy::Never,
                 defer_loading: None,
                 auth_ref: Some(engine::SecretRef {
@@ -1999,6 +2399,7 @@ mod tests {
                     id: "echo".to_string(),
                 }),
                 auth_required: true,
+                allow_private_network: false,
             }),
             parallelism: ToolParallelism::ParallelSafe,
         }
@@ -2071,7 +2472,12 @@ mod tests {
                 ),
             ));
 
-        let execution = LlmGenerationAdapter::generate(&adapter, mcp_auth_generation_request())
+        let mut generation_request = mcp_auth_generation_request();
+        let ToolKind::RemoteMcp(remote_mcp) = &mut generation_request.request.tools[0].kind else {
+            panic!("expected remote MCP tool");
+        };
+        remote_mcp.defer_loading = Some(true);
+        let execution = LlmGenerationAdapter::generate(&adapter, generation_request)
             .await
             .expect("generate");
 
@@ -2090,6 +2496,11 @@ mod tests {
             stored["mcp_servers"][0]["authorization_token"],
             json!("<redacted>")
         );
+        assert_eq!(
+            stored["tools"][0]["type"],
+            json!("tool_search_tool_bm25_20251119")
+        );
+        assert_eq!(stored["tools"][1]["default_config"]["defer_loading"], true);
         assert!(
             !serde_json::to_string(&stored)
                 .expect("stored string")
@@ -2267,14 +2678,18 @@ mod tests {
             execution: Default::default(),
             kind: ToolKind::RemoteMcp(RemoteMcpToolSpec {
                 server_id: "echo".to_string(),
+                record_revision: 1,
                 server_label: "echo".to_string(),
                 server_url: "https://echo.example.com/mcp".to_string(),
                 description_ref: None,
                 allowed_tools: None,
+                execution: RemoteMcpExecution::Provider,
+                exposure: RemoteMcpExposure::Inject,
                 approval: RemoteMcpApprovalPolicy::Always,
                 defer_loading: None,
                 auth_ref: None,
                 auth_required: false,
+                allow_private_network: false,
             }),
             parallelism: ToolParallelism::ParallelSafe,
         }];
@@ -3131,9 +3546,9 @@ mod tests {
 
     /// Prompt caching on Anthropic exists only at explicit markers, so every
     /// request gets the three-breakpoint layout: end of the system prompt,
-    /// last tool definition, last block of the last message. The TTL param
-    /// rides on each marker; a marker a tool brought through provider
-    /// options is kept as is.
+    /// last non-deferred tool definition, last block of the last message. The
+    /// TTL param rides on each marker; a marker a tool brought through
+    /// provider options is kept as is.
     #[tokio::test(flavor = "current_thread")]
     async fn materialize_create_request_places_prompt_cache_breakpoints() {
         let blobs = InMemoryBlobStore::new();

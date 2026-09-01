@@ -68,7 +68,7 @@ local Temporal/PostgreSQL/host-bridge stack:
 ```bash
 source scripts/dev/env.sh
 cargo test -p temporal-server --test environment_provider_live -- --ignored --test-threads=1 --nocapture
-cargo test -p temporal-server --test temporal_live temporal_live_session_start_then_run_start_completes_fake_runs -- --ignored --test-threads=1 --nocapture
+cargo test -p temporal-server --test sessions_live temporal_live_session_start_then_run_start_completes_fake_runs -- --ignored --test-threads=1 --nocapture
 ```
 
 The environment-provider suite includes a focused P113 case that writes and

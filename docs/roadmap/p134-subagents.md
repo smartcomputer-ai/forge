@@ -395,7 +395,7 @@ Everything fleet, deleted rather than deprecated:
 | store | `session_links` table, `SessionLinkRecord`, `UpsertSessionLink`, `ListSessionLinks`, `SessionLinkDirection`, the store trait methods and `store-pg` implementations |
 | platform | the Fleet card in `session-config-editor.tsx`; the fleet entry in `profile-config-reference.ts` |
 | docs | fleet claims in `README.md`, `docs/design.md`, `docs/landing-page.md`, `docs/multi-tenancy.md`; `docs/spec/03-fleet-idea.md` deleted (its ideas live here or in the reference study); the fleet-vs-bots review's status points here |
-| tests | `run_fleet_*` live clients in `temporal_live.rs`, replaced by the sub-agent scenarios below |
+| tests | `run_fleet_*` live clients in `subagents_live.rs`, replaced by the sub-agent scenarios below |
 
 Separable, recommended: the **mailbox**. The audit found exactly one
 `SubmitMessage` caller — `deliver_message_for_fleet`. With `agent_send`

@@ -2,15 +2,16 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use engine::{
-    BlobRef, CompactionPolicy, ContextCompactionRequest, ContextCompactionResult,
-    ContextCompactionStatus, ContextCompactionTask, ContextEntry, ContextEntryInput,
-    ContextEntryKind, ContextMessageRole, LlmFinish, LlmGenerationFacts, LlmGenerationRequest,
-    LlmGenerationResult, LlmGenerationStatus, LlmRequest, LlmUsage,
+    ApprovalContinuation, ApprovalSubject, BlobRef, CompactionPolicy, ContextCompactionRequest,
+    ContextCompactionResult, ContextCompactionStatus, ContextCompactionTask, ContextEntry,
+    ContextEntryInput, ContextEntryKind, ContextMessageRole, LlmFinish, LlmGenerationFacts,
+    LlmGenerationRequest, LlmGenerationResult, LlmGenerationStatus, LlmRequest, LlmUsage,
     OPENAI_RESPONSES_COMPACTION_PROVIDER_KIND, OPENAI_RESPONSES_MCP_APPROVAL_REQUEST_PROVIDER_KIND,
     OPENAI_RESPONSES_MCP_CALL_PROVIDER_KIND, OPENAI_RESPONSES_MCP_LIST_TOOLS_PROVIDER_KIND,
-    OPENAI_RESPONSES_WEB_SEARCH_CALL_PROVIDER_KIND, ObservedToolCall, ProviderApiKind,
-    ProviderNativeToolExecution, RemoteMcpApprovalPolicy, RemoteMcpToolSpec, TokenEstimate,
-    TokenEstimateQuality, ToolCallId, ToolChoice, ToolKind, ToolName, ToolSpec, storage::BlobStore,
+    OPENAI_RESPONSES_WEB_SEARCH_CALL_PROVIDER_KIND, ObservedApprovalRequest, ObservedToolCall,
+    ProviderApiKind, ProviderNativeToolExecution, RemoteMcpApprovalPolicy, RemoteMcpExecution,
+    RemoteMcpExposure, RemoteMcpToolSpec, TokenEstimate, TokenEstimateQuality, ToolCallId,
+    ToolChoice, ToolKind, ToolName, ToolSpec, storage::BlobStore,
 };
 use llm_clients::{ApiResponse, openai::responses as oai};
 use serde_json::{Value, json};
@@ -19,6 +20,9 @@ use crate::{
     blob_io::{put_json, put_text, read_json, read_text},
     error::{LlmAdapterError, LlmAdapterResult},
     executor::{LlmCompactionAdapter, LlmGenerationAdapter},
+    mcp::{
+        MAX_NATIVE_MCP_TOOLS_PER_REQUEST, McpInventoryResolver, UnconfiguredMcpInventoryResolver,
+    },
     params::{openai_reasoning_from_effort, openai_responses_params},
     provider_keys::{ModelProviderResolver, NoStoredModelProviders, resolve_model_provider},
     result::{LlmGenerationExecution, partial_output_entries, truncation_failure_text},
@@ -37,7 +41,7 @@ const MEDIA_TYPE_TEXT: &str = "text/plain";
 #[async_trait]
 pub trait OpenAiResponsesApi: Send + Sync {
     /// `auth` overrides the client's transport-configured key for this
-    /// request (stored provider credentials, P69 G6).
+    /// request when stored provider credentials are used.
     async fn create(
         &self,
         request: oai::CreateResponseRequest,
@@ -80,6 +84,7 @@ pub struct OpenAiResponsesLlmAdapter {
     blobs: Arc<dyn BlobStore>,
     secrets: Arc<dyn SecretResolver>,
     provider_keys: Arc<dyn ModelProviderResolver>,
+    inventory: Arc<dyn McpInventoryResolver>,
 }
 
 impl OpenAiResponsesLlmAdapter {
@@ -89,6 +94,7 @@ impl OpenAiResponsesLlmAdapter {
             blobs,
             secrets: Arc::new(UnconfiguredSecretResolver),
             provider_keys: Arc::new(NoStoredModelProviders),
+            inventory: Arc::new(UnconfiguredMcpInventoryResolver),
         }
     }
 
@@ -105,11 +111,21 @@ impl OpenAiResponsesLlmAdapter {
         self
     }
 
+    pub fn with_mcp_inventory_resolver(mut self, inventory: Arc<dyn McpInventoryResolver>) -> Self {
+        self.inventory = inventory;
+        self
+    }
+
     pub async fn materialize_create_request(
         &self,
         request: &LlmRequest,
     ) -> LlmAdapterResult<oai::CreateResponseRequest> {
-        materialize_create_request(self.blobs.as_ref(), request).await
+        materialize_create_request_with_inventory(
+            self.blobs.as_ref(),
+            self.inventory.as_ref(),
+            request,
+        )
+        .await
     }
 
     pub async fn materialize_compact_request(
@@ -136,7 +152,7 @@ impl LlmGenerationAdapter for OpenAiResponsesLlmAdapter {
         }
 
         let mut provider_request = self.materialize_create_request(&request.request).await?;
-        // Route every turn of a session to the same prompt cache (P137).
+        // Route every turn of a session to the same prompt cache.
         provider_request.prompt_cache_key =
             Some(crate::prompt_cache::prompt_cache_key(&request.session_id));
         let (send_request, redacted_request) =
@@ -205,6 +221,15 @@ pub async fn materialize_create_request(
     blobs: &dyn BlobStore,
     request: &LlmRequest,
 ) -> LlmAdapterResult<oai::CreateResponseRequest> {
+    materialize_create_request_with_inventory(blobs, &UnconfiguredMcpInventoryResolver, request)
+        .await
+}
+
+async fn materialize_create_request_with_inventory(
+    blobs: &dyn BlobStore,
+    inventory: &dyn McpInventoryResolver,
+    request: &LlmRequest,
+) -> LlmAdapterResult<oai::CreateResponseRequest> {
     let mut params = openai_responses_params(request.params.as_ref())?;
     // Materialize intent fields into provider params. Explicit per-run
     // provider params win: derived values never overwrite fields the params
@@ -227,7 +252,7 @@ pub async fn materialize_create_request(
         .cloned()
         .collect::<Vec<_>>();
     let input_items = materialize_input_items(blobs, &input_entries).await?;
-    let tools = materialize_tools(blobs, &request.tools).await?;
+    let tools = materialize_tools(blobs, inventory, &request.tools).await?;
 
     let mut extra = params.extra.clone();
     let service_tier = crate::params::take_openai_service_tier(&mut extra, params.service_tier)?
@@ -484,6 +509,14 @@ async fn materialize_input_item(
         | ContextEntryKind::ProviderOpaque => Ok(oai::ResponseInputItem::Raw(
             read_json(blobs, &item.content_ref).await?,
         )),
+        ContextEntryKind::McpApprovalResponse {
+            approval_request_id,
+            approve,
+        } => Ok(oai::ResponseInputItem::Raw(json!({
+            "type": "mcp_approval_response",
+            "approval_request_id": approval_request_id,
+            "approve": approve,
+        }))),
     }
 }
 
@@ -493,16 +526,69 @@ fn is_openai_raw_item(item: &ContextEntry) -> bool {
         ContextEntryKind::ToolCall { .. }
             | ContextEntryKind::ReasoningState
             | ContextEntryKind::ProviderOpaque
+            | ContextEntryKind::McpApprovalResponse { .. }
     ) && item.media_type.as_deref() == Some(MEDIA_TYPE_JSON)
 }
 
 async fn materialize_tools(
     blobs: &dyn BlobStore,
+    inventory: &dyn McpInventoryResolver,
     tools: &[ToolSpec],
 ) -> LlmAdapterResult<Vec<oai::Tool>> {
     let mut materialized = Vec::with_capacity(tools.len());
+    let mut native_mcp_tool_count = 0usize;
     for tool in tools {
-        materialized.push(materialize_tool(blobs, tool).await?);
+        let ToolKind::RemoteMcp(spec) = &tool.kind else {
+            materialized.push(materialize_tool(blobs, tool).await?);
+            continue;
+        };
+        match (spec.execution, spec.exposure) {
+            (RemoteMcpExecution::Provider, _) => {
+                materialized.push(materialize_tool(blobs, tool).await?);
+            }
+            (RemoteMcpExecution::Native, RemoteMcpExposure::Search) => {}
+            (RemoteMcpExecution::Native, RemoteMcpExposure::Inject) => {
+                let mut native = inventory.list_tools(spec).await.map_err(|error| {
+                    LlmAdapterError::McpInventory {
+                        server: spec.server_id.clone(),
+                        message: error.to_string(),
+                    }
+                })?;
+                native.sort_by(|left, right| left.remote_name.cmp(&right.remote_name));
+                let advertised_count = native.len();
+                native.retain(|native_tool| {
+                    let name = format!("{}__{}", tool.name, native_tool.remote_name);
+                    name.len() <= 64 && ToolName::try_new(name).is_ok()
+                });
+                let omitted_count = advertised_count - native.len();
+                if omitted_count != 0 {
+                    tracing::warn!(
+                        server_id = %spec.server_id,
+                        omitted_tool_count = omitted_count,
+                        "omitted native MCP tools with provider-incompatible names"
+                    );
+                }
+                if native_mcp_tool_count.saturating_add(native.len())
+                    > MAX_NATIVE_MCP_TOOLS_PER_REQUEST
+                {
+                    return Err(LlmAdapterError::McpInventory {
+                        server: spec.server_id.clone(),
+                        message: "native MCP inventory exceeds the per-request tool cap; author a Selected allowlist or switch the record to search exposure".to_owned(),
+                    });
+                }
+                native_mcp_tool_count += native.len();
+                for native_tool in native {
+                    let name = format!("{}__{}", tool.name, native_tool.remote_name);
+                    let mut function = oai::FunctionTool::new(name, native_tool.input_schema);
+                    function.description = native_tool.description;
+                    // MCP accepts general JSON Schema. OpenAI strict functions
+                    // accept only a narrower subset, so a live remote schema
+                    // cannot safely be promoted to strict mode.
+                    function.strict = Some(false);
+                    materialized.push(oai::Tool::Function(function));
+                }
+            }
+        }
     }
     Ok(materialized)
 }
@@ -578,7 +664,6 @@ async fn materialize_remote_mcp_tool(
         object.insert("allowed_tools".to_string(), json!(allowed_tools));
     }
     match remote_mcp.approval {
-        RemoteMcpApprovalPolicy::ProviderDefault => {}
         RemoteMcpApprovalPolicy::Always => {
             object.insert(
                 "require_approval".to_string(),
@@ -611,7 +696,10 @@ async fn inject_remote_mcp_auth(
         .tools
         .iter()
         .filter_map(|tool| match &tool.kind {
-            ToolKind::RemoteMcp(remote_mcp) if remote_mcp.auth_ref.is_some() => {
+            ToolKind::RemoteMcp(remote_mcp)
+                if remote_mcp.execution == RemoteMcpExecution::Provider
+                    && remote_mcp.auth_ref.is_some() =>
+            {
                 Some((tool, remote_mcp))
             }
             _ => None,
@@ -750,6 +838,7 @@ pub async fn result_from_response(
 ) -> LlmAdapterResult<LlmGenerationResult> {
     let mut context_entries = Vec::new();
     let mut tool_calls = Vec::new();
+    let mut approval_requests = Vec::new();
 
     for (index, item) in response.parsed.output.iter().enumerate() {
         let raw_item = raw_output_item(&response.raw_json, index, item)?;
@@ -778,8 +867,14 @@ pub async fn result_from_response(
             "web_search_call" => {
                 context_entries.push(web_search_call_context_entry(blobs, item, raw_item).await?);
             }
-            "mcp_list_tools" | "mcp_call" | "mcp_approval_request" => {
+            "mcp_list_tools" | "mcp_call" => {
                 context_entries.push(mcp_context_entry(blobs, item, raw_item).await?);
+            }
+            "mcp_approval_request" => {
+                let (entry, approval) =
+                    mcp_approval_request_context(blobs, request, item, raw_item).await?;
+                context_entries.push(entry);
+                approval_requests.push(approval);
             }
             _ => {}
         }
@@ -833,6 +928,9 @@ pub async fn result_from_response(
         } else {
             (status, None, context_entries, tool_calls)
         };
+    if status != LlmGenerationStatus::Succeeded {
+        approval_requests.clear();
+    }
     Ok(LlmGenerationResult {
         run_id: request.run_id,
         turn_id: request.turn_id,
@@ -844,6 +942,7 @@ pub async fn result_from_response(
             finish,
             usage,
             tool_calls,
+            approval_requests,
             context_token_estimate: response
                 .parsed
                 .usage
@@ -855,6 +954,71 @@ pub async fn result_from_response(
                 }),
         },
     })
+}
+
+async fn mcp_approval_request_context(
+    blobs: &dyn BlobStore,
+    request: &LlmGenerationRequest,
+    item: &oai::ResponseOutputItem,
+    raw_item: Value,
+) -> LlmAdapterResult<(ContextEntryInput, ObservedApprovalRequest)> {
+    let provider_request_id =
+        item.id
+            .clone()
+            .ok_or_else(|| LlmAdapterError::InvalidProviderRequest {
+                message: "OpenAI MCP approval request is missing id".to_owned(),
+            })?;
+    let server_label = raw_item
+        .get("server_label")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| LlmAdapterError::InvalidProviderRequest {
+            message: "OpenAI MCP approval request is missing server_label".to_owned(),
+        })?
+        .to_owned();
+    let tool_name = item
+        .name
+        .as_deref()
+        .or_else(|| raw_item.get("name").and_then(Value::as_str))
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| LlmAdapterError::InvalidProviderRequest {
+            message: "OpenAI MCP approval request is missing tool name".to_owned(),
+        })?
+        .to_owned();
+    let arguments = item
+        .arguments
+        .as_deref()
+        .or_else(|| raw_item.get("arguments").and_then(Value::as_str))
+        .unwrap_or("{}");
+    let remote = request
+        .request
+        .tools
+        .iter()
+        .find_map(|tool| match &tool.kind {
+            ToolKind::RemoteMcp(remote) if remote.server_label == server_label => Some(remote),
+            _ => None,
+        })
+        .ok_or_else(|| LlmAdapterError::InvalidProviderRequest {
+            message: format!(
+                "OpenAI MCP approval request names unknown server label {server_label}"
+            ),
+        })?;
+    let arguments_ref = put_text(blobs, arguments).await?;
+    let entry = mcp_context_entry(blobs, item, raw_item).await?;
+    Ok((
+        entry,
+        ObservedApprovalRequest {
+            subject: ApprovalSubject::McpToolCall {
+                server_id: remote.server_id.clone(),
+                server_label,
+                tool_name,
+                arguments_ref,
+            },
+            continuation: ApprovalContinuation::OpenAiMcp {
+                provider_request_id,
+            },
+        },
+    ))
 }
 
 pub async fn result_from_compact_response(
@@ -1271,6 +1435,64 @@ mod tests {
     use crate::executor::{LlmAdapterRegistry, LlmRuntime};
     use crate::params::{OpenAiReasoningConfig, OpenAiResponsesParams};
 
+    struct StaticMcpInventory;
+
+    #[async_trait]
+    impl McpInventoryResolver for StaticMcpInventory {
+        async fn list_tools(
+            &self,
+            _spec: &RemoteMcpToolSpec,
+        ) -> Result<Vec<crate::NativeMcpTool>, crate::McpInventoryError> {
+            Ok(vec![crate::NativeMcpTool {
+                remote_name: "search_issues".to_owned(),
+                description: Some("Search issues".to_owned()),
+                input_schema: json!({"type": "object", "properties": {"q": {"type": "string"}}}),
+            }])
+        }
+    }
+
+    fn native_mcp_tool(exposure: RemoteMcpExposure) -> ToolSpec {
+        ToolSpec {
+            name: ToolName::try_new("mcp_github").expect("name"),
+            kind: ToolKind::RemoteMcp(RemoteMcpToolSpec {
+                server_id: "github".to_owned(),
+                record_revision: 1,
+                server_label: "github".to_owned(),
+                server_url: "https://example.com/mcp".to_owned(),
+                description_ref: None,
+                allowed_tools: None,
+                execution: RemoteMcpExecution::Native,
+                exposure,
+                approval: RemoteMcpApprovalPolicy::Never,
+                defer_loading: None,
+                auth_ref: None,
+                auth_required: false,
+                allow_private_network: false,
+            }),
+            execution: Default::default(),
+            parallelism: ToolParallelism::ParallelSafe,
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn native_mcp_injects_functions_and_search_omits_server_entry() {
+        let blobs = InMemoryBlobStore::new();
+        let tools = materialize_tools(
+            &blobs,
+            &StaticMcpInventory,
+            &[
+                native_mcp_tool(RemoteMcpExposure::Inject),
+                native_mcp_tool(RemoteMcpExposure::Search),
+            ],
+        )
+        .await
+        .expect("materialize native MCP");
+        let value = serde_json::to_value(tools).expect("tools json");
+        assert_eq!(value.as_array().expect("array").len(), 1);
+        assert_eq!(value[0]["name"], "mcp_github__search_issues");
+        assert_eq!(value[0]["strict"], false);
+    }
+
     struct FakeOpenAiResponsesApi {
         response: ApiResponse<oai::Response>,
         compact_response: ApiResponse<oai::CompactResponse>,
@@ -1657,14 +1879,18 @@ mod tests {
             execution: Default::default(),
             kind: ToolKind::RemoteMcp(RemoteMcpToolSpec {
                 server_id: "echo".to_string(),
+                record_revision: 1,
                 server_label: "echo".to_string(),
                 server_url: "https://echo.example.com/mcp".to_string(),
                 description_ref: Some(description_ref),
                 allowed_tools: Some(vec!["echo".to_string()]),
+                execution: RemoteMcpExecution::Provider,
+                exposure: RemoteMcpExposure::Inject,
                 approval: RemoteMcpApprovalPolicy::Never,
                 defer_loading: Some(true),
                 auth_ref: None,
                 auth_required: false,
+                allow_private_network: false,
             }),
             parallelism: ToolParallelism::ParallelSafe,
         }];
@@ -1691,16 +1917,75 @@ mod tests {
         assert_eq!(value["tool_choice"], json!("auto"));
     }
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn materialize_create_request_writes_always_approval_policy_explicitly() {
+        let blobs = InMemoryBlobStore::new();
+        let mut tool = auth_remote_mcp_tool();
+        let ToolKind::RemoteMcp(remote) = &mut tool.kind else {
+            unreachable!("fixture is remote MCP")
+        };
+        remote.approval = RemoteMcpApprovalPolicy::Always;
+        let mut request = intent_request(Vec::new());
+        request.tools = vec![tool];
+
+        let materialized = materialize_create_request(&blobs, &request)
+            .await
+            .expect("materialize");
+        let value = serde_json::to_value(materialized).expect("json");
+
+        assert_eq!(value["tools"][0]["require_approval"], json!("always"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn materialize_create_request_replays_typed_mcp_approval_response() {
+        let blobs = InMemoryBlobStore::new();
+        let response = json!({
+            "type": "mcp_approval_response",
+            "approval_request_id": "mcpr_1",
+            "approve": true
+        });
+        let response_ref = text_blob(&blobs, &response.to_string()).await;
+        let entry = ContextEntry {
+            key: None,
+            entry_id: ContextEntryId::new(1),
+            kind: ContextEntryKind::McpApprovalResponse {
+                approval_request_id: "mcpr_1".to_owned(),
+                approve: true,
+            },
+            source: ContextEntrySource::ApprovalDecision {
+                run_id: RunId::new(1),
+                approval_id: engine::ApprovalId::try_new("approval_1").expect("approval id"),
+            },
+            content_ref: response_ref,
+            media_type: Some(MEDIA_TYPE_JSON.to_owned()),
+            preview: None,
+            provider_kind: None,
+            provider_item_id: Some("mcpr_1".to_owned()),
+            token_estimate: None,
+            supersedes: None,
+        };
+
+        let materialized = materialize_create_request(&blobs, &intent_request(vec![entry]))
+            .await
+            .expect("materialize");
+        let value = serde_json::to_value(materialized).expect("json");
+
+        assert_eq!(value["input"], json!([response]));
+    }
+
     fn auth_remote_mcp_tool() -> ToolSpec {
         ToolSpec {
             name: ToolName::new("mcp_echo"),
             execution: Default::default(),
             kind: ToolKind::RemoteMcp(RemoteMcpToolSpec {
                 server_id: "echo".to_string(),
+                record_revision: 1,
                 server_label: "echo".to_string(),
                 server_url: "https://echo.example.com/mcp".to_string(),
                 description_ref: None,
                 allowed_tools: None,
+                execution: RemoteMcpExecution::Provider,
+                exposure: RemoteMcpExposure::Inject,
                 approval: RemoteMcpApprovalPolicy::Never,
                 defer_loading: None,
                 auth_ref: Some(engine::SecretRef {
@@ -1708,6 +1993,7 @@ mod tests {
                     id: "echo".to_string(),
                 }),
                 auth_required: true,
+                allow_private_network: false,
             }),
             parallelism: ToolParallelism::ParallelSafe,
         }
@@ -2595,7 +2881,7 @@ mod tests {
             "status": "completed",
             "action": {
                 "type": "search",
-                "query": "Lightspeed P66 web search",
+                "query": "Lightspeed web search",
                 "sources": [{
                     "url": "https://example.com/source",
                     "title": "Example"
@@ -2679,11 +2965,13 @@ mod tests {
             status: 200,
             headers: HeaderSnapshot::default(),
         };
+        let mut intent = intent_request(Vec::new());
+        intent.tools = vec![auth_remote_mcp_tool()];
         let request = LlmGenerationRequest {
             session_id: SessionId::new("session-a"),
             run_id: RunId::new(1),
             turn_id: TurnId::new(1),
-            request: intent_request(Vec::new()),
+            request: intent,
         };
 
         let result = result_from_response(&blobs, &request, &response)
@@ -2692,6 +2980,22 @@ mod tests {
 
         assert_eq!(result.context_entries.len(), 3);
         assert!(result.facts.tool_calls.is_empty());
+        assert_eq!(result.facts.approval_requests.len(), 1);
+        assert_eq!(
+            result.facts.approval_requests[0].continuation,
+            ApprovalContinuation::OpenAiMcp {
+                provider_request_id: "mcpr_1".to_owned()
+            }
+        );
+        assert!(matches!(
+            &result.facts.approval_requests[0].subject,
+            ApprovalSubject::McpToolCall {
+                server_id,
+                server_label,
+                tool_name,
+                ..
+            } if server_id == "echo" && server_label == "echo" && tool_name == "echo"
+        ));
         for entry in &result.context_entries {
             assert!(matches!(entry.kind, ContextEntryKind::ProviderOpaque));
             assert_eq!(entry.media_type.as_deref(), Some(MEDIA_TYPE_JSON));

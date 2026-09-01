@@ -10,6 +10,7 @@ import { AdminChannelsPage } from "@/pages/AdminChannelsPage";
 import { AdminEnvironmentProvidersPage } from "@/pages/AdminEnvironmentProvidersPage";
 import { BotCreatePage } from "@/pages/BotCreatePage";
 import { BotsPage } from "@/pages/BotsPage";
+import { ChannelsPage } from "@/pages/ChannelsPage";
 import { EnvironmentsPage } from "@/pages/EnvironmentsPage";
 import { GeneralSettingsPage } from "@/pages/GeneralSettingsPage";
 import { HomeRedirect } from "@/pages/HomeRedirect";
@@ -97,6 +98,10 @@ export function App() {
           element={<WorkspacesPage admin={admin} />}
         />
         <Route path="u/:slug/bots" element={<BotsPage admin={admin} />} />
+        <Route
+          path="u/:slug/channels"
+          element={<Navigate to="../settings/channels" replace relative="path" />}
+        />
         <Route path="u/:slug/bots/new" element={<BotCreatePage admin={admin} />} />
         <Route path="u/:slug/bots/:botId" element={<BotsPage admin={admin} view="chat" />} />
         <Route
@@ -135,6 +140,10 @@ export function App() {
           element={<McpServersPage admin={admin} />}
         />
         <Route
+          path="u/:slug/settings/channels"
+          element={<ChannelsPage admin={admin} />}
+        />
+        <Route
           path="u/:slug/settings/integrations"
           element={<IntegrationsPage admin={admin} />}
         />
@@ -153,7 +162,7 @@ export function App() {
         {admin && (
           <>
             <Route path="admin" element={<Navigate to="/admin/users" replace />} />
-            <Route path="admin/users" element={<AdminUsersPage />} />
+            <Route path="admin/users" element={<AdminUsersPage currentUser={user} />} />
             <Route path="admin/universes" element={<AdminUniversesPage />} />
             <Route path="admin/channels" element={<AdminChannelsPage />} />
             <Route path="admin/environment-providers" element={<AdminEnvironmentProvidersPage />} />

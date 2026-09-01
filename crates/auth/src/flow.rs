@@ -1,4 +1,4 @@
-//! Authorization-code flow orchestration (P69 G2).
+//! Authorization-code flow orchestration.
 //!
 //! [`OAuthFlowService`] drives the generic flow over the store traits and the
 //! [`OAuthTokenClient`]: start builds the authorization URL and persists the
@@ -10,9 +10,10 @@ use std::sync::Arc;
 
 use crate::{
     AuthFlowId, AuthFlowRecord, AuthFlowStore, AuthGrantExposure, AuthGrantId, AuthGrantStatus,
-    AuthGrantStore, AuthRegistryError, CreateAuthFlowRecord, CreateAuthGrantRecord, FinishAuthFlow,
-    OAuthClientId, OAuthClientStore, OAuthTokenClient, OAuthTokenGrant, OAuthTokenRequest,
-    PrincipalRef, PutSecretRecord, SECRET_KIND_OAUTH_ACCESS_TOKEN, SECRET_KIND_OAUTH_PKCE_VERIFIER,
+    AuthGrantStore, AuthProviderKind, AuthRegistryError, CreateAuthFlowRecord,
+    CreateAuthGrantRecord, FinishAuthFlow, McpOAuthTokenContext, OAuthClientId, OAuthClientStore,
+    OAuthTokenClient, OAuthTokenGrant, OAuthTokenRequest, PrincipalRef, PutSecretRecord,
+    SECRET_KIND_OAUTH_ACCESS_TOKEN, SECRET_KIND_OAUTH_PKCE_VERIFIER,
     SECRET_KIND_OAUTH_REFRESH_TOKEN, SecretId, SecretStore, SecretValue, build_authorization_url,
     generate_pkce_verifier, generate_state, pkce_challenge_s256, random_auth_id, state_hash,
     validate_audience_url,
@@ -50,6 +51,8 @@ pub struct StartedAuthFlow {
 pub struct AuthCallback {
     pub state: String,
     pub code: Option<SecretValue>,
+    /// Optional RFC 9207 authorization-response issuer.
+    pub issuer: Option<String>,
     pub error: Option<String>,
     pub error_description: Option<String>,
 }
@@ -119,9 +122,54 @@ impl OAuthFlowService {
         })?;
 
         let now_ms = (self.now_ms)();
-        let state = generate_state();
-        let verifier = generate_pkce_verifier();
-        let challenge = pkce_challenge_s256(&verifier);
+        let (state, verifier, authorize_url, expected_issuer, require_issuer) = if client
+            .provider_kind
+            == AuthProviderKind::McpOAuth
+        {
+            let client_secret = match &client.client_secret {
+                Some(secret_id) => Some(self.secrets.read_secret(secret_id).await?.1),
+                None => None,
+            };
+            let audience = audience
+                .as_deref()
+                .ok_or_else(|| AuthRegistryError::InvalidInput {
+                    message: "MCP OAuth authorization requires a resource audience".to_owned(),
+                })?;
+            let started = crate::mcp_oauth::begin_rmcp_authorization(
+                &client,
+                client_secret.as_ref(),
+                &request.redirect_uri,
+                &scopes,
+                audience,
+            )
+            .await
+            .map_err(|error| AuthRegistryError::Store {
+                message: error.to_string(),
+            })?;
+            (
+                started.state,
+                started.pkce_verifier,
+                Some(started.authorize_url),
+                started.expected_issuer,
+                started.require_issuer,
+            )
+        } else {
+            let state = generate_state();
+            let verifier = generate_pkce_verifier();
+            (state, verifier, None, None, false)
+        };
+
+        let authorize_url = authorize_url.unwrap_or_else(|| {
+            let challenge = pkce_challenge_s256(&verifier);
+            build_authorization_url(
+                &client,
+                &request.redirect_uri,
+                &scopes,
+                &state,
+                &challenge,
+                audience.as_deref(),
+            )
+        });
 
         let verifier_secret_id = self.random_secret_id()?;
         self.secrets
@@ -150,6 +198,8 @@ impl OAuthFlowService {
             redirect_uri: request.redirect_uri.clone(),
             scopes: scopes.clone(),
             audience: audience.clone(),
+            expected_issuer,
+            require_issuer,
             expires_at_ms: now_ms.saturating_add(self.flow_ttl_ms),
             created_at_ms: now_ms,
         };
@@ -163,14 +213,6 @@ impl OAuthFlowService {
             }
         };
 
-        let authorize_url = build_authorization_url(
-            &client,
-            &request.redirect_uri,
-            &scopes,
-            &state,
-            &challenge,
-            audience.as_deref(),
-        );
         Ok(StartedAuthFlow {
             flow,
             authorize_url,
@@ -251,6 +293,15 @@ impl OAuthFlowService {
                 code_verifier: verifier,
             },
             resource: flow.audience.clone(),
+            mcp: (flow.provider_kind == AuthProviderKind::McpOAuth).then(|| McpOAuthTokenContext {
+                authorization_endpoint: client.authorization_endpoint.clone(),
+                issuer: flow.expected_issuer.clone(),
+                require_issuer: flow.require_issuer,
+                scopes_supported: client.authorization_server_scopes_supported.clone(),
+                requested_scopes: flow.scopes.clone(),
+                callback_state: Some(SecretValue::new(&callback.state)),
+                callback_issuer: callback.issuer.clone(),
+            }),
         };
         let response = match self.token_client.request_token(&token_request).await {
             Ok(response) => response,
@@ -466,6 +517,9 @@ mod tests {
                 token_endpoint_auth_method: TokenEndpointAuthMethod::None,
                 scopes_default: vec!["contacts.read".to_owned()],
                 audience: Some("https://crm.example.com/mcp".to_owned()),
+                authorization_server_issuer: None,
+                authorization_response_iss_parameter_supported: false,
+                authorization_server_scopes_supported: Vec::new(),
                 created_at_ms: 10,
             })
             .await
@@ -554,6 +608,7 @@ mod tests {
             .complete_callback(AuthCallback {
                 state,
                 code: Some(SecretValue::new("code-1")),
+                issuer: None,
                 error: None,
                 error_description: None,
             })
@@ -626,6 +681,7 @@ mod tests {
             .complete_callback(AuthCallback {
                 state: state.clone(),
                 code: Some(SecretValue::new("code-1")),
+                issuer: None,
                 error: None,
                 error_description: None,
             })
@@ -637,6 +693,7 @@ mod tests {
             .complete_callback(AuthCallback {
                 state,
                 code: Some(SecretValue::new("code-1")),
+                issuer: None,
                 error: None,
                 error_description: None,
             })
@@ -663,6 +720,7 @@ mod tests {
             .complete_callback(AuthCallback {
                 state: "forged-state".to_owned(),
                 code: Some(SecretValue::new("code-1")),
+                issuer: None,
                 error: None,
                 error_description: None,
             })
@@ -684,6 +742,7 @@ mod tests {
             .complete_callback(AuthCallback {
                 state,
                 code: Some(SecretValue::new("code-1")),
+                issuer: None,
                 error: None,
                 error_description: None,
             })
@@ -708,6 +767,7 @@ mod tests {
             .complete_callback(AuthCallback {
                 state,
                 code: None,
+                issuer: None,
                 error: Some("access_denied".to_owned()),
                 error_description: Some("user cancelled".to_owned()),
             })
@@ -747,6 +807,7 @@ mod tests {
             .complete_callback(AuthCallback {
                 state,
                 code: Some(SecretValue::new("code-1")),
+                issuer: None,
                 error: None,
                 error_description: None,
             })

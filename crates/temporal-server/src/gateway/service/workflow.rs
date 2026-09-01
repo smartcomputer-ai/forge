@@ -380,7 +380,7 @@ impl GatewayAgentApi {
                 .filter(|_| can_return_matching_run)
             {
                 return self
-                    .project_run_by_id(session_id, RunId::new(active.run_id), active.status)
+                    .project_run_by_id(session_id, RunId::new(active.run_id))
                     .await;
             }
             if let Some(run) = status
@@ -391,7 +391,7 @@ impl GatewayAgentApi {
                 .filter(|_| can_return_matching_run)
             {
                 return self
-                    .project_run_by_id(session_id, RunId::new(run.run_id), run.status)
+                    .project_run_by_id(session_id, RunId::new(run.run_id))
                     .await;
             }
             // A run accepted behind an active run is returned as
@@ -403,7 +403,7 @@ impl GatewayAgentApi {
                 .filter(|_| can_return_matching_run)
             {
                 return self
-                    .project_run_by_id(session_id, RunId::new(run.run_id), RunStatus::Active)
+                    .project_run_by_id(session_id, RunId::new(run.run_id))
                     .await;
             }
             if let Some(error) = status.last_error {
@@ -425,7 +425,7 @@ impl GatewayAgentApi {
         run_id: RunId,
         baseline: usize,
         correlation_token: &str,
-    ) -> Result<(engine::SteeringId, RunStatus), AgentApiError> {
+    ) -> Result<engine::SteeringId, AgentApiError> {
         let started = Instant::now();
         loop {
             if started.elapsed() > self.operation_timeout {
@@ -454,7 +454,7 @@ impl GatewayAgentApi {
                     if active.steering.len() > baseline
                         && let Some(steering) = active.steering.last()
                     {
-                        return Ok((steering.steering_id, active.status));
+                        return Ok(steering.steering_id);
                     }
                 }
                 _ => {
@@ -463,6 +463,61 @@ impl GatewayAgentApi {
                         api_run_id(run_id)
                     )));
                 }
+            }
+            tokio::time::sleep(self.poll_interval).await;
+        }
+    }
+
+    pub(super) async fn wait_for_approval_decision(
+        &self,
+        session_id: &SessionId,
+        run_id: RunId,
+        approval_id: &engine::ApprovalId,
+        correlation_token: &str,
+    ) -> Result<(), AgentApiError> {
+        let started = Instant::now();
+        loop {
+            if started.elapsed() > self.operation_timeout {
+                return Err(AgentApiError::internal(format!(
+                    "timed out waiting for approval decision: {approval_id}"
+                )));
+            }
+            if let Some(status) = self.query_status_optional(session_id).await? {
+                if let Some(failure) =
+                    status.admission_failures.iter().rev().find(|failure| {
+                        failure.correlation_token.as_deref() == Some(correlation_token)
+                    })
+                {
+                    return Err(map_admission_failure_to_api_error(failure));
+                }
+                if let Some(error) = status.last_error {
+                    return Err(AgentApiError::internal(format!(
+                        "agent workflow reported error: {error}"
+                    )));
+                }
+            }
+            let loaded = self.load_session_state(session_id).await?;
+            if let Some(active_run) = loaded.state.runs.active.as_ref()
+                && active_run.run_id == run_id
+            {
+                let record = active_run.approvals.get(approval_id).ok_or_else(|| {
+                    AgentApiError::not_found(format!("approval not found: {approval_id}"))
+                })?;
+                if record.status.is_terminal() {
+                    return Ok(());
+                }
+            } else if loaded
+                .state
+                .runs
+                .completed
+                .iter()
+                .any(|record| record.run_id == run_id)
+            {
+                // The admission was accepted and the run may have continued
+                // through completion before this polling read observed it.
+                return Ok(());
+            } else {
+                return Err(AgentApiError::not_found(format!("run not found: {run_id}")));
             }
             tokio::time::sleep(self.poll_interval).await;
         }
@@ -515,29 +570,25 @@ impl GatewayAgentApi {
                 )));
             }
             let loaded = self.load_session_state(session_id).await?;
-            if let Some(completed) = loaded
+            if loaded
                 .state
                 .runs
                 .completed
                 .iter()
-                .find(|run| run.run_id == run_id)
+                .any(|run| run.run_id == run_id)
             {
-                return self
-                    .project_run_by_id(session_id, run_id, completed.status)
-                    .await;
+                return self.project_run_by_id(session_id, run_id).await;
             }
             // A parked run is still live; only `cancelling` (or a terminal
             // record above) means the cancel landed.
-            if let Some(active) = loaded
+            if loaded
                 .state
                 .runs
                 .active
                 .as_ref()
-                .filter(|run| run.run_id == run_id && run.status == RunStatus::Cancelling)
+                .is_some_and(|run| run.run_id == run_id && run.status == RunStatus::Cancelling)
             {
-                return self
-                    .project_run_by_id(session_id, run_id, active.status)
-                    .await;
+                return self.project_run_by_id(session_id, run_id).await;
             }
             tokio::time::sleep(self.poll_interval).await;
         }

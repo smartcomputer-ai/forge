@@ -3,11 +3,11 @@
 -- Design notes:
 -- - This migration intentionally creates only the MCP catalog table.
 -- - Generic secrets, OAuth clients, grants, refresh state, and token leases
---   belong to P69 and must not be stored here.
+--   belong to the auth subsystem and must not be stored here.
 -- - Session links are materialized into the event-sourced engine tool set;
 --   there is no separate session_mcp_links table in this migration.
 -- - The catalog owns the non-secret auth-grant binding for each configured
---   server. The grant and token material remain owned by P69 auth tables.
+--   server. Grant and token material remain owned by the auth tables.
 
 CREATE TABLE IF NOT EXISTS mcp_servers (
     universe_id uuid NOT NULL
@@ -101,13 +101,13 @@ COMMENT ON TABLE mcp_servers IS
 COMMENT ON COLUMN mcp_servers.server_id IS
     'Stable universe-scoped MCP server id used by API/CLI control-plane operations.';
 COMMENT ON COLUMN mcp_servers.server_url IS
-    'Remote MCP endpoint URL. Must not contain credentials; runtime auth is resolved through P69 auth handles.';
+    'Remote MCP endpoint URL. Must not contain credentials; runtime auth is resolved through auth handles.';
 COMMENT ON COLUMN mcp_servers.default_server_label IS
     'Default provider-facing MCP server label copied into RemoteMcpToolSpec unless overridden at session link time.';
 COMMENT ON COLUMN mcp_servers.allowed_tools IS
     'Optional provider-side MCP tool allowlist. NULL means no catalog-level allowlist.';
 COMMENT ON COLUMN mcp_servers.auth_policy IS
-    'Non-secret MCP auth requirement hint. Generic credentials, grants, and token refresh are owned by P69.';
+    'Non-secret MCP auth requirement hint. Generic credentials, grants, and token refresh are owned by the auth subsystem.';
 COMMENT ON COLUMN mcp_servers.auth_metadata_json IS
     'Non-secret MCP auth metadata such as OAuth resource, scopes, protected resource metadata URL, or authorization server URL.';
 COMMENT ON COLUMN mcp_servers.auth_grant_id IS

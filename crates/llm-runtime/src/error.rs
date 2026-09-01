@@ -26,8 +26,18 @@ pub enum LlmAdapterError {
     #[error("invalid provider request: {message}")]
     InvalidProviderRequest { message: String },
 
+    #[error("model {model} does not support {feature}: {message}")]
+    UnsupportedModelFeature {
+        model: String,
+        feature: &'static str,
+        message: String,
+    },
+
     #[error("failed to resolve auth secret for tool {tool}: {message}")]
     SecretResolution { tool: String, message: String },
+
+    #[error("failed to resolve native MCP inventory for {server}: {message}")]
+    McpInventory { server: String, message: String },
 
     #[error("failed to resolve provider API key: {message}")]
     ProviderKeyResolution { message: String },

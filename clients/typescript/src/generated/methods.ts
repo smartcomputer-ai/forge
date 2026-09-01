@@ -19,7 +19,10 @@ export const METHODS = [
   "session/context/remove",
   "session/context/compact",
   "session/runs/start",
+  "session/runs/list",
+  "session/runs/read",
   "session/runs/cancel",
+  "session/runs/approvals/decide",
   "session/runs/steer",
   "session/skills/list",
   "session/skills/active",
@@ -64,6 +67,7 @@ export const METHODS = [
   "vfs/workspaces/delete",
   "mcp/servers/put",
   "mcp/servers/auth/discover",
+  "mcp/servers/tools/discover",
   "mcp/servers/read",
   "mcp/servers/list",
   "mcp/servers/delete",
@@ -146,7 +150,7 @@ export const METHOD_INFO = {
   "session/read": {
     scope: "universe",
     summary: "Read a session",
-    description: "Returns the current projected session, including sparse config and revisions, lifecycle/run state, active context, and derived tools.",
+    description: "Returns current state plus a bounded newest-first run-summary page. Follow nextRunCursor with session/runs/list when hasOlderRuns is true; use session/events/read for the transcript.",
   },
   "session/list": {
     scope: "universe",
@@ -198,10 +202,25 @@ export const METHOD_INFO = {
     summary: "Start an agent run",
     description: "Accepts input or existing context keys and returns once the run is accepted — queued behind an active run, or running — not when it finishes. Supply submissionId for retry safety, then follow session events or reread the session.",
   },
+  "session/runs/list": {
+    scope: "universe",
+    summary: "List session runs",
+    description: "Returns a newest-first keyset page of bounded run summaries projected from current reducer state.",
+  },
+  "session/runs/read": {
+    scope: "universe",
+    summary: "Read one session run",
+    description: "Reads and projects one run from its bounded event interval, paged by event sequence.",
+  },
   "session/runs/cancel": {
     scope: "universe",
     summary: "Cancel a run",
     description: "Requests cancellation of the named queued or active run and returns its current projected state; observe session events for terminal completion. In-flight model and tool activity is aborted; no grace turn runs.",
+  },
+  "session/runs/approvals/decide": {
+    scope: "universe",
+    summary: "Decide pending run approvals",
+    description: "Approves or rejects pending MCP tool calls on the named active run. Valid decisions apply independently; the run resumes only after every pending approval has a decision.",
   },
   "session/runs/steer": {
     scope: "universe",
@@ -422,6 +441,11 @@ export const METHOD_INFO = {
     scope: "universe",
     summary: "Discover MCP server authentication",
     description: "Looks for standards-based OAuth protected-resource metadata without creating a server, OAuth client, flow, or grant. An absent OAuth result is inconclusive and callers must allow manual auth selection.",
+  },
+  "mcp/servers/tools/discover": {
+    scope: "universe",
+    summary: "Discover MCP server tools",
+    description: "Connects directly to the configured MCP server with its current universe credential and returns one bounded live tools/list result. The inventory is never persisted or cached and no tool is invoked.",
   },
   "mcp/servers/read": {
     scope: "universe",
@@ -773,7 +797,7 @@ export interface MethodMap {
   /**
    * Read a session
    *
-   * Returns the current projected session, including sparse config and revisions, lifecycle/run state, active context, and derived tools.
+   * Returns current state plus a bounded newest-first run-summary page. Follow nextRunCursor with session/runs/list when hasOlderRuns is true; use session/events/read for the transcript.
    */
   "session/read": {
     params: Api.SessionReadParams;
@@ -870,6 +894,24 @@ export interface MethodMap {
     result: Api.AgentApiOutcomeOfRunStartResponse;
   };
   /**
+   * List session runs
+   *
+   * Returns a newest-first keyset page of bounded run summaries projected from current reducer state.
+   */
+  "session/runs/list": {
+    params: Api.RunListParams;
+    result: Api.AgentApiOutcomeOfRunListResponse;
+  };
+  /**
+   * Read one session run
+   *
+   * Reads and projects one run from its bounded event interval, paged by event sequence.
+   */
+  "session/runs/read": {
+    params: Api.RunReadParams;
+    result: Api.AgentApiOutcomeOfRunReadResponse;
+  };
+  /**
    * Cancel a run
    *
    * Requests cancellation of the named queued or active run and returns its current projected state; observe session events for terminal completion. In-flight model and tool activity is aborted; no grace turn runs.
@@ -877,6 +919,15 @@ export interface MethodMap {
   "session/runs/cancel": {
     params: Api.RunCancelParams;
     result: Api.AgentApiOutcomeOfRunCancelResponse;
+  };
+  /**
+   * Decide pending run approvals
+   *
+   * Approves or rejects pending MCP tool calls on the named active run. Valid decisions apply independently; the run resumes only after every pending approval has a decision.
+   */
+  "session/runs/approvals/decide": {
+    params: Api.RunApprovalsDecideParams;
+    result: Api.AgentApiOutcomeOfRunApprovalsDecideResponse;
   };
   /**
    * Steer the active run
@@ -1273,6 +1324,15 @@ export interface MethodMap {
   "mcp/servers/auth/discover": {
     params: Api.McpServerAuthDiscoverParams;
     result: Api.AgentApiOutcomeOfMcpServerAuthDiscoverResponse;
+  };
+  /**
+   * Discover MCP server tools
+   *
+   * Connects directly to the configured MCP server with its current universe credential and returns one bounded live tools/list result. The inventory is never persisted or cached and no tool is invoked.
+   */
+  "mcp/servers/tools/discover": {
+    params: Api.McpServerToolsDiscoverParams;
+    result: Api.AgentApiOutcomeOfMcpServerToolsDiscoverResponse;
   };
   /**
    * Read an MCP server record
@@ -1860,7 +1920,7 @@ export const rpc = {
   /**
    * Read a session
    *
-   * Returns the current projected session, including sparse config and revisions, lifecycle/run state, active context, and derived tools.
+   * Returns current state plus a bounded newest-first run-summary page. Follow nextRunCursor with session/runs/list when hasOlderRuns is true; use session/events/read for the transcript.
    */
   sessionRead(client: RpcCaller, params: Api.SessionReadParams): Promise<Api.AgentApiOutcomeOfSessionReadResponse> {
     return client.call("session/read", params);
@@ -1946,12 +2006,36 @@ export const rpc = {
     return client.call("session/runs/start", params);
   },
   /**
+   * List session runs
+   *
+   * Returns a newest-first keyset page of bounded run summaries projected from current reducer state.
+   */
+  sessionRunsList(client: RpcCaller, params: Api.RunListParams): Promise<Api.AgentApiOutcomeOfRunListResponse> {
+    return client.call("session/runs/list", params);
+  },
+  /**
+   * Read one session run
+   *
+   * Reads and projects one run from its bounded event interval, paged by event sequence.
+   */
+  sessionRunsRead(client: RpcCaller, params: Api.RunReadParams): Promise<Api.AgentApiOutcomeOfRunReadResponse> {
+    return client.call("session/runs/read", params);
+  },
+  /**
    * Cancel a run
    *
    * Requests cancellation of the named queued or active run and returns its current projected state; observe session events for terminal completion. In-flight model and tool activity is aborted; no grace turn runs.
    */
   sessionRunsCancel(client: RpcCaller, params: Api.RunCancelParams): Promise<Api.AgentApiOutcomeOfRunCancelResponse> {
     return client.call("session/runs/cancel", params);
+  },
+  /**
+   * Decide pending run approvals
+   *
+   * Approves or rejects pending MCP tool calls on the named active run. Valid decisions apply independently; the run resumes only after every pending approval has a decision.
+   */
+  sessionRunsApprovalsDecide(client: RpcCaller, params: Api.RunApprovalsDecideParams): Promise<Api.AgentApiOutcomeOfRunApprovalsDecideResponse> {
+    return client.call("session/runs/approvals/decide", params);
   },
   /**
    * Steer the active run
@@ -2304,6 +2388,14 @@ export const rpc = {
    */
   mcpServersAuthDiscover(client: RpcCaller, params: Api.McpServerAuthDiscoverParams): Promise<Api.AgentApiOutcomeOfMcpServerAuthDiscoverResponse> {
     return client.call("mcp/servers/auth/discover", params);
+  },
+  /**
+   * Discover MCP server tools
+   *
+   * Connects directly to the configured MCP server with its current universe credential and returns one bounded live tools/list result. The inventory is never persisted or cached and no tool is invoked.
+   */
+  mcpServersToolsDiscover(client: RpcCaller, params: Api.McpServerToolsDiscoverParams): Promise<Api.AgentApiOutcomeOfMcpServerToolsDiscoverResponse> {
+    return client.call("mcp/servers/tools/discover", params);
   },
   /**
    * Read an MCP server record

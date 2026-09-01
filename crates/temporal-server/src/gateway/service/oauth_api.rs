@@ -1,4 +1,4 @@
-//! OAuth client and authorization flow API helpers (P69 G2).
+//! OAuth client and authorization flow API helpers.
 //!
 //! Maps between `api` DTOs and `auth` records. The client secret in
 //! `auth/clients/create` params is the second deliberate inbound-plaintext
@@ -75,6 +75,10 @@ pub(super) fn auth_client_create_draft(
         token_endpoint_auth_method: auth_method,
         scopes_default: params.scopes_default,
         audience: params.audience,
+        authorization_server_issuer: params.authorization_server_issuer,
+        authorization_response_iss_parameter_supported: params
+            .authorization_response_iss_parameter_supported,
+        authorization_server_scopes_supported: params.authorization_server_scopes_supported,
         created_at_ms: now_ms,
     };
     if let Some(secret) = &secret {
@@ -103,6 +107,10 @@ pub(super) fn oauth_client_view(record: auth::OAuthClientRecord) -> api::OAuthCl
         ),
         scopes_default: record.scopes_default,
         audience: record.audience,
+        authorization_server_issuer: record.authorization_server_issuer,
+        authorization_response_iss_parameter_supported: record
+            .authorization_response_iss_parameter_supported,
+        authorization_server_scopes_supported: record.authorization_server_scopes_supported,
         created_at_ms: record.created_at_ms,
         updated_at_ms: record.updated_at_ms,
     }

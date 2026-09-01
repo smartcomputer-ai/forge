@@ -25,7 +25,7 @@ const MODEL_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(15);
 /// entry and through models/list with selectableOnly=false.
 const OPENAI_SELECTABLE_MAX_AGE_MS: i64 = 548 * 24 * 60 * 60 * 1_000;
 
-/// The whole P97 route set. This remains code-local deliberately: provider
+/// The model-discovery route set. This remains code-local deliberately: provider
 /// discovery is direct, not a registry or persisted catalog.
 pub(super) struct ModelDiscoveryService {
     openai: Arc<openai::Client>,

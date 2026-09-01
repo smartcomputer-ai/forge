@@ -1,6 +1,6 @@
 //! Broker-backed secret resolution for the worker LLM runtime.
 //!
-//! Adapts the P69 token broker to `llm-runtime`'s [`SecretResolver`] boundary.
+//! Adapts the auth token broker to `llm-runtime`'s [`SecretResolver`] boundary.
 //! Resolution runs only inside activity execution; resolved values never enter
 //! Temporal history, engine events, or persisted provider request blobs.
 
@@ -123,7 +123,7 @@ impl SecretResolver for BrokerSecretResolver {
 }
 
 /// Resolves stored model provider credentials from `model:<provider_id>`
-/// auth provider rows (P69 G6/G7). An absent row resolves to `None` so
+/// auth provider rows. An absent row resolves to `None` so
 /// adapters fall back to the env-configured client key; a row that exists but
 /// is disabled, of the wrong kind, missing its credential, or bound to an
 /// unusable grant fails resolution instead of silently falling back.
@@ -342,12 +342,15 @@ mod tests {
                     server_id: McpServerId::new("crm"),
                     display_name: None,
                     server_url: "https://crm.example.com/mcp".to_owned(),
-                    transport: RemoteMcpTransport::Auto,
+                    transport: RemoteMcpTransport::StreamableHttp,
                     default_server_label: "crm".to_owned(),
                     description: None,
                     allowed_tools: None,
+                    execution: mcp::McpExecution::Provider,
+                    exposure: mcp::McpExposure::Inject,
                     approval_default: McpApprovalPolicy::Never,
                     defer_loading_default: None,
+                    allow_private_network: false,
                     auth_policy: McpServerAuthPolicy::RequiredBearer,
                     auth_grant_id: Some(AuthGrantId::new("authgrant_1")),
                     status: McpServerStatus::Active,
@@ -506,8 +509,11 @@ mod tests {
                     default_server_label: current.default_server_label,
                     description: current.description,
                     allowed_tools: current.allowed_tools,
+                    execution: current.execution,
+                    exposure: current.exposure,
                     approval_default: current.approval_default,
                     defer_loading_default: current.defer_loading_default,
+                    allow_private_network: current.allow_private_network,
                     auth_policy: current.auth_policy,
                     auth_grant_id: Some(AuthGrantId::new("authgrant_2")),
                     status: current.status,

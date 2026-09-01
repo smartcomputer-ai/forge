@@ -47,8 +47,8 @@ const runView = (
 ): SessionRunView => ({
   id,
   status,
-  source: { type: "input", items: text ? [{ type: "text", text }] : [] },
-  entries: [],
+  acceptedAtMs: 0,
+  source: { type: "input", preview: text || null, previewTruncated: false },
 });
 
 describe("session transcript traces", () => {
@@ -400,6 +400,47 @@ describe("session transcript run control", () => {
       text: "run cancelled after 4ms",
       tone: "muted",
     });
+  });
+
+  it("keeps approval-parked runs active and refreshes their projected cards", () => {
+    let state = applyEvents(emptyTranscript(), [
+      event(1, { type: "runAccepted", runId: "run_1" }),
+      event(2, { type: "runStarted", runId: "run_1" }),
+      event(3, {
+        type: "approvalRequested",
+        runId: "run_1",
+        approvalId: "approval_1",
+        subject: {
+          kind: "mcpToolCall",
+          serverId: "mail",
+          serverLabel: "Mail",
+          toolName: "send",
+          argumentsRef: "sha256:args",
+          argumentsPreview: "{}",
+        },
+      }),
+      event(4, { type: "approvalRunParked", runId: "run_1" }),
+    ]);
+    expect(state.activeRun).toEqual({
+      runId: "run_1",
+      label: "approval required",
+      cancelling: false,
+    });
+    expect(runInProgress(state)).toBe(true);
+
+    state = reconcileRuns(state, [runView("run_1", "parked")]);
+    expect(state.activeRun?.label).toBe("approval required");
+
+    state = applyEvents(state, [
+      event(5, {
+        type: "approvalDecided",
+        runId: "run_1",
+        approvalId: "approval_1",
+        decision: "approve",
+      }),
+    ]);
+    expect(state.activeRun).not.toBeNull();
+    expect(state.runRevision).toBeGreaterThan(2);
   });
 
   it("folds steering messages as tagged user entries on their run", () => {

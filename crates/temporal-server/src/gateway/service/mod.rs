@@ -17,6 +17,7 @@ mod github_api;
 mod input;
 mod instructions;
 mod mcp_api;
+pub(crate) mod mcp_discovery;
 mod models_api;
 mod oauth_api;
 mod parse;
@@ -52,6 +53,9 @@ use github_api::{
 };
 use input::{context_entry_input_from_api, run_input_from_api};
 use mcp_api::{map_mcp_error, mcp_server_view, parse_mcp_server_id, put_mcp_server_record};
+use mcp_discovery::{
+    ConfiguratorTrustedHeaderPolicy, HttpMcpToolDiscoverer, McpDiscoveryGate, McpToolDiscoverer,
+};
 use models_api::{ModelDiscoveryService, stored_provider_key_resolver};
 use oauth_api::{
     auth_client_create_draft, auth_flow_view, cimd_config, map_mcp_oauth_error,
@@ -84,10 +88,9 @@ use api::{
     SkillActivationSource as ApiSkillActivationSource,
 };
 use api_projection::{
-    CoreAgentProjector, MAX_EVENT_PAGE_LIMIT, ProjectSession, api_kind_from_str, api_run_id,
-    api_steering_id, core_run_status_to_api_status, decode_stored_entry, event_cursor,
-    event_page_limit, map_session_store_error, parse_api_run_id, project_context_entry_inputs,
-    read_all_session_entries, replay_core_agent_state,
+    CoreAgentProjector, ProjectRun, ProjectSession, api_kind_from_str, api_run_id, api_steering_id,
+    core_run_status_to_api_status, decode_stored_entry, event_cursor, event_page_limit,
+    map_session_store_error, parse_api_run_id, project_context_entry_inputs,
 };
 use async_trait::async_trait;
 use auth::{
@@ -99,14 +102,15 @@ use auth::{
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use engine::{
-    BlobRef, BoundWorkflowToolDispatch, CompactionPolicy, ContextEntry, ContextEntryInput,
-    ContextEntryKey, ContextEntryKind, ContextMessageRole, CoreAgentCommand, CoreAgentStatus,
-    FunctionToolSpec, ManagedSessionWorkflowTools, ModelSelection, ProviderApiKind, RunConfig,
-    RunId, RunStatus, SKILL_ACTIVATION_PROVIDER_KIND_RUN, SKILL_ACTIVATION_PROVIDER_KIND_SESSION,
-    SKILL_CATALOG_CONTEXT_KEY, SessionConfig, SessionId, SkillId, SubmissionId, ToolChoice,
-    ToolKind, ToolName, ToolParallelism, ToolSpec, WorkflowEndpointRef, WorkflowStartRef,
-    WorkflowToolCompletion, WorkflowToolCompletionKeySource, WorkflowToolDeclaration,
-    WorkflowToolDefinition, WorkflowToolId, WorkflowToolTarget, skill_activation_context_key,
+    ApprovalId, BlobRef, BoundWorkflowToolDispatch, CompactionPolicy, ContextEntry,
+    ContextEntryInput, ContextEntryKey, ContextEntryKind, ContextMessageRole, CoreAgentCommand,
+    CoreAgentStatus, FunctionToolSpec, ManagedSessionWorkflowTools, ModelSelection,
+    ProviderApiKind, RunConfig, RunId, RunStatus, SKILL_ACTIVATION_PROVIDER_KIND_RUN,
+    SKILL_ACTIVATION_PROVIDER_KIND_SESSION, SKILL_CATALOG_CONTEXT_KEY, SessionConfig, SessionId,
+    SkillId, SubmissionId, ToolChoice, ToolKind, ToolName, ToolParallelism, ToolSpec,
+    WorkflowEndpointRef, WorkflowStartRef, WorkflowToolCompletion, WorkflowToolCompletionKeySource,
+    WorkflowToolDeclaration, WorkflowToolDefinition, WorkflowToolId, WorkflowToolTarget,
+    skill_activation_context_key,
     storage::{BlobStore, BlobStoreError, ReadSessionEvents, SessionStore},
 };
 use llm_clients::{anthropic::messages as anthropic, openai::responses as openai};
@@ -164,12 +168,25 @@ const ACTIVATION_TEXT_MAX_BYTES: usize = 4096;
 const DEFAULT_SESSION_LIST_LIMIT: usize = 50;
 /// Server-side cap for `session/list` page sizes; larger requests are clamped.
 const MAX_SESSION_LIST_LIMIT: usize = 200;
+const DEFAULT_RUN_SUMMARY_LIMIT: usize = 20;
+const MAX_RUN_SUMMARY_LIMIT: usize = 100;
+const MAX_RUN_DETAIL_LIMIT: usize = 512;
+/// Hard ceiling on the events scanned while projecting one run's complete
+/// interval; a run past this is served through `session/events/read` instead
+/// of an unbounded detail document.
+const MAX_RUN_DETAIL_EVENTS: usize = 20_000;
 /// Resource bound for the opaque managed-controller run terminal token.
 const MAX_RUN_TERMINAL_NOTIFICATION_TOKEN_BYTES: usize = 512;
 
 /// Default public base URL for the gateway-hosted OAuth callback; matches
 /// `DEFAULT_GATEWAY_BIND`. Hosted deployments must set the real public URL.
 pub const DEFAULT_PUBLIC_BASE_URL: &str = "http://127.0.0.1:18080";
+
+fn env_flag(name: &str) -> bool {
+    env::var(name)
+        .ok()
+        .is_some_and(|value| matches!(value.to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
+}
 
 fn session_summary_view(record: engine::storage::SessionRecord) -> SessionSummaryView {
     SessionSummaryView {
@@ -235,8 +252,23 @@ fn status_has_submission(
             .any(|run| run.submission_id.as_ref() == Some(submission_id))
 }
 
+fn approval_decision_failure(
+    approval_id: String,
+    kind: ApprovalDecisionFailureKind,
+    message: impl Into<String>,
+) -> ApprovalDecisionResult {
+    ApprovalDecisionResult {
+        approval_id,
+        status: ApprovalDecisionStatus::Failed,
+        failure: Some(ApprovalDecisionFailure {
+            kind,
+            message: message.into(),
+        }),
+    }
+}
+
 enum ExistingRunSubmission {
-    ReturnRun { run_id: RunId, status: RunStatus },
+    ReturnRun { run_id: RunId },
     Reject,
 }
 
@@ -265,7 +297,6 @@ fn existing_run_submission(
             {
                 ExistingRunSubmission::ReturnRun {
                     run_id: active.run_id,
-                    status: active.status,
                 }
             } else {
                 ExistingRunSubmission::Reject
@@ -297,7 +328,6 @@ fn existing_run_submission(
             Some(existing) if existing != digest => ExistingRunSubmission::Reject,
             _ => ExistingRunSubmission::ReturnRun {
                 run_id: completed.run_id,
-                status: completed.status,
             },
         });
     }
@@ -598,9 +628,20 @@ impl GatewayAgentApiBuilder {
     }
 
     pub fn build(self) -> GatewayAgentApi {
+        let allow_private_mcp = env_flag("LIGHTSPEED_MCP_OAUTH_ALLOW_PRIVATE_NETWORKS");
+        let mcp_private_networks = crate::worker::mcp::McpPrivateNetworkPolicy::from_env()
+            .expect("parse LIGHTSPEED_MCP_PRIVATE_NETWORKS");
+        let configurator_trusted_header = ConfiguratorTrustedHeaderPolicy::from_env()
+            .expect("parse LIGHTSPEED_CONFIGURATOR_MCP_INTERNAL_TRUSTED_HEADER_URL");
+        let metadata_client = self.oauth_metadata_client.unwrap_or_else(|| {
+            Arc::new(HttpOAuthMetadataClient::with_private_networks(
+                allow_private_mcp,
+            ))
+        });
         let token_client = self.oauth_token_client.unwrap_or_else(|| {
             Arc::new(
-                HttpOAuthTokenClient::new().expect("construct OAuth token endpoint HTTP client"),
+                HttpOAuthTokenClient::new_with_mcp_http(metadata_client.clone())
+                    .expect("construct OAuth token endpoint HTTP client"),
             )
         });
         let oauth_flows = OAuthFlowService::new(
@@ -610,14 +651,14 @@ impl GatewayAgentApiBuilder {
             self.store.clone() as Arc<dyn SecretStore>,
             token_client.clone(),
         );
-        let metadata_client = self.oauth_metadata_client.unwrap_or_else(|| {
-            Arc::new(HttpOAuthMetadataClient::new().expect("construct OAuth metadata HTTP client"))
-        });
         let mcp_oauth = McpOAuthDriver::new(
             self.store.clone() as Arc<dyn OAuthClientStore>,
             self.store.clone() as Arc<dyn SecretStore>,
             metadata_client,
         );
+        let mcp_tool_discoverer: Arc<dyn McpToolDiscoverer> =
+            Arc::new(HttpMcpToolDiscoverer::new());
+        let mcp_discovery_gate = Arc::new(McpDiscoveryGate::new(Duration::from_secs(2)));
         let github_api = self.github_api_client.unwrap_or_else(|| {
             Arc::new(HttpGitHubApiClient::new().expect("construct GitHub REST HTTP client"))
         });
@@ -681,6 +722,10 @@ impl GatewayAgentApiBuilder {
             oauth_flows,
             auth_token_broker,
             mcp_oauth,
+            mcp_tool_discoverer,
+            mcp_private_networks,
+            configurator_trusted_header,
+            mcp_discovery_gate,
             github_api,
             model_discovery,
             provider_controller_connector: self.provider_controller_connector,
@@ -704,6 +749,10 @@ pub struct GatewayAgentApi {
     oauth_flows: OAuthFlowService,
     auth_token_broker: Arc<dyn AuthTokenBroker>,
     mcp_oauth: McpOAuthDriver,
+    mcp_tool_discoverer: Arc<dyn McpToolDiscoverer>,
+    mcp_private_networks: crate::worker::mcp::McpPrivateNetworkPolicy,
+    configurator_trusted_header: ConfiguratorTrustedHeaderPolicy,
+    mcp_discovery_gate: Arc<McpDiscoveryGate>,
     github_api: Arc<dyn GitHubApiClient>,
     model_discovery: ModelDiscoveryService,
     provider_controller_connector: Arc<dyn ProviderControllerConnector>,
@@ -841,6 +890,7 @@ impl GatewayAgentApi {
         session_config: SessionConfig,
         workflow_tools: Option<ManagedSessionWorkflowTools>,
         close_on_terminal: bool,
+        auto_reject_approvals: bool,
     ) -> AgentSessionArgs {
         AgentSessionArgs {
             universe_id: self.universe_id(),
@@ -851,11 +901,12 @@ impl GatewayAgentApi {
             legacy_max_steps_per_input: None,
             continue_as_new_history_threshold: self.continue_as_new_history_threshold,
             close_on_terminal,
+            auto_reject_approvals,
             continuation_state: None,
         }
     }
 
-    /// Sub-agent child creation (P134): the child's store row already
+    /// Sub-agent child creation: the child's store row already
     /// exists with its origin (the execution's reservation); this opens its
     /// workflow with the pinned profile applied. The execution closes the
     /// child, so `close_on_terminal` stays off.
@@ -872,6 +923,7 @@ impl GatewayAgentApi {
                 profile: Some(profile),
             },
             false,
+            true,
             None,
         )
         .await?;
@@ -895,6 +947,7 @@ impl GatewayAgentApi {
                 profile,
             },
             close_on_terminal,
+            false,
             Some(workflow_tools),
         )
         .await?;
@@ -962,31 +1015,9 @@ impl GatewayAgentApi {
             AgentApiError::invalid_request(format!("session is not open: {session_id}"))
         })?;
         let run_config = api_config::run_config_for_start(session_config, config)?;
-        let source = match source {
-            RunStartSource::Input { items } => engine::RunRequestSource::Input {
-                input: run_input_from_api(self.store.as_ref(), &items).await?,
-            },
-            RunStartSource::Context { keys } => {
-                if keys.is_empty() {
-                    return Err(AgentApiError::invalid_request(
-                        "session/runs/start source=context requires at least one key",
-                    ));
-                }
-                let mut parsed = Vec::with_capacity(keys.len());
-                let mut seen = BTreeSet::new();
-                for key in keys {
-                    let key = ContextEntryKey::try_new(key).map_err(|error| {
-                        AgentApiError::invalid_request(format!("invalid context key: {error}"))
-                    })?;
-                    if !seen.insert(key.clone()) {
-                        return Err(AgentApiError::invalid_request(format!(
-                            "duplicate trigger context key: {key}"
-                        )));
-                    }
-                    parsed.push(key);
-                }
-                engine::RunRequestSource::Context { keys: parsed }
-            }
+        let RunStartSource::Input { items } = source;
+        let source = engine::RunRequestSource::Input {
+            input: run_input_from_api(self.store.as_ref(), &items).await?,
         };
         if let Some(existing) = existing_run_submission(
             &loaded.state,
@@ -996,8 +1027,8 @@ impl GatewayAgentApi {
             &notify_on_terminal,
         ) {
             return match existing {
-                ExistingRunSubmission::ReturnRun { run_id, status } => {
-                    let run = self.project_run_by_id(&session_id, run_id, status).await?;
+                ExistingRunSubmission::ReturnRun { run_id } => {
+                    let run = self.project_run_by_id(&session_id, run_id).await?;
                     Ok(AgentApiOutcome::new(RunStartResponse { run }))
                 }
                 ExistingRunSubmission::Reject => Err(duplicate_submission_error(&submission_id)),
@@ -1008,6 +1039,21 @@ impl GatewayAgentApi {
                 "session is not open: {session_id}"
             )));
         }
+        // MCP server records are universe-owned mutable policy. Reconcile the
+        // linked records before every new run so exposure and allowlist edits
+        // do not remain pinned to the session's previous materialization. A
+        // tool patch cannot move the revision of a request already in flight,
+        // so signal it first and let the workflow apply it at the next turn
+        // boundary before the subsequently queued run uses the toolset.
+        let turn_in_flight = loaded
+            .state
+            .runs
+            .active
+            .as_ref()
+            .is_some_and(|run| run.active_turn_id.is_some());
+        let _ = self
+            .configure_session_toolset(&session_id, &loaded, !turn_in_flight)
+            .await?;
         let status_before_signal = self.query_status_optional(&session_id).await?;
         let baseline_admission_failures = status_before_signal
             .as_ref()
@@ -1040,6 +1086,7 @@ impl GatewayAgentApi {
         &self,
         params: SessionStartParams,
         close_on_terminal: bool,
+        auto_reject_approvals: bool,
         trusted_workflow_tools: Option<ManagedSessionWorkflowTools>,
     ) -> Result<AgentApiOutcome<SessionStartResponse>, AgentApiError> {
         let SessionStartParams {
@@ -1081,7 +1128,7 @@ impl GatewayAgentApi {
                             workflow_tools,
                         )?;
                     }
-                    let session = self.project_session_by_id(&session_id).await?;
+                    let session = self.session_mutation_view_by_id(&session_id).await?;
                     return Ok(AgentApiOutcome::new(SessionStartResponse { session }));
                 }
                 Ok(loaded) => {
@@ -1152,6 +1199,7 @@ impl GatewayAgentApi {
                     session_config,
                     workflow_tools.clone(),
                     close_on_terminal,
+                    auto_reject_approvals,
                 ),
                 WorkflowStartOptions::new(
                     self.task_queue.clone(),
@@ -1175,10 +1223,11 @@ impl GatewayAgentApi {
                     )?;
                 }
                 if loaded.state.lifecycle.status == CoreAgentStatus::Closed {
-                    let session = self.project_session_by_id(&session_id).await?;
+                    let session = self.session_mutation_view_by_id(&session_id).await?;
                     return Ok(AgentApiOutcome::new(SessionStartResponse { session }));
                 }
-                let session = self.wait_for_open_session(&session_id).await?;
+                self.wait_for_open_session(&session_id).await?;
+                let session = self.session_mutation_view_by_id(&session_id).await?;
                 return Ok(AgentApiOutcome::new(SessionStartResponse { session }));
             }
             Err(error) => return Err(error),
@@ -1188,14 +1237,16 @@ impl GatewayAgentApi {
         if let Some(workflow_tools) = workflow_tools.as_ref() {
             validate_managed_session_retry(&loaded.state, self.universe_id(), workflow_tools)?;
         }
-        let _ = self.configure_session_toolset(&session_id, &loaded).await?;
+        let _ = self
+            .configure_session_toolset(&session_id, &loaded, true)
+            .await?;
         if let Some(profile) = resolved_profile {
             self.apply_profile_document(&session_id, &profile, false, None, None)
                 .await?;
         }
         self.load_session_state_with_current_run_context(&session_id)
             .await?;
-        let session = self.project_session_by_id(&session_id).await?;
+        let session = self.session_mutation_view_by_id(&session_id).await?;
         Ok(AgentApiOutcome::new(SessionStartResponse { session }))
     }
 
@@ -1610,17 +1661,25 @@ impl GatewayAgentApi {
             .await
             .map_err(map_session_store_error)?
             .ok_or_else(|| AgentApiError::not_found(format!("session not found: {session_id}")))?;
-        let entries = read_all_session_entries(
-            self.store.as_ref(),
-            session_id,
-            MAX_EVENT_PAGE_LIMIT as usize,
-        )
-        .await?;
-        let state = replay_core_agent_state(&entries)?;
+        let loaded =
+            crate::checkpoint::load_reduction(self.store.as_ref(), self.store.as_ref(), &record)
+                .await
+                .map_err(|error| AgentApiError::internal(error.to_string()))?;
+        if crate::checkpoint::checkpoint_due(&loaded)
+            && let Err(error) = crate::checkpoint::write_checkpoint(
+                self.store.as_ref(),
+                self.store.as_ref(),
+                &record,
+                &loaded.reduced,
+                record.updated_at_ms,
+            )
+            .await
+        {
+            tracing::warn!(session_id = %session_id, error = %error, "session checkpoint write failed after gateway replay");
+        }
         Ok(LoadedSession {
             record,
-            entries,
-            state,
+            state: loaded.reduced.core_state,
         })
     }
 
@@ -1634,54 +1693,211 @@ impl GatewayAgentApi {
                 session_id,
                 state: &loaded.state,
                 record: &loaded.record,
-                entries: &loaded.entries,
+                run_limit: DEFAULT_RUN_SUMMARY_LIMIT,
+                run_cursor: None,
             })
             .await
+            .map(|(session, _, _)| session)
+    }
+
+    async fn project_session_page_by_id(
+        &self,
+        session_id: &SessionId,
+        run_limit: usize,
+    ) -> Result<(SessionView, Option<api::RunId>, bool), AgentApiError> {
+        let loaded = self.load_session_state(session_id).await?;
+        self.projector()
+            .project_session(ProjectSession {
+                session_id,
+                state: &loaded.state,
+                record: &loaded.record,
+                run_limit,
+                run_cursor: None,
+            })
+            .await
+    }
+
+    fn session_mutation_view(&self, loaded: &LoadedSession) -> SessionMutationView {
+        SessionMutationView {
+            id: loaded.record.session_id.as_str().to_owned(),
+            status: api_projection::session_status(&loaded.state),
+            head_cursor: loaded
+                .record
+                .head
+                .as_ref()
+                .map(|head| event_cursor(head.seq)),
+            config_revision: loaded.state.lifecycle.config_revision,
+            context_revision: loaded.state.context.revision,
+        }
+    }
+
+    async fn session_mutation_view_by_id(
+        &self,
+        session_id: &SessionId,
+    ) -> Result<SessionMutationView, AgentApiError> {
+        let loaded = self.load_session_state(session_id).await?;
+        Ok(self.session_mutation_view(&loaded))
     }
 
     async fn project_run_by_id(
         &self,
         session_id: &SessionId,
         run_id: RunId,
-        fallback_status: RunStatus,
     ) -> Result<RunView, AgentApiError> {
         let loaded = self.load_session_state(session_id).await?;
-        let status = loaded
-            .state
-            .runs
-            .completed
-            .iter()
-            .find(|run| run.run_id == run_id)
-            .map(|run| core_run_status_to_api_status(run.status))
-            .or_else(|| {
-                loaded
-                    .state
-                    .runs
-                    .active
-                    .as_ref()
-                    .filter(|run| run.run_id == run_id)
-                    .map(|run| core_run_status_to_api_status(run.status))
-            })
-            .or_else(|| {
-                loaded
-                    .state
-                    .runs
-                    .queued
-                    .iter()
-                    .any(|run| run.run_id == run_id)
-                    .then_some(api::RunStatus::Queued)
-            })
-            .unwrap_or(core_run_status_to_api_status(fallback_status));
+        self.project_loaded_run(&loaded, run_id).await
+    }
+
+    /// Project one run from its complete sequence interval. Run projection is
+    /// stateful across events (tool batches, approval pairs), so a partial
+    /// interval would silently drop cross-event state; the interval is always
+    /// read to completion and one pathological run is rejected with a typed
+    /// error instead of a truncated view.
+    async fn project_loaded_run(
+        &self,
+        loaded: &LoadedSession,
+        run_id: RunId,
+    ) -> Result<RunView, AgentApiError> {
+        let metadata = run_projection_metadata(&loaded.state, run_id)
+            .ok_or_else(|| AgentApiError::not_found(format!("run not found: {run_id}")))?;
+        let entries = self
+            .read_run_interval(
+                &loaded.record,
+                run_id,
+                metadata.first_seq,
+                metadata.terminal_seq,
+            )
+            .await?;
         self.projector()
-            .project_run_with_api_status(&loaded.entries, run_id, status)
+            .project_run_with_metadata(ProjectRun {
+                entries: &entries,
+                run_id,
+                status: metadata.status,
+                source: metadata.source,
+                started_at_ms: metadata.started_at_ms,
+                completed_at_ms: metadata.completed_at_ms,
+                usage: metadata.usage,
+            })
             .await
+    }
+
+    async fn read_run_interval(
+        &self,
+        record: &engine::storage::SessionRecord,
+        run_id: RunId,
+        first_seq: engine::EventSeq,
+        terminal_seq: Option<engine::EventSeq>,
+    ) -> Result<Vec<engine::CoreAgentEntry>, AgentApiError> {
+        let through = terminal_seq
+            .or_else(|| record.head.as_ref().map(|head| head.seq))
+            .unwrap_or(first_seq);
+        let mut after = engine::EventSeq::new(first_seq.as_u64().saturating_sub(1));
+        let codec = engine::CoreAgentCodec;
+        let mut entries = Vec::new();
+        let mut scanned: usize = 0;
+        loop {
+            let page = self
+                .store
+                .read_range(engine::storage::ReadSessionEventRange {
+                    session_id: record.session_id.clone(),
+                    after,
+                    through,
+                    limit: MAX_RUN_DETAIL_LIMIT,
+                })
+                .await
+                .map_err(map_session_store_error)?;
+            scanned = scanned.saturating_add(page.entries.len());
+            if scanned > MAX_RUN_DETAIL_EVENTS {
+                return Err(AgentApiError::rejected(format!(
+                    "run {run_id} spans more than {MAX_RUN_DETAIL_EVENTS} events; page it through session/events/read"
+                )));
+            }
+            for entry in &page.entries {
+                let belongs = entry
+                    .joins
+                    .get("run_id")
+                    .is_some_and(|value| value == &run_id.as_u64().to_string());
+                if belongs {
+                    entries.push(decode_stored_entry(&codec, entry)?);
+                }
+            }
+            let Some(next_after) = page.next_after else {
+                break;
+            };
+            if page.complete {
+                break;
+            }
+            after = next_after;
+        }
+        Ok(entries)
     }
 }
 
 pub(super) struct LoadedSession {
     pub(super) record: engine::storage::SessionRecord,
-    pub(super) entries: Vec<engine::CoreAgentEntry>,
     pub(super) state: engine::CoreAgentState,
+}
+
+struct RunProjectionMetadata<'a> {
+    status: api::RunStatus,
+    first_seq: engine::EventSeq,
+    terminal_seq: Option<engine::EventSeq>,
+    source: &'a engine::RunSource,
+    started_at_ms: Option<u64>,
+    completed_at_ms: Option<u64>,
+    usage: Option<&'a engine::LlmUsage>,
+}
+
+fn run_projection_metadata(
+    state: &engine::CoreAgentState,
+    run_id: RunId,
+) -> Option<RunProjectionMetadata<'_>> {
+    state
+        .runs
+        .completed
+        .iter()
+        .find(|run| run.run_id == run_id)
+        .map(|run| RunProjectionMetadata {
+            status: core_run_status_to_api_status(run.status),
+            first_seq: run.first_seq,
+            terminal_seq: Some(run.terminal_seq),
+            source: &run.source,
+            started_at_ms: run.started_at_ms,
+            completed_at_ms: Some(run.completed_at_ms),
+            usage: run.usage.as_ref(),
+        })
+        .or_else(|| {
+            state
+                .runs
+                .active
+                .as_ref()
+                .filter(|run| run.run_id == run_id)
+                .map(|run| RunProjectionMetadata {
+                    status: core_run_status_to_api_status(run.status),
+                    first_seq: run.first_seq,
+                    terminal_seq: None,
+                    source: &run.source,
+                    started_at_ms: run.started_at_ms,
+                    completed_at_ms: None,
+                    usage: run.usage.as_ref(),
+                })
+        })
+        .or_else(|| {
+            state
+                .runs
+                .queued
+                .iter()
+                .find(|run| run.run_id == run_id)
+                .map(|run| RunProjectionMetadata {
+                    status: api::RunStatus::Queued,
+                    first_seq: run.first_seq,
+                    terminal_seq: None,
+                    source: &run.source,
+                    started_at_ms: None,
+                    completed_at_ms: None,
+                    usage: None,
+                })
+        })
 }
 
 fn managed_workflow_tools_from_api(
@@ -2326,7 +2542,8 @@ impl AgentApiService for GatewayAgentApi {
         &self,
         params: SessionStartParams,
     ) -> Result<AgentApiOutcome<SessionStartResponse>, AgentApiError> {
-        self.start_session_internal(params, false, None).await
+        self.start_session_internal(params, false, false, None)
+            .await
     }
 
     async fn start_managed_session(
@@ -2348,6 +2565,7 @@ impl AgentApiService for GatewayAgentApi {
                 config,
                 profile,
             },
+            false,
             false,
             Some(workflow_tools),
         )
@@ -2449,12 +2667,16 @@ impl AgentApiService for GatewayAgentApi {
         self.validate_subagent_agents(&config.features).await?;
         validate_subagent_deadline_for_existing_bindings(&loaded.state, &config.features)?;
         if &config == current_config {
-            // The config event is an idempotent no-op, but derived managed
-            // context may still need repair after an interrupted refresh.
+            // The config event is an idempotent no-op, but derived tools and
+            // managed context may still need repair or reflect newer
+            // universe-owned registry records.
+            let _ = self
+                .configure_session_toolset(&session_id, &loaded, true)
+                .await?;
             self.load_session_state_with_current_run_context(&session_id)
                 .await?;
             return Ok(AgentApiOutcome::new(SessionConfigPutResponse {
-                session: self.project_session_by_id(&session_id).await?,
+                session: self.session_mutation_view_by_id(&session_id).await?,
             }));
         }
         let baseline_failures = self
@@ -2479,10 +2701,12 @@ impl AgentApiService for GatewayAgentApi {
         self.wait_for_config_revision(&session_id, target_revision, baseline_failures)
             .await?;
         let loaded = self.load_session_state(&session_id).await?;
-        let _ = self.configure_session_toolset(&session_id, &loaded).await?;
+        let _ = self
+            .configure_session_toolset(&session_id, &loaded, true)
+            .await?;
         self.load_session_state_with_current_run_context(&session_id)
             .await?;
-        let session = self.project_session_by_id(&session_id).await?;
+        let session = self.session_mutation_view_by_id(&session_id).await?;
         Ok(AgentApiOutcome::new(SessionConfigPutResponse { session }))
     }
 
@@ -2500,8 +2724,25 @@ impl AgentApiService for GatewayAgentApi {
                 "agent workflow reported error: {error}"
             )));
         }
-        let session = self.project_session_by_id(&session_id).await?;
-        Ok(AgentApiOutcome::new(SessionReadResponse { session }))
+        let limit = match params.run_limit {
+            Some(0) => return Err(AgentApiError::invalid_request("runLimit must be positive")),
+            Some(limit) => (limit as usize).min(MAX_RUN_SUMMARY_LIMIT),
+            None => DEFAULT_RUN_SUMMARY_LIMIT,
+        };
+        let (session, next_run_cursor, has_older_runs) =
+            self.project_session_page_by_id(&session_id, limit).await?;
+        tracing::debug!(
+            session_id = %session_id,
+            summary_page_size = session.runs.len(),
+            preview_blob_reads_upper_bound = session.runs.len(),
+            has_older_runs,
+            "projected bounded session summary"
+        );
+        Ok(AgentApiOutcome::new(SessionReadResponse {
+            session,
+            next_run_cursor,
+            has_older_runs,
+        }))
     }
 
     async fn list_sessions(
@@ -2642,7 +2883,7 @@ impl AgentApiService for GatewayAgentApi {
         let loaded = self.load_session_state(&session_id).await?;
         if loaded.state.lifecycle.status == CoreAgentStatus::Closed {
             return Ok(AgentApiOutcome::new(SessionCloseResponse {
-                session: self.project_session_by_id(&session_id).await?,
+                session: self.session_mutation_view_by_id(&session_id).await?,
             }));
         }
         if !params.force {
@@ -2653,7 +2894,8 @@ impl AgentApiService for GatewayAgentApi {
             }
             self.submit_core_command(&session_id, CoreAgentCommand::CloseSession { force: false })
                 .await?;
-            let session = self.wait_for_closed_session(&session_id).await?;
+            self.wait_for_closed_session(&session_id).await?;
+            let session = self.session_mutation_view_by_id(&session_id).await?;
             self.close_session_owned_environments(&session_id).await;
             return Ok(AgentApiOutcome::new(SessionCloseResponse { session }));
         }
@@ -2665,8 +2907,9 @@ impl AgentApiService for GatewayAgentApi {
                 .submit_core_command(&session_id, CoreAgentCommand::CloseSession { force: true })
                 .await
                 .is_ok();
-            if signalled && let Ok(session) = self.wait_for_closed_session(&session_id).await {
+            if signalled && self.wait_for_closed_session(&session_id).await.is_ok() {
                 self.close_session_owned_environments(&session_id).await;
+                let session = self.session_mutation_view_by_id(&session_id).await?;
                 return Ok(AgentApiOutcome::new(SessionCloseResponse { session }));
             }
             // The workflow exists but never converged: it is wedged (e.g. a
@@ -2683,7 +2926,7 @@ impl AgentApiService for GatewayAgentApi {
         // row; the expected-head CAS protects against a concurrent writer.
         self.force_close_session_in_store(&session_id).await?;
         self.close_session_owned_environments(&session_id).await;
-        let session = self.project_session_by_id(&session_id).await?;
+        let session = self.session_mutation_view_by_id(&session_id).await?;
         Ok(AgentApiOutcome::new(SessionCloseResponse { session }))
     }
 
@@ -2722,9 +2965,13 @@ impl AgentApiService for GatewayAgentApi {
             .unwrap_or(0);
         self.submit_core_command(&session_id, CoreAgentCommand::CompactContext)
             .await?;
-        let session = self
-            .wait_for_context_compaction_complete(&session_id, baseline_revision, baseline_failures)
-            .await?;
+        self.wait_for_context_compaction_complete(
+            &session_id,
+            baseline_revision,
+            baseline_failures,
+        )
+        .await?;
+        let session = self.session_mutation_view_by_id(&session_id).await?;
         Ok(AgentApiOutcome::new(ContextCompactResponse { session }))
     }
 
@@ -2999,6 +3246,57 @@ impl AgentApiService for GatewayAgentApi {
         self.start_run_internal(params, Vec::new()).await
     }
 
+    async fn list_runs(
+        &self,
+        params: RunListParams,
+    ) -> Result<AgentApiOutcome<RunListResponse>, AgentApiError> {
+        let session_id = SessionId::try_new(params.session_id).map_err(|error| {
+            AgentApiError::invalid_request(format!("invalid session id: {error}"))
+        })?;
+        let limit = match params.limit {
+            Some(0) => return Err(AgentApiError::invalid_request("limit must be positive")),
+            Some(limit) => (limit as usize).min(MAX_RUN_SUMMARY_LIMIT),
+            None => DEFAULT_RUN_SUMMARY_LIMIT,
+        };
+        let cursor = params.cursor.as_deref().map(parse_api_run_id).transpose()?;
+        let loaded = self.load_session_state(&session_id).await?;
+        let (runs, next_cursor, has_older_runs) = self
+            .projector()
+            .project_run_summaries(&loaded.state, cursor, limit)
+            .await?;
+        tracing::debug!(
+            session_id = %session_id,
+            summary_page_size = runs.len(),
+            preview_blob_reads_upper_bound = runs.len(),
+            has_older_runs,
+            "projected run summary page"
+        );
+        Ok(AgentApiOutcome::new(RunListResponse {
+            runs,
+            next_cursor,
+            has_older_runs,
+        }))
+    }
+
+    async fn read_run(
+        &self,
+        params: RunReadParams,
+    ) -> Result<AgentApiOutcome<RunReadResponse>, AgentApiError> {
+        let session_id = SessionId::try_new(params.session_id).map_err(|error| {
+            AgentApiError::invalid_request(format!("invalid session id: {error}"))
+        })?;
+        let run_id = parse_api_run_id(&params.run_id)?;
+        let loaded = self.load_session_state(&session_id).await?;
+        let run = self.project_loaded_run(&loaded, run_id).await?;
+        tracing::debug!(
+            session_id = %session_id,
+            run_id = run_id.as_u64(),
+            detail_entries = run.entries.len(),
+            "projected complete run detail"
+        );
+        Ok(AgentApiOutcome::new(RunReadResponse { run }))
+    }
+
     async fn cancel_run(
         &self,
         params: RunCancelParams,
@@ -3057,6 +3355,189 @@ impl AgentApiService for GatewayAgentApi {
             .wait_for_cancelled_run(&session_id, requested_run_id)
             .await?;
         Ok(AgentApiOutcome::new(RunCancelResponse { run }))
+    }
+
+    async fn decide_run_approvals(
+        &self,
+        params: RunApprovalsDecideParams,
+    ) -> Result<AgentApiOutcome<RunApprovalsDecideResponse>, AgentApiError> {
+        const MAX_DECISIONS: usize = 64;
+        let session_id = SessionId::try_new(params.session_id).map_err(|error| {
+            AgentApiError::invalid_request(format!("invalid session id: {error}"))
+        })?;
+        let run_id = parse_api_run_id(&params.run_id)?;
+        if params.decisions.is_empty() || params.decisions.len() > MAX_DECISIONS {
+            return Err(AgentApiError::invalid_request(format!(
+                "session/runs/approvals/decide requires 1 to {MAX_DECISIONS} decisions"
+            )));
+        }
+        let loaded = self.load_session_state(&session_id).await?;
+        let Some(active) = loaded.state.runs.active.as_ref() else {
+            return Err(AgentApiError::rejected(format!(
+                "run is not active: {}",
+                params.run_id
+            )));
+        };
+        if active.run_id != run_id
+            || !matches!(active.status, RunStatus::Active | RunStatus::Parked)
+        {
+            return Err(AgentApiError::rejected(format!(
+                "run is not accepting approval decisions: {}",
+                params.run_id
+            )));
+        }
+
+        let principal = crate::gateway::principal::request_principal();
+        let decided_by = engine::ApprovalPrincipal {
+            kind: match principal.kind {
+                auth::PrincipalKind::User => "user",
+                auth::PrincipalKind::ServiceAccount => "service_account",
+                auth::PrincipalKind::UniverseDefault => "universe_default",
+            }
+            .to_owned(),
+            id: principal.id,
+        };
+        let mut seen = BTreeSet::new();
+        let mut results = Vec::with_capacity(params.decisions.len());
+        for input in params.decisions {
+            let approval_id = match ApprovalId::try_new(input.approval_id.clone()) {
+                Ok(id) => id,
+                Err(error) => {
+                    results.push(approval_decision_failure(
+                        input.approval_id,
+                        ApprovalDecisionFailureKind::InvalidId,
+                        error.to_string(),
+                    ));
+                    continue;
+                }
+            };
+            if !seen.insert(approval_id.clone()) {
+                results.push(approval_decision_failure(
+                    input.approval_id,
+                    ApprovalDecisionFailureKind::Duplicate,
+                    "duplicate approval id in decision batch",
+                ));
+                continue;
+            }
+            if let Err(error) = engine::validate_note(input.note.as_deref()) {
+                results.push(approval_decision_failure(
+                    input.approval_id,
+                    ApprovalDecisionFailureKind::InvalidNote,
+                    error.to_string(),
+                ));
+                continue;
+            }
+            let Some(record) = active.approvals.get(&approval_id) else {
+                results.push(approval_decision_failure(
+                    input.approval_id,
+                    ApprovalDecisionFailureKind::Unknown,
+                    "approval was not found for the active run",
+                ));
+                continue;
+            };
+            if record.request.run_id != run_id {
+                results.push(approval_decision_failure(
+                    input.approval_id,
+                    ApprovalDecisionFailureKind::ForeignRun,
+                    "approval belongs to a different run",
+                ));
+                continue;
+            }
+            if record.status != engine::ApprovalStatus::Pending {
+                let kind = if record.status == engine::ApprovalStatus::Cancelled {
+                    ApprovalDecisionFailureKind::Cancelled
+                } else {
+                    ApprovalDecisionFailureKind::AlreadyDecided
+                };
+                results.push(approval_decision_failure(
+                    input.approval_id,
+                    kind,
+                    "approval is already terminal",
+                ));
+                continue;
+            }
+            let engine_decision = match input.decision {
+                ApprovalDecisionKind::Approve => engine::ApprovalDecision::Approved,
+                ApprovalDecisionKind::Reject => engine::ApprovalDecision::Rejected,
+            };
+            let approve = engine_decision == engine::ApprovalDecision::Approved;
+            let response = match &record.request.continuation {
+                engine::ApprovalContinuation::OpenAiMcp {
+                    provider_request_id,
+                } => {
+                    let response_json = serde_json::json!({
+                        "type": "mcp_approval_response",
+                        "approval_request_id": provider_request_id,
+                        "approve": approve,
+                    });
+                    let response_ref = self
+                        .store
+                        .put_bytes(serde_json::to_vec(&response_json).map_err(|error| {
+                            AgentApiError::internal(format!(
+                                "encode MCP approval response: {error}"
+                            ))
+                        })?)
+                        .await
+                        .map_err(|error| AgentApiError::internal(error.to_string()))?;
+                    Some(ContextEntryInput {
+                        kind: ContextEntryKind::McpApprovalResponse {
+                            approval_request_id: provider_request_id.clone(),
+                            approve,
+                        },
+                        content_ref: response_ref,
+                        media_type: Some("application/json".to_owned()),
+                        preview: Some(
+                            if approve {
+                                "MCP tool call approved"
+                            } else {
+                                "MCP tool call rejected"
+                            }
+                            .to_owned(),
+                        ),
+                        provider_kind: Some("openai.responses.mcp_approval_response".to_owned()),
+                        provider_item_id: None,
+                        token_estimate: None,
+                    })
+                }
+                engine::ApprovalContinuation::NativeMcp { .. } => None,
+            };
+            let correlation = format!("approval_{}", uuid::Uuid::new_v4().simple());
+            self.signal_submit_admissions(
+                &session_id,
+                vec![AgentAdmission {
+                    command: CoreAgentCommand::DecideApproval(engine::ApprovalDecisionCommand {
+                        approval_id: approval_id.clone(),
+                        run_id,
+                        decision: engine_decision,
+                        note: input.note,
+                        decided_by: Some(decided_by.clone()),
+                        response,
+                    }),
+                    correlation_token: Some(correlation.clone()),
+                }],
+            )
+            .await?;
+            match self
+                .wait_for_approval_decision(&session_id, run_id, &approval_id, &correlation)
+                .await
+            {
+                Ok(()) => results.push(ApprovalDecisionResult {
+                    approval_id: approval_id.as_str().to_owned(),
+                    status: ApprovalDecisionStatus::Decided,
+                    failure: None,
+                }),
+                Err(error) => results.push(approval_decision_failure(
+                    approval_id.as_str().to_owned(),
+                    ApprovalDecisionFailureKind::Rejected,
+                    error.message,
+                )),
+            }
+        }
+        let run = self.project_run_by_id(&session_id, run_id).await?;
+        Ok(AgentApiOutcome::new(RunApprovalsDecideResponse {
+            results,
+            run,
+        }))
     }
 
     /// Steer the active run. The steering is admitted against the
@@ -3136,7 +3617,7 @@ impl AgentApiService for GatewayAgentApi {
             }],
         )
         .await?;
-        let (steering_id, status) = self
+        let steering_id = self
             .wait_for_steering_accepted(
                 &session_id,
                 requested_run_id,
@@ -3145,7 +3626,7 @@ impl AgentApiService for GatewayAgentApi {
             )
             .await?;
         let run = self
-            .project_run_by_id(&session_id, requested_run_id, status)
+            .project_run_by_id(&session_id, requested_run_id)
             .await?;
         Ok(AgentApiOutcome::new(RunSteerResponse {
             steering_id: api_steering_id(steering_id),
@@ -3682,6 +4163,7 @@ impl AgentApiService for GatewayAgentApi {
             Ok(Ok(metadata)) => Some(McpOAuthDiscoveryView {
                 resource: metadata.resource,
                 authorization_servers: metadata.authorization_servers,
+                scopes_supported: metadata.scopes_supported,
             }),
             Ok(Err(auth::McpOAuthError::ProtectedResourceMetadataUnavailable { .. })) | Err(_) => {
                 None
@@ -3691,6 +4173,116 @@ impl AgentApiService for GatewayAgentApi {
         Ok(AgentApiOutcome::new(McpServerAuthDiscoverResponse {
             oauth,
         }))
+    }
+
+    async fn discover_mcp_server_tools(
+        &self,
+        params: McpServerToolsDiscoverParams,
+    ) -> Result<AgentApiOutcome<McpServerToolsDiscoverResponse>, AgentApiError> {
+        let server_id = parse_mcp_server_id(params.server_id)?;
+        let record = self
+            .store
+            .read_server(&server_id)
+            .await
+            .map_err(map_mcp_error)?;
+        if record.status == mcp::McpServerStatus::Disabled {
+            return Err(AgentApiError::rejected(format!(
+                "MCP server is disabled: {server_id}"
+            )));
+        }
+        if record.status == mcp::McpServerStatus::NeedsAuthConfig
+            || (record.auth_grant_id.is_none()
+                && matches!(
+                    record.auth_policy,
+                    mcp::McpServerAuthPolicy::RequiredBearer
+                        | mcp::McpServerAuthPolicy::RequiredOAuth { .. }
+                ))
+        {
+            return Ok(AgentApiOutcome::new(mcp_api::mcp_tool_discovery_failure(
+                mcp::McpToolDiscoveryFailure::new(
+                    mcp::McpToolDiscoveryFailureKind::CredentialAbsent,
+                    "This MCP server needs a credential before its tools can be discovered",
+                ),
+            )));
+        }
+
+        let _discovery_permit = self
+            .mcp_discovery_gate
+            .try_start(server_id.as_str())
+            .map_err(AgentApiError::rejected)?;
+        let discovery_started = Instant::now();
+
+        let trusted_universe = self
+            .configurator_trusted_header
+            .permits(server_id.as_str(), &record.server_url)
+            .then_some(self.store.config().universe_id);
+        let bearer = match (trusted_universe, record.auth_grant_id.as_ref()) {
+            (Some(_), _) => None,
+            (None, Some(grant_id)) => match self
+                .auth_token_broker
+                .bearer_token(
+                    grant_id,
+                    &TokenAudience::McpResource(record.server_url.clone()),
+                )
+                .await
+            {
+                Ok(token) => Some(token),
+                Err(auth::AuthBrokerError::AudienceMismatch { .. }) => {
+                    return Ok(AgentApiOutcome::new(mcp_api::mcp_tool_discovery_failure(
+                        mcp::McpToolDiscoveryFailure::new(
+                            mcp::McpToolDiscoveryFailureKind::GrantAudienceMismatch,
+                            "The configured credential does not cover this MCP server",
+                        ),
+                    )));
+                }
+                Err(auth::AuthBrokerError::Store { message }) => {
+                    return Err(AgentApiError::internal(message));
+                }
+                Err(_) => {
+                    return Ok(AgentApiOutcome::new(mcp_api::mcp_tool_discovery_failure(
+                        mcp::McpToolDiscoveryFailure::new(
+                            mcp::McpToolDiscoveryFailureKind::GrantNeedsReauth,
+                            "The configured credential must be reconnected",
+                        ),
+                    )));
+                }
+            },
+            (None, None) => None,
+        };
+        let response = match self
+            .mcp_tool_discoverer
+            .discover_tools(
+                &record.server_url,
+                bearer.as_ref(),
+                trusted_universe,
+                self.mcp_private_networks
+                    .permits(&record.server_url, record.allow_private_network),
+                mcp::McpToolDiscoveryLimits::default(),
+            )
+            .await
+        {
+            Ok(inventory) => {
+                tracing::info!(
+                    server_id = %server_id,
+                    outcome = "success",
+                    tool_count = inventory.tools.len(),
+                    duration_ms = discovery_started.elapsed().as_millis(),
+                    "completed live MCP tool discovery"
+                );
+                mcp_api::mcp_tool_discovery_success(inventory.tools)
+            }
+            Err(failure) => {
+                tracing::info!(
+                    server_id = %server_id,
+                    outcome = ?failure.kind,
+                    tool_count = 0,
+                    duration_ms = discovery_started.elapsed().as_millis(),
+                    "completed live MCP tool discovery"
+                );
+                mcp_api::mcp_tool_discovery_failure(failure)
+            }
+        };
+        Ok(AgentApiOutcome::new(response))
     }
 
     async fn list_mcp_servers(
@@ -4153,7 +4745,7 @@ pub enum OAuthCallbackOutcome {
 
 impl GatewayAgentApi {
     /// Lazily discover and register the OAuth client for an OAuth-protected
-    /// MCP server (P69 G4): protected resource metadata, authorization
+    /// MCP server: protected resource metadata, authorization
     /// server metadata, then CIMD or dynamic client registration. Existing
     /// `mcp:<server_id>` client records are reused without network traffic.
     async fn ensure_mcp_oauth_client(

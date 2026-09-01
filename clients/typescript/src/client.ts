@@ -161,14 +161,6 @@ export class LightspeedClient implements RpcCaller {
     return this.startRunWithSource(sessionId, { type: "input", items: input }, options);
   }
 
-  startRunFromContext(
-    sessionId: string,
-    keys: string[],
-    options: StartRunOptions = {},
-  ): Promise<AgentApiOutcomeOfRunStartResponse> {
-    return this.startRunWithSource(sessionId, { type: "context", keys }, options);
-  }
-
   startRunWithSource(
     sessionId: string,
     source: RunStartSource,

@@ -4,11 +4,14 @@ import {
 } from "@lightspeed/agent-client";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 
+// Exactly one representation of every result: the JSON text block that all
+// MCP clients read. No tool declares an outputSchema, so structuredContent
+// would be a second copy of the same bytes — the duplication that once
+// doubled a large session read — and content-only clients would see an
+// empty result if the text block were dropped instead.
 export function successfulToolResult(outcome: unknown): CallToolResult {
-  const structuredContent = asStructuredContent(outcome);
   return {
     content: [{ type: "text", text: JSON.stringify(outcome) }],
-    structuredContent,
   };
 }
 
@@ -16,7 +19,6 @@ export function failedToolResult(error: unknown): CallToolResult {
   const safe = safeError(error);
   return {
     content: [{ type: "text", text: JSON.stringify(safe) }],
-    structuredContent: { error: safe },
     isError: true,
   };
 }
@@ -54,13 +56,6 @@ function redact(value: string): string {
   return value
     .replace(/\blsk_[A-Za-z0-9._~-]+/g, "[REDACTED]")
     .replace(/Bearer\s+\S+/gi, "Bearer [REDACTED]");
-}
-
-function asStructuredContent(value: unknown): Record<string, unknown> {
-  if (typeof value === "object" && value !== null && !Array.isArray(value)) {
-    return value as Record<string, unknown>;
-  }
-  return { value };
 }
 
 function isAbortError(error: unknown): boolean {

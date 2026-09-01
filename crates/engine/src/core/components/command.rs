@@ -4,9 +4,10 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::{
-    BlobRef, ContextEntryInput, ContextEntryKey, EnvironmentId, ManagedSessionWorkflowTools,
-    PromiseId, PromiseResolution, ResumeToolBatchCommand, RunId, RunRequestCommand, SessionConfig,
-    ToolName, ToolPatch, ToolSpec, WorkflowToolDeclaration, WorkflowToolInvocationId,
+    ApprovalDecisionCommand, BlobRef, ContextEntryInput, ContextEntryKey, EnvironmentId,
+    ManagedSessionWorkflowTools, PromiseId, PromiseResolution, ResumeToolBatchCommand, RunId,
+    RunRequestCommand, SessionConfig, ToolName, ToolPatch, ToolSpec, WorkflowToolDeclaration,
+    WorkflowToolInvocationId,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -82,6 +83,7 @@ pub enum CoreAgentCommand {
     CancelRun {
         run_id: RunId,
     },
+    DecideApproval(ApprovalDecisionCommand),
     /// Force the matching active run to `cancelled` regardless of open turn
     /// or tool-batch state. Watchdog/recovery surface: admission is an
     /// idempotent no-op when the run is no longer active.

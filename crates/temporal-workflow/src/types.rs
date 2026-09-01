@@ -25,7 +25,8 @@ pub struct AgentSessionArgs {
     /// immutable creation fact on the first append.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workflow_tools: Option<ManagedSessionWorkflowTools>,
-    /// Legacy cutover field accepted from workflows started before P105.
+    /// Legacy cutover field accepted from workflows started before active-run
+    /// rollover support.
     /// Hosted drive ignores it, and continuation/new-session payloads never
     /// serialize it.
     #[serde(default, rename = "max_steps_per_input", skip_serializing)]
@@ -33,6 +34,10 @@ pub struct AgentSessionArgs {
     pub continue_as_new_history_threshold: Option<u32>,
     #[serde(default)]
     pub close_on_terminal: bool,
+    /// One-shot unattended child sessions cannot expose approval UI. They
+    /// append explicit rejection continuations instead of parking forever.
+    #[serde(default)]
+    pub auto_reject_approvals: bool,
     /// Workflow-local query state that is not reconstructible from the
     /// PostgreSQL session log. Transport queues are deliberately drained
     /// instead of being copied into this payload.
@@ -389,7 +394,7 @@ pub struct PendingToolBatchResume {
 }
 
 /// Armed while the active run sits in `cancelling`; the workflow forces the
-/// run terminal once the deadline passes (P92 step 1 watchdog).
+/// run terminal once the deadline passes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CancellingWatchdog {
     pub run_id: u64,
@@ -453,7 +458,8 @@ pub struct EnvironmentJobWorkflowToolContext {
 
 /// Accepted inputs for the core job workflow. Bare public starts arrive as
 /// fully prepared job arguments; internally supervised starts use the fixed
-/// P100b input and are normalized by an activity before provider work begins.
+/// internally supervised input and are normalized by an activity before
+/// provider work begins.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum EnvironmentJobWorkflowInput {
@@ -467,7 +473,7 @@ impl From<EnvironmentJobWorkflowArgs> for EnvironmentJobWorkflowInput {
     }
 }
 
-/// Sub-agent execution (P134): one delegation supervised by
+/// Sub-agent execution: one delegation supervised by
 /// `SubagentExecutionWorkflow`, started on call by the parent session.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SubagentPrepareActivityRequest {
@@ -627,8 +633,11 @@ pub struct CreateOrLoadSessionResult {
     pub run_submissions: BTreeMap<u64, Option<SubmissionId>>,
     /// Current durable log head after replay.
     pub head: Option<SessionPosition>,
-    /// Number of persisted events replayed. `0` signals a fresh session that
-    /// still needs `open_new_session`.
+    /// True only when the authoritative durable head was empty at bootstrap.
+    /// This must not be inferred from tail replay counts because a checkpoint
+    /// can make a non-empty session replay zero events.
+    pub fresh_session: bool,
+    /// Number of persisted tail events replayed during this bootstrap.
     pub replayed_event_count: u64,
 }
 
@@ -656,7 +665,7 @@ impl std::fmt::Display for SessionBootstrapPayloadTooLarge {
 
 impl std::error::Error for SessionBootstrapPayloadTooLarge {}
 
-/// Application-failure type name for a transient LLM provider error (P116).
+/// Application-failure type name for a transient LLM provider error.
 /// The worker attaches it to a retryable `ApplicationFailure`; the session
 /// workflow recognizes it in an exhausted activity failure's cause chain and
 /// converts it into a terminal failed generation/compaction result.
@@ -754,7 +763,7 @@ pub struct ToolInvokeCallActivityRequest {
     pub request: engine::ToolInvocationCallRequest,
 }
 
-/// Outcome of one per-call tool activity (P114/P125).
+/// Outcome of one per-call tool activity.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum ToolInvokeCallActivityResult {
@@ -766,9 +775,12 @@ pub enum ToolInvokeCallActivityResult {
     /// provisioning or booting. The workflow waits for readiness with
     /// `await_environment_ready` and re-dispatches the same call.
     EnvironmentNotReady { environment_id: String },
+    /// The native MCP call must receive a single-use run-owned decision
+    /// before the worker performs any MCP wire I/O.
+    NeedsApproval { subject: engine::ApprovalSubject },
 }
 
-/// Wait for the session's active environment to become reachable (P125).
+/// Wait for the session's active environment to become reachable.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AwaitEnvironmentReadyActivityRequest {
     pub session_id: SessionId,
@@ -847,7 +859,7 @@ mod tests {
 
     #[test]
     fn split_workflow_id_rejects_non_composed_ids() {
-        // Pre-P90 ids were the bare session id; they must not silently parse.
+        // Legacy ids were the bare session id; they must not silently parse.
         assert_eq!(split_workflow_id("session_mybot"), None);
         assert_eq!(split_workflow_id("not-a-uuid/session_mybot"), None);
         assert_eq!(

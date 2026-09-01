@@ -2,8 +2,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     ActiveRun, BlobRef, CoreAgentEvent, CoreAgentEventProposal, CoreAgentJoins, CoreAgentState,
-    CoreAgentStatus, DomainError, ObservedToolCall, PlanningError, RunId, RunStatus, TokenEstimate,
-    TurnId,
+    CoreAgentStatus, DomainError, ObservedApprovalRequest, ObservedToolCall, PlanningError, RunId,
+    RunStatus, TokenEstimate, TurnId,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -214,6 +214,7 @@ pub enum TurnOutcome {
     FinalOutput { output_ref: Option<BlobRef> },
     ToolCallsQueued,
     ContextUpdateRequired,
+    ApprovalsRequested,
     Failed { failure_ref: Option<BlobRef> },
     Cancelled,
 }
@@ -224,6 +225,8 @@ pub struct LlmGenerationFacts {
     pub finish: LlmFinish,
     pub usage: Option<LlmUsage>,
     pub tool_calls: Vec<ObservedToolCall>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub approval_requests: Vec<ObservedApprovalRequest>,
     pub context_token_estimate: Option<TokenEstimate>,
 }
 
@@ -381,20 +384,26 @@ pub(crate) fn apply_event(state: &mut CoreAgentState, event: &Event) -> Result<(
             status,
             facts,
         } => {
-            let active_turn = active_turn_mut(state, *run_id, *turn_id)?;
-            if active_turn.status != TurnStatus::GenerationPending {
-                return Err(DomainError::InvariantViolation(
-                    "generation can only complete from pending state".into(),
-                ));
+            {
+                let active_turn = active_turn_mut(state, *run_id, *turn_id)?;
+                if active_turn.status != TurnStatus::GenerationPending {
+                    return Err(DomainError::InvariantViolation(
+                        "generation can only complete from pending state".into(),
+                    ));
+                }
+                if active_turn.facts.is_some() || active_turn.generation_status.is_some() {
+                    return Err(DomainError::InvariantViolation(
+                        "turn already has a generation result".into(),
+                    ));
+                }
+                active_turn.generation_status = Some(status.clone());
+                active_turn.facts = Some(facts.clone());
+                active_turn.status = TurnStatus::GenerationSettled;
             }
-            if active_turn.facts.is_some() || active_turn.generation_status.is_some() {
-                return Err(DomainError::InvariantViolation(
-                    "turn already has a generation result".into(),
-                ));
+            if let Some(usage) = facts.usage.as_ref() {
+                let run = crate::core::components::run::active_run_mut(state, *run_id)?;
+                accumulate_usage(&mut run.usage, usage);
             }
-            active_turn.generation_status = Some(status.clone());
-            active_turn.facts = Some(facts.clone());
-            active_turn.status = TurnStatus::GenerationSettled;
             Ok(())
         }
         Event::Completed { turn_id, outcome } => {
@@ -432,7 +441,8 @@ pub(crate) fn apply_event(state: &mut CoreAgentState, event: &Event) -> Result<(
             turn.status = match outcome {
                 TurnOutcome::FinalOutput { .. }
                 | TurnOutcome::ToolCallsQueued
-                | TurnOutcome::ContextUpdateRequired => TurnStatus::Completed,
+                | TurnOutcome::ContextUpdateRequired
+                | TurnOutcome::ApprovalsRequested => TurnStatus::Completed,
                 TurnOutcome::Failed { .. } => TurnStatus::Failed,
                 TurnOutcome::Cancelled => TurnStatus::Cancelled,
             };
@@ -470,6 +480,36 @@ pub(crate) fn apply_event(state: &mut CoreAgentState, event: &Event) -> Result<(
     }
 }
 
+fn accumulate_usage(total: &mut Option<LlmUsage>, usage: &LlmUsage) {
+    fn add(target: &mut Option<u32>, value: Option<u32>) {
+        if let Some(value) = value {
+            *target = Some(target.unwrap_or(0).saturating_add(value));
+        }
+    }
+    let total = total.get_or_insert_with(|| LlmUsage {
+        input_tokens: None,
+        output_tokens: None,
+        reasoning_tokens: None,
+        total_tokens: None,
+        cached_input_tokens: None,
+        cache_write_input_tokens: None,
+        cache_miss_input_tokens: None,
+    });
+    add(&mut total.input_tokens, usage.input_tokens);
+    add(&mut total.output_tokens, usage.output_tokens);
+    add(&mut total.reasoning_tokens, usage.reasoning_tokens);
+    add(&mut total.total_tokens, usage.total_tokens);
+    add(&mut total.cached_input_tokens, usage.cached_input_tokens);
+    add(
+        &mut total.cache_write_input_tokens,
+        usage.cache_write_input_tokens,
+    );
+    add(
+        &mut total.cache_miss_input_tokens,
+        usage.cache_miss_input_tokens,
+    );
+}
+
 fn active_turn_mut(
     state: &mut CoreAgentState,
     run_id: RunId,
@@ -502,7 +542,11 @@ fn validate_outcome_for_generation(
                 matches!(outcome, TurnOutcome::Failed { .. })
             }
             LlmFinish::Stop | LlmFinish::Unknown => {
-                matches!(outcome, TurnOutcome::FinalOutput { .. })
+                if facts.approval_requests.is_empty() {
+                    matches!(outcome, TurnOutcome::FinalOutput { .. })
+                } else {
+                    matches!(outcome, TurnOutcome::ApprovalsRequested)
+                }
             }
         },
     };

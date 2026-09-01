@@ -13,8 +13,7 @@ use std::collections::{BTreeMap, HashSet};
 use api::{
     AgentApiError, AgentApiErrorKind, AgentApiService as _, BotEventDocument, BotEventMedia,
     BotEventOutcome, BotTriggerKind, BotTriggerSpec, ChannelAccountId, ChannelProvider, ChatScope,
-    ContextEntryKindView, ContextMessageRoleView, RunView, SessionReadParams, ToolItemStatus,
-    WorkflowEndpointInput,
+    ContextEntryKindView, ContextMessageRoleView, RunView, ToolItemStatus, WorkflowEndpointInput,
 };
 use bots::{
     BotError, BotEventStore, BotRecord, BotRefusalCode, BotStore, BotTriggerRecord,
@@ -258,9 +257,49 @@ pub fn run_used_messaging_tool(run: &RunView) -> bool {
     answered_in_entries || answered_in_batches
 }
 
+/// The run's assistant messages with truncated inline bodies re-read from
+/// CAS, trimmed and joined; `None` when the run wrote nothing. Projected
+/// entry text is a bounded prefix, and the outbound channel message must be
+/// the complete reply.
+async fn full_assistant_text(
+    blobs: &dyn BlobStore,
+    run: &RunView,
+) -> Result<Option<String>, ActivityError> {
+    let mut texts: Vec<String> = Vec::new();
+    for entry in &run.entries {
+        if !matches!(
+            entry.kind,
+            ContextEntryKindView::Message {
+                role: ContextMessageRoleView::Assistant
+            }
+        ) {
+            continue;
+        }
+        let text = if entry.text_truncated {
+            let blob_ref = parse_blob_ref(&entry.content_ref)?;
+            Some(
+                blobs
+                    .read_text(&blob_ref)
+                    .await
+                    .map_err(|error| blob_error("read assistant output", error))?,
+            )
+        } else {
+            entry.text.clone()
+        };
+        if let Some(text) = text {
+            let text = text.trim();
+            if !text.is_empty() {
+                texts.push(text.to_owned());
+            }
+        }
+    }
+    Ok((!texts.is_empty()).then(|| texts.join("\n\n")))
+}
+
 /// The run's assistant messages, trimmed and joined; `None` when it wrote
 /// nothing.
-pub fn assistant_text(run: &RunView) -> Option<String> {
+#[cfg(test)]
+fn assistant_text(run: &RunView) -> Option<String> {
     let texts: Vec<&str> = run
         .entries
         .iter()
@@ -281,7 +320,8 @@ pub fn assistant_text(run: &RunView) -> Option<String> {
 /// The reconciliation over the session's runs: suppress when the run
 /// answered through a `message_*` tool, otherwise deliver its text (or the
 /// canned line when it wrote nothing, including when the run is unknown).
-pub fn reconcile_runs(runs: &[RunView], run_id: &str) -> ChatReconcileDeliveryResult {
+#[cfg(test)]
+fn reconcile_runs(runs: &[RunView], run_id: &str) -> ChatReconcileDeliveryResult {
     let run = runs.iter().find(|run| run.id == run_id);
     if run.is_some_and(run_used_messaging_tool) {
         return ChatReconcileDeliveryResult::Suppress {
@@ -309,15 +349,35 @@ pub async fn reconcile_delivery(
             reason: ChatSuppressReason::NoRun,
         });
     };
-    let session = api
-        .read_session(SessionReadParams {
+    let run = match api
+        .read_run(api::RunReadParams {
             session_id: request.session_id,
+            run_id: run_id.clone(),
         })
         .await
-        .map_err(|error| api_error("read session", error))?
-        .result
-        .session;
-    Ok(reconcile_runs(&session.runs, &run_id))
+    {
+        Ok(response) => Some(response.result.run),
+        // The run is no longer resolvable (session pruned or force-closed
+        // between trigger and reconcile): deliver the canned line instead of
+        // wedging the delivery workflow on a permanent error.
+        Err(error) if error.kind == AgentApiErrorKind::NotFound => None,
+        Err(error) => return Err(api_error("read run", error)),
+    };
+    let Some(run) = run else {
+        return Ok(ChatReconcileDeliveryResult::Deliver {
+            text: NO_REPLY_TEXT.to_owned(),
+        });
+    };
+    if run_used_messaging_tool(&run) {
+        return Ok(ChatReconcileDeliveryResult::Suppress {
+            reason: ChatSuppressReason::MessagingTool,
+        });
+    }
+    Ok(ChatReconcileDeliveryResult::Deliver {
+        text: full_assistant_text(blob_store(api), &run)
+            .await?
+            .unwrap_or_else(|| NO_REPLY_TEXT.to_owned()),
+    })
 }
 
 // ── Event documents ─────────────────────────────────────────────────────────
@@ -1305,6 +1365,26 @@ mod tests {
                 text: NO_REPLY_TEXT.to_owned()
             }
         );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_truncated_assistant_entry_is_delivered_from_its_blob() {
+        use engine::storage::InMemoryBlobStore;
+        let blobs = InMemoryBlobStore::new();
+        let full_text = "long reply ".repeat(1_000);
+        let blob_ref = blobs
+            .put_bytes(full_text.clone().into_bytes())
+            .await
+            .expect("store reply");
+        let mut entry = message_entry("assistant", "long reply \u{2026}");
+        entry["contentRef"] = json!(blob_ref.as_str());
+        entry["textTruncated"] = json!(true);
+        let run = run(json!([entry]), json!([]));
+        let text = full_assistant_text(&blobs, &run)
+            .await
+            .expect("resolve truncated entry")
+            .expect("assistant text");
+        assert_eq!(text, full_text.trim());
     }
 
     #[test]

@@ -238,6 +238,17 @@ export function applyEvents(
         // nothing to fold yet beyond the revision bump for the page.
         next.runRevision += 1;
         break;
+      case "approvalRequested":
+        next.runRevision += 1;
+        break;
+      case "approvalRunParked":
+        setRunLabel(next, "approval required");
+        next.runRevision += 1;
+        break;
+      case "approvalDecided":
+      case "approvalCancelled":
+        next.runRevision += 1;
+        break;
       case "turnStarted":
         setRunLabel(next, "planning");
         break;
@@ -446,11 +457,14 @@ export function reconcileRuns(
         }
         break;
       case "running":
+      case "parked":
       case "cancelling":
         if (phase === undefined || phase === "queued") {
           startRun(next, runId);
           if (run.status === "cancelling" && next.activeRun?.runId === runId) {
             next.activeRun = { ...next.activeRun, label: "cancelling", cancelling: true };
+          } else if (run.status === "parked" && next.activeRun?.runId === runId) {
+            next.activeRun = { ...next.activeRun, label: "approval required" };
           }
           changed = true;
         } else if (
@@ -459,6 +473,13 @@ export function reconcileRuns(
           !next.activeRun.cancelling
         ) {
           next.activeRun = { ...next.activeRun, label: "cancelling", cancelling: true };
+          changed = true;
+        } else if (
+          run.status === "parked" &&
+          next.activeRun?.runId === runId &&
+          next.activeRun.label !== "approval required"
+        ) {
+          next.activeRun = { ...next.activeRun, label: "approval required" };
           changed = true;
         }
         break;

@@ -133,7 +133,7 @@ impl PromiseIdAllocator {
 pub enum PromiseSource {
     /// A durable timer owned by the session workflow.
     Timer { fire_at_ms: u64 },
-    /// One keyed completion promise of a workflow-tool invocation (P100b).
+    /// One keyed completion promise of a workflow-tool invocation.
     /// `producer` is the only workflow authorized to resolve it: the
     /// admitted bound receiver, or the system-derived started execution.
     /// Whether cancellation targets a shared receiver or an owned execution

@@ -479,33 +479,8 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
           "additionalProperties": {
             "not": {}
           },
-          "description": "A linked catalog server with optional per-session overrides; absent\nfields defer to the catalog record's defaults.",
+          "description": "A selected universe MCP server. Its catalog record owns all connection and\nbehavior configuration.",
           "properties": {
-            "allowedTools": {
-              "items": {
-                "type": "string"
-              },
-              "type": [
-                "array",
-                "null"
-              ]
-            },
-            "approval": {
-              "anyOf": [
-                {
-                  "$ref": "#/definitions/RemoteMcpApprovalPolicy"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "deferLoading": {
-              "type": [
-                "boolean",
-                "null"
-              ]
-            },
             "serverId": {
               "type": "string"
             }
@@ -570,7 +545,7 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
               "additionalProperties": {
                 "not": {}
               },
-              "description": "Activate the delegating parent's active environment (sub-agents,\nP134). Resolved at spawn, shared not copied, never closed by the\nchild; rejected on a session without a delegation origin or whose\nparent has no active environment.",
+              "description": "Activate the delegating parent's active environment. Resolved at\nsub-agent spawn, shared not copied, never closed by the\nchild; rejected on a session without a delegation origin or whose\nparent has no active environment.",
               "properties": {
                 "type": {
                   "const": "inherit",
@@ -589,7 +564,7 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
               "description": "Provision one environment for the session from the universe's enabled\nbinding for `providerId`, then activate it. The provision request id\nis derived from the session id, so retries and repeated applies\nconverge on the same environment.",
               "properties": {
                 "credentials": {
-                  "description": "Credentials bound to the environment right after it is\nprovisioned, before activation (P127 D5): references to universe\ngrants/providers/secrets, never values. They become ordinary\nenvironment credential bindings; the profile is the initial set,\nnot a live sync. Not available for `existing` environments.",
+                  "description": "Credentials bound to the environment right after it is\nprovisioned before activation: references to universe\ngrants/providers/secrets, never values. They become ordinary\nenvironment credential bindings; the profile is the initial set,\nnot a live sync. Not available for `existing` environments.",
                   "items": {
                     "$ref": "#/definitions/ProfileEnvironmentCredential"
                   },
@@ -610,7 +585,7 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                       "type": "null"
                     }
                   ],
-                  "description": "Optional staged idle policy for the provisioned environment\n(P126). Stages the provider cannot realize are skipped."
+                  "description": "Optional staged idle policy for the provisioned environment.\nStages the provider cannot realize are skipped."
                 },
                 "metadata": {
                   "additionalProperties": {
@@ -756,14 +731,6 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
               "type": "object"
             }
           ]
-        },
-        "RemoteMcpApprovalPolicy": {
-          "enum": [
-            "providerDefault",
-            "always",
-            "never"
-          ],
-          "type": "string"
         },
         "SessionConfig": {
           "additionalProperties": {
@@ -1198,12 +1165,21 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
     "name": "lightspeed_session_read",
     "method": "session/read",
     "summary": "Read a session",
-    "description": "Returns the current projected session, including sparse config and revisions, lifecycle/run state, active context, and derived tools.",
+    "description": "Returns current state plus a bounded newest-first run-summary page. Follow nextRunCursor with session/runs/list when hasOlderRuns is true; use session/events/read for the transcript.",
     "paramsType": "SessionReadParams",
     "resultType": "AgentApiOutcome<SessionReadResponse>",
     "inputSchema": {
       "$schema": "http://json-schema.org/draft-07/schema#",
       "properties": {
+        "runLimit": {
+          "description": "Newest run summaries to include. Values above the server maximum are\nclamped.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "sessionId": {
           "type": "string"
         }
@@ -1578,33 +1554,8 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
           "additionalProperties": {
             "not": {}
           },
-          "description": "A linked catalog server with optional per-session overrides; absent\nfields defer to the catalog record's defaults.",
+          "description": "A selected universe MCP server. Its catalog record owns all connection and\nbehavior configuration.",
           "properties": {
-            "allowedTools": {
-              "items": {
-                "type": "string"
-              },
-              "type": [
-                "array",
-                "null"
-              ]
-            },
-            "approval": {
-              "anyOf": [
-                {
-                  "$ref": "#/definitions/RemoteMcpApprovalPolicy"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "deferLoading": {
-              "type": [
-                "boolean",
-                "null"
-              ]
-            },
             "serverId": {
               "type": "string"
             }
@@ -1643,14 +1594,6 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
           "type": "string"
         },
         "ProfileId": {
-          "type": "string"
-        },
-        "RemoteMcpApprovalPolicy": {
-          "enum": [
-            "providerDefault",
-            "always",
-            "never"
-          ],
           "type": "string"
         },
         "SessionConfig": {
@@ -2710,25 +2653,6 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                 "items"
               ],
               "type": "object"
-            },
-            {
-              "properties": {
-                "keys": {
-                  "items": {
-                    "type": "string"
-                  },
-                  "type": "array"
-                },
-                "type": {
-                  "const": "context",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "type",
-                "keys"
-              ],
-              "type": "object"
             }
           ]
         },
@@ -2806,6 +2730,65 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
     }
   },
   {
+    "name": "lightspeed_session_runs_list",
+    "method": "session/runs/list",
+    "summary": "List session runs",
+    "description": "Returns a newest-first keyset page of bounded run summaries projected from current reducer state.",
+    "paramsType": "RunListParams",
+    "resultType": "AgentApiOutcome<RunListResponse>",
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "cursor": {
+          "description": "Exclusive upper run-id bound from a previous page.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "limit": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "sessionId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "sessionId"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "lightspeed_session_runs_read",
+    "method": "session/runs/read",
+    "summary": "Read one session run",
+    "description": "Reads and projects one run from its bounded event interval, paged by event sequence.",
+    "paramsType": "RunReadParams",
+    "resultType": "AgentApiOutcome<RunReadResponse>",
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "runId": {
+          "type": "string"
+        },
+        "sessionId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "sessionId",
+        "runId"
+      ],
+      "type": "object"
+    }
+  },
+  {
     "name": "lightspeed_session_runs_cancel",
     "method": "session/runs/cancel",
     "summary": "Cancel a run",
@@ -2827,6 +2810,67 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
         "runId"
       ],
       "type": "object"
+    }
+  },
+  {
+    "name": "lightspeed_session_runs_approvals_decide",
+    "method": "session/runs/approvals/decide",
+    "summary": "Decide pending run approvals",
+    "description": "Approves or rejects pending MCP tool calls on the named active run. Valid decisions apply independently; the run resumes only after every pending approval has a decision.",
+    "paramsType": "RunApprovalsDecideParams",
+    "resultType": "AgentApiOutcome<RunApprovalsDecideResponse>",
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "decisions": {
+          "items": {
+            "$ref": "#/definitions/ApprovalDecisionInput"
+          },
+          "type": "array"
+        },
+        "runId": {
+          "type": "string"
+        },
+        "sessionId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "sessionId",
+        "runId",
+        "decisions"
+      ],
+      "type": "object",
+      "definitions": {
+        "ApprovalDecisionInput": {
+          "properties": {
+            "approvalId": {
+              "type": "string"
+            },
+            "decision": {
+              "$ref": "#/definitions/ApprovalDecisionKind"
+            },
+            "note": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "approvalId",
+            "decision"
+          ],
+          "type": "object"
+        },
+        "ApprovalDecisionKind": {
+          "enum": [
+            "approve",
+            "reject"
+          ],
+          "type": "string"
+        }
+      }
     }
   },
   {
@@ -3531,33 +3575,8 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
           "additionalProperties": {
             "not": {}
           },
-          "description": "A linked catalog server with optional per-session overrides; absent\nfields defer to the catalog record's defaults.",
+          "description": "A selected universe MCP server. Its catalog record owns all connection and\nbehavior configuration.",
           "properties": {
-            "allowedTools": {
-              "items": {
-                "type": "string"
-              },
-              "type": [
-                "array",
-                "null"
-              ]
-            },
-            "approval": {
-              "anyOf": [
-                {
-                  "$ref": "#/definitions/RemoteMcpApprovalPolicy"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "deferLoading": {
-              "type": [
-                "boolean",
-                "null"
-              ]
-            },
             "serverId": {
               "type": "string"
             }
@@ -3622,7 +3641,7 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
               "additionalProperties": {
                 "not": {}
               },
-              "description": "Activate the delegating parent's active environment (sub-agents,\nP134). Resolved at spawn, shared not copied, never closed by the\nchild; rejected on a session without a delegation origin or whose\nparent has no active environment.",
+              "description": "Activate the delegating parent's active environment. Resolved at\nsub-agent spawn, shared not copied, never closed by the\nchild; rejected on a session without a delegation origin or whose\nparent has no active environment.",
               "properties": {
                 "type": {
                   "const": "inherit",
@@ -3641,7 +3660,7 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
               "description": "Provision one environment for the session from the universe's enabled\nbinding for `providerId`, then activate it. The provision request id\nis derived from the session id, so retries and repeated applies\nconverge on the same environment.",
               "properties": {
                 "credentials": {
-                  "description": "Credentials bound to the environment right after it is\nprovisioned, before activation (P127 D5): references to universe\ngrants/providers/secrets, never values. They become ordinary\nenvironment credential bindings; the profile is the initial set,\nnot a live sync. Not available for `existing` environments.",
+                  "description": "Credentials bound to the environment right after it is\nprovisioned before activation: references to universe\ngrants/providers/secrets, never values. They become ordinary\nenvironment credential bindings; the profile is the initial set,\nnot a live sync. Not available for `existing` environments.",
                   "items": {
                     "$ref": "#/definitions/ProfileEnvironmentCredential"
                   },
@@ -3662,7 +3681,7 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                       "type": "null"
                     }
                   ],
-                  "description": "Optional staged idle policy for the provisioned environment\n(P126). Stages the provider cannot realize are skipped."
+                  "description": "Optional staged idle policy for the provisioned environment.\nStages the provider cannot realize are skipped."
                 },
                 "metadata": {
                   "additionalProperties": {
@@ -3808,14 +3827,6 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
               "type": "object"
             }
           ]
-        },
-        "RemoteMcpApprovalPolicy": {
-          "enum": [
-            "providerDefault",
-            "always",
-            "never"
-          ],
-          "type": "string"
         },
         "SessionConfig": {
           "additionalProperties": {
@@ -4587,12 +4598,12 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
             },
             {
               "const": "paused",
-              "description": "Execution frozen (P126); wakes on next use.",
+              "description": "Execution frozen; wakes on next use.",
               "type": "string"
             },
             {
               "const": "suspended",
-              "description": "Execution state saved to disk (P126); wakes on next use.",
+              "description": "Execution state saved to disk; wakes on next use.",
               "type": "string"
             },
             {
@@ -4771,7 +4782,7 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
       "type": "object",
       "definitions": {
         "EnvironmentPowerStateView": {
-          "description": "Steady power state of a provisioned environment (P126).",
+          "description": "Steady power state of a provisioned environment.",
           "oneOf": [
             {
               "enum": [
@@ -5416,33 +5427,8 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
           "additionalProperties": {
             "not": {}
           },
-          "description": "A linked catalog server with optional per-session overrides; absent\nfields defer to the catalog record's defaults.",
+          "description": "A selected universe MCP server. Its catalog record owns all connection and\nbehavior configuration.",
           "properties": {
-            "allowedTools": {
-              "items": {
-                "type": "string"
-              },
-              "type": [
-                "array",
-                "null"
-              ]
-            },
-            "approval": {
-              "anyOf": [
-                {
-                  "$ref": "#/definitions/RemoteMcpApprovalPolicy"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "deferLoading": {
-              "type": [
-                "boolean",
-                "null"
-              ]
-            },
             "serverId": {
               "type": "string"
             }
@@ -5507,7 +5493,7 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
               "additionalProperties": {
                 "not": {}
               },
-              "description": "Activate the delegating parent's active environment (sub-agents,\nP134). Resolved at spawn, shared not copied, never closed by the\nchild; rejected on a session without a delegation origin or whose\nparent has no active environment.",
+              "description": "Activate the delegating parent's active environment. Resolved at\nsub-agent spawn, shared not copied, never closed by the\nchild; rejected on a session without a delegation origin or whose\nparent has no active environment.",
               "properties": {
                 "type": {
                   "const": "inherit",
@@ -5526,7 +5512,7 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
               "description": "Provision one environment for the session from the universe's enabled\nbinding for `providerId`, then activate it. The provision request id\nis derived from the session id, so retries and repeated applies\nconverge on the same environment.",
               "properties": {
                 "credentials": {
-                  "description": "Credentials bound to the environment right after it is\nprovisioned, before activation (P127 D5): references to universe\ngrants/providers/secrets, never values. They become ordinary\nenvironment credential bindings; the profile is the initial set,\nnot a live sync. Not available for `existing` environments.",
+                  "description": "Credentials bound to the environment right after it is\nprovisioned before activation: references to universe\ngrants/providers/secrets, never values. They become ordinary\nenvironment credential bindings; the profile is the initial set,\nnot a live sync. Not available for `existing` environments.",
                   "items": {
                     "$ref": "#/definitions/ProfileEnvironmentCredential"
                   },
@@ -5547,7 +5533,7 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                       "type": "null"
                     }
                   ],
-                  "description": "Optional staged idle policy for the provisioned environment\n(P126). Stages the provider cannot realize are skipped."
+                  "description": "Optional staged idle policy for the provisioned environment.\nStages the provider cannot realize are skipped."
                 },
                 "metadata": {
                   "additionalProperties": {
@@ -5657,14 +5643,6 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
               "type": "object"
             }
           ]
-        },
-        "RemoteMcpApprovalPolicy": {
-          "enum": [
-            "providerDefault",
-            "always",
-            "never"
-          ],
-          "type": "string"
         },
         "SessionConfig": {
           "additionalProperties": {
@@ -6592,33 +6570,8 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
           "additionalProperties": {
             "not": {}
           },
-          "description": "A linked catalog server with optional per-session overrides; absent\nfields defer to the catalog record's defaults.",
+          "description": "A selected universe MCP server. Its catalog record owns all connection and\nbehavior configuration.",
           "properties": {
-            "allowedTools": {
-              "items": {
-                "type": "string"
-              },
-              "type": [
-                "array",
-                "null"
-              ]
-            },
-            "approval": {
-              "anyOf": [
-                {
-                  "$ref": "#/definitions/RemoteMcpApprovalPolicy"
-                },
-                {
-                  "type": "null"
-                }
-              ]
-            },
-            "deferLoading": {
-              "type": [
-                "boolean",
-                "null"
-              ]
-            },
             "serverId": {
               "type": "string"
             }
@@ -6683,7 +6636,7 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
               "additionalProperties": {
                 "not": {}
               },
-              "description": "Activate the delegating parent's active environment (sub-agents,\nP134). Resolved at spawn, shared not copied, never closed by the\nchild; rejected on a session without a delegation origin or whose\nparent has no active environment.",
+              "description": "Activate the delegating parent's active environment. Resolved at\nsub-agent spawn, shared not copied, never closed by the\nchild; rejected on a session without a delegation origin or whose\nparent has no active environment.",
               "properties": {
                 "type": {
                   "const": "inherit",
@@ -6702,7 +6655,7 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
               "description": "Provision one environment for the session from the universe's enabled\nbinding for `providerId`, then activate it. The provision request id\nis derived from the session id, so retries and repeated applies\nconverge on the same environment.",
               "properties": {
                 "credentials": {
-                  "description": "Credentials bound to the environment right after it is\nprovisioned, before activation (P127 D5): references to universe\ngrants/providers/secrets, never values. They become ordinary\nenvironment credential bindings; the profile is the initial set,\nnot a live sync. Not available for `existing` environments.",
+                  "description": "Credentials bound to the environment right after it is\nprovisioned before activation: references to universe\ngrants/providers/secrets, never values. They become ordinary\nenvironment credential bindings; the profile is the initial set,\nnot a live sync. Not available for `existing` environments.",
                   "items": {
                     "$ref": "#/definitions/ProfileEnvironmentCredential"
                   },
@@ -6723,7 +6676,7 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                       "type": "null"
                     }
                   ],
-                  "description": "Optional staged idle policy for the provisioned environment\n(P126). Stages the provider cannot realize are skipped."
+                  "description": "Optional staged idle policy for the provisioned environment.\nStages the provider cannot realize are skipped."
                 },
                 "metadata": {
                   "additionalProperties": {
@@ -6833,14 +6786,6 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
               "type": "object"
             }
           ]
-        },
-        "RemoteMcpApprovalPolicy": {
-          "enum": [
-            "providerDefault",
-            "always",
-            "never"
-          ],
-          "type": "string"
         },
         "SessionConfig": {
           "additionalProperties": {
@@ -7693,8 +7638,15 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
           ]
         },
         "McpServerInput": {
+          "additionalProperties": {
+            "not": {}
+          },
           "description": "Full MCP server document as submitted by clients.",
           "properties": {
+            "allowPrivateNetwork": {
+              "default": false,
+              "type": "boolean"
+            },
             "allowedTools": {
               "items": {
                 "type": "string"
@@ -7753,6 +7705,22 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                 "null"
               ]
             },
+            "execution": {
+              "allOf": [
+                {
+                  "$ref": "#/definitions/RemoteMcpExecution"
+                }
+              ],
+              "default": "provider"
+            },
+            "exposure": {
+              "allOf": [
+                {
+                  "$ref": "#/definitions/RemoteMcpExposure"
+                }
+              ],
+              "default": "inject"
+            },
             "serverId": {
               "type": "string"
             },
@@ -7766,14 +7734,6 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                 }
               ],
               "default": "active"
-            },
-            "transport": {
-              "allOf": [
-                {
-                  "$ref": "#/definitions/RemoteMcpTransport"
-                }
-              ],
-              "default": "auto"
             }
           },
           "required": [
@@ -7794,17 +7754,22 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
         },
         "RemoteMcpApprovalPolicy": {
           "enum": [
-            "providerDefault",
-            "always",
-            "never"
+            "never",
+            "always"
           ],
           "type": "string"
         },
-        "RemoteMcpTransport": {
+        "RemoteMcpExecution": {
           "enum": [
-            "streamableHttp",
-            "sse",
-            "auto"
+            "provider",
+            "native"
+          ],
+          "type": "string"
+        },
+        "RemoteMcpExposure": {
+          "enum": [
+            "inject",
+            "search"
           ],
           "type": "string"
         }
@@ -7828,6 +7793,30 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
       },
       "required": [
         "serverUrl"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "lightspeed_mcp_servers_tools_discover",
+    "method": "mcp/servers/tools/discover",
+    "summary": "Discover MCP server tools",
+    "description": "Connects directly to the configured MCP server with its current universe credential and returns one bounded live tools/list result. The inventory is never persisted or cached and no tool is invoked.",
+    "paramsType": "McpServerToolsDiscoverParams",
+    "resultType": "AgentApiOutcome<McpServerToolsDiscoverResponse>",
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": {
+        "not": {}
+      },
+      "description": "Live, non-persisting tool discovery for a configured MCP server.",
+      "properties": {
+        "serverId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "serverId"
       ],
       "type": "object"
     }
@@ -8085,6 +8074,22 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
         },
         "authorizationEndpoint": {
           "type": "string"
+        },
+        "authorizationResponseIssParameterSupported": {
+          "default": false,
+          "type": "boolean"
+        },
+        "authorizationServerIssuer": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "authorizationServerScopesSupported": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
         },
         "clientId": {
           "type": [

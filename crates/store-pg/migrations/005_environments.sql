@@ -1,4 +1,4 @@
--- P118 environment compute: deployment providers, universe bindings, and
+-- Environment compute: deployment providers, universe bindings, and
 -- durable logical environments with incarnation-scoped physical facts.
 
 CREATE TABLE IF NOT EXISTS environment_providers (

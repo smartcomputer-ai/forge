@@ -7,15 +7,17 @@ pub struct McpServerView {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
     pub server_url: String,
-    pub transport: RemoteMcpTransport,
     pub default_server_label: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub allowed_tools: Option<Vec<String>>,
+    pub execution: RemoteMcpExecution,
+    pub exposure: RemoteMcpExposure,
     pub approval_default: RemoteMcpApprovalPolicy,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub defer_loading_default: Option<bool>,
+    pub allow_private_network: bool,
     pub auth_policy: McpServerAuthPolicy,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub credential: Option<McpServerCredential>,
@@ -41,6 +43,10 @@ pub struct McpOAuthDiscoveryView {
     pub resource: String,
     #[serde(default)]
     pub authorization_servers: Vec<String>,
+    /// Scopes advertised by current protected-resource/authorization-server
+    /// metadata. Advisory only; clients must not silently expand consent.
+    #[serde(default)]
+    pub scopes_supported: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -50,22 +56,97 @@ pub struct McpServerAuthDiscoverResponse {
     pub oauth: Option<McpOAuthDiscoveryView>,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+/// Live, non-persisting tool discovery for a configured MCP server.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct McpServerToolsDiscoverParams {
+    pub server_id: String,
+}
+
+/// The result of one live MCP `tools/list` exchange. Operational connection
+/// failures are data so management clients can render stable remediation;
+/// ordinary API admission/not-found/internal failures remain API errors.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "status", rename_all = "camelCase")]
+pub enum McpServerToolsDiscoverResponse {
+    Success {
+        tools: Vec<McpAdvertisedToolView>,
+    },
+    Failure {
+        code: McpToolDiscoveryFailureCode,
+        message: String,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        required_scopes: Vec<String>,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
-pub enum RemoteMcpTransport {
-    StreamableHttp,
-    Sse,
-    #[default]
-    Auto,
+pub struct McpAdvertisedToolView {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub annotations: Option<McpToolAnnotationsView>,
+}
+
+/// Narrow projection of standard MCP `ToolAnnotations`. All values are
+/// untrusted hints and never authorization facts.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct McpToolAnnotationsView {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub read_only_hint: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub destructive_hint: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idempotent_hint: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub open_world_hint: Option<bool>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum McpToolDiscoveryFailureCode {
+    CredentialAbsent,
+    GrantNeedsReauth,
+    GrantAudienceMismatch,
+    Unauthorized,
+    Forbidden,
+    AdditionalConsentRequired,
+    RemoteRateLimited,
+    RemoteFailure,
+    Unreachable,
+    InvalidResponse,
+    UnsupportedProtocol,
+    PaginationLimit,
+    ResponseTooLarge,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub enum RemoteMcpApprovalPolicy {
-    ProviderDefault,
-    Always,
     #[default]
     Never,
+    Always,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum RemoteMcpExecution {
+    #[default]
+    Provider,
+    Native,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum RemoteMcpExposure {
+    #[default]
+    Inject,
+    Search,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -119,23 +200,27 @@ pub enum McpServerStatus {
 
 /// Full MCP server document as submitted by clients.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct McpServerInput {
     pub server_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
     pub server_url: String,
-    #[serde(default)]
-    pub transport: RemoteMcpTransport,
     pub default_server_label: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub allowed_tools: Option<Vec<String>>,
     #[serde(default)]
+    pub execution: RemoteMcpExecution,
+    #[serde(default)]
+    pub exposure: RemoteMcpExposure,
+    #[serde(default)]
     pub approval_default: RemoteMcpApprovalPolicy,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub defer_loading_default: Option<bool>,
+    #[serde(default)]
+    pub allow_private_network: bool,
     #[serde(default)]
     pub auth_policy: McpServerAuthPolicy,
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -34,17 +34,18 @@ use api::{
     METHOD_MCP_SERVERS_READ, METHOD_PROFILES_DELETE, METHOD_PROFILES_LIST, METHOD_PROFILES_PUT,
     METHOD_PROFILES_READ, METHOD_SESSION_CONFIG_PUT, METHOD_SESSION_ENVIRONMENTS_ACTIVATE,
     METHOD_SESSION_ENVIRONMENTS_DEACTIVATE, METHOD_SESSION_EVENTS_READ, METHOD_SESSION_LIST,
-    METHOD_SESSION_PROFILES_APPLY, METHOD_SESSION_READ, METHOD_SESSION_RUNS_CANCEL,
-    METHOD_SESSION_RUNS_START, METHOD_SESSION_RUNS_STEER, METHOD_SESSION_SKILLS_ACTIVATE,
-    METHOD_SESSION_SKILLS_ACTIVE, METHOD_SESSION_SKILLS_DEACTIVATE, METHOD_SESSION_SKILLS_LIST,
-    METHOD_SESSION_START, METHOD_VFS_SNAPSHOTS_COMMIT, METHOD_VFS_SNAPSHOTS_READ,
-    METHOD_VFS_WORKSPACES_CREATE, METHOD_VFS_WORKSPACES_DELETE, METHOD_VFS_WORKSPACES_LIST,
-    METHOD_VFS_WORKSPACES_READ, METHOD_VFS_WORKSPACES_UPDATE, McpServerDeleteParams,
-    McpServerDeleteResponse, McpServerListParams, McpServerListResponse, McpServerPutParams,
-    McpServerPutResponse, McpServerReadParams, McpServerReadResponse, ProfileApplyParams,
-    ProfileApplyResponse, ProfileDeleteParams, ProfileDeleteResponse, ProfileListParams,
-    ProfileListResponse, ProfilePutParams, ProfilePutResponse, ProfileReadParams,
-    ProfileReadResponse, RequestId, RunCancelParams, RunCancelResponse, RunStartParams,
+    METHOD_SESSION_PROFILES_APPLY, METHOD_SESSION_READ, METHOD_SESSION_RUNS_APPROVALS_DECIDE,
+    METHOD_SESSION_RUNS_CANCEL, METHOD_SESSION_RUNS_START, METHOD_SESSION_RUNS_STEER,
+    METHOD_SESSION_SKILLS_ACTIVATE, METHOD_SESSION_SKILLS_ACTIVE, METHOD_SESSION_SKILLS_DEACTIVATE,
+    METHOD_SESSION_SKILLS_LIST, METHOD_SESSION_START, METHOD_VFS_SNAPSHOTS_COMMIT,
+    METHOD_VFS_SNAPSHOTS_READ, METHOD_VFS_WORKSPACES_CREATE, METHOD_VFS_WORKSPACES_DELETE,
+    METHOD_VFS_WORKSPACES_LIST, METHOD_VFS_WORKSPACES_READ, METHOD_VFS_WORKSPACES_UPDATE,
+    McpServerDeleteParams, McpServerDeleteResponse, McpServerListParams, McpServerListResponse,
+    McpServerPutParams, McpServerPutResponse, McpServerReadParams, McpServerReadResponse,
+    ProfileApplyParams, ProfileApplyResponse, ProfileDeleteParams, ProfileDeleteResponse,
+    ProfileListParams, ProfileListResponse, ProfilePutParams, ProfilePutResponse,
+    ProfileReadParams, ProfileReadResponse, RequestId, RunApprovalsDecideParams,
+    RunApprovalsDecideResponse, RunCancelParams, RunCancelResponse, RunStartParams,
     RunStartResponse, RunSteerParams, RunSteerResponse, SessionConfigPutParams,
     SessionConfigPutResponse, SessionEnvironmentActivateParams, SessionEnvironmentActivateResponse,
     SessionEnvironmentDeactivateParams, SessionEnvironmentDeactivateResponse,
@@ -118,12 +119,19 @@ impl HttpAgentApi {
             {
                 self.read_session(SessionReadParams {
                     session_id: params.session_id.expect("checked session id present"),
+                    run_limit: None,
                 })
                 .await
                 .map(|outcome| {
                     AgentApiOutcome::with_notifications(
                         SessionStartResponse {
-                            session: outcome.result.session,
+                            session: api::SessionMutationView {
+                                id: outcome.result.session.id,
+                                status: outcome.result.session.status,
+                                head_cursor: None,
+                                config_revision: outcome.result.session.config_revision,
+                                context_revision: outcome.result.session.active_context.revision,
+                            },
                         },
                         outcome.notifications,
                     )
@@ -208,6 +216,14 @@ impl HttpAgentApi {
         params: RunCancelParams,
     ) -> Result<AgentApiOutcome<RunCancelResponse>, AgentApiError> {
         self.request(METHOD_SESSION_RUNS_CANCEL, params).await
+    }
+
+    pub(crate) async fn decide_run_approvals(
+        &self,
+        params: RunApprovalsDecideParams,
+    ) -> Result<AgentApiOutcome<RunApprovalsDecideResponse>, AgentApiError> {
+        self.request(METHOD_SESSION_RUNS_APPROVALS_DECIDE, params)
+            .await
     }
 
     pub(crate) async fn steer_run(

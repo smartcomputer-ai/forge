@@ -166,42 +166,6 @@ describe("LightspeedClient", () => {
     });
   });
 
-  it("can start runs from context keys", async () => {
-    const bodies: Record<string, unknown>[] = [];
-    const fetchImpl = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
-      bodies.push(decodeBody(init));
-      return jsonResponse({
-        id: bodies.length,
-        result: {
-          result: {
-            run: {
-              id: "run_1",
-              status: "queued",
-              source: { type: "input", items: [] },
-              entries: [],
-              toolBatches: [],
-            },
-          },
-          notifications: [],
-        },
-      });
-    }) as unknown as typeof fetch;
-    const client = new LightspeedClient({ endpoint: "http://lightspeed.local/rpc", fetch: fetchImpl });
-
-    await client.startRunFromContext("session_1", ["channel.telegram.msg.1.text"], {
-      submissionId: "sub_context",
-    });
-
-    expect(bodies[0]?.params).toMatchObject({
-      sessionId: "session_1",
-      source: {
-        type: "context",
-        keys: ["channel.telegram.msg.1.text"],
-      },
-      submissionId: "sub_context",
-    });
-  });
-
   it("awaitRun resumes from cursors until the requested run reaches a terminal event", async () => {
     const requests: Record<string, unknown>[] = [];
     const terminalEvent: SessionEventView = {

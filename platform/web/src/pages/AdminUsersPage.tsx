@@ -1,7 +1,7 @@
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Plus } from "lucide-react";
-import { authClient } from "@/auth";
+import { Pencil, Plus } from "lucide-react";
+import { authClient, type SessionUser } from "@/auth";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -12,7 +12,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Field, FieldLabel } from "@/components/ui/field";
+import { Field, FieldDescription, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import {
   Select,
@@ -26,6 +26,7 @@ import {
   TableBody,
   TableCard,
   TableCell,
+  TableActionsCell,
   TableHead,
   TableHeader,
   TableRow,
@@ -40,7 +41,7 @@ interface UserRow {
   createdAt?: string | Date;
 }
 
-export function AdminUsersPage() {
+export function AdminUsersPage({ currentUser }: { currentUser: SessionUser }) {
   const users = useQuery({
     queryKey: ["admin", "users"],
     queryFn: async () => {
@@ -55,6 +56,7 @@ export function AdminUsersPage() {
   });
 
   const [createOpen, setCreateOpen] = useState(false);
+  const [editing, setEditing] = useState<UserRow | null>(null);
 
   return (
     <>
@@ -69,6 +71,13 @@ export function AdminUsersPage() {
         }
       />
       <CreateUserDialog open={createOpen} onOpenChange={setCreateOpen} />
+      <EditUserDialog
+        user={editing}
+        currentUserId={currentUser.id}
+        onOpenChange={(open) => {
+          if (!open) setEditing(null);
+        }}
+      />
       {users.isLoading && <LoadingNote />}
       {users.error && <p className="text-sm text-destructive">{users.error.message}</p>}
       {users.data && (
@@ -80,6 +89,7 @@ export function AdminUsersPage() {
                 <TableHead>Email</TableHead>
                 <TableHead>Role</TableHead>
                 <TableHead>Created</TableHead>
+                <TableHead className="w-0" />
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -99,6 +109,16 @@ export function AdminUsersPage() {
                       ? new Date(user.createdAt).toLocaleDateString()
                       : "—"}
                   </TableCell>
+                  <TableActionsCell>
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
+                      aria-label={`Edit ${user.email}`}
+                      onClick={() => setEditing(user)}
+                    >
+                      <Pencil />
+                    </Button>
+                  </TableActionsCell>
                 </TableRow>
               ))}
             </TableBody>
@@ -106,6 +126,237 @@ export function AdminUsersPage() {
         </TableCard>
       )}
     </>
+  );
+}
+
+function EditUserDialog({
+  user,
+  currentUserId,
+  onOpenChange,
+}: {
+  user: UserRow | null;
+  currentUserId: string;
+  onOpenChange: (open: boolean) => void;
+}) {
+  const queryClient = useQueryClient();
+  const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
+  const [role, setRole] = useState("user");
+  const [password, setPassword] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [error, setError] = useState<string | null>(null);
+
+  const open = user !== null;
+  const isCurrentUser = user?.id === currentUserId;
+
+  useEffect(() => {
+    if (!user) return;
+    setName(user.name);
+    setEmail(user.email);
+    setRole(user.role?.split(",").includes("admin") ? "admin" : "user");
+    setPassword("");
+    setConfirm("");
+    setError(null);
+  }, [user]);
+
+  const reset = () => {
+    setName("");
+    setEmail("");
+    setRole("user");
+    setPassword("");
+    setConfirm("");
+    setError(null);
+  };
+
+  const close = () => {
+    onOpenChange(false);
+    reset();
+  };
+
+  const edit = useMutation({
+    mutationFn: async () => {
+      if (!user) return;
+
+      const data: Record<string, unknown> = {};
+      const nextName = name.trim();
+      const nextEmail = email.trim().toLowerCase();
+      const currentRole = user.role?.split(",").includes("admin") ? "admin" : "user";
+      if (nextName !== user.name) data.name = nextName;
+      if (nextEmail !== user.email.toLowerCase()) {
+        data.email = nextEmail;
+        // Platform accounts are provisioned and maintained by a trusted admin.
+        data.emailVerified = true;
+      }
+      if (!isCurrentUser && role !== currentRole) data.role = role;
+
+      if (Object.keys(data).length > 0) {
+        const result = await authClient.admin.updateUser({ userId: user.id, data });
+        if (result.error) {
+          throw new Error(result.error.message ?? "failed to update user");
+        }
+      }
+
+      if (password) {
+        const result = await authClient.admin.setUserPassword({
+          userId: user.id,
+          newPassword: password,
+        });
+        if (result.error) {
+          throw new Error(result.error.message ?? "failed to set password");
+        }
+        const revoked = await authClient.admin.revokeUserSessions({ userId: user.id });
+        if (revoked.error) {
+          throw new Error(
+            `Password changed, but sessions could not be signed out: ${revoked.error.message ?? "unknown error"}`,
+          );
+        }
+      }
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["admin", "users"] });
+      const signedOutSelf = isCurrentUser && Boolean(password);
+      const refreshedSelf = isCurrentUser && hasProfileChanges;
+      close();
+      if (signedOutSelf) {
+        window.location.assign("/login");
+      } else if (refreshedSelf) {
+        window.location.reload();
+      }
+    },
+    onError: (err) => setError(err.message),
+  });
+
+  const currentRole = user?.role?.split(",").includes("admin") ? "admin" : "user";
+  const hasProfileChanges = Boolean(
+    user &&
+      (name.trim() !== user.name ||
+        email.trim().toLowerCase() !== user.email.toLowerCase() ||
+        (!isCurrentUser && role !== currentRole)),
+  );
+  const hasChanges = hasProfileChanges || Boolean(password);
+
+  const submit = (event: FormEvent) => {
+    event.preventDefault();
+    setError(null);
+    if (password !== confirm) {
+      setError("New passwords do not match.");
+      return;
+    }
+    edit.mutate();
+  };
+
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={(next) => {
+        if (!next) close();
+      }}
+    >
+      <DialogContent className="max-h-[min(92dvh,800px)] overflow-y-auto sm:max-w-lg">
+        <DialogHeader>
+          <DialogTitle>Edit user</DialogTitle>
+          <DialogDescription>
+            Update the platform account for {user?.email}. A password reset signs the
+            user out of every session.
+          </DialogDescription>
+        </DialogHeader>
+        <form onSubmit={submit} className="grid gap-5">
+          <div className="grid gap-4">
+            <Field>
+              <FieldLabel htmlFor="edit-user-name">Name</FieldLabel>
+              <Input
+                id="edit-user-name"
+                value={name}
+                onChange={(event) => setName(event.target.value)}
+                required
+                autoFocus
+              />
+            </Field>
+            <Field>
+              <FieldLabel htmlFor="edit-user-email">Email</FieldLabel>
+              <Input
+                id="edit-user-email"
+                type="email"
+                value={email}
+                onChange={(event) => setEmail(event.target.value)}
+                required
+              />
+              <FieldDescription>
+                Admin-managed addresses are treated as verified sign-in addresses.
+              </FieldDescription>
+            </Field>
+            <Field>
+              <FieldLabel htmlFor="edit-user-role">Platform role</FieldLabel>
+              <Select
+                value={role}
+                onValueChange={(value) => setRole(value as string)}
+                disabled={isCurrentUser}
+              >
+                <SelectTrigger id="edit-user-role" className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="user">user</SelectItem>
+                  <SelectItem value="admin">admin</SelectItem>
+                </SelectContent>
+              </Select>
+              {isCurrentUser && (
+                <FieldDescription>
+                  Another platform admin must change your role, preventing accidental
+                  self-lockout.
+                </FieldDescription>
+              )}
+            </Field>
+          </div>
+
+          <div className="grid gap-4 border-t pt-5">
+            <div>
+              <p className="font-medium">Reset password</p>
+              <p className="text-sm text-muted-foreground">
+                Leave these fields empty to keep the current password.
+                {isCurrentUser ? " You will be signed out if you reset your own password." : ""}
+              </p>
+            </div>
+            <Field>
+              <FieldLabel htmlFor="edit-user-password">New password</FieldLabel>
+              <Input
+                id="edit-user-password"
+                type="password"
+                value={password}
+                onChange={(event) => setPassword(event.target.value)}
+                minLength={8}
+                autoComplete="new-password"
+              />
+            </Field>
+            <Field>
+              <FieldLabel htmlFor="edit-user-confirm">Repeat new password</FieldLabel>
+              <Input
+                id="edit-user-confirm"
+                type="password"
+                value={confirm}
+                onChange={(event) => setConfirm(event.target.value)}
+                minLength={8}
+                autoComplete="new-password"
+                required={Boolean(password)}
+              />
+            </Field>
+          </div>
+
+          {error && <p className="text-sm text-destructive">{error}</p>}
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={close}>
+              Cancel
+            </Button>
+            <Button
+              type="submit"
+              disabled={edit.isPending || !hasChanges || !name.trim() || !email.trim()}
+            >
+              {edit.isPending ? "Saving…" : "Save changes"}
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
   );
 }
 

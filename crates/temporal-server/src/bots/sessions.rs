@@ -15,11 +15,10 @@ use api::{
     ContextAppendParams, ContextAppendResponse, ContextAppendStatus, EventCursor,
     InlineAgentProfile, InputItem, ManagedSessionStartParams, ManagedSessionWorkflowToolsInput,
     ProfileApplyParams, ProfileDocument, ProfileInstructions, ProfileSource, RunStartParams,
-    RunStartSource, RunStatus, RunSteerParams, RunTerminalNotificationInput, RunView,
-    SessionCloseParams, SessionEventKindView, SessionEventView, SessionEventsReadParams,
-    SessionLifecycleStatus, SessionListParams, SessionReadParams, SessionRenameParams,
-    SessionStatus, SessionSummaryView, SessionView, WorkflowEndpointInput,
-    WorkflowToolDeclarationInput,
+    RunStartSource, RunStatus, RunSteerParams, RunTerminalNotificationInput, SessionCloseParams,
+    SessionEventKindView, SessionEventView, SessionEventsReadParams, SessionLifecycleStatus,
+    SessionListParams, SessionReadParams, SessionRenameParams, SessionStatus, SessionSummaryView,
+    SessionView, WorkflowEndpointInput, WorkflowToolDeclarationInput,
 };
 use bots::{
     ids::appended_event_context_key,
@@ -119,6 +118,7 @@ async fn read_session_view(
     Ok(api
         .read_session(SessionReadParams {
             session_id: session_id.to_owned(),
+            run_limit: None,
         })
         .await?
         .result
@@ -184,12 +184,14 @@ pub(super) fn session_status_from_view(session: &SessionView) -> BotSessionStatu
     }
 }
 
-/// The run steering can land on: the session's `running` run.
-fn running_run(session: &SessionView) -> Option<&RunView> {
+/// The run steering can land on: the session's `running` run. Read from the
+/// dedicated `active_run` fact, never the paged `runs` window — the newest
+/// page can omit the executing run behind newer queued runs.
+fn running_run(session: &SessionView) -> Option<&api::RunSummaryView> {
     session
-        .runs
-        .iter()
-        .find(|run| run.status == RunStatus::Running)
+        .active_run
+        .as_ref()
+        .filter(|run| run.status == RunStatus::Running)
 }
 
 /// One bound-tool invocation off the session log — every bound tool, not
@@ -802,12 +804,18 @@ pub async fn read_json_blob(
 mod tests {
     use super::*;
     use api::{
-        BoundWorkflowToolDispatchInput, EventJoinsView, RunViewSource, ToolParallelismView,
+        BoundWorkflowToolDispatchInput, EventJoinsView, RunSummarySourceView, ToolParallelismView,
         WorkflowToolCompletionInput, WorkflowToolDefinitionInput, WorkflowToolKindInput,
         WorkflowToolSpecInput, WorkflowToolTargetInput,
     };
 
-    fn session_view(status: SessionStatus, runs: Vec<RunView>) -> SessionView {
+    fn session_view(status: SessionStatus, runs: Vec<api::RunSummaryView>) -> SessionView {
+        // Mirror the projector: the executing run is surfaced as the
+        // dedicated `active_run` fact, independent of the page window.
+        let active_run = runs
+            .iter()
+            .find(|run| matches!(run.status, RunStatus::Running | RunStatus::Parked))
+            .cloned();
         SessionView {
             id: "bot:v1:triage".to_owned(),
             display_name: None,
@@ -818,6 +826,7 @@ mod tests {
             created_at_ms: 0,
             updated_at_ms: 0,
             runs,
+            active_run,
             active_context: Default::default(),
             active_tools: Default::default(),
             active_environment_id: None,
@@ -826,16 +835,20 @@ mod tests {
         }
     }
 
-    fn run_view(id: &str, status: RunStatus) -> RunView {
-        RunView {
+    fn run_view(id: &str, status: RunStatus) -> api::RunSummaryView {
+        api::RunSummaryView {
             id: id.to_owned(),
             status,
+            accepted_at_ms: 0,
             started_at_ms: None,
             completed_at_ms: None,
-            source: RunViewSource::Input { items: Vec::new() },
-            entries: Vec::new(),
-            tool_batches: Vec::new(),
+            source: RunSummarySourceView::Input {
+                content_ref: None,
+                preview: None,
+                preview_truncated: false,
+            },
             usage: None,
+            pending_approvals: Vec::new(),
         }
     }
 

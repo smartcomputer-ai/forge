@@ -45,7 +45,7 @@ const expectedImages = [
   "platformWorkers",
 ];
 if (JSON.stringify(Object.keys(value.images ?? {}).sort()) !== JSON.stringify(expectedImages.sort())) {
-  fail("images must contain the complete P124 artifact set");
+  fail("images must contain the complete runtime artifact set");
 }
 for (const [name, image] of Object.entries(value.images)) {
   if (image !== null && !/@sha256:[0-9a-f]{64}$/.test(image)) fail(`image ${name} is not digest-pinned`);

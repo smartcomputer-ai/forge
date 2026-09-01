@@ -14,16 +14,16 @@ use thiserror::Error;
 pub const AWAIT_TOOL_NAME: &str = "await";
 
 use crate::{
-    AwaitMode, AwaitSpec, BlobRef, CodecError, CommandError, ContextCompactionRequest,
-    ContextCompactionResult, ContextEntryInput, ContextEntryKind, ContextEntrySource, ContextEvent,
-    ContextMessageRole, CoreAgentCodec, CoreAgentEntry, CoreAgentEvent, CoreAgentEventProposal,
-    CoreAgentJoins, CoreAgentState, CoreAgentStatus, DomainError, LlmFinish, LlmGenerationRequest,
-    LlmGenerationResult, LlmGenerationStatus, LlmRequest, PlanningError, PromiseEvent, PromiseId,
-    PromiseOwnership, PromiseStatus, ResumeToolBatchCommand, RunEvent, SessionId, SessionPosition,
-    ToolBatchId, ToolBatchOutcome, ToolBatchResumeOutput, ToolBatchSuspension, ToolCallId,
-    ToolCallResult, ToolCallStatus, ToolEvent, ToolInvocationBatchRequest,
-    ToolInvocationBatchResult, ToolInvocationRequest, ToolInvocationResult, TurnEvent, TurnId,
-    TurnOutcome, WakeReason,
+    ApprovalEvent, ApprovalId, ApprovalRequested, AwaitMode, AwaitSpec, BlobRef, CodecError,
+    CommandError, ContextCompactionRequest, ContextCompactionResult, ContextEntryInput,
+    ContextEntryKind, ContextEntrySource, ContextEvent, ContextMessageRole, CoreAgentCodec,
+    CoreAgentEntry, CoreAgentEvent, CoreAgentEventProposal, CoreAgentJoins, CoreAgentState,
+    CoreAgentStatus, DomainError, LlmFinish, LlmGenerationRequest, LlmGenerationResult,
+    LlmGenerationStatus, LlmRequest, PlanningError, PromiseEvent, PromiseId, PromiseOwnership,
+    PromiseStatus, ResumeToolBatchCommand, RunEvent, SessionId, SessionPosition, ToolBatchId,
+    ToolBatchOutcome, ToolBatchResumeOutput, ToolBatchSuspension, ToolCallId, ToolCallResult,
+    ToolCallStatus, ToolEvent, ToolInvocationBatchRequest, ToolInvocationBatchResult,
+    ToolInvocationRequest, ToolInvocationResult, TurnEvent, TurnId, TurnOutcome, WakeReason,
     core::components::context::context_entries_from_inputs,
     session::{StoredSessionEntry, UncommittedStoredEvent},
 };
@@ -219,6 +219,69 @@ impl CoreAgentDrive {
             results: vec![result],
         };
         self.resume_tool_batch(result, observed_at_ms)
+    }
+
+    pub fn request_native_mcp_approval(
+        &mut self,
+        batch_id: ToolBatchId,
+        call_id: ToolCallId,
+        subject: crate::ApprovalSubject,
+        observed_at_ms: u64,
+    ) -> Result<CoreAgentAction, CoreAgentDriveError> {
+        let active_run = self.state.runs.active.as_ref().ok_or_else(|| {
+            DomainError::InvariantViolation("native MCP approval requires an active run".into())
+        })?;
+        let batch = active_run.tool_batches.get(&batch_id).ok_or_else(|| {
+            DomainError::InvariantViolation(format!("tool batch {batch_id} is missing"))
+        })?;
+        if active_run.active_tool_batch_id != Some(batch_id)
+            || !batch.calls.iter().any(|call| {
+                call.call.call_id == call_id && call.status == crate::ToolCallStatus::Pending
+            })
+        {
+            return Err(DomainError::InvariantViolation(
+                "native MCP approval does not match a pending active call".into(),
+            )
+            .into());
+        }
+        let next = self
+            .state
+            .id_cursors
+            .last_approval_id
+            .checked_add(1)
+            .ok_or_else(|| {
+                DomainError::InvariantViolation("approval id cursor exhausted".into())
+            })?;
+        let approval_id = crate::ApprovalId::new(format!("approval_{next}"));
+        let joins = CoreAgentJoins {
+            run_id: Some(batch.run_id),
+            turn_id: Some(batch.turn_id),
+            tool_batch_id: Some(batch.batch_id),
+            tool_call_id: Some(call_id.clone()),
+            ..CoreAgentJoins::default()
+        };
+        self.append_action(
+            vec![
+                CoreAgentEventProposal::new(
+                    joins.clone(),
+                    CoreAgentEvent::Approval(crate::ApprovalEvent::Requested {
+                        approval: crate::ApprovalRequested {
+                            approval_id,
+                            run_id: batch.run_id,
+                            subject,
+                            continuation: crate::ApprovalContinuation::NativeMcp { call_id },
+                        },
+                    }),
+                ),
+                CoreAgentEventProposal::new(
+                    joins,
+                    CoreAgentEvent::Approval(crate::ApprovalEvent::RunParked {
+                        run_id: batch.run_id,
+                    }),
+                ),
+            ],
+            observed_at_ms,
+        )
     }
 
     pub fn resume_tool_batch_outcome(
@@ -481,6 +544,7 @@ pub fn generation_result_proposals(
     }
     let context_entries = context_entries_from_llm_result(state, &result)?;
     let outcome = turn_outcome_for_generation_result(&result);
+    let approval_requests = result.facts.approval_requests.clone();
     let joins = CoreAgentJoins {
         run_id: Some(result.run_id),
         turn_id: Some(result.turn_id),
@@ -506,6 +570,23 @@ pub fn generation_result_proposals(
             facts: result.facts,
         }),
     ));
+    let mut next_approval_id = state.id_cursors.last_approval_id;
+    for observed in &approval_requests {
+        next_approval_id = next_approval_id.checked_add(1).ok_or_else(|| {
+            DomainError::InvariantViolation("approval id cursor exhausted".to_owned())
+        })?;
+        proposals.push(CoreAgentEventProposal::new(
+            joins.clone(),
+            CoreAgentEvent::Approval(ApprovalEvent::Requested {
+                approval: ApprovalRequested {
+                    approval_id: ApprovalId::new(format!("approval_{next_approval_id}")),
+                    run_id: result.run_id,
+                    subject: observed.subject.clone(),
+                    continuation: observed.continuation.clone(),
+                },
+            }),
+        ));
+    }
     proposals.push(CoreAgentEventProposal::new(
         joins,
         CoreAgentEvent::Turn(TurnEvent::Completed {
@@ -536,6 +617,9 @@ fn turn_outcome_for_generation_result(result: &LlmGenerationResult) -> TurnOutco
                 TurnOutcome::Failed {
                     failure_ref: result.failure_ref.clone(),
                 }
+            }
+            LlmFinish::Stop | LlmFinish::Unknown if !result.facts.approval_requests.is_empty() => {
+                TurnOutcome::ApprovalsRequested
             }
             LlmFinish::Stop | LlmFinish::Unknown => TurnOutcome::FinalOutput {
                 output_ref: final_output_ref(&result.context_entries),
@@ -585,11 +669,6 @@ fn final_output_ref(context_entries: &[ContextEntryInput]) -> Option<BlobRef> {
                 role: ContextMessageRole::Assistant,
             } => Some(entry.content_ref.clone()),
             _ => None,
-        })
-        .or_else(|| {
-            context_entries
-                .last()
-                .map(|entry| entry.content_ref.clone())
         })
 }
 
@@ -2152,6 +2231,7 @@ mod tests {
                         finish: LlmFinish::ToolCalls,
                         usage: None,
                         tool_calls,
+                        approval_requests: Vec::new(),
                         context_token_estimate: None,
                     },
                 },
@@ -2520,6 +2600,14 @@ mod tests {
             drive.state().runs.queued[0].source.input()[0].kind,
             ContextEntryKind::ProviderOpaque
         ));
+    }
+
+    #[test]
+    fn provider_opaque_approval_request_is_never_a_final_output() {
+        let opaque_ref = BlobRef::from_bytes(b"mcp approval request");
+        let entries = vec![provider_opaque_input(opaque_ref)];
+
+        assert_eq!(final_output_ref(&entries), None);
     }
 
     #[test]
@@ -2992,49 +3080,6 @@ mod tests {
     }
 
     #[test]
-    fn context_source_run_acceptance_records_resolved_trigger_entry_ids() {
-        let session_id = SessionId::new("session-a");
-        let mut drive = CoreAgentDrive::from_replayed(session_id, CoreAgentState::new(), None);
-        open_session(&mut drive);
-        let key = ContextEntryKey::new("client.message.1");
-
-        let upsert = drive
-            .admit_command(
-                CoreAgentCommand::UpsertContext {
-                    expected_revision: None,
-                    key: key.clone(),
-                    entry: message_input(ContextMessageRole::User, BlobRef::from_bytes(b"hello")),
-                },
-                20,
-            )
-            .expect("context upsert");
-        commit_action(&mut drive, upsert);
-        let entry_id = drive.state().context.entries[0].entry_id;
-
-        let request = drive
-            .admit_command(
-                CoreAgentCommand::RequestRun(RunRequestCommand {
-                    notify_on_terminal: Vec::new(),
-                    submission_id: None,
-                    source: RunRequestSource::Context {
-                        keys: vec![key.clone()],
-                    },
-                    run_config: run_config(),
-                }),
-                30,
-            )
-            .expect("context source run");
-        commit_action(&mut drive, request);
-
-        let crate::RunSource::Context { triggers } = &drive.state().runs.queued[0].source else {
-            panic!("expected context source");
-        };
-        assert_eq!(triggers.len(), 1);
-        assert_eq!(triggers[0].key, key);
-        assert_eq!(triggers[0].entry_id, entry_id);
-    }
-
-    #[test]
     fn upsert_context_accepts_instruction_entry_with_instruction_key() {
         let session_id = SessionId::new("session-a");
         let mut drive = CoreAgentDrive::from_replayed(session_id, CoreAgentState::new(), None);
@@ -3466,6 +3511,7 @@ mod tests {
                         finish: LlmFinish::Stop,
                         usage: None,
                         tool_calls: Vec::new(),
+                        approval_requests: Vec::new(),
                         context_token_estimate: None,
                     },
                 },
@@ -4160,6 +4206,7 @@ mod tests {
                     finish: LlmFinish::Stop,
                     usage: None,
                     tool_calls: Vec::new(),
+                    approval_requests: Vec::new(),
                     context_token_estimate: None,
                 },
             },
@@ -4252,6 +4299,7 @@ mod tests {
                             arguments_ref: BlobRef::from_bytes(br#"{"wait":true}"#),
                             native_call_ref: None,
                         }],
+                        approval_requests: Vec::new(),
                         context_token_estimate: None,
                     },
                 },
@@ -4333,6 +4381,7 @@ mod tests {
                 finish: LlmFinish::Stop,
                 usage: None,
                 tool_calls: Vec::new(),
+                approval_requests: Vec::new(),
                 context_token_estimate: None,
             },
         };
@@ -4757,6 +4806,7 @@ mod tests {
                         finish: LlmFinish::Stop,
                         usage: None,
                         tool_calls: Vec::new(),
+                        approval_requests: Vec::new(),
                         context_token_estimate: None,
                     },
                 },
@@ -4895,6 +4945,7 @@ mod tests {
                         finish: LlmFinish::Stop,
                         usage: None,
                         tool_calls: Vec::new(),
+                        approval_requests: Vec::new(),
                         context_token_estimate: None,
                     },
                 };
@@ -4960,6 +5011,7 @@ mod tests {
                         finish: LlmFinish::Length,
                         usage: None,
                         tool_calls: Vec::new(),
+                        approval_requests: Vec::new(),
                         context_token_estimate: None,
                     },
                 },
@@ -5036,6 +5088,7 @@ mod tests {
                         finish: LlmFinish::ContentFilter,
                         usage: None,
                         tool_calls: Vec::new(),
+                        approval_requests: Vec::new(),
                         context_token_estimate: None,
                     },
                 },
@@ -5103,6 +5156,7 @@ mod tests {
                         finish: LlmFinish::Failed,
                         usage: None,
                         tool_calls: Vec::new(),
+                        approval_requests: Vec::new(),
                         context_token_estimate: None,
                     },
                 },
@@ -5589,6 +5643,7 @@ mod tests {
                         finish: LlmFinish::Stop,
                         usage: None,
                         tool_calls: Vec::new(),
+                        approval_requests: Vec::new(),
                         context_token_estimate: None,
                     },
                 },

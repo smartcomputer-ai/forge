@@ -5,15 +5,15 @@ use serde::{Deserialize, Serialize};
 use crate::{
     BlobRef, CompactionPolicy, ContextEntryKey, ContextItemId, CoreAgentEvent,
     CoreAgentEventProposal, CoreAgentJoins, CoreAgentState, CoreAgentStatus, DomainError,
-    PlanningError, ProviderApiKind, RunId, RunSource, RunSourceContextTrigger, RunStatus, SkillId,
-    SteeringId, ToolBatchId, ToolCallId, ToolName, TurnId,
+    PlanningError, ProviderApiKind, RunId, RunSource, RunStatus, SkillId, SteeringId, ToolBatchId,
+    ToolCallId, ToolName, TurnId,
 };
 
 const RESERVED_RUN_CONTEXT_KEY_PREFIX: &str = "run";
 const INSTRUCTIONS_KEY_PREFIX: &str = "instructions.";
 pub const VFS_CATALOG_CONTEXT_KEY: &str = "environment.vfs_catalog";
 pub const SKILL_CATALOG_CONTEXT_KEY: &str = "skills.catalog.vfs";
-/// The sub-agent catalog (P134): the grant's agent menu with profile
+/// The sub-agent catalog: the grant's agent menu with profile
 /// descriptions, refreshed like the skill catalog.
 pub const SUBAGENT_CATALOG_CONTEXT_KEY: &str = "subagents.catalog";
 /// Superseded catalog versions kept per key before the oldest is removed.
@@ -252,6 +252,10 @@ pub enum ContextEntryKind {
     },
     ReasoningState,
     ProviderOpaque,
+    McpApprovalResponse {
+        approval_request_id: String,
+        approve: bool,
+    },
 }
 
 /// Catalog kinds supersede on keyed replacement instead of removing the
@@ -291,6 +295,10 @@ pub enum ContextEntrySource {
     AssistantOutput {
         run_id: RunId,
         turn_id: TurnId,
+    },
+    ApprovalDecision {
+        run_id: RunId,
+        approval_id: crate::ApprovalId,
     },
     Tool {
         run_id: RunId,
@@ -614,36 +622,6 @@ pub(crate) fn validate_context_key_exists(
     }
 }
 
-pub(crate) fn validate_run_trigger_context_keys(
-    state: &CoreAgentState,
-    keys: &[ContextEntryKey],
-) -> Result<Vec<RunSourceContextTrigger>, DomainError> {
-    if keys.is_empty() {
-        return Err(DomainError::InvariantViolation(
-            "run trigger context keys must not be empty".to_owned(),
-        ));
-    }
-    let mut seen = BTreeSet::new();
-    let mut triggers = Vec::with_capacity(keys.len());
-    for key in keys {
-        if !seen.insert(key.clone()) {
-            return Err(DomainError::InvariantViolation(format!(
-                "duplicate run trigger context key: {key}"
-            )));
-        }
-        let Some(entry) = current_key_entry(state, key) else {
-            return Err(DomainError::InvariantViolation(format!(
-                "run trigger context key {key} does not exist"
-            )));
-        };
-        triggers.push(RunSourceContextTrigger {
-            key: key.clone(),
-            entry_id: entry.entry_id,
-        });
-    }
-    Ok(triggers)
-}
-
 pub(crate) fn run_input_context_keys(
     run_id: RunId,
     input_len: usize,
@@ -759,6 +737,9 @@ fn validate_external_context_edit_entry(
 
     match &entry.kind {
         ContextEntryKind::ProviderOpaque => Ok(()),
+        ContextEntryKind::McpApprovalResponse { .. } => Err(DomainError::InvariantViolation(
+            "MCP approval responses are runtime-owned context".to_owned(),
+        )),
         ContextEntryKind::Message {
             role: ContextMessageRole::User,
         } => Ok(()),
@@ -929,9 +910,7 @@ fn missing_run_input_entries(state: &CoreAgentState) -> Result<Vec<ContextEntry>
     let Some(active_run) = state.runs.active.as_ref() else {
         return Ok(Vec::new());
     };
-    let RunSource::Input { input } = &active_run.source else {
-        return Ok(Vec::new());
-    };
+    let RunSource::Input { input } = &active_run.source;
     if active_run.input_entry_ids.len() >= input.len() {
         return Ok(Vec::new());
     }
@@ -1444,12 +1423,7 @@ fn record_entry_materialization(
         } => {
             let active_run = crate::core::components::run::active_run_mut(state, *run_id)?;
             let index = *input_index as usize;
-            let RunSource::Input { input } = &active_run.source else {
-                return Err(DomainError::InvariantViolation(format!(
-                    "run input context entry {} references context-triggered run {}",
-                    entry.entry_id, run_id
-                )));
-            };
+            let RunSource::Input { input } = &active_run.source;
             let Some(expected) = input.get(index) else {
                 return Err(DomainError::InvariantViolation(format!(
                     "run input context entry {} references missing input index {}",
@@ -1505,6 +1479,7 @@ fn record_entry_materialization(
         }
         ContextEntrySource::ContextEdit
         | ContextEntrySource::AssistantOutput { .. }
+        | ContextEntrySource::ApprovalDecision { .. }
         | ContextEntrySource::Tool { .. }
         | ContextEntrySource::Reasoning { .. }
         | ContextEntrySource::Runtime { .. } => Ok(()),

@@ -1,4 +1,4 @@
-//! Encrypted secret storage and auth grant records (P69 G1).
+//! Encrypted secret storage and auth grant records.
 //!
 //! Secret values are sealed with AES-256-GCM before insertion. The AAD binds
 //! each ciphertext to its universe, secret id, and secret kind, so rows cannot

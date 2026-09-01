@@ -1,7 +1,14 @@
 import { describe, expect, it } from "vitest";
 import { createDemoStore } from "./fixtures";
 import { createDemoRouter } from "./router";
-import type { Universe, BotListItem, SessionEventsPage, SessionListPage } from "@/api";
+import type {
+  Universe,
+  BotListItem,
+  McpServer,
+  McpToolDiscovery,
+  SessionEventsPage,
+  SessionListPage,
+} from "@/api";
 
 /// Walks the demo router the way the UI does: every read path each page
 /// opens with must answer, and the live paths (a message, its tail, a bot
@@ -95,6 +102,61 @@ describe("demo router", () => {
       "/api/auth/admin/list-users",
     ]) {
       expect((await call("GET", path)).status, path).toBe(200);
+    }
+  });
+
+  it("updates a user's admin-managed account fields and accepts a password reset", async () => {
+    const { store, call } = await boot();
+    const target = [...store.users.values()].find((user) => user.id !== store.currentUser.id)!;
+
+    const updated = await call("POST", "/api/auth/admin/update-user", {
+      userId: target.id,
+      data: {
+        name: "Updated User",
+        email: "UPDATED@EXAMPLE.COM",
+        emailVerified: true,
+        role: "admin",
+      },
+    });
+    expect(updated.status).toBe(200);
+    expect(store.users.get(target.id)).toMatchObject({
+      name: "Updated User",
+      email: "updated@example.com",
+      emailVerified: true,
+      role: "admin",
+    });
+
+    expect(
+      (await call("POST", "/api/auth/admin/set-user-password", {
+        userId: target.id,
+        newPassword: "replacement-password",
+      })).status,
+    ).toBe(200);
+    expect(
+      (await call("POST", "/api/auth/admin/revoke-user-sessions", {
+        userId: target.id,
+      })).status,
+    ).toBe(200);
+  });
+
+  it("returns a request-local MCP tool inventory", async () => {
+    const { call } = await boot();
+    const [universe] = (await call("GET", "/api/v1/universes")).json as Universe[];
+    const servers = (await call(
+      "GET",
+      `/api/v1/universes/${universe!.id}/mcp-servers`,
+    )).json as McpServer[];
+    const server = servers.find((candidate) => candidate.status === "active");
+    expect(server).toBeDefined();
+    const discovered = await call(
+      "POST",
+      `/api/v1/universes/${universe!.id}/mcp-servers/${server!.serverId}/tools/discover`,
+    );
+    expect(discovered.status).toBe(200);
+    const inventory = discovered.json as McpToolDiscovery;
+    expect(inventory.status).toBe("success");
+    if (inventory.status === "success") {
+      expect(inventory.tools[0]).toMatchObject({ name: "search" });
     }
   });
 

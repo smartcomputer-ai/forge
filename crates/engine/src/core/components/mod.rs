@@ -3,6 +3,7 @@
 //! These modules define the built-in agent's closed command/event/state
 //! vocabulary plus the domain-local logic that owns those facts.
 
+pub mod approval;
 pub mod command;
 pub mod config;
 pub mod context;
@@ -20,6 +21,7 @@ pub mod tooling;
 pub mod turn;
 pub mod workflow_tool;
 
+pub use approval::*;
 pub use command::*;
 pub use config::*;
 pub use context::{
@@ -59,19 +61,20 @@ pub use promise::{
 pub use run::{
     AcceptedRun, AcceptedRunEvent, ActiveRun, AwaitMode, AwaitSpec, JoinedWorkflowCall,
     ParkedToolBatch, ResumeToolBatchCommand, RunEvent, RunFailure, RunFailureKind, RunQueueState,
-    RunRecord, RunRequestCommand, RunRequestSource, RunSource, RunSourceContextTrigger, RunStatus,
-    RunTerminalNotifyIntent, SteeringBatch, ToolBatchResumeOutput, ToolBatchSuspension, WakeReason,
+    RunRecord, RunRequestCommand, RunRequestSource, RunSource, RunStatus, RunTerminalNotifyIntent,
+    SteeringBatch, ToolBatchResumeOutput, ToolBatchSuspension, WakeReason,
     request_run_submission_digest,
 };
 pub use state::*;
 pub use tooling::{
     ActiveToolBatch, CANCELLED_TOOL_RESULT_CONTENT, CompletedToolBatch, FunctionToolSpec,
     ObservedToolCall, ProviderNativeToolExecution, ProviderNativeToolSpec, RemoteMcpApprovalPolicy,
-    RemoteMcpToolSpec, SecretRef, TOOL_RUNTIME_BOUNDARY_FAILURE_CONTENT, ToolCallExecutionPolicy,
-    ToolCallResult, ToolCallState, ToolCallStatus, ToolChoice, ToolConfigEvent, ToolEvent,
-    ToolExecutionClass, ToolExecutionSpec, ToolKind, ToolParallelism, ToolPatch, ToolSpec,
-    ToolingState, UNAVAILABLE_TOOL_RESULT_CONTENT, cancelled_tool_result_ref,
-    tool_runtime_boundary_failure_ref, unavailable_tool_result_ref, validate_tool_map,
+    RemoteMcpExecution, RemoteMcpExposure, RemoteMcpToolSpec, SecretRef,
+    TOOL_RUNTIME_BOUNDARY_FAILURE_CONTENT, ToolCallExecutionPolicy, ToolCallResult, ToolCallState,
+    ToolCallStatus, ToolChoice, ToolConfigEvent, ToolEvent, ToolExecutionClass, ToolExecutionSpec,
+    ToolKind, ToolParallelism, ToolPatch, ToolSpec, ToolingState, UNAVAILABLE_TOOL_RESULT_CONTENT,
+    cancelled_tool_result_ref, remote_mcp_call_runtime, tool_runtime_boundary_failure_ref,
+    unavailable_tool_result_ref, validate_tool_map,
 };
 pub use turn::{
     LlmFinish, LlmGenerationFacts, LlmGenerationStatus, LlmUsage, PlannedRequestState, TurnEvent,

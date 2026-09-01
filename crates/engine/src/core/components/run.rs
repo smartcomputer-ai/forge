@@ -3,10 +3,11 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    ActiveToolBatch, BlobRef, CompletedToolBatch, ContextEntryId, ContextEntryInput,
-    ContextEntryKey, CoreAgentEvent, CoreAgentEventProposal, CoreAgentJoins, CoreAgentState,
-    CoreAgentStatus, DomainError, PlanningError, PromiseId, RunConfig, RunId, SteeringId,
-    SubmissionId, ToolBatchId, ToolCallId, TurnId, TurnOutcome, TurnState, TurnStatus,
+    ActiveToolBatch, ApprovalId, ApprovalRecord, ApprovalStatus, BlobRef, CompletedToolBatch,
+    ContextEntryId, ContextEntryInput, CoreAgentEvent, CoreAgentEventProposal, CoreAgentJoins,
+    CoreAgentState, CoreAgentStatus, DomainError, EventSeq, LlmUsage, PlanningError, PromiseId,
+    RunConfig, RunId, SteeringId, SubmissionId, ToolBatchId, ToolCallId, TurnId, TurnOutcome,
+    TurnState, TurnStatus,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -58,6 +59,11 @@ pub struct AcceptedRun {
     pub source: RunSource,
     pub run_config: RunConfig,
     pub config_revision: u64,
+    /// Durable event-log position and wall-clock time of acceptance. These
+    /// metadata facts let current-state readers page runs without replaying
+    /// their event ranges.
+    pub first_seq: EventSeq,
+    pub accepted_at_ms: u64,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub notify_on_terminal: Vec<RunTerminalNotifyIntent>,
 }
@@ -80,10 +86,22 @@ pub struct ActiveRun {
     pub input_consumed_by_turn_id: Option<TurnId>,
     pub run_config: RunConfig,
     pub config_revision: u64,
+    pub first_seq: EventSeq,
+    pub accepted_at_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_at_ms: Option<u64>,
+    /// Provider usage accumulated as generation-completed events apply.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<LlmUsage>,
     pub steering: Vec<SteeringBatch>,
     pub turns: BTreeMap<TurnId, TurnState>,
     pub active_turn_id: Option<TurnId>,
     pub active_tool_batch_id: Option<ToolBatchId>,
+    /// Single-use approval records owned by this run. They disappear from
+    /// materialized state with the active run; their immutable audit trail
+    /// remains in the session event log.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub approvals: BTreeMap<ApprovalId, ApprovalRecord>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parked_tool_batch: Option<ParkedToolBatch>,
     pub tool_batches: BTreeMap<ToolBatchId, ActiveToolBatch>,
@@ -92,6 +110,14 @@ pub struct ActiveRun {
     pub failure: Option<RunFailure>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub notify_on_terminal: Vec<RunTerminalNotifyIntent>,
+}
+
+impl ActiveRun {
+    pub fn pending_approvals(&self) -> impl Iterator<Item = &ApprovalRecord> {
+        self.approvals
+            .values()
+            .filter(|record| record.status == ApprovalStatus::Pending)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -116,6 +142,17 @@ pub struct RunRecord {
     /// against completed runs.
     #[serde(default)]
     pub submission_digest: Option<u64>,
+    /// Accepted source retained as scalar metadata and CAS references only;
+    /// resolved content never enters reducer state.
+    pub source: RunSource,
+    pub first_seq: EventSeq,
+    pub terminal_seq: EventSeq,
+    pub accepted_at_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_at_ms: Option<u64>,
+    pub completed_at_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<LlmUsage>,
     pub output_ref: Option<BlobRef>,
     pub failure: Option<RunFailure>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -221,12 +258,12 @@ pub struct RunRequestCommand {
     pub run_config: RunConfig,
     /// Cross-session notify-intents recorded at admission: on this run's
     /// terminal event, signal each holder workflow with its token (the
-    /// holder-side promise id). The edge event is the subscription (P92 §1).
+    /// holder-side promise id). The edge event is the subscription.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub notify_on_terminal: Vec<RunTerminalNotifyIntent>,
 }
 
-/// One log-backed notify-intent attached to a run. Replaces the P84
+/// One log-backed notify-intent attached to a run. Replaces the former
 /// `subscribe_run` machinery: recorded by the event that creates the edge
 /// (spawn admission), rebuilt with the run at bootstrap, including after the
 /// observed session's own continue-as-new.
@@ -236,42 +273,25 @@ pub struct RunTerminalNotifyIntent {
     pub token: String,
 }
 
+/// Every run starts from explicit input entries. The tagged single-variant
+/// encoding keeps the wire shape (`{"type":"input",...}`) stable for any
+/// future source kind without a migration of stored accepted events.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "type")]
 pub enum RunRequestSource {
     Input { input: Vec<ContextEntryInput> },
-    Context { keys: Vec<ContextEntryKey> },
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RunSourceContextTrigger {
-    pub key: ContextEntryKey,
-    pub entry_id: ContextEntryId,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "type")]
 pub enum RunSource {
-    Input {
-        input: Vec<ContextEntryInput>,
-    },
-    Context {
-        triggers: Vec<RunSourceContextTrigger>,
-    },
+    Input { input: Vec<ContextEntryInput> },
 }
 
 impl RunRequestSource {
     pub fn input(&self) -> &[ContextEntryInput] {
         match self {
             Self::Input { input } => input,
-            Self::Context { .. } => &[],
-        }
-    }
-
-    pub fn context_keys(&self) -> &[ContextEntryKey] {
-        match self {
-            Self::Input { .. } => &[],
-            Self::Context { keys } => keys,
         }
     }
 }
@@ -280,46 +300,21 @@ impl RunSource {
     pub fn input(&self) -> &[ContextEntryInput] {
         match self {
             Self::Input { input } => input,
-            Self::Context { .. } => &[],
-        }
-    }
-
-    pub fn context_triggers(&self) -> &[RunSourceContextTrigger] {
-        match self {
-            Self::Input { .. } => &[],
-            Self::Context { triggers } => triggers,
-        }
-    }
-
-    pub fn context_keys(&self) -> Vec<ContextEntryKey> {
-        match self {
-            Self::Input { .. } => Vec::new(),
-            Self::Context { triggers } => {
-                triggers.iter().map(|trigger| trigger.key.clone()).collect()
-            }
         }
     }
 
     /// Whether this accepted source matches a client-requested source.
-    /// Context sources compare by trigger keys; resolved entry ids are an
-    /// admission-time snapshot, not part of the request identity.
     pub fn matches_request(&self, request: &RunRequestSource) -> bool {
         match (self, request) {
             (Self::Input { input }, RunRequestSource::Input { input: requested }) => {
                 input == requested
             }
-            (Self::Context { triggers }, RunRequestSource::Context { keys: requested }) => triggers
-                .iter()
-                .map(|trigger| &trigger.key)
-                .eq(requested.iter()),
-            _ => false,
         }
     }
 
     pub fn matches_message_input(&self, requested: &[ContextEntryInput]) -> bool {
         match self {
             Self::Input { input } => input == requested,
-            Self::Context { .. } => false,
         }
     }
 }
@@ -444,11 +439,19 @@ fn terminal_run_proposal(
         }
         (
             TurnStatus::Completed,
-            Some(TurnOutcome::ToolCallsQueued | TurnOutcome::ContextUpdateRequired),
+            Some(
+                TurnOutcome::ToolCallsQueued
+                | TurnOutcome::ContextUpdateRequired
+                | TurnOutcome::ApprovalsRequested,
+            ),
         ) => None,
         (
             TurnStatus::Failed | TurnStatus::Cancelled,
-            Some(TurnOutcome::ToolCallsQueued | TurnOutcome::ContextUpdateRequired),
+            Some(
+                TurnOutcome::ToolCallsQueued
+                | TurnOutcome::ContextUpdateRequired
+                | TurnOutcome::ApprovalsRequested,
+            ),
         ) => {
             return Err(DomainError::InvariantViolation(format!(
                 "turn {} status {:?} does not match outcome {:?}",
@@ -519,7 +522,12 @@ pub(crate) fn latest_turn_is_terminal_run_outcome(
     Ok(terminal_run_proposal(active_run)?.is_some())
 }
 
-pub(crate) fn apply_event(state: &mut CoreAgentState, event: &Event) -> Result<(), DomainError> {
+pub(crate) fn apply_event(
+    state: &mut CoreAgentState,
+    event: &Event,
+    seq: EventSeq,
+    observed_at_ms: u64,
+) -> Result<(), DomainError> {
     match event {
         Event::Accepted(accepted) => {
             let AcceptedRunEvent {
@@ -558,6 +566,8 @@ pub(crate) fn apply_event(state: &mut CoreAgentState, event: &Event) -> Result<(
                 source: source.clone(),
                 run_config: run_config.clone(),
                 config_revision: *config_revision,
+                first_seq: seq,
+                accepted_at_ms: observed_at_ms,
                 notify_on_terminal: notify_on_terminal.clone(),
             });
             state.id_cursors.last_run_id = run_id.as_u64();
@@ -597,10 +607,15 @@ pub(crate) fn apply_event(state: &mut CoreAgentState, event: &Event) -> Result<(
                 input_consumed_by_turn_id: None,
                 run_config: queued.run_config,
                 config_revision: queued.config_revision,
+                first_seq: queued.first_seq,
+                accepted_at_ms: queued.accepted_at_ms,
+                started_at_ms: Some(observed_at_ms),
+                usage: None,
                 steering: Vec::new(),
                 turns: BTreeMap::new(),
                 active_turn_id: None,
                 active_tool_batch_id: None,
+                approvals: BTreeMap::new(),
                 parked_tool_batch: None,
                 tool_batches: BTreeMap::new(),
                 completed_tool_batches: BTreeMap::new(),
@@ -658,6 +673,8 @@ pub(crate) fn apply_event(state: &mut CoreAgentState, event: &Event) -> Result<(
             RunStatus::Completed,
             output_ref.clone(),
             None,
+            seq,
+            observed_at_ms,
         ),
         Event::Failed { run_id, failure } => finish_active_run(
             state,
@@ -665,6 +682,8 @@ pub(crate) fn apply_event(state: &mut CoreAgentState, event: &Event) -> Result<(
             RunStatus::Failed,
             None,
             Some(failure.clone()),
+            seq,
+            observed_at_ms,
         ),
         Event::Cancelled { run_id } => {
             let Some(active_run) = state.runs.active.as_ref() else {
@@ -680,7 +699,15 @@ pub(crate) fn apply_event(state: &mut CoreAgentState, event: &Event) -> Result<(
                     "cancellation requires drained active work".into(),
                 ));
             }
-            finish_active_run(state, *run_id, RunStatus::Cancelled, None, None)
+            finish_active_run(
+                state,
+                *run_id,
+                RunStatus::Cancelled,
+                None,
+                None,
+                seq,
+                observed_at_ms,
+            )
         }
         Event::ForceCancelled { run_id } => {
             let Some(active_run) = state.runs.active.as_ref() else {
@@ -694,7 +721,15 @@ pub(crate) fn apply_event(state: &mut CoreAgentState, event: &Event) -> Result<(
                     "only non-terminal runs can be force-cancelled".into(),
                 ));
             }
-            finish_active_run(state, *run_id, RunStatus::Cancelled, None, None)
+            finish_active_run(
+                state,
+                *run_id,
+                RunStatus::Cancelled,
+                None,
+                None,
+                seq,
+                observed_at_ms,
+            )
         }
         Event::QueuedCancelled { run_id } => {
             let Some(position) = state
@@ -718,6 +753,13 @@ pub(crate) fn apply_event(state: &mut CoreAgentState, event: &Event) -> Result<(
                 status: RunStatus::Cancelled,
                 submission_id: queued.submission_id,
                 submission_digest,
+                source: compact_terminal_source(queued.source),
+                first_seq: queued.first_seq,
+                terminal_seq: seq,
+                accepted_at_ms: queued.accepted_at_ms,
+                started_at_ms: None,
+                completed_at_ms: observed_at_ms,
+                usage: None,
                 output_ref: None,
                 failure: None,
                 notify_on_terminal: queued.notify_on_terminal,
@@ -838,9 +880,6 @@ pub(crate) fn source_request_equivalent(source: &RunSource) -> RunRequestSource 
         RunSource::Input { input } => RunRequestSource::Input {
             input: input.clone(),
         },
-        RunSource::Context { triggers } => RunRequestSource::Context {
-            keys: triggers.iter().map(|trigger| trigger.key.clone()).collect(),
-        },
     }
 }
 
@@ -882,6 +921,8 @@ fn finish_active_run(
     status: RunStatus,
     output_ref: Option<BlobRef>,
     failure: Option<RunFailure>,
+    terminal_seq: EventSeq,
+    completed_at_ms: u64,
 ) -> Result<(), DomainError> {
     let Some(active_run) = state.runs.active.as_ref() else {
         return Err(DomainError::InvariantViolation("no active run".into()));
@@ -904,6 +945,8 @@ fn finish_active_run(
             source: active_run.source.clone(),
             run_config: active_run.run_config.clone(),
             config_revision: active_run.config_revision,
+            first_seq: active_run.first_seq,
+            accepted_at_ms: active_run.accepted_at_ms,
             notify_on_terminal: active_run.notify_on_terminal.clone(),
         };
         submission_digest_for_accepted_run(&accepted)
@@ -913,10 +956,25 @@ fn finish_active_run(
         status,
         submission_id: active_run.submission_id,
         submission_digest,
+        source: compact_terminal_source(active_run.source),
+        first_seq: active_run.first_seq,
+        terminal_seq,
+        accepted_at_ms: active_run.accepted_at_ms,
+        started_at_ms: active_run.started_at_ms,
+        completed_at_ms,
+        usage: active_run.usage,
         output_ref,
         failure,
         notify_on_terminal: active_run.notify_on_terminal,
     });
     crate::core::components::context::expire_run_scoped_context_entries(state)?;
     Ok(())
+}
+
+fn compact_terminal_source(mut source: RunSource) -> RunSource {
+    let RunSource::Input { input } = &mut source;
+    for entry in input {
+        entry.preview = None;
+    }
+    source
 }

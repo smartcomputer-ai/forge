@@ -767,7 +767,8 @@ Cleanup should be explicit:
 
 ## Lightspeed Design Position
 
-Superseded by `docs/roadmap/p134-subagents.md`, which turned this position into the shipped `agent_run` / `agent_spawn` kernel; the notes below are the study's original conclusions.
+This position became the shipped `agent_run` / `agent_spawn` kernel; the notes
+below preserve the study's original conclusions.
 
 For the first Lightspeed subagent implementation, prefer:
 
@@ -792,4 +793,3 @@ Do not start with:
 Codex gives the better durable control plane. Claude Code gives the better
 per-child execution envelope. A good Lightspeed design should combine those two
 pieces rather than copying either system wholesale.
-

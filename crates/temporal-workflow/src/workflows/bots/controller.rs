@@ -1,5 +1,5 @@
-//! One durable inbox, router, and session lifecycle controller per bot
-//! (P142, ported from the TypeScript `botControllerWorkflowV1`).
+//! One durable inbox, router, and session lifecycle controller per bot,
+//! ported from the TypeScript `botControllerWorkflowV1`.
 //!
 //! Signals only mutate state and wake the loop; every decision that needs
 //! no I/O lives in [`state`]. The loop runs one pass per wake — teardown

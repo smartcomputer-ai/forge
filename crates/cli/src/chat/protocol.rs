@@ -108,6 +108,11 @@ pub(crate) enum ChatCommand {
     InterruptRun {
         reason: Option<String>,
     },
+    DecideApproval {
+        approval_id: String,
+        decision: api::ApprovalDecisionKind,
+        note: Option<String>,
+    },
     PauseSession,
     ResumeSession,
     SwitchSession {
@@ -137,6 +142,11 @@ pub(crate) enum ChatEvent {
     },
     TranscriptDelta(ChatDelta),
     RunChanged(ChatRunView),
+    ApprovalsPending {
+        session_id: String,
+        run_id: String,
+        approvals: Vec<api::PendingApprovalView>,
+    },
     ToolChainsChanged {
         session_id: String,
         chains: Vec<ChatToolChainView>,
@@ -360,7 +370,9 @@ pub(crate) fn reasoning_effort_label(value: Option<ReasoningEffort>) -> &'static
 pub(crate) fn run_status(status: RunStatus) -> ChatProgressStatus {
     match status {
         RunStatus::Queued => ChatProgressStatus::Queued,
-        RunStatus::Running | RunStatus::Cancelling => ChatProgressStatus::Running,
+        RunStatus::Running | RunStatus::Parked | RunStatus::Cancelling => {
+            ChatProgressStatus::Running
+        }
         RunStatus::Completed => ChatProgressStatus::Succeeded,
         RunStatus::Failed => ChatProgressStatus::Failed,
         RunStatus::Cancelled => ChatProgressStatus::Cancelled,

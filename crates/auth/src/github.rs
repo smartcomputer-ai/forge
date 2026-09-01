@@ -1,4 +1,4 @@
-//! GitHub App driver (P69 G5): app JWT signing and installation access
+//! GitHub App driver: app JWT signing and installation access
 //! token minting.
 //!
 //! Unlike OAuth there is no flow and no stored access token: the app's

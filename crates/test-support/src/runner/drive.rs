@@ -740,6 +740,7 @@ async fn failed_generation_result_from_error(
             finish: LlmFinish::Failed,
             usage: None,
             tool_calls: Vec::new(),
+            approval_requests: Vec::new(),
             context_token_estimate: None,
         },
     })
@@ -1046,6 +1047,7 @@ mod tests {
                         provider_response_id: Some("resp-tool".to_owned()),
                         finish: LlmFinish::ToolCalls,
                         usage: None,
+                        approval_requests: Vec::new(),
                         tool_calls: vec![ObservedToolCall {
                             call_id: engine::ToolCallId::new("call-1"),
                             tool_name: ToolName::new("test_tool"),
@@ -1099,6 +1101,7 @@ mod tests {
                         provider_response_id: Some("resp-read-skill".to_owned()),
                         finish: LlmFinish::ToolCalls,
                         usage: None,
+                        approval_requests: Vec::new(),
                         tool_calls: vec![ObservedToolCall {
                             call_id: engine::ToolCallId::new(self.call_id.clone()),
                             tool_name: ToolName::new("vfs_read_file"),
@@ -1150,6 +1153,7 @@ mod tests {
                 finish: LlmFinish::Stop,
                 usage: None,
                 tool_calls: Vec::new(),
+                approval_requests: Vec::new(),
                 context_token_estimate: None,
             },
         }
@@ -1453,10 +1457,11 @@ mod tests {
             .await
             .expect("open source");
 
-        let fork_seq = sessions
-            .safe_fork_seq(&source_id)
+        let source_state = runner
+            .load_state(&source_id)
             .await
-            .expect("compute safe fork seq");
+            .expect("load source state");
+        let fork_seq = engine::storage::largest_safe_fork_seq_from_state(&source_state);
         assert_eq!(fork_seq, engine::EventSeq::new(1));
         sessions
             .create_forked_session(CreateForkedSession {

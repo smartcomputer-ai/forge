@@ -14,7 +14,7 @@ import type { AppContext, ApiVariables } from "../context.js";
 import { engineClientFor, withGateway } from "./gateway.js";
 import { universeForSession } from "./universes.js";
 
-/// Universe-scoped passthroughs to the core `bots/*` API (P142): the
+/// Universe-scoped passthroughs to the core `bots/*` API: the
 /// platform checks membership, the core owns the records, controllers,
 /// Temporal Schedules, and the event log. Reads use member access so every
 /// member can see the roster; writes require the owner/admin org role.

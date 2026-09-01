@@ -1,5 +1,5 @@
 //! One sub-agent delegation, supervised: started on call by the parent
-//! session's `agent_run` / `agent_spawn` invocation (P100b start-on-call),
+//! session's start-on-call `agent_run` / `agent_spawn` invocation;
 //! it creates the child session from the pinned profile, waits for the
 //! child's run terminal, resolves the parent's `reply` promise with the
 //! result envelope, and closes the child. Cancellation from any direction

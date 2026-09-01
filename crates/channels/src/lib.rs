@@ -1,6 +1,6 @@
 //! Channels domain crate: provider accounts, pairings, the inbound and
 //! delivery shapes shared with the connector host, and the pure policy of
-//! a conversation (P139, hosted in the core runtime by P142).
+//! a conversation hosted in the core runtime.
 //!
 //! A chat connection is a bot trigger of kind `chat`; this crate holds
 //! what that trigger points at and the conversation-side logic. The

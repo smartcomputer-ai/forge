@@ -1,7 +1,8 @@
 import type { Server as HttpServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { LightspeedRpcError, LightspeedTransportError } from "@lightspeed/agent-client";
-import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { toNodeHandler } from "@modelcontextprotocol/node";
+import { createMcpHandler } from "@modelcontextprotocol/server";
 import express, {
   type ErrorRequestHandler,
   type Express,
@@ -123,16 +124,12 @@ async function handleMcpPost(
       config.upstreamTimeoutMs,
     );
 
-    const mcpServer = registry.createServer(auth);
-    const transport = new StreamableHTTPServerTransport({
-      enableJsonResponse: true,
-    });
-    await mcpServer.connect(transport as Parameters<typeof mcpServer.connect>[0]);
+    const handler = createMcpHandler(() => registry.createServer(auth));
+    const nodeHandler = toNodeHandler(handler);
     res.once("close", () => {
-      void transport.close();
-      void mcpServer.close();
+      void handler.close();
     });
-    await transport.handleRequest(req, res, req.body);
+    await nodeHandler(req, res, req.body);
   } catch (error) {
     if (!res.headersSent) {
       sendHttpError(res, error);

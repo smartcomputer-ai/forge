@@ -1,11 +1,11 @@
 //! Core command admission for external session requests.
 
 use crate::{
-    CommandError, CommandRejection, CommandRejectionKind, ContextEntrySource, ContextEvent,
-    CoreAgentCommand, CoreAgentEvent, CoreAgentEventProposal, CoreAgentJoins,
-    CoreAgentLifecycleEvent, CoreAgentState, CoreAgentStatus, DomainError, PromiseEvent,
-    PromiseResolution, RunEvent, RunRequestSource, RunSource, RunStatus, ToolConfigEvent,
-    WorkflowToolConfigEvent,
+    ApprovalContinuation, ApprovalEvent, ApprovalStatus, CommandError, CommandRejection,
+    CommandRejectionKind, ContextEntrySource, ContextEvent, CoreAgentCommand, CoreAgentEvent,
+    CoreAgentEventProposal, CoreAgentJoins, CoreAgentLifecycleEvent, CoreAgentState,
+    CoreAgentStatus, DomainError, PromiseEvent, PromiseResolution, RunEvent, RunRequestSource,
+    RunSource, RunStatus, ToolConfigEvent, WorkflowToolConfigEvent,
     core::components::{
         config::{validate_config_update_for_state, validate_run_config_for_state},
         tooling::validate_tool_map,
@@ -205,33 +205,16 @@ pub fn admit_command(
                 ))
             })?;
             let next_run_id = crate::RunId::new(next_run_id);
-            let source = match request.source {
-                RunRequestSource::Input { input } => {
-                    if input.is_empty() {
-                        return reject(
-                            CommandRejectionKind::InvariantViolation,
-                            "run input must contain at least one entry",
-                        );
-                    }
-                    crate::core::components::context::validate_run_input_entries(&input)
-                        .map_err(command_rejection_from_domain)?;
-                    RunSource::Input { input }
-                }
-                RunRequestSource::Context { keys } => {
-                    let triggers =
-                        crate::core::components::context::validate_run_trigger_context_keys(
-                            state, &keys,
-                        )
-                        .map_err(command_rejection_from_domain)?;
-                    RunSource::Context { triggers }
-                }
-            };
-            if source.input().is_empty() && source.context_triggers().is_empty() {
+            let RunRequestSource::Input { input } = request.source;
+            if input.is_empty() {
                 return reject(
                     CommandRejectionKind::InvariantViolation,
-                    "run source must contain input entries or trigger context keys",
+                    "run input must contain at least one entry",
                 );
             }
+            crate::core::components::context::validate_run_input_entries(&input)
+                .map_err(command_rejection_from_domain)?;
+            let source = RunSource::Input { input };
             let joins = CoreAgentJoins {
                 submission_id: request.submission_id.clone(),
                 run_id: Some(next_run_id),
@@ -446,7 +429,7 @@ pub fn admit_command(
                     return Ok(Vec::new());
                 }
                 if matches!(active_run.status, RunStatus::Active | RunStatus::Parked) {
-                    return Ok(vec![CoreAgentEventProposal::new(
+                    let mut proposals = vec![CoreAgentEventProposal::new(
                         CoreAgentJoins {
                             run_id: Some(active_run.run_id),
                             ..CoreAgentJoins::default()
@@ -454,7 +437,20 @@ pub fn admit_command(
                         CoreAgentEvent::Run(RunEvent::CancellationRequested {
                             run_id: active_run.run_id,
                         }),
-                    )]);
+                    )];
+                    proposals.extend(active_run.pending_approvals().map(|record| {
+                        CoreAgentEventProposal::new(
+                            CoreAgentJoins {
+                                run_id: Some(run_id),
+                                ..CoreAgentJoins::default()
+                            },
+                            CoreAgentEvent::Approval(ApprovalEvent::Cancelled {
+                                approval_id: record.request.approval_id.clone(),
+                                run_id,
+                            }),
+                        )
+                    }));
+                    return Ok(proposals);
                 }
                 return Ok(Vec::new());
             }
@@ -473,6 +469,130 @@ pub fn admit_command(
                 )]);
             }
             Ok(Vec::new())
+        }
+        CoreAgentCommand::DecideApproval(command) => {
+            require_open(state)?;
+            crate::core::components::approval::validate_note(command.note.as_deref())
+                .map_err(command_rejection_from_domain)?;
+            let active_run = state
+                .runs
+                .active
+                .as_ref()
+                .filter(|run| run.run_id == command.run_id)
+                .ok_or_else(|| {
+                    CommandError::Rejected(CommandRejection::new(
+                        CommandRejectionKind::UnknownReference,
+                        format!("run {} is not active", command.run_id),
+                    ))
+                })?;
+            let record = active_run
+                .approvals
+                .get(&command.approval_id)
+                .ok_or_else(|| {
+                    CommandError::Rejected(CommandRejection::new(
+                        CommandRejectionKind::UnknownReference,
+                        format!("unknown approval {}", command.approval_id),
+                    ))
+                })?;
+            if record.request.run_id != command.run_id {
+                return reject(
+                    CommandRejectionKind::UnknownReference,
+                    format!(
+                        "approval {} does not belong to run {}",
+                        command.approval_id, command.run_id
+                    ),
+                );
+            }
+            if record.status != ApprovalStatus::Pending {
+                return reject(
+                    CommandRejectionKind::InvalidConfiguration,
+                    format!("approval {} is already terminal", command.approval_id),
+                );
+            }
+            let Some(active) = state.runs.active.as_ref() else {
+                return reject(
+                    CommandRejectionKind::MissingActiveRun,
+                    "approval decision requires an active run",
+                );
+            };
+            if active.run_id != command.run_id
+                || !matches!(active.status, RunStatus::Active | RunStatus::Parked)
+            {
+                return reject(
+                    CommandRejectionKind::ActiveWork,
+                    "approval decision does not target the accepting active run",
+                );
+            }
+            let provider_expectation = match &record.request.continuation {
+                ApprovalContinuation::OpenAiMcp {
+                    provider_request_id,
+                } => Some((
+                    provider_request_id.as_str(),
+                    command.decision == crate::ApprovalDecision::Approved,
+                )),
+                ApprovalContinuation::NativeMcp { .. } => None,
+            };
+            if let Some((expected_provider_id, expected_approve)) = provider_expectation {
+                match command.response.as_ref().map(|response| &response.kind) {
+                    Some(crate::ContextEntryKind::McpApprovalResponse {
+                        approval_request_id,
+                        approve,
+                    }) if approval_request_id == expected_provider_id
+                        && *approve == expected_approve => {}
+                    _ => {
+                        return reject(
+                            CommandRejectionKind::InvariantViolation,
+                            "approval response context does not match the pending continuation",
+                        );
+                    }
+                }
+            } else if command.response.is_some() {
+                return reject(
+                    CommandRejectionKind::InvariantViolation,
+                    "native MCP approval decisions must not add provider response context",
+                );
+            }
+            let entries = if let Some(response) = command.response {
+                crate::core::components::context::context_entries_from_inputs(
+                    state,
+                    vec![(
+                        None,
+                        ContextEntrySource::ApprovalDecision {
+                            run_id: command.run_id,
+                            approval_id: command.approval_id.clone(),
+                        },
+                        response,
+                    )],
+                )?
+            } else {
+                Vec::new()
+            };
+            let mut proposals = vec![CoreAgentEventProposal::new(
+                CoreAgentJoins {
+                    run_id: Some(command.run_id),
+                    ..CoreAgentJoins::default()
+                },
+                CoreAgentEvent::Approval(ApprovalEvent::Decided {
+                    approval_id: command.approval_id,
+                    run_id: command.run_id,
+                    decision: command.decision,
+                    note: command.note,
+                    decided_by: command.decided_by,
+                }),
+            )];
+            if !entries.is_empty() {
+                proposals.push(CoreAgentEventProposal::new(
+                    CoreAgentJoins {
+                        run_id: Some(command.run_id),
+                        ..CoreAgentJoins::default()
+                    },
+                    CoreAgentEvent::Context(ContextEvent::EntriesApplied {
+                        base_revision: state.context.revision,
+                        entries,
+                    }),
+                ));
+            }
+            Ok(proposals)
         }
         CoreAgentCommand::ResolvePromise {
             promise_id,

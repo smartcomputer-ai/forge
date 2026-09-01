@@ -1,7 +1,7 @@
 import type {
   ContextEntryView,
+  RunSummaryView,
   RunStatus,
-  RunView,
   EnvironmentCredentialSourceView,
   EnvironmentCredentialView,
   EnvironmentProviderBindingView,
@@ -318,12 +318,14 @@ export interface McpServer {
   serverId: string;
   displayName?: string | null;
   serverUrl: string;
-  transport: "streamableHttp" | "sse" | "auto";
   defaultServerLabel: string;
   description?: string | null;
   allowedTools?: string[] | null;
-  approvalDefault: "providerDefault" | "always" | "never";
+  execution: "provider" | "native";
+  exposure: "inject" | "search";
+  approvalDefault: "always" | "never";
   deferLoadingDefault?: boolean | null;
+  allowPrivateNetwork: boolean;
   authPolicy: { type: string } & Record<string, unknown>;
   credential?: { type: "authGrant"; grantId: string } | null;
   status: "active" | "needsAuthConfig" | "unverified" | "disabled";
@@ -331,6 +333,40 @@ export interface McpServer {
   createdAtMs: number;
   updatedAtMs: number;
 }
+
+export interface McpAdvertisedTool {
+  name: string;
+  title?: string | null;
+  description?: string | null;
+  annotations?: {
+    readOnlyHint?: boolean | null;
+    destructiveHint?: boolean | null;
+    idempotentHint?: boolean | null;
+    openWorldHint?: boolean | null;
+  } | null;
+}
+
+export type McpToolDiscovery =
+  | { status: "success"; tools: McpAdvertisedTool[] }
+  | {
+      status: "failure";
+      code:
+        | "credentialAbsent"
+        | "grantNeedsReauth"
+        | "grantAudienceMismatch"
+        | "unauthorized"
+        | "forbidden"
+        | "additionalConsentRequired"
+        | "remoteRateLimited"
+        | "remoteFailure"
+        | "unreachable"
+        | "invalidResponse"
+        | "unsupportedProtocol"
+        | "paginationLimit"
+        | "responseTooLarge";
+      message: string;
+      requiredScopes?: string[];
+    };
 
 export interface McpOAuthFlowStart {
   flowId: string;
@@ -355,6 +391,7 @@ export interface McpServerAuthDiscovery {
   oauth?: {
     resource: string;
     authorizationServers: string[];
+    scopesSupported: string[];
   } | null;
 }
 
@@ -365,7 +402,7 @@ export type EnvironmentTemplate = EnvironmentTemplateView;
 export type EnvironmentCredentialSource = EnvironmentCredentialSourceView;
 export type EnvironmentCredential = EnvironmentCredentialView;
 
-/// Sub-agent lineage (P134): who delegated the session, under which root,
+/// Sub-agent lineage: who delegated the session, under which root,
 /// at what depth, from which pinned profile revision. Provenance only.
 export interface SessionOrigin {
   kind: "subagent";
@@ -419,13 +456,12 @@ export interface SessionView {
   configRevision: number;
   management?: SessionManagement | null;
   origin?: SessionOrigin | null;
-  /// Every run of the session — completed, the active one, and runs queued
-  /// behind it — straight from the engine. Authoritative for run state; the
-  /// event tail is the live, incremental view.
+  /// Bounded newest-first run summary page. Authoritative for recent run
+  /// state; the event tail is the live, incremental transcript view.
   runs?: SessionRunView[];
 }
 
-export type SessionRunView = RunView;
+export type SessionRunView = RunSummaryView;
 export type SessionRunStatus = RunStatus;
 
 export type WorkspaceLinkTarget =
@@ -490,6 +526,15 @@ export interface SessionRunCancelled {
   run: { id: string; status: SessionRunStatus };
 }
 
+export interface SessionRunApprovalsDecided {
+  results: Array<{
+    approvalId: string;
+    status: "decided" | "failed";
+    failure?: { kind: string; message: string };
+  }>;
+  run: SessionRunView;
+}
+
 /// Engine workspace view, straight from `vfs/workspaces/list`.
 export interface WorkspaceRow {
   workspaceId: string;
@@ -531,8 +576,8 @@ export interface BlobContent {
   bytesBase64: string;
 }
 
-/// Bot and channel wire types come from the generated core API client
-/// (P142): the platform routes are passthroughs, so the browser reads the
+/// Bot and channel wire types come from the generated core API client: the
+/// platform routes are passthroughs, so the browser reads the
 /// core response shapes verbatim. Only the connector health report — a
 /// platform-owned surface — keeps a local shape.
 export type {
@@ -615,9 +660,10 @@ export function botLabel(bot: Pick<BotView, "botId" | "displayName">): string {
 /// unrelated to the core channel account records.
 export interface ChannelConnectorHealth {
   version: 1;
+  universeId?: string;
   provider: string;
   accountId: string;
-  state: "starting" | "ready" | "disconnected" | "stopping" | "stopped";
+  state: "starting" | "ready" | "disconnected" | "failed" | "stopping" | "stopped";
   ingressConnected: boolean;
   activityWorkerReady: boolean;
   reconnectAttempts: number;
@@ -627,14 +673,39 @@ export interface ChannelConnectorHealth {
   changedAtMs: number;
 }
 
+export interface ChannelConnectorHostHealth {
+  version: 1;
+  state: "starting" | "ready" | "degraded" | "stopping" | "stopped";
+  startedAtMs: number;
+  discovery: {
+    passes: number;
+    lastSuccessAtMs?: number;
+    lastError?: string;
+    lastErrorAtMs?: number;
+  };
+  accounts: ChannelConnectorHealth[];
+}
+
 export interface ChannelConnectorStatus {
   url: string;
   reachable: boolean;
   httpStatus: number | null;
-  health?: ChannelConnectorHealth;
+  health?: ChannelConnectorHostHealth | ChannelConnectorHealth;
   error?: string;
 }
 
 export interface ChannelsStatus {
   connectors: ChannelConnectorStatus[];
+}
+
+export interface UniverseChannelStatus {
+  accounts: ChannelConnectorHealth[];
+}
+
+export function connectorAccountHealth(
+  status: ChannelConnectorStatus,
+): ChannelConnectorHealth[] {
+  const health = status.health;
+  if (!health) return [];
+  return "accounts" in health ? health.accounts : [health];
 }

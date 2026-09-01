@@ -4,8 +4,9 @@ Lightspeed environments are universe-owned live resources backed by external
 providers. Sessions neither own nor attach copies of them. A session records
 only an optional active universe environment id.
 
-P108 defines ownership and selection; P113 defines the current filesystem/tool
-routing. Lightspeed is greenfield, so these replace the old
+Universe environments define ownership and selection, while explicit VFS and
+environment domains define filesystem/tool routing. Lightspeed is greenfield,
+so these replace the old
 session-binding, environment-catalog, and generic default-target designs rather
 than preserving compatibility with them.
 

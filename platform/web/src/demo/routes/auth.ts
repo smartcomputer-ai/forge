@@ -58,6 +58,51 @@ export function authRoutes(store: DemoStore): Hono {
     store.users.set(user.id, user);
     return c.json({ user });
   });
+  app.post("/admin/update-user", async (c) => {
+    const body = await readBody<{
+      userId?: string;
+      data?: {
+        name?: unknown;
+        email?: unknown;
+        emailVerified?: unknown;
+        role?: unknown;
+      };
+    }>(c);
+    const target = body.userId ? store.users.get(body.userId) : undefined;
+    if (!target) return c.json({ message: "user not found" }, 404);
+    const data = body.data ?? {};
+    if (typeof data.name === "string" && data.name.trim()) {
+      target.name = data.name.trim();
+    }
+    if (typeof data.email === "string" && data.email.trim()) {
+      const email = data.email.trim().toLowerCase();
+      if ([...store.users.values()].some((user) => user.id !== target.id && user.email === email)) {
+        return c.json({ message: "user already exists; use another email" }, 400);
+      }
+      target.email = email;
+    }
+    if (typeof data.emailVerified === "boolean") target.emailVerified = data.emailVerified;
+    if (data.role === "user" || data.role === "admin") target.role = data.role;
+    target.updatedAt = nowIso();
+    return c.json(target);
+  });
+  app.post("/admin/set-user-password", async (c) => {
+    const body = await readBody<{ userId?: string; newPassword?: string }>(c);
+    if (!body.userId || !store.users.has(body.userId)) {
+      return c.json({ message: "user not found" }, 404);
+    }
+    if (!body.newPassword || body.newPassword.length < 8) {
+      return c.json({ message: "password is too short" }, 400);
+    }
+    return c.json({ status: true });
+  });
+  app.post("/admin/revoke-user-sessions", async (c) => {
+    const body = await readBody<{ userId?: string }>(c);
+    if (!body.userId || !store.users.has(body.userId)) {
+      return c.json({ message: "user not found" }, 404);
+    }
+    return c.json({ success: true });
+  });
 
   return app;
 }

@@ -236,7 +236,7 @@ impl EnvironmentJobWorkflow {
         self.nudged = true;
     }
 
-    /// P100b per-key cancellation for internally supervised job starts.
+    /// Per-key cancellation for internally supervised job starts.
     #[signal(name = "deliver_emission")]
     pub fn deliver_emission(
         &mut self,

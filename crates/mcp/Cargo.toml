@@ -9,6 +9,7 @@ auth = { path = "../auth" }
 engine = { path = "../engine" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+strsim = "0.11.1"
 thiserror = "1"
 
 [dev-dependencies]

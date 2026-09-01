@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use serde_json::json;
+use serde_json::{Value, json};
 
 use super::*;
 
@@ -20,6 +20,7 @@ fn notification_serializes_as_json_rpc_lite_shape() {
             entries: Vec::new(),
             tool_batches: Vec::new(),
             usage: None,
+            pending_approvals: Vec::new(),
         },
     };
 
@@ -725,6 +726,31 @@ async fn dispatch_json_rpc_routes_run_cancel() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn dispatch_json_rpc_routes_run_approvals_decide() {
+    let response = dispatch_json_rpc(
+        &TestService,
+        JsonRpcRequest {
+            id: RequestId::Number(1),
+            method: METHOD_SESSION_RUNS_APPROVALS_DECIDE.to_owned(),
+            params: Some(json!({
+                "sessionId": "session_1",
+                "runId": "run_1",
+                "decisions": [{
+                    "approvalId": "approval_1",
+                    "decision": "approve"
+                }]
+            })),
+        },
+    )
+    .await;
+
+    assert!(response.error.is_none());
+    let result = response.result.expect("result");
+    assert_eq!(result["result"]["results"][0]["status"], json!("decided"));
+    assert_eq!(result["result"]["run"]["status"], json!("running"));
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn dispatch_json_rpc_routes_run_steer() {
     let response = dispatch_json_rpc(
         &TestService,
@@ -1084,6 +1110,28 @@ async fn dispatch_json_rpc_routes_mcp_server_auth_discovery() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn dispatch_json_rpc_routes_live_mcp_tool_discovery_without_revision() {
+    let response = dispatch_json_rpc(
+        &TestService,
+        JsonRpcRequest {
+            id: RequestId::Number(1),
+            method: METHOD_MCP_SERVERS_TOOLS_DISCOVER.to_owned(),
+            params: Some(json!({ "serverId": "echo" })),
+        },
+    )
+    .await;
+
+    assert!(response.error.is_none());
+    let result = response.result.expect("result");
+    assert_eq!(result["result"]["status"], json!("success"));
+    assert_eq!(result["result"]["tools"][0]["name"], json!("echo_search"));
+    assert_eq!(
+        result["result"]["tools"][0]["annotations"]["readOnlyHint"],
+        json!(true)
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn dispatch_json_rpc_routes_auth_grant_lease() {
     let response = dispatch_json_rpc(
         &TestService,
@@ -1145,14 +1193,37 @@ fn mcp_server_put_decodes_universe_auth_grant_credential() {
 }
 
 #[test]
-fn mcp_session_links_reject_the_removed_auth_grant_field() {
-    let error = serde_json::from_value::<McpServerLink>(json!({
-        "serverId": "echo",
-        "authGrantId": "authgrant_1"
+fn mcp_server_put_rejects_internal_transport_field() {
+    let error = serde_json::from_value::<McpServerPutParams>(json!({
+        "server": {
+            "serverId": "echo",
+            "serverUrl": "https://echo.example.com/mcp",
+            "defaultServerLabel": "echo",
+            "transport": "streamableHttp"
+        }
     }))
-    .expect_err("session MCP links must not accept credential selection");
+    .expect_err("MCP transport is not public configuration");
 
-    assert!(error.to_string().contains("unknown field"));
+    assert!(error.to_string().contains("unknown field `transport`"));
+}
+
+#[test]
+fn mcp_session_links_reject_removed_connection_and_policy_fields() {
+    for (field, value) in [
+        ("authGrantId", json!("authgrant_1")),
+        ("allowedTools", json!(["search"])),
+        ("approval", json!("never")),
+        ("deferLoading", json!(true)),
+    ] {
+        let mut link = serde_json::Map::from_iter([("serverId".to_owned(), json!("echo"))]);
+        link.insert(field.to_owned(), value);
+        let error = serde_json::from_value::<McpServerLink>(Value::Object(link))
+            .expect_err("session MCP links must reject removed fields");
+        assert!(
+            error.to_string().contains("unknown field"),
+            "{field}: {error}"
+        );
+    }
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -1454,6 +1525,7 @@ fn provider_context_entry_serializes_debug_metadata() {
             quality: TokenEstimateQualityView::ProviderCounted,
         }),
         text: None,
+        text_truncated: false,
         display: None,
         source: None,
         supersedes: None,
@@ -1493,6 +1565,7 @@ fn provider_context_entry_serializes_mcp_display() {
         provider_item_id: Some("mcp_1".to_owned()),
         token_estimate: None,
         text: None,
+        text_truncated: false,
         display: Some(ProviderContextDisplayView {
             summary: ToolCallDisplayView {
                 group: ToolCallDisplayGroup::Other,
@@ -1571,6 +1644,7 @@ fn run_view_can_expose_tool_batches() {
             }],
         }],
         usage: None,
+        pending_approvals: Vec::new(),
     };
 
     let value = serde_json::to_value(run).expect("serialize run");
@@ -1651,7 +1725,7 @@ fn session_id_validation_matches_public_api_shape() {
 #[test]
 fn session_id_reserves_slash_as_the_workflow_id_separator() {
     // The hosted runtime composes Temporal workflow ids as
-    // `{universe_id}/{session_id}` (P90 multi-tenancy). Session ids rejecting
+    // `{universe_id}/{session_id}`. Session ids rejecting
     // `/` is what makes that composition unambiguously splittable, so this is
     // a load-bearing invariant, not an incidental charset choice.
     assert_eq!(
@@ -1795,7 +1869,7 @@ impl AgentApiService for TestService {
         params: SessionConfigPutParams,
     ) -> Result<AgentApiOutcome<SessionConfigPutResponse>, AgentApiError> {
         Ok(AgentApiOutcome::new(SessionConfigPutResponse {
-            session: test_session(params.session_id, SessionStatus::Idle),
+            session: test_session_mutation(params.session_id, SessionStatus::Idle),
         }))
     }
 
@@ -1853,7 +1927,7 @@ impl AgentApiService for TestService {
         params: SessionCloseParams,
     ) -> Result<AgentApiOutcome<SessionCloseResponse>, AgentApiError> {
         Ok(AgentApiOutcome::new(SessionCloseResponse {
-            session: test_session(params.session_id, SessionStatus::Closed),
+            session: test_session_mutation(params.session_id, SessionStatus::Closed),
         }))
     }
 
@@ -1879,7 +1953,7 @@ impl AgentApiService for TestService {
         params: ContextCompactParams,
     ) -> Result<AgentApiOutcome<ContextCompactResponse>, AgentApiError> {
         Ok(AgentApiOutcome::new(ContextCompactResponse {
-            session: test_session(params.session_id, SessionStatus::Idle),
+            session: test_session_mutation(params.session_id, SessionStatus::Idle),
         }))
     }
 
@@ -1937,12 +2011,50 @@ impl AgentApiService for TestService {
         }))
     }
 
+    async fn list_runs(
+        &self,
+        _params: RunListParams,
+    ) -> Result<AgentApiOutcome<RunListResponse>, AgentApiError> {
+        Ok(AgentApiOutcome::new(RunListResponse {
+            runs: Vec::new(),
+            next_cursor: None,
+            has_older_runs: false,
+        }))
+    }
+
+    async fn read_run(
+        &self,
+        params: RunReadParams,
+    ) -> Result<AgentApiOutcome<RunReadResponse>, AgentApiError> {
+        Ok(AgentApiOutcome::new(RunReadResponse {
+            run: test_run(params.run_id, RunStatus::Completed),
+        }))
+    }
+
     async fn cancel_run(
         &self,
         params: RunCancelParams,
     ) -> Result<AgentApiOutcome<RunCancelResponse>, AgentApiError> {
         Ok(AgentApiOutcome::new(RunCancelResponse {
             run: test_run(params.run_id, RunStatus::Cancelled),
+        }))
+    }
+
+    async fn decide_run_approvals(
+        &self,
+        params: RunApprovalsDecideParams,
+    ) -> Result<AgentApiOutcome<RunApprovalsDecideResponse>, AgentApiError> {
+        Ok(AgentApiOutcome::new(RunApprovalsDecideResponse {
+            results: params
+                .decisions
+                .into_iter()
+                .map(|decision| ApprovalDecisionResult {
+                    approval_id: decision.approval_id,
+                    status: ApprovalDecisionStatus::Decided,
+                    failure: None,
+                })
+                .collect(),
+            run: test_run(params.run_id, RunStatus::Running),
         }))
     }
 
@@ -2334,8 +2446,28 @@ impl AgentApiService for TestService {
             oauth: Some(McpOAuthDiscoveryView {
                 resource: params.server_url,
                 authorization_servers: vec!["https://auth.example.com".to_owned()],
+                scopes_supported: vec!["mcp:tools".to_owned()],
             }),
         }))
+    }
+
+    async fn discover_mcp_server_tools(
+        &self,
+        params: McpServerToolsDiscoverParams,
+    ) -> Result<AgentApiOutcome<McpServerToolsDiscoverResponse>, AgentApiError> {
+        Ok(AgentApiOutcome::new(
+            McpServerToolsDiscoverResponse::Success {
+                tools: vec![McpAdvertisedToolView {
+                    name: format!("{}_search", params.server_id),
+                    title: Some("Search".to_owned()),
+                    description: Some("Search the configured service".to_owned()),
+                    annotations: Some(McpToolAnnotationsView {
+                        read_only_hint: Some(true),
+                        ..McpToolAnnotationsView::default()
+                    }),
+                }],
+            },
+        ))
     }
 
     async fn list_mcp_servers(
@@ -2813,6 +2945,9 @@ fn test_auth_client(client_id: String) -> OAuthClientView {
         token_endpoint_auth_method: TokenEndpointAuthMethod::None,
         scopes_default: Vec::new(),
         audience: Some("https://crm.example.com/mcp".to_owned()),
+        authorization_server_issuer: Some("https://as.example.com".to_owned()),
+        authorization_response_iss_parameter_supported: true,
+        authorization_server_scopes_supported: Vec::new(),
         created_at_ms: 1,
         updated_at_ms: 2,
     }
@@ -2893,6 +3028,7 @@ fn test_session(id: SessionId, status: SessionStatus) -> SessionView {
         id,
         display_name: Some("Test session".to_owned()),
         status,
+        active_run: None,
         managed: false,
         config_revision: 0,
         config: None,
@@ -2904,6 +3040,16 @@ fn test_session(id: SessionId, status: SessionStatus) -> SessionView {
         active_tools: ActiveToolsView::default(),
         management: None,
         origin: None,
+    }
+}
+
+fn test_session_mutation(id: SessionId, status: SessionStatus) -> SessionMutationView {
+    SessionMutationView {
+        id,
+        status,
+        head_cursor: None,
+        config_revision: 0,
+        context_revision: 0,
     }
 }
 
@@ -2996,6 +3142,7 @@ fn test_run(id: RunId, status: RunStatus) -> RunView {
         entries: Vec::new(),
         tool_batches: Vec::new(),
         usage: None,
+        pending_approvals: Vec::new(),
     }
 }
 
@@ -3020,11 +3167,13 @@ fn test_mcp_server(server_id: String) -> McpServerView {
         server_url: format!("https://{server_id}.example.com/mcp"),
         server_id,
         display_name: None,
-        transport: RemoteMcpTransport::Auto,
         description: None,
         allowed_tools: None,
-        approval_default: RemoteMcpApprovalPolicy::ProviderDefault,
+        execution: RemoteMcpExecution::Provider,
+        exposure: RemoteMcpExposure::Inject,
+        approval_default: RemoteMcpApprovalPolicy::Never,
         defer_loading_default: None,
+        allow_private_network: false,
         auth_policy: McpServerAuthPolicy::None,
         credential: None,
         status: McpServerStatus::Active,

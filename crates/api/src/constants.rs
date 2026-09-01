@@ -31,7 +31,10 @@ pub const METHOD_SESSION_CONTEXT_APPEND: &str = "session/context/append";
 pub const METHOD_SESSION_CONTEXT_REMOVE: &str = "session/context/remove";
 pub const METHOD_SESSION_CONTEXT_COMPACT: &str = "session/context/compact";
 pub const METHOD_SESSION_RUNS_START: &str = "session/runs/start";
+pub const METHOD_SESSION_RUNS_LIST: &str = "session/runs/list";
+pub const METHOD_SESSION_RUNS_READ: &str = "session/runs/read";
 pub const METHOD_SESSION_RUNS_CANCEL: &str = "session/runs/cancel";
+pub const METHOD_SESSION_RUNS_APPROVALS_DECIDE: &str = "session/runs/approvals/decide";
 pub const METHOD_SESSION_RUNS_STEER: &str = "session/runs/steer";
 
 // ── Sessions: prompt and skill state ────────────────────────────────────────
@@ -82,6 +85,7 @@ pub const METHOD_VFS_WORKSPACES_DELETE: &str = "vfs/workspaces/delete";
 
 pub const METHOD_MCP_SERVERS_PUT: &str = "mcp/servers/put";
 pub const METHOD_MCP_SERVERS_AUTH_DISCOVER: &str = "mcp/servers/auth/discover";
+pub const METHOD_MCP_SERVERS_TOOLS_DISCOVER: &str = "mcp/servers/tools/discover";
 pub const METHOD_MCP_SERVERS_READ: &str = "mcp/servers/read";
 pub const METHOD_MCP_SERVERS_LIST: &str = "mcp/servers/list";
 pub const METHOD_MCP_SERVERS_DELETE: &str = "mcp/servers/delete";

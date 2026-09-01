@@ -1,5 +1,4 @@
-//! Bots: durable event routers that own managed sessions (P130–P141, hosted
-//! in the core runtime by P142).
+//! Bots: durable event routers that own managed sessions in the core runtime.
 //!
 //! A bot is a universe record (brief, profile, budgets, capability grants)
 //! plus triggers (schedule, webhook, poll, inbox, chat). Every event goes

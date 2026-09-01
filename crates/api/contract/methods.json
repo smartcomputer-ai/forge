@@ -55,7 +55,7 @@
       "summary": "Create or reopen a managed session"
     },
     {
-      "description": "Returns the current projected session, including sparse config and revisions, lifecycle/run state, active context, and derived tools.",
+      "description": "Returns current state plus a bounded newest-first run-summary page. Follow nextRunCursor with session/runs/list when hasOlderRuns is true; use session/events/read for the transcript.",
       "method": "session/read",
       "params": {
         "schema": {
@@ -253,6 +253,42 @@
       "summary": "Start an agent run"
     },
     {
+      "description": "Returns a newest-first keyset page of bounded run summaries projected from current reducer state.",
+      "method": "session/runs/list",
+      "params": {
+        "schema": {
+          "$ref": "#/definitions/RunListParams"
+        },
+        "type": "RunListParams"
+      },
+      "result": {
+        "schema": {
+          "$ref": "#/definitions/AgentApiOutcomeOfRunListResponse"
+        },
+        "type": "AgentApiOutcome<RunListResponse>"
+      },
+      "scope": "universe",
+      "summary": "List session runs"
+    },
+    {
+      "description": "Reads and projects one run from its bounded event interval, paged by event sequence.",
+      "method": "session/runs/read",
+      "params": {
+        "schema": {
+          "$ref": "#/definitions/RunReadParams"
+        },
+        "type": "RunReadParams"
+      },
+      "result": {
+        "schema": {
+          "$ref": "#/definitions/AgentApiOutcomeOfRunReadResponse"
+        },
+        "type": "AgentApiOutcome<RunReadResponse>"
+      },
+      "scope": "universe",
+      "summary": "Read one session run"
+    },
+    {
       "description": "Requests cancellation of the named queued or active run and returns its current projected state; observe session events for terminal completion. In-flight model and tool activity is aborted; no grace turn runs.",
       "method": "session/runs/cancel",
       "params": {
@@ -269,6 +305,24 @@
       },
       "scope": "universe",
       "summary": "Cancel a run"
+    },
+    {
+      "description": "Approves or rejects pending MCP tool calls on the named active run. Valid decisions apply independently; the run resumes only after every pending approval has a decision.",
+      "method": "session/runs/approvals/decide",
+      "params": {
+        "schema": {
+          "$ref": "#/definitions/RunApprovalsDecideParams"
+        },
+        "type": "RunApprovalsDecideParams"
+      },
+      "result": {
+        "schema": {
+          "$ref": "#/definitions/AgentApiOutcomeOfRunApprovalsDecideResponse"
+        },
+        "type": "AgentApiOutcome<RunApprovalsDecideResponse>"
+      },
+      "scope": "universe",
+      "summary": "Decide pending run approvals"
     },
     {
       "description": "Injects input into the named active run; the model sees it at the next turn boundary without interrupting the in-flight turn. Accepted while the run is running or parked on an await; rejected for queued, cancelling, or finished runs.",
@@ -1061,6 +1115,24 @@
       },
       "scope": "universe",
       "summary": "Discover MCP server authentication"
+    },
+    {
+      "description": "Connects directly to the configured MCP server with its current universe credential and returns one bounded live tools/list result. The inventory is never persisted or cached and no tool is invoked.",
+      "method": "mcp/servers/tools/discover",
+      "params": {
+        "schema": {
+          "$ref": "#/definitions/McpServerToolsDiscoverParams"
+        },
+        "type": "McpServerToolsDiscoverParams"
+      },
+      "result": {
+        "schema": {
+          "$ref": "#/definitions/AgentApiOutcomeOfMcpServerToolsDiscoverResponse"
+        },
+        "type": "AgentApiOutcome<McpServerToolsDiscoverResponse>"
+      },
+      "scope": "universe",
+      "summary": "Discover MCP server tools"
     },
     {
       "description": "Returns one catalog document with defaults, auth policy, non-secret grant binding, status, and revision; no credential value is exposed.",

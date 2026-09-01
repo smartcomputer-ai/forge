@@ -63,6 +63,11 @@
             "const": "environment_not_ready",
             "description": "The environment exists but is not reachable yet: it is still\nprovisioning/booting, or it was powered down and a wake (desired\npower `running`) has been initiated by this request. Distinct from\n`Rejected` so clients retry with backoff instead of failing —\npolling and automation callers lean on this for wake-on-use.",
             "type": "string"
+          },
+          {
+            "const": "response_too_large",
+            "description": "The requested page still exceeds the public serialized response\nbudget. Callers can retry with a smaller page limit or continuation.",
+            "type": "string"
           }
         ]
       },
@@ -1307,6 +1312,23 @@
         ],
         "type": "object"
       },
+      "AgentApiOutcomeOfMcpServerToolsDiscoverResponse": {
+        "properties": {
+          "notifications": {
+            "items": {
+              "$ref": "#/components/schemas/AgentNotification"
+            },
+            "type": "array"
+          },
+          "result": {
+            "$ref": "#/components/schemas/McpServerToolsDiscoverResponse"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "type": "object"
+      },
       "AgentApiOutcomeOfModelListResponse": {
         "properties": {
           "notifications": {
@@ -1681,6 +1703,23 @@
         ],
         "type": "object"
       },
+      "AgentApiOutcomeOfRunApprovalsDecideResponse": {
+        "properties": {
+          "notifications": {
+            "items": {
+              "$ref": "#/components/schemas/AgentNotification"
+            },
+            "type": "array"
+          },
+          "result": {
+            "$ref": "#/components/schemas/RunApprovalsDecideResponse"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "type": "object"
+      },
       "AgentApiOutcomeOfRunCancelResponse": {
         "properties": {
           "notifications": {
@@ -1691,6 +1730,40 @@
           },
           "result": {
             "$ref": "#/components/schemas/RunCancelResponse"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "type": "object"
+      },
+      "AgentApiOutcomeOfRunListResponse": {
+        "properties": {
+          "notifications": {
+            "items": {
+              "$ref": "#/components/schemas/AgentNotification"
+            },
+            "type": "array"
+          },
+          "result": {
+            "$ref": "#/components/schemas/RunListResponse"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "type": "object"
+      },
+      "AgentApiOutcomeOfRunReadResponse": {
+        "properties": {
+          "notifications": {
+            "items": {
+              "$ref": "#/components/schemas/AgentNotification"
+            },
+            "type": "array"
+          },
+          "result": {
+            "$ref": "#/components/schemas/RunReadResponse"
           }
         },
         "required": [
@@ -2413,6 +2486,130 @@
         ],
         "type": "object"
       },
+      "ApprovalDecisionFailure": {
+        "properties": {
+          "kind": {
+            "$ref": "#/components/schemas/ApprovalDecisionFailureKind"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "message"
+        ],
+        "type": "object"
+      },
+      "ApprovalDecisionFailureKind": {
+        "enum": [
+          "invalidId",
+          "unknown",
+          "foreignRun",
+          "alreadyDecided",
+          "cancelled",
+          "duplicate",
+          "invalidNote",
+          "rejected"
+        ],
+        "type": "string"
+      },
+      "ApprovalDecisionInput": {
+        "properties": {
+          "approvalId": {
+            "type": "string"
+          },
+          "decision": {
+            "$ref": "#/components/schemas/ApprovalDecisionKind"
+          },
+          "note": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "approvalId",
+          "decision"
+        ],
+        "type": "object"
+      },
+      "ApprovalDecisionKind": {
+        "enum": [
+          "approve",
+          "reject"
+        ],
+        "type": "string"
+      },
+      "ApprovalDecisionResult": {
+        "properties": {
+          "approvalId": {
+            "type": "string"
+          },
+          "failure": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ApprovalDecisionFailure"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "status": {
+            "$ref": "#/components/schemas/ApprovalDecisionStatus"
+          }
+        },
+        "required": [
+          "approvalId",
+          "status"
+        ],
+        "type": "object"
+      },
+      "ApprovalDecisionStatus": {
+        "enum": [
+          "decided",
+          "failed"
+        ],
+        "type": "string"
+      },
+      "ApprovalSubjectView": {
+        "oneOf": [
+          {
+            "properties": {
+              "argumentsPreview": {
+                "type": "string"
+              },
+              "argumentsRef": {
+                "type": "string"
+              },
+              "kind": {
+                "const": "mcpToolCall",
+                "type": "string"
+              },
+              "serverId": {
+                "type": "string"
+              },
+              "serverLabel": {
+                "type": "string"
+              },
+              "toolName": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "serverId",
+              "serverLabel",
+              "toolName",
+              "argumentsRef",
+              "argumentsPreview"
+            ],
+            "type": "object"
+          }
+        ]
+      },
       "AuthClientCreateParams": {
         "description": "Register an OAuth client configuration. `client_secret` is the second\ndeliberate inbound-plaintext path after `auth/grants/import`: it is\nencrypted on receipt and never returned by any method. `Debug` output\nredacts it; request logging must never echo these params.",
         "properties": {
@@ -2424,6 +2621,22 @@
           },
           "authorizationEndpoint": {
             "type": "string"
+          },
+          "authorizationResponseIssParameterSupported": {
+            "default": false,
+            "type": "boolean"
+          },
+          "authorizationServerIssuer": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "authorizationServerScopesSupported": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           },
           "clientId": {
             "type": [
@@ -6825,7 +7038,7 @@
       "ContextCompactResponse": {
         "properties": {
           "session": {
-            "$ref": "#/components/schemas/SessionView"
+            "$ref": "#/components/schemas/SessionMutationView"
           }
         },
         "required": [
@@ -7064,6 +7277,22 @@
               "type"
             ],
             "type": "object"
+          },
+          {
+            "properties": {
+              "approve": {
+                "type": "boolean"
+              },
+              "type": {
+                "const": "mcpApprovalResponse",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "approve"
+            ],
+            "type": "object"
           }
         ]
       },
@@ -7146,6 +7375,26 @@
               "type",
               "runId",
               "turnId"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "approvalId": {
+                "type": "string"
+              },
+              "runId": {
+                "type": "string"
+              },
+              "type": {
+                "const": "approvalDecision",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "runId",
+              "approvalId"
             ],
             "type": "object"
           },
@@ -7295,6 +7544,10 @@
               "string",
               "null"
             ]
+          },
+          "textTruncated": {
+            "description": "True when `text` is a bounded prefix of the blob body; fetch\n`contentRef` for the complete content.",
+            "type": "boolean"
           },
           "tokenEstimate": {
             "anyOf": [
@@ -8028,12 +8281,12 @@
           },
           {
             "const": "paused",
-            "description": "Execution frozen (P126); wakes on next use.",
+            "description": "Execution frozen; wakes on next use.",
             "type": "string"
           },
           {
             "const": "suspended",
-            "description": "Execution state saved to disk (P126); wakes on next use.",
+            "description": "Execution state saved to disk; wakes on next use.",
             "type": "string"
           },
           {
@@ -8147,7 +8400,7 @@
         "type": "object"
       },
       "EnvironmentPowerStateView": {
-        "description": "Steady power state of a provisioned environment (P126).",
+        "description": "Steady power state of a provisioned environment.",
         "oneOf": [
           {
             "enum": [
@@ -9166,6 +9419,39 @@
         ],
         "type": "object"
       },
+      "McpAdvertisedToolView": {
+        "properties": {
+          "annotations": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/McpToolAnnotationsView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "type": "object"
+      },
       "McpFeature": {
         "additionalProperties": false,
         "description": "Grants remote MCP tools by declaring linked servers from the universe MCP\ncatalog; must link at least one server, with unique server ids.",
@@ -9196,6 +9482,14 @@
           },
           "resource": {
             "type": "string"
+          },
+          "scopesSupported": {
+            "default": [],
+            "description": "Scopes advertised by current protected-resource/authorization-server\nmetadata. Advisory only; clients must not silently expand consent.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           }
         },
         "required": [
@@ -9384,8 +9678,13 @@
         "type": "object"
       },
       "McpServerInput": {
+        "additionalProperties": false,
         "description": "Full MCP server document as submitted by clients.",
         "properties": {
+          "allowPrivateNetwork": {
+            "default": false,
+            "type": "boolean"
+          },
           "allowedTools": {
             "items": {
               "type": "string"
@@ -9444,6 +9743,22 @@
               "null"
             ]
           },
+          "execution": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/RemoteMcpExecution"
+              }
+            ],
+            "default": "provider"
+          },
+          "exposure": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/RemoteMcpExposure"
+              }
+            ],
+            "default": "inject"
+          },
           "serverId": {
             "type": "string"
           },
@@ -9457,14 +9772,6 @@
               }
             ],
             "default": "active"
-          },
-          "transport": {
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/RemoteMcpTransport"
-              }
-            ],
-            "default": "auto"
           }
         },
         "required": [
@@ -9476,33 +9783,8 @@
       },
       "McpServerLink": {
         "additionalProperties": false,
-        "description": "A linked catalog server with optional per-session overrides; absent\nfields defer to the catalog record's defaults.",
+        "description": "A selected universe MCP server. Its catalog record owns all connection and\nbehavior configuration.",
         "properties": {
-          "allowedTools": {
-            "items": {
-              "type": "string"
-            },
-            "type": [
-              "array",
-              "null"
-            ]
-          },
-          "approval": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/RemoteMcpApprovalPolicy"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "deferLoading": {
-            "type": [
-              "boolean",
-              "null"
-            ]
-          },
           "serverId": {
             "type": "string"
           }
@@ -9601,8 +9883,74 @@
         ],
         "type": "string"
       },
+      "McpServerToolsDiscoverParams": {
+        "additionalProperties": false,
+        "description": "Live, non-persisting tool discovery for a configured MCP server.",
+        "properties": {
+          "serverId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "serverId"
+        ],
+        "type": "object"
+      },
+      "McpServerToolsDiscoverResponse": {
+        "description": "The result of one live MCP `tools/list` exchange. Operational connection\nfailures are data so management clients can render stable remediation;\nordinary API admission/not-found/internal failures remain API errors.",
+        "oneOf": [
+          {
+            "properties": {
+              "status": {
+                "const": "success",
+                "type": "string"
+              },
+              "tools": {
+                "items": {
+                  "$ref": "#/components/schemas/McpAdvertisedToolView"
+                },
+                "type": "array"
+              }
+            },
+            "required": [
+              "status",
+              "tools"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "code": {
+                "$ref": "#/components/schemas/McpToolDiscoveryFailureCode"
+              },
+              "message": {
+                "type": "string"
+              },
+              "required_scopes": {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "status": {
+                "const": "failure",
+                "type": "string"
+              }
+            },
+            "required": [
+              "status",
+              "code",
+              "message"
+            ],
+            "type": "object"
+          }
+        ]
+      },
       "McpServerView": {
         "properties": {
+          "allowPrivateNetwork": {
+            "type": "boolean"
+          },
           "allowedTools": {
             "items": {
               "type": "string"
@@ -9653,6 +10001,12 @@
               "null"
             ]
           },
+          "execution": {
+            "$ref": "#/components/schemas/RemoteMcpExecution"
+          },
+          "exposure": {
+            "$ref": "#/components/schemas/RemoteMcpExposure"
+          },
           "revision": {
             "format": "uint64",
             "minimum": 0,
@@ -9667,9 +10021,6 @@
           "status": {
             "$ref": "#/components/schemas/McpServerStatus"
           },
-          "transport": {
-            "$ref": "#/components/schemas/RemoteMcpTransport"
-          },
           "updatedAtMs": {
             "format": "int64",
             "type": "integer"
@@ -9678,9 +10029,11 @@
         "required": [
           "serverId",
           "serverUrl",
-          "transport",
           "defaultServerLabel",
+          "execution",
+          "exposure",
           "approvalDefault",
+          "allowPrivateNetwork",
           "authPolicy",
           "status",
           "revision",
@@ -9688,6 +10041,54 @@
           "updatedAtMs"
         ],
         "type": "object"
+      },
+      "McpToolAnnotationsView": {
+        "description": "Narrow projection of standard MCP `ToolAnnotations`. All values are\nuntrusted hints and never authorization facts.",
+        "properties": {
+          "destructiveHint": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "idempotentHint": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "openWorldHint": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          },
+          "readOnlyHint": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
+      "McpToolDiscoveryFailureCode": {
+        "enum": [
+          "credentialAbsent",
+          "grantNeedsReauth",
+          "grantAudienceMismatch",
+          "unauthorized",
+          "forbidden",
+          "additionalConsentRequired",
+          "remoteRateLimited",
+          "remoteFailure",
+          "unreachable",
+          "invalidResponse",
+          "unsupportedProtocol",
+          "paginationLimit",
+          "responseTooLarge"
+        ],
+        "type": "string"
       },
       "MediaKind": {
         "enum": [
@@ -9954,7 +10355,7 @@
                 "$ref": "#/components/schemas/ModelSource"
               }
             ],
-            "description": "Always `provider` in P97: there is no maintained model catalog."
+            "description": "Always `provider`; there is no maintained model catalog."
           }
         },
         "required": [
@@ -9978,6 +10379,22 @@
           },
           "authorizationEndpoint": {
             "type": "string"
+          },
+          "authorizationResponseIssParameterSupported": {
+            "default": false,
+            "type": "boolean"
+          },
+          "authorizationServerIssuer": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "authorizationServerScopesSupported": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
           },
           "clientId": {
             "type": "string"
@@ -10765,6 +11182,27 @@
         ],
         "type": "object"
       },
+      "PendingApprovalView": {
+        "properties": {
+          "approvalId": {
+            "type": "string"
+          },
+          "requestedAtMs": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "subject": {
+            "$ref": "#/components/schemas/ApprovalSubjectView"
+          }
+        },
+        "required": [
+          "approvalId",
+          "requestedAtMs",
+          "subject"
+        ],
+        "type": "object"
+      },
       "PollCursorSpec": {
         "description": "Dedupe discipline of a poll: an id set for unordered feeds, a watermark\nfor ordered ones.",
         "oneOf": [
@@ -11142,7 +11580,7 @@
           },
           {
             "additionalProperties": false,
-            "description": "Activate the delegating parent's active environment (sub-agents,\nP134). Resolved at spawn, shared not copied, never closed by the\nchild; rejected on a session without a delegation origin or whose\nparent has no active environment.",
+            "description": "Activate the delegating parent's active environment. Resolved at\nsub-agent spawn, shared not copied, never closed by the\nchild; rejected on a session without a delegation origin or whose\nparent has no active environment.",
             "properties": {
               "type": {
                 "const": "inherit",
@@ -11159,7 +11597,7 @@
             "description": "Provision one environment for the session from the universe's enabled\nbinding for `providerId`, then activate it. The provision request id\nis derived from the session id, so retries and repeated applies\nconverge on the same environment.",
             "properties": {
               "credentials": {
-                "description": "Credentials bound to the environment right after it is\nprovisioned, before activation (P127 D5): references to universe\ngrants/providers/secrets, never values. They become ordinary\nenvironment credential bindings; the profile is the initial set,\nnot a live sync. Not available for `existing` environments.",
+                "description": "Credentials bound to the environment right after it is\nprovisioned before activation: references to universe\ngrants/providers/secrets, never values. They become ordinary\nenvironment credential bindings; the profile is the initial set,\nnot a live sync. Not available for `existing` environments.",
                 "items": {
                   "$ref": "#/components/schemas/ProfileEnvironmentCredential"
                 },
@@ -11180,7 +11618,7 @@
                     "type": "null"
                   }
                 ],
-                "description": "Optional staged idle policy for the provisioned environment\n(P126). Stages the provider cannot realize are skipped."
+                "description": "Optional staged idle policy for the provisioned environment.\nStages the provider cannot realize are skipped."
               },
               "metadata": {
                 "additionalProperties": {
@@ -11443,17 +11881,22 @@
       },
       "RemoteMcpApprovalPolicy": {
         "enum": [
-          "providerDefault",
-          "always",
-          "never"
+          "never",
+          "always"
         ],
         "type": "string"
       },
-      "RemoteMcpTransport": {
+      "RemoteMcpExecution": {
         "enum": [
-          "streamableHttp",
-          "sse",
-          "auto"
+          "provider",
+          "native"
+        ],
+        "type": "string"
+      },
+      "RemoteMcpExposure": {
+        "enum": [
+          "inject",
+          "search"
         ],
         "type": "string"
       },
@@ -11477,27 +11920,48 @@
               "entries"
             ],
             "type": "object"
-          },
-          {
-            "properties": {
-              "keys": {
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              "type": {
-                "const": "context",
-                "type": "string"
-              }
-            },
-            "required": [
-              "type",
-              "keys"
-            ],
-            "type": "object"
           }
         ]
+      },
+      "RunApprovalsDecideParams": {
+        "properties": {
+          "decisions": {
+            "items": {
+              "$ref": "#/components/schemas/ApprovalDecisionInput"
+            },
+            "type": "array"
+          },
+          "runId": {
+            "type": "string"
+          },
+          "sessionId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "sessionId",
+          "runId",
+          "decisions"
+        ],
+        "type": "object"
+      },
+      "RunApprovalsDecideResponse": {
+        "properties": {
+          "results": {
+            "items": {
+              "$ref": "#/components/schemas/ApprovalDecisionResult"
+            },
+            "type": "array"
+          },
+          "run": {
+            "$ref": "#/components/schemas/RunView"
+          }
+        },
+        "required": [
+          "results",
+          "run"
+        ],
+        "type": "object"
       },
       "RunCancelParams": {
         "properties": {
@@ -11544,6 +12008,83 @@
             ]
           }
         },
+        "type": "object"
+      },
+      "RunListParams": {
+        "properties": {
+          "cursor": {
+            "description": "Exclusive upper run-id bound from a previous page.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "limit": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "sessionId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "sessionId"
+        ],
+        "type": "object"
+      },
+      "RunListResponse": {
+        "properties": {
+          "hasOlderRuns": {
+            "type": "boolean"
+          },
+          "nextCursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "runs": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/RunSummaryView"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "hasOlderRuns"
+        ],
+        "type": "object"
+      },
+      "RunReadParams": {
+        "properties": {
+          "runId": {
+            "type": "string"
+          },
+          "sessionId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "sessionId",
+          "runId"
+        ],
+        "type": "object"
+      },
+      "RunReadResponse": {
+        "description": "The complete projection of one run. Run projection is stateful across the\nrun's events, so partial pages would silently lose cross-event state; a\nrun whose interval exceeds the server's detail ceiling is rejected with a\ntyped error and remains readable through `session/events/read`. Inline\nentry text is bounded; full bodies stay blob-addressed via `contentRef`.",
+        "properties": {
+          "run": {
+            "$ref": "#/components/schemas/RunView"
+          }
+        },
+        "required": [
+          "run"
+        ],
         "type": "object"
       },
       "RunStartConfig": {
@@ -11655,25 +12196,6 @@
               "items"
             ],
             "type": "object"
-          },
-          {
-            "properties": {
-              "keys": {
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              "type": {
-                "const": "context",
-                "type": "string"
-              }
-            },
-            "required": [
-              "type",
-              "keys"
-            ],
-            "type": "object"
           }
         ]
       },
@@ -11681,6 +12203,7 @@
         "enum": [
           "queued",
           "running",
+          "parked",
           "cancelling",
           "completed",
           "failed",
@@ -11728,6 +12251,95 @@
         ],
         "type": "object"
       },
+      "RunSummarySourceView": {
+        "oneOf": [
+          {
+            "properties": {
+              "contentRef": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "preview": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "previewTruncated": {
+                "type": "boolean"
+              },
+              "type": {
+                "const": "input",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "RunSummaryView": {
+        "description": "Bounded run metadata projected from reducer state. Transcript entries and\ntool payloads are available only from `session/runs/read` or the event\nstream.",
+        "properties": {
+          "acceptedAtMs": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "completedAtMs": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "pendingApprovals": {
+            "items": {
+              "$ref": "#/components/schemas/PendingApprovalView"
+            },
+            "type": "array"
+          },
+          "source": {
+            "$ref": "#/components/schemas/RunSummarySourceView"
+          },
+          "startedAtMs": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "status": {
+            "$ref": "#/components/schemas/RunStatus"
+          },
+          "usage": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LlmUsageView"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "status",
+          "acceptedAtMs",
+          "source"
+        ],
+        "type": "object"
+      },
       "RunTerminalNotificationInput": {
         "additionalProperties": false,
         "properties": {
@@ -11760,6 +12372,12 @@
           },
           "id": {
             "type": "string"
+          },
+          "pendingApprovals": {
+            "items": {
+              "$ref": "#/components/schemas/PendingApprovalView"
+            },
+            "type": "array"
           },
           "source": {
             "$ref": "#/components/schemas/RunViewSource"
@@ -11819,25 +12437,6 @@
             "required": [
               "type",
               "items"
-            ],
-            "type": "object"
-          },
-          {
-            "properties": {
-              "keys": {
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              "type": {
-                "const": "context",
-                "type": "string"
-              }
-            },
-            "required": [
-              "type",
-              "keys"
             ],
             "type": "object"
           }
@@ -11900,7 +12499,7 @@
       "SessionCloseResponse": {
         "properties": {
           "session": {
-            "$ref": "#/components/schemas/SessionView"
+            "$ref": "#/components/schemas/SessionMutationView"
           }
         },
         "required": [
@@ -11994,7 +12593,7 @@
       "SessionConfigPutResponse": {
         "properties": {
           "session": {
-            "$ref": "#/components/schemas/SessionView"
+            "$ref": "#/components/schemas/SessionMutationView"
           }
         },
         "required": [
@@ -12440,6 +13039,106 @@
             "required": [
               "type",
               "runId"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "approvalId": {
+                "type": "string"
+              },
+              "runId": {
+                "type": "string"
+              },
+              "subject": {
+                "$ref": "#/components/schemas/ApprovalSubjectView"
+              },
+              "type": {
+                "const": "approvalRequested",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "runId",
+              "approvalId",
+              "subject"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "runId": {
+                "type": "string"
+              },
+              "type": {
+                "const": "approvalRunParked",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "runId"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "approvalId": {
+                "type": "string"
+              },
+              "decidedBy": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/PrincipalRefView"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "decision": {
+                "$ref": "#/components/schemas/ApprovalDecisionKind"
+              },
+              "note": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "runId": {
+                "type": "string"
+              },
+              "type": {
+                "const": "approvalDecided",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "runId",
+              "approvalId",
+              "decision"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "approvalId": {
+                "type": "string"
+              },
+              "runId": {
+                "type": "string"
+              },
+              "type": {
+                "const": "approvalCancelled",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "runId",
+              "approvalId"
             ],
             "type": "object"
           },
@@ -13831,6 +14530,44 @@
         },
         "type": "object"
       },
+      "SessionMutationView": {
+        "description": "Compact acknowledgement returned by session mutations. Call\n`session/read` when the complete current-state summary is needed.",
+        "properties": {
+          "configRevision": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "contextRevision": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "headCursor": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EventCursor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "id": {
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/SessionStatus"
+          }
+        },
+        "required": [
+          "id",
+          "status",
+          "configRevision",
+          "contextRevision"
+        ],
+        "type": "object"
+      },
       "SessionOriginKind": {
         "enum": [
           "subagent"
@@ -13884,6 +14621,15 @@
       },
       "SessionReadParams": {
         "properties": {
+          "runLimit": {
+            "description": "Newest run summaries to include. Values above the server maximum are\nclamped.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
           "sessionId": {
             "type": "string"
           }
@@ -13895,12 +14641,23 @@
       },
       "SessionReadResponse": {
         "properties": {
+          "hasOlderRuns": {
+            "type": "boolean"
+          },
+          "nextRunCursor": {
+            "description": "Exclusive upper run-id bound for `session/runs/list`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "session": {
             "$ref": "#/components/schemas/SessionView"
           }
         },
         "required": [
-          "session"
+          "session",
+          "hasOlderRuns"
         ],
         "type": "object"
       },
@@ -13974,7 +14731,7 @@
       "SessionStartResponse": {
         "properties": {
           "session": {
-            "$ref": "#/components/schemas/SessionView"
+            "$ref": "#/components/schemas/SessionMutationView"
           }
         },
         "required": [
@@ -14053,6 +14810,17 @@
               "null"
             ]
           },
+          "activeRun": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RunSummaryView"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The currently executing run, always present when one exists — the\npaged `runs` window can omit it behind newer queued runs, so control\nsurfaces (steering, status) must read it from here."
+          },
           "activeTools": {
             "allOf": [
               {
@@ -14123,7 +14891,7 @@
           "runs": {
             "default": [],
             "items": {
-              "$ref": "#/components/schemas/RunView"
+              "$ref": "#/components/schemas/RunSummaryView"
             },
             "type": "array"
           },
@@ -15914,7 +16682,7 @@
       "summary": "Create or reopen a managed session"
     },
     {
-      "description": "Returns the current projected session, including sparse config and revisions, lifecycle/run state, active context, and derived tools.",
+      "description": "Returns current state plus a bounded newest-first run-summary page. Follow nextRunCursor with session/runs/list when hasOlderRuns is true; use session/events/read for the transcript.",
       "name": "session/read",
       "paramStructure": "by-name",
       "params": [
@@ -16145,6 +16913,48 @@
       "summary": "Start an agent run"
     },
     {
+      "description": "Returns a newest-first keyset page of bounded run summaries projected from current reducer state.",
+      "name": "session/runs/list",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "params",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/RunListParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/AgentApiOutcomeOfRunListResponse"
+        }
+      },
+      "summary": "List session runs"
+    },
+    {
+      "description": "Reads and projects one run from its bounded event interval, paged by event sequence.",
+      "name": "session/runs/read",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "params",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/RunReadParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/AgentApiOutcomeOfRunReadResponse"
+        }
+      },
+      "summary": "Read one session run"
+    },
+    {
       "description": "Requests cancellation of the named queued or active run and returns its current projected state; observe session events for terminal completion. In-flight model and tool activity is aborted; no grace turn runs.",
       "name": "session/runs/cancel",
       "paramStructure": "by-name",
@@ -16164,6 +16974,27 @@
         }
       },
       "summary": "Cancel a run"
+    },
+    {
+      "description": "Approves or rejects pending MCP tool calls on the named active run. Valid decisions apply independently; the run resumes only after every pending approval has a decision.",
+      "name": "session/runs/approvals/decide",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "params",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/RunApprovalsDecideParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/AgentApiOutcomeOfRunApprovalsDecideResponse"
+        }
+      },
+      "summary": "Decide pending run approvals"
     },
     {
       "description": "Injects input into the named active run; the model sees it at the next turn boundary without interrupting the in-flight turn. Accepted while the run is running or parked on an await; rejected for queued, cancelling, or finished runs.",
@@ -17088,6 +17919,27 @@
         }
       },
       "summary": "Discover MCP server authentication"
+    },
+    {
+      "description": "Connects directly to the configured MCP server with its current universe credential and returns one bounded live tools/list result. The inventory is never persisted or cached and no tool is invoked.",
+      "name": "mcp/servers/tools/discover",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "params",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/McpServerToolsDiscoverParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/AgentApiOutcomeOfMcpServerToolsDiscoverResponse"
+        }
+      },
+      "summary": "Discover MCP server tools"
     },
     {
       "description": "Returns one catalog document with defaults, auth policy, non-secret grant binding, status, and revision; no credential value is exposed.",

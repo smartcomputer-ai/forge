@@ -40,6 +40,9 @@ pub const PROFILE_SCHEMA_SQL: &str = include_str!("../migrations/006_agent_profi
 pub const API_KEYS_SCHEMA_SQL: &str = include_str!("../migrations/007_api_keys.sql");
 pub const BOTS_SCHEMA_SQL: &str = include_str!("../migrations/008_bots.sql");
 pub const CHANNELS_SCHEMA_SQL: &str = include_str!("../migrations/009_channels.sql");
+pub const MCP_RUNTIME_SCHEMA_SQL: &str = include_str!("../migrations/010_mcp_runtime.sql");
+pub const SESSION_CHECKPOINTS_SCHEMA_SQL: &str =
+    include_str!("../migrations/011_session_checkpoints.sql");
 
 pub const DEFAULT_INLINE_THRESHOLD_BYTES: usize = 64 * 1024;
 
@@ -362,7 +365,7 @@ pub async fn list_universes_with_pending_environments(
     pool: &PgPool,
 ) -> Result<Vec<Uuid>, PgStoreError> {
     // Universes with lifecycle work in flight, plus universes holding an open
-    // profile-provisioned environment that closes with its session (P125):
+    // profile-provisioned environment that closes with its session:
     // the sweep decides per environment whether that session is closed.
     let rows: Vec<(Uuid,)> = sqlx::query_as(
         "SELECT DISTINCT e.universe_id FROM environments e \

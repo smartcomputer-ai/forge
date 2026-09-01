@@ -24,7 +24,7 @@ const ENVIRONMENT_SECRET_PROVIDER_ID = "environment-secret";
 const DEFAULT_GITHUB_API_BASE_URL = "https://api.github.com";
 /// `claude setup-token` mints one-year tokens.
 const CLAUDE_CODE_TOKEN_TTL_MS = 365 * 24 * 60 * 60 * 1000;
-const CONFIGURATOR_VERSION = 3;
+const CONFIGURATOR_VERSION = 4;
 const CONFIGURATOR_SERVER_ID = "lightspeed-configurator";
 const CONFIGURATOR_PROFILE_ID = "lightspeed-configurator";
 const CONFIGURATOR_MCP_URL = "https://configurator.lightspeed.demo/mcp";
@@ -357,12 +357,14 @@ function finishConfiguratorInstall(store: DemoStore, universe: UniverseState, se
     serverId: CONFIGURATOR_SERVER_ID,
     displayName: "Lightspeed Configurator",
     serverUrl: CONFIGURATOR_MCP_URL,
-    transport: "streamableHttp",
     defaultServerLabel: "configurator",
     description: "Configure and operate this Lightspeed universe through its generated API.",
     allowedTools: null,
+    execution: "native",
+    exposure: "search",
     approvalDefault: "never",
     deferLoadingDefault: null,
+    allowPrivateNetwork: false,
     authPolicy: { type: "requiredBearer" },
     credential: { type: "authGrant", grantId: grant.grantId },
     status: "active",
@@ -381,7 +383,7 @@ function finishConfiguratorInstall(store: DemoStore, universe: UniverseState, se
       text:
         "Configure and operate the current Lightspeed universe. Read revisioned resources before replacing them, make only the requested changes, and report the resulting resource identifiers.",
     },
-    config: { features: { mcp: { servers: [{ serverId: CONFIGURATOR_SERVER_ID, approval: "never" }] } } },
+    config: { features: { mcp: { servers: [{ serverId: CONFIGURATOR_SERVER_ID }] } } },
     revision: (existingProfile?.revision ?? 0) + 1,
     createdAtMs: existingProfile?.createdAtMs ?? now,
     updatedAtMs: now,

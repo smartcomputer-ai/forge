@@ -7,8 +7,8 @@ use thiserror::Error;
 
 use crate::{
     AuthGrantId, AuthGrantRecord, AuthGrantStatus, AuthGrantStore, AuthGrantTokenRefresh,
-    AuthProviderKind, AuthRegistryError, GrantRefreshLock, OAuthClientStore, OAuthTokenClient,
-    OAuthTokenError, OAuthTokenGrant, OAuthTokenRequest, PutSecretRecord,
+    AuthProviderKind, AuthRegistryError, GrantRefreshLock, McpOAuthTokenContext, OAuthClientStore,
+    OAuthTokenClient, OAuthTokenError, OAuthTokenGrant, OAuthTokenRequest, PutSecretRecord,
     SECRET_KIND_OAUTH_ACCESS_TOKEN, SECRET_KIND_OAUTH_REFRESH_TOKEN, SecretId, SecretStore,
     SecretValue, random_auth_id,
 };
@@ -23,7 +23,7 @@ pub enum TokenAudience {
     /// GitHub REST API base URL the installation token is for.
     GitHubApi(String),
     /// Model provider API base URL an LLM/model call is about to hit
-    /// (P69 G7 model provider OAuth). Bindings without a configured audience
+    /// for model-provider OAuth. Bindings without a configured audience
     /// request a non-URL `model:<provider_id>` sentinel, which only
     /// audience-unrestricted grants cover.
     ModelProvider(String),
@@ -288,6 +288,17 @@ impl StoredTokenSource {
             auth_method: client.token_endpoint_auth_method,
             grant: OAuthTokenGrant::RefreshToken { refresh_token },
             resource: grant.audience.clone(),
+            mcp: (grant.provider_kind == AuthProviderKind::McpOAuth).then(|| {
+                McpOAuthTokenContext {
+                    authorization_endpoint: client.authorization_endpoint.clone(),
+                    issuer: client.authorization_server_issuer.clone(),
+                    require_issuer: client.authorization_response_iss_parameter_supported,
+                    scopes_supported: client.authorization_server_scopes_supported.clone(),
+                    requested_scopes: grant.scopes.clone(),
+                    callback_state: None,
+                    callback_issuer: None,
+                }
+            }),
         };
         let response = match oauth.token_client.request_token(&request).await {
             Ok(response) => response,
@@ -837,6 +848,9 @@ mod tests {
                 token_endpoint_auth_method: TokenEndpointAuthMethod::None,
                 scopes_default: Vec::new(),
                 audience: Some("https://crm.example.com/mcp".to_owned()),
+                authorization_server_issuer: None,
+                authorization_response_iss_parameter_supported: false,
+                authorization_server_scopes_supported: Vec::new(),
                 created_at_ms: 10,
             })
             .await

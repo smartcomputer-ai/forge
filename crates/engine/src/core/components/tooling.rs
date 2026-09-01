@@ -204,11 +204,39 @@ pub fn validate_tool_map(tools: &BTreeMap<ToolName, ToolSpec>) -> Result<(), Dom
     }
 
     validate_unique_remote_mcp_server_labels(tools)?;
+    validate_unique_native_mcp_prefixes(tools)?;
 
     for tool in tools.values() {
         tool.validate()?;
     }
 
+    Ok(())
+}
+
+fn validate_unique_native_mcp_prefixes(
+    tools: &BTreeMap<ToolName, ToolSpec>,
+) -> Result<(), DomainError> {
+    let prefixes = tools
+        .values()
+        .filter_map(|tool| match &tool.kind {
+            ToolKind::RemoteMcp(spec)
+                if spec.execution == RemoteMcpExecution::Native
+                    && spec.exposure == RemoteMcpExposure::Inject =>
+            {
+                Some((format!("{}__", tool.name), &tool.name))
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    for (index, (prefix, name)) in prefixes.iter().enumerate() {
+        for (other_prefix, other_name) in prefixes.iter().skip(index + 1) {
+            if prefix.starts_with(other_prefix) || other_prefix.starts_with(prefix) {
+                return Err(DomainError::InvariantViolation(format!(
+                    "native MCP tool prefixes for {name} and {other_name} are ambiguous"
+                )));
+            }
+        }
+    }
     Ok(())
 }
 
@@ -359,7 +387,7 @@ impl ToolSpec {
             ToolKind::ProviderNative(native) => {
                 native.execution == ProviderNativeToolExecution::ClientEffect
             }
-            ToolKind::RemoteMcp(_) => false,
+            ToolKind::RemoteMcp(remote) => remote.execution == RemoteMcpExecution::Native,
         }
     }
 }
@@ -404,19 +432,28 @@ pub struct ProviderNativeToolSpec {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RemoteMcpToolSpec {
     pub server_id: String,
+    pub record_revision: u64,
     pub server_label: String,
     pub server_url: String,
     pub description_ref: Option<BlobRef>,
     pub allowed_tools: Option<Vec<String>>,
+    pub execution: RemoteMcpExecution,
+    pub exposure: RemoteMcpExposure,
     pub approval: RemoteMcpApprovalPolicy,
     pub defer_loading: Option<bool>,
     pub auth_ref: Option<SecretRef>,
     pub auth_required: bool,
+    pub allow_private_network: bool,
 }
 
 impl RemoteMcpToolSpec {
     pub fn validate(&self) -> Result<(), DomainError> {
         validate_secret_ref_component("remote MCP server id", &self.server_id)?;
+        if self.record_revision == 0 {
+            return Err(DomainError::InvariantViolation(
+                "remote MCP record revision must be >= 1".to_owned(),
+            ));
+        }
         validate_remote_mcp_server_label(&self.server_label)?;
         validate_remote_mcp_server_url(&self.server_url)?;
         if let Some(allowed_tools) = &self.allowed_tools {
@@ -448,16 +485,38 @@ impl RemoteMcpToolSpec {
                 "remote MCP required auth needs a server credential ref".to_owned(),
             ));
         }
+        if self.execution == RemoteMcpExecution::Provider
+            && self.exposure != RemoteMcpExposure::Inject
+        {
+            return Err(DomainError::InvariantViolation(
+                "remote MCP exposure applies only to native execution".to_owned(),
+            ));
+        }
         Ok(())
     }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RemoteMcpExecution {
+    #[default]
+    Provider,
+    Native,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RemoteMcpExposure {
+    #[default]
+    Inject,
+    Search,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RemoteMcpApprovalPolicy {
-    ProviderDefault,
-    Always,
     Never,
+    Always,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1264,13 +1323,113 @@ fn initial_tool_call_execution_policy(
     turn_id: TurnId,
     call: &ObservedToolCall,
 ) -> Option<ToolCallExecutionPolicy> {
-    let tool = planned_tool_for_turn(state, turn_id, &call.tool_name)?;
-    if !tool.invokes_client_effect() {
+    let invokes_client_effect = planned_tool_for_turn(state, turn_id, &call.tool_name)
+        .is_some_and(|tool| tool.invokes_client_effect())
+        || resolve_injected_native_mcp(state, &call.tool_name).is_some();
+    if !invokes_client_effect {
         return None;
     }
     Some(ToolCallExecutionPolicy {
         invokes_client_effect: true,
     })
+}
+
+pub fn remote_mcp_call_runtime(
+    state: &CoreAgentState,
+    tool_name: &ToolName,
+    call_id: &ToolCallId,
+) -> Option<crate::RemoteMcpCallRuntime> {
+    let approval_decision = state
+        .runs
+        .active
+        .as_ref()
+        .and_then(|run| {
+            run.approvals.values().find_map(|record| {
+                let crate::ApprovalContinuation::NativeMcp {
+                    call_id: approval_call_id,
+                } = &record.request.continuation
+                else {
+                    return None;
+                };
+                (approval_call_id == call_id).then_some(match record.status {
+                    crate::ApprovalStatus::Approved => Some(true),
+                    crate::ApprovalStatus::Rejected => Some(false),
+                    crate::ApprovalStatus::Pending | crate::ApprovalStatus::Cancelled => None,
+                })
+            })
+        })
+        .flatten();
+
+    if let Some((spec, remote_tool_name)) = resolve_injected_native_mcp(state, tool_name) {
+        return Some(crate::RemoteMcpCallRuntime::Injected {
+            target: remote_mcp_target(spec),
+            remote_tool_name,
+            approval_decision,
+        });
+    }
+    if !matches!(tool_name.as_str(), "mcp_find_tools" | "mcp_call") {
+        return None;
+    }
+    let targets = state
+        .tooling
+        .tools
+        .values()
+        .filter_map(|tool| match &tool.kind {
+            ToolKind::RemoteMcp(spec)
+                if spec.execution == RemoteMcpExecution::Native
+                    && spec.exposure == RemoteMcpExposure::Search =>
+            {
+                Some(remote_mcp_target(spec))
+            }
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    (!targets.is_empty()).then_some(crate::RemoteMcpCallRuntime::Search {
+        targets,
+        approval_decision,
+    })
+}
+
+fn resolve_injected_native_mcp<'a>(
+    state: &'a CoreAgentState,
+    tool_name: &ToolName,
+) -> Option<(&'a RemoteMcpToolSpec, String)> {
+    state.tooling.tools.values().find_map(|tool| {
+        let ToolKind::RemoteMcp(spec) = &tool.kind else {
+            return None;
+        };
+        if spec.execution != RemoteMcpExecution::Native
+            || spec.exposure != RemoteMcpExposure::Inject
+        {
+            return None;
+        }
+        let prefix = format!("{}__", tool.name);
+        let remote_name = tool_name.as_str().strip_prefix(&prefix)?;
+        if remote_name.is_empty()
+            || spec
+                .allowed_tools
+                .as_ref()
+                .is_some_and(|allowed| !allowed.iter().any(|candidate| candidate == remote_name))
+        {
+            return None;
+        }
+        validate_remote_mcp_allowed_tool_name(remote_name).ok()?;
+        Some((spec, remote_name.to_owned()))
+    })
+}
+
+fn remote_mcp_target(spec: &RemoteMcpToolSpec) -> crate::RemoteMcpCallTarget {
+    crate::RemoteMcpCallTarget {
+        server_id: spec.server_id.clone(),
+        record_revision: spec.record_revision,
+        server_label: spec.server_label.clone(),
+        server_url: spec.server_url.clone(),
+        allowed_tools: spec.allowed_tools.clone(),
+        approval: spec.approval.clone(),
+        auth_ref: spec.auth_ref.clone(),
+        auth_required: spec.auth_required,
+        allow_private_network: spec.allow_private_network,
+    }
 }
 
 fn planned_tool_for_turn(
@@ -1868,10 +2027,13 @@ mod tests {
     fn remote_mcp_spec(server_label: &str, server_url: &str) -> RemoteMcpToolSpec {
         RemoteMcpToolSpec {
             server_id: server_label.to_owned(),
+            record_revision: 1,
             server_label: server_label.to_owned(),
             server_url: server_url.to_owned(),
             description_ref: None,
             allowed_tools: Some(vec!["hello".to_owned()]),
+            execution: RemoteMcpExecution::Provider,
+            exposure: RemoteMcpExposure::Inject,
             approval: RemoteMcpApprovalPolicy::Never,
             defer_loading: Some(true),
             auth_ref: Some(SecretRef {
@@ -1879,6 +2041,7 @@ mod tests {
                 id: server_label.to_owned(),
             }),
             auth_required: true,
+            allow_private_network: false,
         }
     }
 

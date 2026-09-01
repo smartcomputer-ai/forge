@@ -13,7 +13,7 @@ environment-client = { path = "../environment-client" }
 environment-protocol = { path = "../environment-protocol" }
 jsonschema = { version = "0.33", default-features = false }
 regex = "1"
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "stream"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "1"

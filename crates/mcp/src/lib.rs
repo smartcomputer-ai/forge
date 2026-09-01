@@ -4,6 +4,8 @@
 //! for remote MCP server catalogs. Concrete persistence adapters, such as
 //! `store-pg`, implement these traits outside this crate.
 
+pub mod search;
+
 use std::collections::BTreeMap;
 use std::fmt;
 use std::str::FromStr;
@@ -119,6 +121,96 @@ pub enum McpRegistryError {
     Store { message: String },
 }
 
+/// Sanitized metadata from one live MCP `tools/list` response. This is
+/// request-scoped evidence, never catalog or execution state.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DiscoveredMcpTool {
+    pub name: String,
+    pub title: Option<String>,
+    pub description: Option<String>,
+    pub input_schema: serde_json::Value,
+    pub annotations: Option<McpToolAnnotations>,
+}
+
+/// Standard MCP tool annotation hints. Values are untrusted and must not be
+/// treated as authorization or approval facts.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct McpToolAnnotations {
+    pub read_only_hint: Option<bool>,
+    pub destructive_hint: Option<bool>,
+    pub idempotent_hint: Option<bool>,
+    pub open_world_hint: Option<bool>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum McpToolDiscoveryFailureKind {
+    CredentialAbsent,
+    GrantNeedsReauth,
+    GrantAudienceMismatch,
+    Unauthorized,
+    Forbidden,
+    AdditionalConsentRequired,
+    RemoteRateLimited,
+    RemoteFailure,
+    Unreachable,
+    InvalidResponse,
+    UnsupportedProtocol,
+    PaginationLimit,
+    ResponseTooLarge,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Error)]
+#[error("{message}")]
+pub struct McpToolDiscoveryFailure {
+    pub kind: McpToolDiscoveryFailureKind,
+    pub message: String,
+    pub required_scopes: Vec<String>,
+}
+
+impl McpToolDiscoveryFailure {
+    pub fn new(kind: McpToolDiscoveryFailureKind, message: impl Into<String>) -> Self {
+        Self {
+            kind,
+            message: message.into(),
+            required_scopes: Vec::new(),
+        }
+    }
+
+    pub fn with_required_scopes(mut self, scopes: Vec<String>) -> Self {
+        self.required_scopes = scopes;
+        self
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct McpToolDiscoveryLimits {
+    pub max_pages: usize,
+    pub max_tools: usize,
+    pub max_response_bytes: usize,
+    /// Independent response budget for `tools/call`; changing discovery
+    /// inventory limits must not silently change tool execution policy.
+    pub max_tool_call_response_bytes: usize,
+    pub max_name_bytes: usize,
+    pub max_text_bytes: usize,
+    pub max_schema_bytes: usize,
+    pub max_schema_depth: usize,
+}
+
+impl Default for McpToolDiscoveryLimits {
+    fn default() -> Self {
+        Self {
+            max_pages: 8,
+            max_tools: 256,
+            max_response_bytes: 2 * 1024 * 1024,
+            max_tool_call_response_bytes: 2 * 1024 * 1024,
+            max_name_bytes: 128,
+            max_text_bytes: 4 * 1024,
+            max_schema_bytes: 64 * 1024,
+            max_schema_depth: 32,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct McpServerRecord {
     pub server_id: McpServerId,
@@ -128,8 +220,11 @@ pub struct McpServerRecord {
     pub default_server_label: String,
     pub description: Option<String>,
     pub allowed_tools: Option<Vec<String>>,
+    pub execution: McpExecution,
+    pub exposure: McpExposure,
     pub approval_default: McpApprovalPolicy,
     pub defer_loading_default: Option<bool>,
+    pub allow_private_network: bool,
     pub auth_policy: McpServerAuthPolicy,
     /// Universe-owned grant used to authenticate this configured server.
     /// Sessions select only `server_id` and never override this binding.
@@ -152,6 +247,12 @@ impl McpServerRecord {
         validate_remote_mcp_server_label(&self.default_server_label)?;
         validate_nonempty_optional("description", self.description.as_deref())?;
         validate_allowed_tools(self.allowed_tools.as_deref())?;
+        validate_execution_policy(
+            &self.default_server_label,
+            self.execution,
+            self.exposure,
+            self.allowed_tools.as_deref(),
+        )?;
         self.auth_policy.validate()?;
         if matches!(self.auth_policy, McpServerAuthPolicy::None) && self.auth_grant_id.is_some() {
             return Err(McpRegistryError::InvalidInput {
@@ -184,8 +285,11 @@ pub struct PutMcpServerRecord {
     pub default_server_label: String,
     pub description: Option<String>,
     pub allowed_tools: Option<Vec<String>>,
+    pub execution: McpExecution,
+    pub exposure: McpExposure,
     pub approval_default: McpApprovalPolicy,
     pub defer_loading_default: Option<bool>,
+    pub allow_private_network: bool,
     pub auth_policy: McpServerAuthPolicy,
     pub auth_grant_id: Option<AuthGrantId>,
     pub status: McpServerStatus,
@@ -203,8 +307,11 @@ impl PutMcpServerRecord {
             default_server_label: self.default_server_label,
             description: self.description,
             allowed_tools: self.allowed_tools,
+            execution: self.execution,
+            exposure: self.exposure,
             approval_default: self.approval_default,
             defer_loading_default: self.defer_loading_default,
+            allow_private_network: self.allow_private_network,
             auth_policy: self.auth_policy,
             auth_grant_id: self.auth_grant_id,
             status: self.status,
@@ -244,8 +351,11 @@ impl PutMcpServerRecord {
             default_server_label: self.default_server_label,
             description: self.description,
             allowed_tools: self.allowed_tools,
+            execution: self.execution,
+            exposure: self.exposure,
             approval_default: self.approval_default,
             defer_loading_default: self.defer_loading_default,
+            allow_private_network: self.allow_private_network,
             auth_policy: self.auth_policy,
             auth_grant_id: self.auth_grant_id,
             status: self.status,
@@ -261,22 +371,38 @@ pub struct ListMcpServers {
     pub status: Option<McpServerStatus>,
 }
 
+/// Runtime transport selected by the catalog implementation. This is kept out
+/// of the public management API until Lightspeed supports more than the
+/// current Streamable HTTP transport.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RemoteMcpTransport {
-    StreamableHttp,
-    Sse,
     #[default]
-    Auto,
+    StreamableHttp,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum McpExecution {
+    #[default]
+    Provider,
+    Native,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum McpExposure {
+    #[default]
+    Inject,
+    Search,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum McpApprovalPolicy {
     #[default]
-    ProviderDefault,
-    Always,
     Never,
+    Always,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -495,6 +621,56 @@ fn validate_allowed_tools(values: Option<&[String]>) -> Result<(), McpRegistryEr
     Ok(())
 }
 
+fn validate_execution_policy(
+    server_label: &str,
+    execution: McpExecution,
+    exposure: McpExposure,
+    allowed_tools: Option<&[String]>,
+) -> Result<(), McpRegistryError> {
+    if execution == McpExecution::Provider && exposure != McpExposure::Inject {
+        return Err(McpRegistryError::InvalidInput {
+            message: "exposure applies only to native MCP execution".to_owned(),
+        });
+    }
+    if execution != McpExecution::Native || exposure != McpExposure::Inject {
+        return Ok(());
+    }
+    let Some(allowed_tools) = allowed_tools else {
+        return Ok(());
+    };
+    let prefix = native_tool_prefix(server_label);
+    for remote_name in allowed_tools {
+        validate_mcp_component(
+            "native injected MCP tool",
+            remote_name,
+            "ASCII letters, digits, '_', '-'",
+            |ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-'),
+        )?;
+        let combined = format!("{prefix}{remote_name}");
+        if combined.len() > 64 {
+            return Err(McpRegistryError::InvalidInput {
+                message: format!(
+                    "native MCP tool name {combined:?} exceeds the 64-byte provider limit; shorten the server label or remote tool name, or use search exposure"
+                ),
+            });
+        }
+    }
+    Ok(())
+}
+
+pub fn native_tool_prefix(server_label: &str) -> String {
+    let mut prefix = String::from("mcp_");
+    for ch in server_label.chars() {
+        prefix.push(if ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-') {
+            ch
+        } else {
+            '_'
+        });
+    }
+    prefix.push_str("__");
+    prefix
+}
+
 fn validate_scope_defaults(values: &[String]) -> Result<(), McpRegistryError> {
     let mut seen = std::collections::BTreeSet::new();
     for value in values {
@@ -652,12 +828,15 @@ mod tests {
             server_id: McpServerId::new(server_id),
             display_name: Some("Echo".to_owned()),
             server_url: "https://echo.example.com/mcp".to_owned(),
-            transport: RemoteMcpTransport::Auto,
+            transport: RemoteMcpTransport::StreamableHttp,
             default_server_label: "echo".to_owned(),
             description: Some("Echo MCP server".to_owned()),
             allowed_tools: Some(vec!["hello".to_owned()]),
+            execution: McpExecution::Provider,
+            exposure: McpExposure::Inject,
             approval_default: McpApprovalPolicy::Never,
             defer_loading_default: Some(true),
+            allow_private_network: false,
             auth_policy: McpServerAuthPolicy::None,
             auth_grant_id: None,
             status,
@@ -670,6 +849,36 @@ mod tests {
         let record = put_request("echo", McpServerStatus::Active).into_record();
 
         record.validate().expect("valid MCP server record");
+    }
+
+    #[test]
+    fn native_inject_selected_tools_must_fit_provider_function_names() {
+        let mut record =
+            put_request("durable-native-server-identifier", McpServerStatus::Active).into_record();
+        record.execution = McpExecution::Native;
+        record.exposure = McpExposure::Inject;
+        record.default_server_label = "native".to_owned();
+        record.allowed_tools = Some(vec!["lookup_customer".to_owned()]);
+        record
+            .validate()
+            .expect("the compact server label determines the injected tool name");
+
+        record.allowed_tools = Some(vec!["x".repeat(60)]);
+        assert!(matches!(
+            record.validate(),
+            Err(McpRegistryError::InvalidInput { .. })
+        ));
+
+        record.allowed_tools = Some(vec!["not/a/function".to_owned()]);
+        assert!(matches!(
+            record.validate(),
+            Err(McpRegistryError::InvalidInput { .. })
+        ));
+
+        record.exposure = McpExposure::Search;
+        record
+            .validate()
+            .expect("search exposure transports the remote name as data");
     }
 
     #[test]

@@ -1,8 +1,8 @@
 # Incus environment provider
 
-`lightspeed-provider-incus` is a stateless P118 controller, passive P119 data
-endpoint, optional P121 application edge, and P122 single-node/cluster Incus
-adapter. It depends on the public host
+`lightspeed-provider-incus` is a stateless controller, passive data endpoint,
+optional application edge, and single-node/cluster Incus adapter. It depends
+on the public host
 protocol crate, not Lightspeed's database, API implementation, engine, or
 Temporal runtime.
 
@@ -95,7 +95,7 @@ commercial quotas or specialized offerings would need a future provider
 administration mechanism; they are intentionally not modeled as deployment
 JSON entries.
 
-Optional P121 ingress uses one provider-approved guest port per template. Set
+Optional public ingress uses one provider-approved guest port per template. Set
 `ingress.publicBaseUrl` to the wildcard HTTPS base and `ingress.listen` to the
 provider edge listener behind deployment-managed wildcard TLS. For a template,
 `publicIngress: true` requires `ingressPort`. Lightspeed callers can only

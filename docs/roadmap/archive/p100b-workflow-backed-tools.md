@@ -1098,7 +1098,7 @@ Live Temporal tests must source `scripts/dev/env.sh` and run serially:
 ```bash
 source scripts/dev/env.sh
 cargo test -p temporal-server --test workflow_tool_plugins_live -- --ignored --test-threads=1
-cargo test -p temporal-server --test temporal_live -- --ignored --test-threads=1
+cargo test -p temporal-server --test sessions_live --test runs_live --test subagents_live --test profiles_live --test tenancy_live --test mcp_live -- --ignored --test-threads=1
 cargo test -p temporal-server --test environment_provider_live -- --ignored --test-threads=1
 ```
 

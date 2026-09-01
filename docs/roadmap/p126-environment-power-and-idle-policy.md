@@ -375,7 +375,7 @@ Executed 2026-08-17:
 - `store_pg_live::pg_live_universe_environments_are_independent_of_sessions`
   (power intent, power states, idle policy round trip; reconcile and reaper
   candidate queries) on a database re-migrated to revision 8 (extended 008).
-- `temporal_live::temporal_live_environment_power_intent_converges_and_wakes_on_use`:
+- `environment_provider_live::temporal_live_environment_power_intent_converges_and_wakes_on_use`:
   create with idle policy; power change rejected before first observation;
   ready with four reported states; malformed idle policy rejected, clear and
   restore; reaper sees one candidate and one unreachable daemon; pause intent

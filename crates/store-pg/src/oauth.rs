@@ -1,5 +1,5 @@
 //! OAuth client configurations, authorization flows, and the per-grant
-//! refresh lock (P69 G2/G3).
+//! refresh lock.
 //!
 //! Tables never hold secret values: client secrets and PKCE verifiers live in
 //! `auth_secrets`, flows store only the SHA-256 hash of the `state`
@@ -34,6 +34,9 @@ const OAUTH_CLIENT_COLUMNS: &str = r#"
     token_endpoint_auth_method,
     scopes_default,
     audience,
+    authorization_server_issuer,
+    authorization_response_iss_parameter_supported,
+    authorization_server_scopes_supported,
     created_at_ms,
     updated_at_ms
 "#;
@@ -51,6 +54,8 @@ const AUTH_FLOW_COLUMNS: &str = r#"
     redirect_uri,
     scopes,
     audience,
+    expected_issuer,
+    require_issuer,
     grant_id,
     error,
     expires_at_ms,
@@ -86,10 +91,13 @@ impl OAuthClientStore for PgStore {
                 token_endpoint_auth_method,
                 scopes_default,
                 audience,
+                authorization_server_issuer,
+                authorization_response_iss_parameter_supported,
+                authorization_server_scopes_supported,
                 created_at_ms,
                 updated_at_ms
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $13)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $16)
             ON CONFLICT (universe_id, client_id) DO NOTHING
             RETURNING {OAUTH_CLIENT_COLUMNS}
             "#
@@ -109,6 +117,9 @@ impl OAuthClientStore for PgStore {
             ))
             .bind(&record.scopes_default)
             .bind(record.audience.as_deref())
+            .bind(record.authorization_server_issuer.as_deref())
+            .bind(record.authorization_response_iss_parameter_supported)
+            .bind(&record.authorization_server_scopes_supported)
             .bind(record.created_at_ms)
             .fetch_optional(&self.pool)
             .await
@@ -219,11 +230,13 @@ impl AuthFlowStore for PgStore {
                 redirect_uri,
                 scopes,
                 audience,
+                expected_issuer,
+                require_issuer,
                 expires_at_ms,
                 created_at_ms,
                 updated_at_ms
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $15)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $17)
             ON CONFLICT (universe_id, flow_id) DO NOTHING
             RETURNING {AUTH_FLOW_COLUMNS}
             "#
@@ -242,6 +255,8 @@ impl AuthFlowStore for PgStore {
             .bind(&record.redirect_uri)
             .bind(&record.scopes)
             .bind(record.audience.as_deref())
+            .bind(record.expected_issuer.as_deref())
+            .bind(record.require_issuer)
             .bind(record.expires_at_ms)
             .bind(record.created_at_ms)
             .fetch_optional(&self.pool)
@@ -473,6 +488,15 @@ fn oauth_client_from_row(
         audience: row
             .try_get("audience")
             .map_err(|error| auth_sql_error("decode oauth client audience", error))?,
+        authorization_server_issuer: row
+            .try_get("authorization_server_issuer")
+            .map_err(|error| auth_sql_error("decode oauth client issuer", error))?,
+        authorization_response_iss_parameter_supported: row
+            .try_get("authorization_response_iss_parameter_supported")
+            .map_err(|error| auth_sql_error("decode oauth client issuer support", error))?,
+        authorization_server_scopes_supported: row
+            .try_get("authorization_server_scopes_supported")
+            .map_err(|error| auth_sql_error("decode oauth client supported scopes", error))?,
         created_at_ms: row
             .try_get("created_at_ms")
             .map_err(|error| auth_sql_error("decode oauth client created_at_ms", error))?,
@@ -542,6 +566,12 @@ fn auth_flow_from_row(row: &sqlx::postgres::PgRow) -> Result<AuthFlowRecord, Aut
         audience: row
             .try_get("audience")
             .map_err(|error| auth_sql_error("decode auth flow audience", error))?,
+        expected_issuer: row
+            .try_get("expected_issuer")
+            .map_err(|error| auth_sql_error("decode auth flow expected issuer", error))?,
+        require_issuer: row
+            .try_get("require_issuer")
+            .map_err(|error| auth_sql_error("decode auth flow issuer requirement", error))?,
         grant_id: grant_id
             .map(AuthGrantId::try_new)
             .transpose()
