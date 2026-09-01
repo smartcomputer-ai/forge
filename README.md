@@ -44,9 +44,15 @@ attached only when needed. One worker can therefore manage hundreds of agents.
 **What you can build with Lightspeed**:
 
 - **Personal assistants** for thousands of users without one idle VM per user
+  (<a href="https://ls.bot/demo/u/personal-assistant" target="_blank" rel="noopener">Assistant Demo</a>)
 - **Autonomous software factories** that coordinate agents to build, test, and
   critique features for weeks at a time
+  (<a href="https://ls.bot/demo/u/software-factory" target="_blank" rel="noopener">Software Factory Demo</a>)
+- **On-call operations agents** that investigate alerts, propose fixes, and
+  report back through chat
+  (<a href="https://ls.bot/demo/u/technical-support" target="_blank" rel="noopener">Technical Support Demo</a>)
 - **Research agents** that spin up compute for long-running experiments, stay live for days, and supervise progress
+- and more...
 
 ## Quick start
 
