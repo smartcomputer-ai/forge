@@ -36,6 +36,13 @@ The authoritative configuration reference is
 Platform server, connector host, Configurator MCP, and development-only
 settings.
 
+Platform admins manage invite-only user accounts under **Admin → Users**. They
+can update a user's name, verified sign-in email, platform role, and password;
+password resets revoke that user's active sessions. Signed-in users can update
+their own display name and password under **Account**. Self-service email
+changes stay disabled until the deployment provides an email-verification
+sender.
+
 ## Development
 
 Install all Node workspace dependencies and run the complete check:

@@ -661,6 +661,7 @@ function providerTypeLabel(provider: SecretProvider): string {
 
 /// Which integration owns a grant, for the inventory tag; null for plain secrets.
 function managedByIntegration(grant: SecretGrant): string | null {
+  if (grant.providerId === "telegram") return "Telegram channel";
   if (grant.providerKind === "gitHubApp") return "GitHub App";
   const subscription = subscriptionProviderOf(grant);
   if (subscription === "anthropic") return "Claude Code";

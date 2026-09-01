@@ -1167,7 +1167,7 @@ export function ChatFields({
           {accounts.error
             ? accounts.error.message
             : accounts.data && accountList.length === 0
-              ? "No provider accounts are registered in this universe; an owner adds them under Settings."
+              ? "No messaging accounts are connected in this universe; an owner adds them under Channels."
               : "A Telegram or WhatsApp account registered in this universe."}
         </FieldDescription>
       </Field>

@@ -660,9 +660,10 @@ export function botLabel(bot: Pick<BotView, "botId" | "displayName">): string {
 /// unrelated to the core channel account records.
 export interface ChannelConnectorHealth {
   version: 1;
+  universeId?: string;
   provider: string;
   accountId: string;
-  state: "starting" | "ready" | "disconnected" | "stopping" | "stopped";
+  state: "starting" | "ready" | "disconnected" | "failed" | "stopping" | "stopped";
   ingressConnected: boolean;
   activityWorkerReady: boolean;
   reconnectAttempts: number;
@@ -672,14 +673,39 @@ export interface ChannelConnectorHealth {
   changedAtMs: number;
 }
 
+export interface ChannelConnectorHostHealth {
+  version: 1;
+  state: "starting" | "ready" | "degraded" | "stopping" | "stopped";
+  startedAtMs: number;
+  discovery: {
+    passes: number;
+    lastSuccessAtMs?: number;
+    lastError?: string;
+    lastErrorAtMs?: number;
+  };
+  accounts: ChannelConnectorHealth[];
+}
+
 export interface ChannelConnectorStatus {
   url: string;
   reachable: boolean;
   httpStatus: number | null;
-  health?: ChannelConnectorHealth;
+  health?: ChannelConnectorHostHealth | ChannelConnectorHealth;
   error?: string;
 }
 
 export interface ChannelsStatus {
   connectors: ChannelConnectorStatus[];
+}
+
+export interface UniverseChannelStatus {
+  accounts: ChannelConnectorHealth[];
+}
+
+export function connectorAccountHealth(
+  status: ChannelConnectorStatus,
+): ChannelConnectorHealth[] {
+  const health = status.health;
+  if (!health) return [];
+  return "accounts" in health ? health.accounts : [health];
 }

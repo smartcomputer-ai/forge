@@ -784,3 +784,14 @@ and core-Channels variable groups in `docs/variables.md`.
   now carry `source` (`runInput` / `steering`) and `runAccepted` carries
   `submissionId`, like the live projection — without them the page cannot
   reconcile its optimistic bubble and shows it twice until the run ends.
+- **Universe-owned channel setup (2026-09-01).** Provider-account setup moved
+  from the platform-admin surface to a Channels page in each universe's
+  Settings. The normal Telegram flow accepts the BotFather token, validates it
+  with `getMe`, derives the provider identity and authored account id, imports
+  the retrievable grant, and compensates by revoking that grant if account
+  creation fails; grant ids are no longer user input. WhatsApp setup similarly
+  derives its account id from the phone number. The page owns enable/disable,
+  per-account connector health, pairing visibility, and unpairing; bot pages
+  still own chat-trigger behavior. Platform Admin → Channels is now a read-only
+  deployment inventory and connector diagnostic surface. The demo backend
+  mirrors the connection and universe-health routes.

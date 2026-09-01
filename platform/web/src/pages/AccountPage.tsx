@@ -55,6 +55,9 @@ function ProfileCard({ user }: { user: SessionUser }) {
           <Field>
             <FieldLabel htmlFor="account-email">Email</FieldLabel>
             <Input id="account-email" value={user.email} disabled />
+            <FieldDescription>
+              A platform admin can change your verified sign-in address.
+            </FieldDescription>
           </Field>
           <Field>
             <FieldLabel htmlFor="account-name">Name</FieldLabel>

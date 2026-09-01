@@ -1,11 +1,21 @@
 import type {
+  AuthGrantImportParams,
   ChannelAccountCreateParams,
   ChannelAccountListParams,
   ChannelAccountPutParams,
   ChannelPairingListParams,
 } from "@lightspeed/agent-client";
 import { Hono } from "hono";
+import { z } from "zod";
+import {
+  readTelegramBotIdentity,
+  TelegramConnectionError,
+  telegramChannelAccountId,
+  whatsAppChannelAccountId,
+} from "../channel-connections.js";
+import { readChannelsStatus } from "../channels-status.js";
 import type { AppContext, ApiVariables } from "../context.js";
+import { parseBody } from "../http.js";
 import { isPlatformAdmin } from "../context.js";
 import { engineClientFor, operatorClientFor, withGateway } from "./gateway.js";
 import { universeForSession } from "./universes.js";
@@ -28,6 +38,20 @@ async function jsonBody(c: {
     return null;
   }
 }
+
+const channelConnectionSchema = z.discriminatedUnion("provider", [
+  z.object({
+    provider: z.literal("telegram"),
+    token: z.string().trim().min(1).max(512),
+    displayName: z.string().trim().min(1).max(200).optional(),
+  }),
+  z.object({
+    provider: z.literal("whatsapp"),
+    phoneNumber: z.string().trim().min(1).max(200),
+    displayName: z.string().trim().min(1).max(200).optional(),
+    printQr: z.boolean().default(true),
+  }),
+]);
 
 /// Deployment-wide listing for the admin page and the connector-host
 /// operator view: every enabled account across universes, from the
@@ -55,6 +79,23 @@ export function channelAccountAdminRoutes(ctx: AppContext) {
 /// `/universes`.
 export function channelUniverseRoutes(ctx: AppContext) {
   const app = new Hono<{ Variables: ApiVariables }>();
+
+  app.get("/:id/channel-status", async (c) => {
+    const access = await universeForSession(ctx, c, c.req.param("id"), false);
+    if (!access) {
+      return c.json({ error: "not found" }, 404);
+    }
+    const statuses = await readChannelsStatus(ctx.env.channelsHealthUrls);
+    return c.json({
+      accounts: statuses.flatMap((status) =>
+        isConnectorHostHealth(status.health)
+          ? status.health.accounts.filter(
+              (account) => account.universeId === access.universe.lightspeedUniverseId,
+            )
+          : [],
+      ),
+    });
+  });
 
   app.get("/:id/channel-accounts", async (c) => {
     const access = await universeForSession(ctx, c, c.req.param("id"), false);
@@ -86,6 +127,77 @@ export function channelUniverseRoutes(ctx: AppContext) {
         account,
       } as unknown as ChannelAccountCreateParams);
       return c.json(response.result, 201);
+    });
+  });
+
+  app.post("/:id/channel-accounts/connect", async (c) => {
+    const access = await universeForSession(ctx, c, c.req.param("id"), true);
+    if (!access) {
+      return c.json({ error: "not found" }, 404);
+    }
+    const body = await parseBody(c, channelConnectionSchema);
+    if (!body.ok) {
+      return body.response;
+    }
+
+    const input = body.data;
+    if (input.provider === "whatsapp") {
+      const displayName = input.displayName ?? input.phoneNumber;
+      return withGateway(c, async () => {
+        const client = engineClientFor(ctx, access.universe);
+        const response = await client.call("channels/accounts/create", {
+          account: {
+            accountId: whatsAppChannelAccountId(input.phoneNumber),
+            provider: "whatsapp",
+            providerAccountId: input.phoneNumber,
+            displayName,
+            settings: { printQr: input.printQr },
+          },
+        } as ChannelAccountCreateParams);
+        return c.json(response.result, 201);
+      });
+    }
+
+    let identity;
+    try {
+      identity = await readTelegramBotIdentity(input.token);
+    } catch (error) {
+      if (error instanceof TelegramConnectionError) {
+        return c.json({ error: error.message }, error.status);
+      }
+      throw error;
+    }
+    const accountId = telegramChannelAccountId(identity.username);
+    const displayName = input.displayName ?? identity.firstName;
+    return withGateway(c, async () => {
+      const client = engineClientFor(ctx, access.universe);
+      const grantParams: AuthGrantImportParams = {
+        providerId: "telegram",
+        exposure: "retrievable",
+        token: input.token,
+        displayName: `${displayName} Telegram bot token`,
+        subjectHint: `@${identity.username}`,
+        metadata: { managedBy: "channelAccount", accountId },
+      };
+      const imported = await client.call("auth/grants/import", grantParams);
+      try {
+        const response = await client.call("channels/accounts/create", {
+          account: {
+            accountId,
+            provider: "telegram",
+            providerAccountId: identity.username,
+            displayName,
+            credentialGrantId: imported.result.grant.grantId,
+            settings: {},
+          },
+        } as ChannelAccountCreateParams);
+        return c.json(response.result, 201);
+      } catch (error) {
+        await client.call("auth/grants/revoke", {
+          grantId: imported.result.grant.grantId,
+        }).catch(() => undefined);
+        throw error;
+      }
     });
   });
 
@@ -168,4 +280,13 @@ export function channelUniverseRoutes(ctx: AppContext) {
   });
 
   return app;
+}
+
+function isConnectorHostHealth(value: unknown): value is {
+  accounts: Array<{ universeId: string } & Record<string, unknown>>;
+  [key: string]: unknown;
+} {
+  return typeof value === "object"
+    && value !== null
+    && Array.isArray((value as { accounts?: unknown }).accounts);
 }

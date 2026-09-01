@@ -8,7 +8,7 @@ import type {
   ChannelAccountView,
   ChannelPairingView,
 } from "@lightspeed/agent-client";
-import type { ChannelConnectorStatus } from "@/api";
+import { connectorAccountHealth, type ChannelConnectorHealth, type ChannelConnectorStatus } from "@/api";
 import type { DemoStore, UniverseState } from "../store";
 import { badRequest, conflict, notFound, readBody, universeFor } from "./common";
 
@@ -26,12 +26,18 @@ function parseSettings(value: unknown): ChannelAccountView["settings"] {
   return isRecord(value) ? (value as ChannelAccountView["settings"]) : {};
 }
 
-function connectorFor(store: DemoStore, account: ChannelAccountView): ChannelConnectorStatus | undefined {
-  return store.channelsStatus.connectors.find(
-    (connector) =>
-      connector.health?.provider === account.provider &&
-      connector.health.accountId === account.providerAccountId,
-  );
+function connectorFor(
+  store: DemoStore,
+  account: ChannelAccountView,
+): { connector: ChannelConnectorStatus; health: ChannelConnectorHealth } | undefined {
+  for (const connector of store.channelsStatus.connectors) {
+    const health = connectorAccountHealth(connector).find(
+      (candidate) => candidate.provider === account.provider
+        && candidate.accountId === account.providerAccountId,
+    );
+    if (health) return { connector, health };
+  }
+  return undefined;
 }
 
 export function setConnectorState(
@@ -39,11 +45,11 @@ export function setConnectorState(
   account: ChannelAccountView,
   state: NonNullable<ChannelConnectorStatus["health"]>["state"],
 ): void {
-  const connector = connectorFor(store, account);
-  if (!connector?.health) return;
-  connector.health.state = state;
-  connector.health.ingressConnected = state === "ready";
-  connector.health.changedAtMs = Date.now();
+  const match = connectorFor(store, account);
+  if (!match) return;
+  match.health.state = state as ChannelConnectorHealth["state"];
+  match.health.ingressConnected = state === "ready";
+  match.health.changedAtMs = Date.now();
 }
 
 /// A new account gets a connector that comes up after a beat, so the
@@ -74,9 +80,9 @@ function addConnector(store: DemoStore, universe: UniverseState, account: Channe
 }
 
 function removeConnector(store: DemoStore, account: ChannelAccountView): void {
-  const connector = connectorFor(store, account);
-  if (connector) {
-    store.channelsStatus.connectors.splice(store.channelsStatus.connectors.indexOf(connector), 1);
+  const match = connectorFor(store, account);
+  if (match) {
+    store.channelsStatus.connectors.splice(store.channelsStatus.connectors.indexOf(match.connector), 1);
   }
 }
 
@@ -111,6 +117,29 @@ function accountFromInput(
 export function channelRoutes(store: DemoStore): Hono {
   const app = new Hono();
 
+  app.get("/:id/channel-status", (c) => {
+    const universe = universeFor(store, c);
+    if (!universe) return notFound(c);
+    const accounts = [...universe.channelAccounts.values()];
+    return c.json({
+      accounts: store.channelsStatus.connectors.flatMap((connector) =>
+        connectorAccountHealth(connector).flatMap((health) => {
+          const account = accounts.find(
+            (candidate) => candidate.provider === health.provider
+              && candidate.providerAccountId === health.accountId,
+          );
+          return account
+            ? [{
+                ...health,
+                universeId: universe.universe.lightspeedUniverseId,
+                accountId: account.accountId,
+              }]
+            : [];
+        }),
+      ),
+    });
+  });
+
   app.get("/:id/channel-accounts", (c) => {
     const universe = universeFor(store, c);
     if (!universe) return notFound(c);
@@ -127,6 +156,48 @@ export function channelRoutes(store: DemoStore): Hono {
     const body = await readBody(c);
     const input = isRecord(body.account) ? body.account : null;
     if (!input) return badRequest(c, "invalid body");
+    const account = accountFromInput(input, undefined);
+    if (typeof account === "string") return badRequest(c, account);
+    if (universe.channelAccounts.has(account.accountId)) {
+      return conflict(c, "a channel account with that id already exists");
+    }
+    universe.channelAccounts.set(account.accountId, account);
+    addConnector(store, universe, account);
+    return c.json({ account }, 201);
+  });
+
+  app.post("/:id/channel-accounts/connect", async (c) => {
+    const universe = universeFor(store, c);
+    if (!universe) return notFound(c);
+    const body = await readBody(c);
+    const provider = optionalString(body.provider);
+    const displayName = optionalString(body.displayName);
+    let input: Record<string, unknown>;
+    if (provider === "telegram") {
+      if (!optionalString(body.token)) return badRequest(c, "validation failed — token: required");
+      const sequence = store.nextId("telegram");
+      const username = `${sequence.replaceAll("-", "_")}_bot`;
+      input = {
+        accountId: `telegram-${sequence}`,
+        provider,
+        providerAccountId: username,
+        displayName: displayName ?? "Demo Telegram bot",
+        credentialGrantId: store.nextId("authgrant-telegram"),
+        settings: {},
+      };
+    } else if (provider === "whatsapp") {
+      const phoneNumber = optionalString(body.phoneNumber);
+      if (!phoneNumber) return badRequest(c, "validation failed — phoneNumber: required");
+      input = {
+        accountId: `whatsapp-${phoneNumber.replace(/[^0-9]+/g, "-").replace(/^-|-$/g, "")}`,
+        provider,
+        providerAccountId: phoneNumber,
+        displayName: displayName ?? phoneNumber,
+        settings: { printQr: body.printQr !== false },
+      };
+    } else {
+      return badRequest(c, "validation failed — provider: expected telegram or whatsapp");
+    }
     const account = accountFromInput(input, undefined);
     if (typeof account === "string") return badRequest(c, account);
     if (universe.channelAccounts.has(account.accountId)) {

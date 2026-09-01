@@ -205,6 +205,11 @@ export function AppShell({ user, admin }: { user: SessionUser; admin: boolean })
                           icon={Server}
                           label="MCP servers"
                         />
+                        <NavItem
+                          to={`/u/${active.slug}/settings/channels`}
+                          icon={RadioTower}
+                          label="Channels"
+                        />
                       </>
                     )}
                     {canManage(active, admin) && (
