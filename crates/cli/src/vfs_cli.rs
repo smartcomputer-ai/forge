@@ -432,6 +432,7 @@ async fn mount_delete(args: MountDeleteArgs) -> Result<()> {
     let session = api
         .read_session(api::SessionReadParams {
             session_id: args.session.clone(),
+            run_limit: None,
         })
         .await
         .map_err(crate::api_client::api_error)?
@@ -475,6 +476,7 @@ async fn mount_list(args: MountListArgs) -> Result<()> {
     let session = api
         .read_session(api::SessionReadParams {
             session_id: args.session,
+            run_limit: None,
         })
         .await
         .map_err(crate::api_client::api_error)?
@@ -539,6 +541,7 @@ async fn put_workspace_link(
     let session = api
         .read_session(api::SessionReadParams {
             session_id: session_id.clone(),
+            run_limit: None,
         })
         .await
         .map_err(crate::api_client::api_error)?

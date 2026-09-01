@@ -633,8 +633,11 @@ pub struct CreateOrLoadSessionResult {
     pub run_submissions: BTreeMap<u64, Option<SubmissionId>>,
     /// Current durable log head after replay.
     pub head: Option<SessionPosition>,
-    /// Number of persisted events replayed. `0` signals a fresh session that
-    /// still needs `open_new_session`.
+    /// True only when the authoritative durable head was empty at bootstrap.
+    /// This must not be inferred from tail replay counts because a checkpoint
+    /// can make a non-empty session replay zero events.
+    pub fresh_session: bool,
+    /// Number of persisted tail events replayed during this bootstrap.
     pub replayed_event_count: u64,
 }
 

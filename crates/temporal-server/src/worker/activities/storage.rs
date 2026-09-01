@@ -5,9 +5,7 @@ use engine::{
         SessionStore, SessionStoreError, StoredSessionEntry, UncommittedStoredEvent,
     },
 };
-use temporal_workflow::{
-    DEFAULT_BOOTSTRAP_PAYLOAD_BUDGET_BYTES, SessionBootstrapPayloadTooLarge, reduce_session_entries,
-};
+use temporal_workflow::{DEFAULT_BOOTSTRAP_PAYLOAD_BUDGET_BYTES, SessionBootstrapPayloadTooLarge};
 use temporalio_sdk::activities::ActivityError;
 
 use crate::worker::{
@@ -49,13 +47,34 @@ pub(super) async fn create_or_load_session(
         Err(error) => return Err(activity_error(error)),
     };
 
-    // Reduce the durable log *inside the activity* and return only the compact
-    // state, so the full event log never crosses the activity boundary into
-    // Temporal history.
-    let entries = read_all_session_events(deps.sessions.as_ref(), &request.session_id).await?;
-    let reduced = reduce_session_entries(&entries).map_err(activity_error)?;
+    // Reduce checkpoint + authoritative tail *inside the activity* and return
+    // only compact state, so neither the checkpoint bytes nor event history
+    // crosses the Temporal activity boundary.
+    let loaded =
+        crate::checkpoint::load_reduction(deps.sessions.as_ref(), deps.blobs.as_ref(), &record)
+            .await
+            .map_err(activity_error)?;
+    let checkpoint_due = crate::checkpoint::checkpoint_due(&loaded);
+    let reduced = loaded.reduced;
     let head = record.head.clone();
-    let (core_state, replayed_event_count) = if reduced.replayed_event_count == 0 {
+    let fresh_session = loaded.fresh_session;
+    if checkpoint_due
+        && let Err(error) = crate::checkpoint::write_checkpoint(
+            deps.sessions.as_ref(),
+            deps.blobs.as_ref(),
+            &record,
+            &reduced,
+            request.observed_at_ms,
+        )
+        .await
+    {
+        tracing::warn!(
+            session_id = %request.session_id,
+            error = %error,
+            "session checkpoint write failed after bootstrap"
+        );
+    }
+    let (core_state, replayed_event_count) = if fresh_session {
         (None, 0)
     } else {
         (Some(reduced.core_state), reduced.replayed_event_count)
@@ -66,6 +85,7 @@ pub(super) async fn create_or_load_session(
         core_state,
         run_submissions: reduced.run_submissions,
         head,
+        fresh_session,
         replayed_event_count,
     };
 
@@ -302,7 +322,10 @@ pub(super) async fn append_events(
         events: request.events.clone(),
     };
     match deps.sessions.append(append).await {
-        Ok(result) => Ok(result),
+        Ok(result) => {
+            maybe_refresh_checkpoint_after_append(deps, &request.session_id, &result).await;
+            Ok(result)
+        }
         Err(error @ SessionStoreError::ExpectedHeadMismatch { .. })
             if !request.events.is_empty() =>
         {
@@ -311,6 +334,89 @@ pub(super) async fn append_events(
                 .map_err(activity_error)
         }
         Err(error) => Err(activity_error(error)),
+    }
+}
+
+async fn maybe_refresh_checkpoint_after_append(
+    deps: &StorageActivityDeps,
+    session_id: &SessionId,
+    result: &AppendSessionEventsResult,
+) {
+    let appended_bytes = result
+        .entries
+        .iter()
+        .map(|entry| serde_json::to_vec(entry).map_or(0, |bytes| bytes.len() as u64))
+        .sum::<u64>();
+    let terminal = result
+        .entries
+        .iter()
+        .any(engine::storage::is_terminal_run_entry);
+    let Some(record) = deps.sessions.load_session(session_id).await.ok().flatten() else {
+        return;
+    };
+    let checkpoint_seq = deps
+        .sessions
+        .load_checkpoint(session_id)
+        .await
+        .ok()
+        .flatten()
+        .map(|checkpoint| checkpoint.through_seq);
+    let tail_event_count = record.head.as_ref().map_or(0, |head| {
+        head.seq
+            .as_u64()
+            .saturating_sub(checkpoint_seq.map_or(0, engine::EventSeq::as_u64))
+    });
+    if !terminal
+        && tail_event_count < crate::checkpoint::CHECKPOINT_TAIL_EVENT_THRESHOLD
+        && appended_bytes < crate::checkpoint::CHECKPOINT_APPEND_BATCH_BYTE_THRESHOLD
+    {
+        return;
+    }
+    let loaded = match crate::checkpoint::load_reduction(
+        deps.sessions.as_ref(),
+        deps.blobs.as_ref(),
+        &record,
+    )
+    .await
+    {
+        Ok(loaded) => loaded,
+        Err(error) => {
+            tracing::warn!(session_id = %session_id, error = %error, "session checkpoint refresh load failed");
+            return;
+        }
+    };
+    let newly_terminal_seqs = result
+        .entries
+        .iter()
+        .filter(|entry| engine::storage::is_terminal_run_entry(entry))
+        .map(|entry| entry.position.seq)
+        .collect::<Vec<_>>();
+    let terminal_runs_due = terminal
+        && crate::checkpoint::terminal_runs_checkpoint_due(
+            &loaded.reduced.core_state,
+            checkpoint_seq,
+            &newly_terminal_seqs,
+        );
+    let tail_due = loaded.tail_event_count >= crate::checkpoint::CHECKPOINT_TAIL_EVENT_THRESHOLD
+        || loaded.tail_encoded_bytes >= crate::checkpoint::CHECKPOINT_TAIL_BYTE_THRESHOLD
+        || appended_bytes >= crate::checkpoint::CHECKPOINT_APPEND_BATCH_BYTE_THRESHOLD;
+    if !terminal_runs_due && !tail_due {
+        return;
+    }
+    let created_at_ms = result
+        .entries
+        .last()
+        .map_or(record.updated_at_ms, |entry| entry.observed_at_ms);
+    if let Err(error) = crate::checkpoint::write_checkpoint(
+        deps.sessions.as_ref(),
+        deps.blobs.as_ref(),
+        &record,
+        &loaded.reduced,
+        created_at_ms,
+    )
+    .await
+    {
+        tracing::warn!(session_id = %session_id, error = %error, "session checkpoint refresh failed");
     }
 }
 
@@ -360,6 +466,7 @@ fn committed_entries_match_request(
     })
 }
 
+#[cfg(test)]
 async fn read_all_session_events(
     store: &dyn SessionStore,
     session_id: &SessionId,
@@ -714,6 +821,7 @@ mod tests {
             core_state: Some(engine::CoreAgentState::new()),
             run_submissions: Default::default(),
             head: None,
+            fresh_session: true,
             replayed_event_count: 0,
         };
 

@@ -24,6 +24,9 @@ pub enum AgentApiErrorKind {
     /// `Rejected` so clients retry with backoff instead of failing —
     /// polling and automation callers lean on this for wake-on-use.
     EnvironmentNotReady,
+    /// The requested page still exceeds the public serialized response
+    /// budget. Callers can retry with a smaller page limit or continuation.
+    ResponseTooLarge,
     Internal,
 }
 
@@ -91,6 +94,10 @@ impl AgentApiError {
         Self::new(AgentApiErrorKind::EnvironmentNotReady, message)
     }
 
+    pub fn response_too_large(message: impl Into<String>) -> Self {
+        Self::new(AgentApiErrorKind::ResponseTooLarge, message)
+    }
+
     pub fn internal(message: impl Into<String>) -> Self {
         Self::new(AgentApiErrorKind::Internal, message)
     }
@@ -109,6 +116,7 @@ impl AgentApiError {
             | AgentApiErrorKind::TranscriptionFailure => -32010,
             AgentApiErrorKind::SessionBootstrapFailed => -32011,
             AgentApiErrorKind::EnvironmentNotReady => -32012,
+            AgentApiErrorKind::ResponseTooLarge => -32013,
             AgentApiErrorKind::Internal => -32603,
         }
     }
@@ -317,7 +325,7 @@ api_methods! {
     METHOD_SESSION_MANAGED_START => start_managed_session(ManagedSessionStartParams) -> SessionStartResponse =>
         ["Create or reopen a managed session", "Creates a session with an immutable lifecycle controller and/or workflow tools using explicit bound pull/push dispatch, start targets, and Accepted, Joined, or keyed-Promise completion. Retrying an existing session id requires the same managed-creation declaration; an ordinary session cannot be upgraded to managed."],
     METHOD_SESSION_READ => read_session(SessionReadParams) -> SessionReadResponse =>
-        ["Read a session", "Returns the current projected session, including sparse config and revisions, lifecycle/run state, active context, and derived tools."],
+        ["Read a session", "Returns current state plus a bounded newest-first run-summary page. Follow nextRunCursor with session/runs/list when hasOlderRuns is true; use session/events/read for the transcript."],
     METHOD_SESSION_LIST => list_sessions(SessionListParams) -> SessionListResponse =>
         ["List sessions", "Returns a cursor-paginated summary list ordered by most recent update. Pages may shift while sessions are changing."],
     METHOD_SESSION_CONFIG_PUT => put_session_config(SessionConfigPutParams) -> SessionConfigPutResponse =>
@@ -338,6 +346,10 @@ api_methods! {
         ["Compact session context", "Runs the configured compaction policy on an open idle session and waits for the resulting context revision."],
     METHOD_SESSION_RUNS_START => start_run(RunStartParams) -> RunStartResponse =>
         ["Start an agent run", "Accepts input or existing context keys and returns once the run is accepted — queued behind an active run, or running — not when it finishes. Supply submissionId for retry safety, then follow session events or reread the session."],
+    METHOD_SESSION_RUNS_LIST => list_runs(RunListParams) -> RunListResponse =>
+        ["List session runs", "Returns a newest-first keyset page of bounded run summaries projected from current reducer state."],
+    METHOD_SESSION_RUNS_READ => read_run(RunReadParams) -> RunReadResponse =>
+        ["Read one session run", "Reads and projects one run from its bounded event interval, paged by event sequence."],
     METHOD_SESSION_RUNS_CANCEL => cancel_run(RunCancelParams) -> RunCancelResponse =>
         ["Cancel a run", "Requests cancellation of the named queued or active run and returns its current projected state; observe session events for terminal completion. In-flight model and tool activity is aborted; no grace turn runs."],
     METHOD_SESSION_RUNS_APPROVALS_DECIDE => decide_run_approvals(RunApprovalsDecideParams) -> RunApprovalsDecideResponse =>

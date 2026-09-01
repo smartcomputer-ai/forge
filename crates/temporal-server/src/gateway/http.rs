@@ -961,9 +961,39 @@ async fn rpc(
     {
         return no_store_json_rpc(JsonRpcResponse::failure(request.id, error.into()));
     }
-    no_store_json_rpc(
-        principal::with_request_principal(caller, dispatch_json_rpc(api.as_ref(), request)).await,
-    )
+    let method = request.method.clone();
+    let response =
+        principal::with_request_principal(caller, dispatch_json_rpc(api.as_ref(), request)).await;
+    if response_budget_exempt(&method) {
+        no_store_json_rpc(response)
+    } else {
+        no_store_json_rpc(enforce_response_budget(response))
+    }
+}
+
+/// Deliberate bulk transfers whose size the caller already chose; the byte
+/// budget guards accidentally unbounded documents, not blob bodies, which
+/// have no smaller page to retry with.
+fn response_budget_exempt(method: &str) -> bool {
+    method == api::METHOD_BLOBS_READ
+}
+
+fn enforce_response_budget(response: JsonRpcResponse) -> JsonRpcResponse {
+    const MAX_JSON_RPC_RESPONSE_BYTES: usize = 2 * 1024 * 1024;
+    if response.result.is_some()
+        && serde_json::to_vec(&response)
+            .is_ok_and(|bytes| bytes.len() > MAX_JSON_RPC_RESPONSE_BYTES)
+    {
+        JsonRpcResponse::failure(
+            response.id,
+            AgentApiError::response_too_large(format!(
+                "serialized response exceeds {MAX_JSON_RPC_RESPONSE_BYTES} bytes; retry with a smaller page limit"
+            ))
+            .into(),
+        )
+    } else {
+        response
+    }
 }
 
 fn no_store_json_rpc(response: JsonRpcResponse) -> Response {

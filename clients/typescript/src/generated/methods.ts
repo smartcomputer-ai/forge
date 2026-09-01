@@ -19,6 +19,8 @@ export const METHODS = [
   "session/context/remove",
   "session/context/compact",
   "session/runs/start",
+  "session/runs/list",
+  "session/runs/read",
   "session/runs/cancel",
   "session/runs/approvals/decide",
   "session/runs/steer",
@@ -148,7 +150,7 @@ export const METHOD_INFO = {
   "session/read": {
     scope: "universe",
     summary: "Read a session",
-    description: "Returns the current projected session, including sparse config and revisions, lifecycle/run state, active context, and derived tools.",
+    description: "Returns current state plus a bounded newest-first run-summary page. Follow nextRunCursor with session/runs/list when hasOlderRuns is true; use session/events/read for the transcript.",
   },
   "session/list": {
     scope: "universe",
@@ -199,6 +201,16 @@ export const METHOD_INFO = {
     scope: "universe",
     summary: "Start an agent run",
     description: "Accepts input or existing context keys and returns once the run is accepted — queued behind an active run, or running — not when it finishes. Supply submissionId for retry safety, then follow session events or reread the session.",
+  },
+  "session/runs/list": {
+    scope: "universe",
+    summary: "List session runs",
+    description: "Returns a newest-first keyset page of bounded run summaries projected from current reducer state.",
+  },
+  "session/runs/read": {
+    scope: "universe",
+    summary: "Read one session run",
+    description: "Reads and projects one run from its bounded event interval, paged by event sequence.",
   },
   "session/runs/cancel": {
     scope: "universe",
@@ -785,7 +797,7 @@ export interface MethodMap {
   /**
    * Read a session
    *
-   * Returns the current projected session, including sparse config and revisions, lifecycle/run state, active context, and derived tools.
+   * Returns current state plus a bounded newest-first run-summary page. Follow nextRunCursor with session/runs/list when hasOlderRuns is true; use session/events/read for the transcript.
    */
   "session/read": {
     params: Api.SessionReadParams;
@@ -880,6 +892,24 @@ export interface MethodMap {
   "session/runs/start": {
     params: Api.RunStartParams;
     result: Api.AgentApiOutcomeOfRunStartResponse;
+  };
+  /**
+   * List session runs
+   *
+   * Returns a newest-first keyset page of bounded run summaries projected from current reducer state.
+   */
+  "session/runs/list": {
+    params: Api.RunListParams;
+    result: Api.AgentApiOutcomeOfRunListResponse;
+  };
+  /**
+   * Read one session run
+   *
+   * Reads and projects one run from its bounded event interval, paged by event sequence.
+   */
+  "session/runs/read": {
+    params: Api.RunReadParams;
+    result: Api.AgentApiOutcomeOfRunReadResponse;
   };
   /**
    * Cancel a run
@@ -1890,7 +1920,7 @@ export const rpc = {
   /**
    * Read a session
    *
-   * Returns the current projected session, including sparse config and revisions, lifecycle/run state, active context, and derived tools.
+   * Returns current state plus a bounded newest-first run-summary page. Follow nextRunCursor with session/runs/list when hasOlderRuns is true; use session/events/read for the transcript.
    */
   sessionRead(client: RpcCaller, params: Api.SessionReadParams): Promise<Api.AgentApiOutcomeOfSessionReadResponse> {
     return client.call("session/read", params);
@@ -1974,6 +2004,22 @@ export const rpc = {
    */
   sessionRunsStart(client: RpcCaller, params: Api.RunStartParams): Promise<Api.AgentApiOutcomeOfRunStartResponse> {
     return client.call("session/runs/start", params);
+  },
+  /**
+   * List session runs
+   *
+   * Returns a newest-first keyset page of bounded run summaries projected from current reducer state.
+   */
+  sessionRunsList(client: RpcCaller, params: Api.RunListParams): Promise<Api.AgentApiOutcomeOfRunListResponse> {
+    return client.call("session/runs/list", params);
+  },
+  /**
+   * Read one session run
+   *
+   * Reads and projects one run from its bounded event interval, paged by event sequence.
+   */
+  sessionRunsRead(client: RpcCaller, params: Api.RunReadParams): Promise<Api.AgentApiOutcomeOfRunReadResponse> {
+    return client.call("session/runs/read", params);
   },
   /**
    * Cancel a run

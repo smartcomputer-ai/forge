@@ -503,6 +503,7 @@ async fn wait_for_pending_approval(
             let session = api
                 .read_session(SessionReadParams {
                     session_id: session_id.as_str().to_owned(),
+                    run_limit: None,
                 })
                 .await?
                 .result
@@ -516,9 +517,8 @@ async fn wait_for_pending_approval(
                     api::RunStatus::Completed | api::RunStatus::Failed | api::RunStatus::Cancelled
                 ) {
                     anyhow::bail!(
-                        "MCP matrix run became terminal before approval: {:?} {:?}",
-                        run.status,
-                        run.tool_batches
+                        "MCP matrix run became terminal before approval: {:?}",
+                        run.status
                     );
                 }
             }
@@ -647,6 +647,12 @@ async fn fixture_handler(
 ) -> Response {
     let id = request.get("id").cloned().unwrap_or(Value::Null);
     match request.get("method").and_then(Value::as_str) {
+        Some("server/discover") => Json(json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "error": {"code": -32601, "message": "Method not found"}
+        }))
+        .into_response(),
         Some("initialize") => {
             let mut response = Json(json!({
                 "jsonrpc": "2.0",

@@ -119,12 +119,19 @@ impl HttpAgentApi {
             {
                 self.read_session(SessionReadParams {
                     session_id: params.session_id.expect("checked session id present"),
+                    run_limit: None,
                 })
                 .await
                 .map(|outcome| {
                     AgentApiOutcome::with_notifications(
                         SessionStartResponse {
-                            session: outcome.result.session,
+                            session: api::SessionMutationView {
+                                id: outcome.result.session.id,
+                                status: outcome.result.session.status,
+                                head_cursor: None,
+                                config_revision: outcome.result.session.config_revision,
+                                context_revision: outcome.result.session.active_context.revision,
+                            },
                         },
                         outcome.notifications,
                     )

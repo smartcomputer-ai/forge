@@ -67,7 +67,8 @@ export type AgentApiErrorKind =
       | "internal"
     )
   | "session_bootstrap_failed"
-  | "environment_not_ready";
+  | "environment_not_ready"
+  | "response_too_large";
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "AgentNotification".
@@ -230,6 +231,39 @@ export type ContextEntrySourceView =
 export type TokenEstimateQualityView = "exact" | "providerCounted" | "estimated";
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "ApprovalSubjectView".
+ */
+export type ApprovalSubjectView = {
+  argumentsPreview: string;
+  argumentsRef: string;
+  kind: "mcpToolCall";
+  serverId: string;
+  serverLabel: string;
+  toolName: string;
+};
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "RunSummarySourceView".
+ */
+export type RunSummarySourceView =
+  | {
+      contentRef?: string | null;
+      preview?: string | null;
+      previewTruncated?: boolean;
+      type: "input";
+    }
+  | {
+      keys: string[];
+      type: "context";
+    };
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "RunStatus".
+ */
+export type RunStatus =
+  "queued" | "running" | "parked" | "cancelling" | "completed" | "failed" | "cancelled";
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "CompactionPolicy".
  */
 export type CompactionPolicy =
@@ -388,73 +422,6 @@ export type BoundWorkflowToolDispatchInput = "pull" | "push";
  * via the `definition` "SessionOriginKind".
  */
 export type SessionOriginKind = "subagent";
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "ApprovalSubjectView".
- */
-export type ApprovalSubjectView = {
-  argumentsPreview: string;
-  argumentsRef: string;
-  kind: "mcpToolCall";
-  serverId: string;
-  serverLabel: string;
-  toolName: string;
-};
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "RunViewSource".
- */
-export type RunViewSource =
-  | {
-      items: InputItem[];
-      type: "input";
-    }
-  | {
-      keys: string[];
-      type: "context";
-    };
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "InputItem".
- */
-export type InputItem =
-  | {
-      text: string;
-      type: "text";
-    }
-  | {
-      blobRef: string;
-      type: "textRef";
-    }
-  | {
-      blobRef: string;
-      kind: MediaKind;
-      mime: string;
-      name?: string | null;
-      type: "media";
-    }
-  | {
-      /**
-       * The catalog body, plain text or Markdown.
-       */
-      text: string;
-      /**
-       * Short name shown as the catalog's heading, e.g. "Bot directory".
-       */
-      title: string;
-      type: "catalog";
-    };
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "MediaKind".
- */
-export type MediaKind = "image" | "audio" | "document";
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "RunStatus".
- */
-export type RunStatus =
-  "queued" | "running" | "parked" | "cancelling" | "completed" | "failed" | "cancelled";
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "SessionStatus".
@@ -792,6 +759,55 @@ export type PrincipalKind = "user" | "serviceAccount" | "universeDefault";
  * via the `definition` "ApprovalDecisionKind".
  */
 export type ApprovalDecisionKind = "approve" | "reject";
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "RunViewSource".
+ */
+export type RunViewSource =
+  | {
+      items: InputItem[];
+      type: "input";
+    }
+  | {
+      items: RunContextTriggerView[];
+      type: "context";
+    };
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "InputItem".
+ */
+export type InputItem =
+  | {
+      text: string;
+      type: "text";
+    }
+  | {
+      blobRef: string;
+      type: "textRef";
+    }
+  | {
+      blobRef: string;
+      kind: MediaKind;
+      mime: string;
+      name?: string | null;
+      type: "media";
+    }
+  | {
+      /**
+       * The catalog body, plain text or Markdown.
+       */
+      text: string;
+      /**
+       * Short name shown as the catalog's heading, e.g. "Bot directory".
+       */
+      title: string;
+      type: "catalog";
+    };
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "MediaKind".
+ */
+export type MediaKind = "image" | "audio" | "document";
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "AuthProviderKind".
@@ -1715,6 +1731,12 @@ export interface SessionView {
    * The universe environment selected by the session event log.
    */
   activeEnvironmentId?: string | null;
+  /**
+   * The currently executing run, always present when one exists — the
+   * paged `runs` window can omit it behind newer queued runs, so control
+   * surfaces (steering, status) must read it from here.
+   */
+  activeRun?: RunSummaryView | null;
   activeTools?: ActiveToolsView;
   /**
    * The stored sparse config document, exactly as last put (model and
@@ -1740,7 +1762,7 @@ export interface SessionView {
    * Sub-agent lineage; absent for root sessions.
    */
   origin?: SessionOriginView | null;
-  runs?: RunView[];
+  runs?: RunSummaryView[];
   status: SessionStatus;
   updatedAtMs: number;
 }
@@ -1792,6 +1814,11 @@ export interface ContextEntryView {
    */
   supersedes?: string | null;
   text?: string | null;
+  /**
+   * True when `text` is a bounded prefix of the blob body; fetch
+   * `contentRef` for the complete content.
+   */
+  textTruncated?: boolean;
   tokenEstimate?: TokenEstimateView | null;
 }
 /**
@@ -1824,6 +1851,57 @@ export interface ToolCallDisplayView {
 export interface TokenEstimateView {
   quality: TokenEstimateQualityView;
   tokens: number;
+}
+/**
+ * Bounded run metadata projected from reducer state. Transcript entries and
+ * tool payloads are available only from `session/runs/read` or the event
+ * stream.
+ *
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "RunSummaryView".
+ */
+export interface RunSummaryView {
+  acceptedAtMs: number;
+  completedAtMs?: number | null;
+  id: string;
+  pendingApprovals?: PendingApprovalView[];
+  source: RunSummarySourceView;
+  startedAtMs?: number | null;
+  status: RunStatus;
+  usage?: LlmUsageView | null;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "PendingApprovalView".
+ */
+export interface PendingApprovalView {
+  approvalId: string;
+  requestedAtMs: number;
+  subject: ApprovalSubjectView;
+}
+/**
+ * Provider-reported token usage for one generation or a sum of them. Every
+ * field is optional because providers report different subsets; counts
+ * that a provider reports separately (Anthropic's cache read/write) are
+ * folded into `input_tokens` so the field always means "prompt tokens
+ * billed on this request, cached or not".
+ *
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "LlmUsageView".
+ */
+export interface LlmUsageView {
+  /**
+   * Prompt tokens written into the provider's prompt cache (Anthropic).
+   */
+  cacheWriteInputTokens?: number | null;
+  /**
+   * Prompt tokens served from the provider's prompt cache.
+   */
+  cachedInputTokens?: number | null;
+  inputTokens?: number | null;
+  outputTokens?: number | null;
+  reasoningTokens?: number | null;
+  totalTokens?: number | null;
 }
 /**
  * Declared session configuration document.
@@ -2217,102 +2295,6 @@ export interface SubagentLimitsView {
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "RunView".
- */
-export interface RunView {
-  /**
-   * When the run reached a terminal state, derived from its committed
-   * completed, failed, or cancelled event. Absent for non-terminal runs.
-   */
-  completedAtMs?: number | null;
-  entries?: ContextEntryView[];
-  id: string;
-  pendingApprovals?: PendingApprovalView[];
-  source: RunViewSource;
-  /**
-   * When the run left the queue and began executing, derived from the
-   * committed `runStarted` event. Absent while the run is queued.
-   */
-  startedAtMs?: number | null;
-  status: RunStatus;
-  toolBatches?: ToolBatchView[];
-  /**
-   * Provider token usage summed over the run's completed generations;
-   * absent until the first generation reports usage. The cached share
-   * (`cachedInputTokens / inputTokens`) is the prompt-cache hit rate.
-   */
-  usage?: LlmUsageView | null;
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "PendingApprovalView".
- */
-export interface PendingApprovalView {
-  approvalId: string;
-  requestedAtMs: number;
-  subject: ApprovalSubjectView;
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "ToolBatchView".
- */
-export interface ToolBatchView {
-  calls?: ToolCallView[];
-  id: string;
-  status: ToolItemStatus;
-  turnId: string;
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "ToolCallView".
- */
-export interface ToolCallView {
-  arguments?: string | null;
-  argumentsRef: string;
-  callId: string;
-  display?: ToolCallDisplayView | null;
-  effects?: ToolEffectView[];
-  isError?: boolean;
-  output?: string | null;
-  status: ToolItemStatus;
-  toolName: string;
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "ToolEffectView".
- */
-export interface ToolEffectView {
-  data?: {
-    [k: string]: string;
-  };
-  kind: string;
-}
-/**
- * Provider-reported token usage for one generation or a sum of them. Every
- * field is optional because providers report different subsets; counts
- * that a provider reports separately (Anthropic's cache read/write) are
- * folded into `input_tokens` so the field always means "prompt tokens
- * billed on this request, cached or not".
- *
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "LlmUsageView".
- */
-export interface LlmUsageView {
-  /**
-   * Prompt tokens written into the provider's prompt cache (Anthropic).
-   */
-  cacheWriteInputTokens?: number | null;
-  /**
-   * Prompt tokens served from the provider's prompt cache.
-   */
-  cachedInputTokens?: number | null;
-  inputTokens?: number | null;
-  outputTokens?: number | null;
-  reasoningTokens?: number | null;
-  totalTokens?: number | null;
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "SessionEventView".
  */
 export interface SessionEventView {
@@ -2371,6 +2353,85 @@ export interface ToolCallEventView {
   argumentsRef: string;
   callId: string;
   display?: ToolCallDisplayView | null;
+  toolName: string;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "ToolEffectView".
+ */
+export interface ToolEffectView {
+  data?: {
+    [k: string]: string;
+  };
+  kind: string;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "RunView".
+ */
+export interface RunView {
+  /**
+   * When the run reached a terminal state, derived from its committed
+   * completed, failed, or cancelled event. Absent for non-terminal runs.
+   */
+  completedAtMs?: number | null;
+  entries?: ContextEntryView[];
+  id: string;
+  pendingApprovals?: PendingApprovalView[];
+  source: RunViewSource;
+  /**
+   * When the run left the queue and began executing, derived from the
+   * committed `runStarted` event. Absent while the run is queued.
+   */
+  startedAtMs?: number | null;
+  status: RunStatus;
+  toolBatches?: ToolBatchView[];
+  /**
+   * Provider token usage summed over the run's completed generations;
+   * absent until the first generation reports usage. The cached share
+   * (`cachedInputTokens / inputTokens`) is the prompt-cache hit rate.
+   */
+  usage?: LlmUsageView | null;
+}
+/**
+ * A context entry that triggered a context-sourced run, carrying the blob
+ * reference resolved at acceptance so run detail can render the trigger
+ * without scanning pre-acceptance events. `text` is a bounded inline body;
+ * the full content stays blob-addressed.
+ *
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "RunContextTriggerView".
+ */
+export interface RunContextTriggerView {
+  contentRef?: string | null;
+  key: string;
+  mediaType?: string | null;
+  text?: string | null;
+  textTruncated?: boolean;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "ToolBatchView".
+ */
+export interface ToolBatchView {
+  calls?: ToolCallView[];
+  id: string;
+  status: ToolItemStatus;
+  turnId: string;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "ToolCallView".
+ */
+export interface ToolCallView {
+  arguments?: string | null;
+  argumentsRef: string;
+  callId: string;
+  display?: ToolCallDisplayView | null;
+  effects?: ToolEffectView[];
+  isError?: boolean;
+  output?: string | null;
+  status: ToolItemStatus;
   toolName: string;
 }
 /**
@@ -3840,7 +3901,21 @@ export interface AgentApiOutcomeOfContextCompactResponse {
  * via the `definition` "ContextCompactResponse".
  */
 export interface ContextCompactResponse {
-  session: SessionView;
+  session: SessionMutationView;
+}
+/**
+ * Compact acknowledgement returned by session mutations. Call
+ * `session/read` when the complete current-state summary is needed.
+ *
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "SessionMutationView".
+ */
+export interface SessionMutationView {
+  configRevision: number;
+  contextRevision: number;
+  headCursor?: EventCursor | null;
+  id: string;
+  status: SessionStatus;
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
@@ -5146,6 +5221,44 @@ export interface RunCancelResponse {
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "AgentApiOutcomeOfRunListResponse".
+ */
+export interface AgentApiOutcomeOfRunListResponse {
+  notifications?: AgentNotification[];
+  result: RunListResponse;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "RunListResponse".
+ */
+export interface RunListResponse {
+  hasOlderRuns: boolean;
+  nextCursor?: string | null;
+  runs?: RunSummaryView[];
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "AgentApiOutcomeOfRunReadResponse".
+ */
+export interface AgentApiOutcomeOfRunReadResponse {
+  notifications?: AgentNotification[];
+  result: RunReadResponse;
+}
+/**
+ * The complete projection of one run. Run projection is stateful across the
+ * run's events, so partial pages would silently lose cross-event state; a
+ * run whose interval exceeds the server's detail ceiling is rejected with a
+ * typed error and remains readable through `session/events/read`. Inline
+ * entry text is bounded; full bodies stay blob-addressed via `contentRef`.
+ *
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "RunReadResponse".
+ */
+export interface RunReadResponse {
+  run: RunView;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "AgentApiOutcomeOfRunStartResponse".
  */
 export interface AgentApiOutcomeOfRunStartResponse {
@@ -5191,7 +5304,7 @@ export interface AgentApiOutcomeOfSessionCloseResponse {
  * via the `definition` "SessionCloseResponse".
  */
 export interface SessionCloseResponse {
-  session: SessionView;
+  session: SessionMutationView;
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
@@ -5206,7 +5319,7 @@ export interface AgentApiOutcomeOfSessionConfigPutResponse {
  * via the `definition` "SessionConfigPutResponse".
  */
 export interface SessionConfigPutResponse {
-  session: SessionView;
+  session: SessionMutationView;
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
@@ -5314,6 +5427,11 @@ export interface AgentApiOutcomeOfSessionReadResponse {
  * via the `definition` "SessionReadResponse".
  */
 export interface SessionReadResponse {
+  hasOlderRuns: boolean;
+  /**
+   * Exclusive upper run-id bound for `session/runs/list`.
+   */
+  nextRunCursor?: string | null;
   session: SessionView;
 }
 /**
@@ -5344,7 +5462,7 @@ export interface AgentApiOutcomeOfSessionStartResponse {
  * via the `definition` "SessionStartResponse".
  */
 export interface SessionStartResponse {
-  session: SessionView;
+  session: SessionMutationView;
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
@@ -6806,6 +6924,26 @@ export interface RunLimitsConfig {
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "RunListParams".
+ */
+export interface RunListParams {
+  /**
+   * Exclusive upper run-id bound from a previous page.
+   */
+  cursor?: string | null;
+  limit?: number | null;
+  sessionId: string;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "RunReadParams".
+ */
+export interface RunReadParams {
+  runId: string;
+  sessionId: string;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "RunStartConfig".
  */
 export interface RunStartConfig {
@@ -6955,6 +7093,11 @@ export interface SessionListParams {
  * via the `definition` "SessionReadParams".
  */
 export interface SessionReadParams {
+  /**
+   * Newest run summaries to include. Values above the server maximum are
+   * clamped.
+   */
+  runLimit?: number | null;
   sessionId: string;
 }
 /**

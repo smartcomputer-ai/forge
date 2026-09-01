@@ -41,6 +41,8 @@ pub const API_KEYS_SCHEMA_SQL: &str = include_str!("../migrations/007_api_keys.s
 pub const BOTS_SCHEMA_SQL: &str = include_str!("../migrations/008_bots.sql");
 pub const CHANNELS_SCHEMA_SQL: &str = include_str!("../migrations/009_channels.sql");
 pub const MCP_RUNTIME_SCHEMA_SQL: &str = include_str!("../migrations/010_mcp_runtime.sql");
+pub const SESSION_CHECKPOINTS_SCHEMA_SQL: &str =
+    include_str!("../migrations/011_session_checkpoints.sql");
 
 pub const DEFAULT_INLINE_THRESHOLD_BYTES: usize = 64 * 1024;
 

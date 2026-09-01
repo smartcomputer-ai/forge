@@ -16,10 +16,11 @@ pub use blobs::{
     CachedBlobStore, InMemoryBlobCache, InMemoryBlobStore, SessionBlobRoot, ensure_engine_blobs,
 };
 pub use session::{
-    AppendSessionEvents, AppendSessionEventsResult, CreateClonedSession, CreateForkedSession,
-    CreateSession, InMemorySessionStore, ListSessions, ReadSessionEvents, SessionLifecycleStatus,
-    SessionListCursor, SessionListPage, SessionOrigin, SessionOriginCounts, SessionOriginKind,
-    SessionOriginLimit, SessionPage, SessionRecord, SessionStore, SessionStoreError,
-    apply_lifecycle_projection, check_origin_limits, largest_safe_fork_seq, lifecycle_at_fork,
-    validate_fork_point,
+    AdvanceSessionCheckpoint, AppendSessionEvents, AppendSessionEventsResult, CreateClonedSession,
+    CreateForkedSession, CreateSession, InMemorySessionStore, ListSessions, ReadSessionEventRange,
+    ReadSessionEvents, SessionCheckpoint, SessionLifecycleStatus, SessionListCursor,
+    SessionListPage, SessionOrigin, SessionOriginCounts, SessionOriginKind, SessionOriginLimit,
+    SessionPage, SessionRecord, SessionStore, SessionStoreError, apply_lifecycle_projection,
+    check_origin_limits, is_terminal_run_entry, largest_safe_fork_seq,
+    largest_safe_fork_seq_from_state, lifecycle_at_fork, validate_fork_point,
 };

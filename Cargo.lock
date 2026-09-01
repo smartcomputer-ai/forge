@@ -167,6 +167,7 @@ version = "0.1.0"
 dependencies = [
  "api",
  "engine",
+ "futures-util",
  "serde_json",
  "tokio",
 ]

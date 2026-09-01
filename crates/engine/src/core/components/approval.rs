@@ -108,6 +108,10 @@ impl ApprovalStatus {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ApprovalRecord {
     pub request: ApprovalRequested,
+    /// Wall-clock time of the request event, retained so summary readers do
+    /// not have to rescan the event log for it.
+    #[serde(default)]
+    pub requested_at_ms: u64,
     pub status: ApprovalStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
@@ -162,6 +166,7 @@ fn has_unstarted_tool_calls(run: &crate::ActiveRun) -> bool {
 pub(crate) fn apply_approval_event(
     state: &mut CoreAgentState,
     event: &ApprovalEvent,
+    observed_at_ms: u64,
 ) -> Result<(), DomainError> {
     match event {
         ApprovalEvent::Requested { approval } => {
@@ -199,6 +204,7 @@ pub(crate) fn apply_approval_event(
                 approval.approval_id.clone(),
                 ApprovalRecord {
                     request: approval.clone(),
+                    requested_at_ms: observed_at_ms,
                     status: ApprovalStatus::Pending,
                     note: None,
                     decided_by: None,
@@ -314,6 +320,10 @@ mod tests {
             input_consumed_by_turn_id: None,
             run_config: crate::RunConfig::default(),
             config_revision: 0,
+            first_seq: crate::EventSeq::new(1),
+            accepted_at_ms: 1,
+            started_at_ms: Some(1),
+            usage: None,
             steering: Vec::new(),
             turns: BTreeMap::new(),
             active_turn_id: None,
@@ -349,7 +359,7 @@ mod tests {
     fn approvals_are_run_owned_single_use_and_unpark_only_as_a_set() {
         let mut state = active_state();
         for approval in [request(1, "mcpr_1"), request(2, "mcpr_2")] {
-            apply_approval_event(&mut state, &ApprovalEvent::Requested { approval })
+            apply_approval_event(&mut state, &ApprovalEvent::Requested { approval }, 7)
                 .expect("request");
         }
         apply_approval_event(
@@ -357,6 +367,7 @@ mod tests {
             &ApprovalEvent::RunParked {
                 run_id: RunId::new(1),
             },
+            8,
         )
         .expect("park");
 
@@ -367,17 +378,17 @@ mod tests {
             note: None,
             decided_by: None,
         };
-        apply_approval_event(&mut state, &decide(1, ApprovalDecision::Approved))
+        apply_approval_event(&mut state, &decide(1, ApprovalDecision::Approved), 9)
             .expect("first decision");
         let run = state.runs.active.as_ref().expect("active run");
         assert_eq!(run.status, RunStatus::Parked);
         assert_eq!(run.pending_approvals().count(), 1);
 
-        let duplicate = apply_approval_event(&mut state, &decide(1, ApprovalDecision::Rejected))
+        let duplicate = apply_approval_event(&mut state, &decide(1, ApprovalDecision::Rejected), 10)
             .expect_err("approval is single use");
         assert!(matches!(duplicate, DomainError::InvariantViolation(_)));
 
-        apply_approval_event(&mut state, &decide(2, ApprovalDecision::Rejected))
+        apply_approval_event(&mut state, &decide(2, ApprovalDecision::Rejected), 11)
             .expect("last decision");
         let run = state.runs.active.as_ref().expect("active run");
         assert_eq!(run.status, RunStatus::Active);
@@ -390,13 +401,15 @@ mod tests {
         let mut state = active_state();
         let approval = request(1, "mcpr_1");
         let approval_id = approval.approval_id.clone();
-        apply_approval_event(&mut state, &ApprovalEvent::Requested { approval }).expect("request");
+        apply_approval_event(&mut state, &ApprovalEvent::Requested { approval }, 7)
+            .expect("request");
         apply_approval_event(
             &mut state,
             &ApprovalEvent::Cancelled {
                 approval_id: approval_id.clone(),
                 run_id: RunId::new(1),
             },
+            8,
         )
         .expect("cancel");
 

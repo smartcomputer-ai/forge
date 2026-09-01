@@ -262,6 +262,7 @@ pub async fn wait_for_terminal_run(
         let session = api
             .read_session(SessionReadParams {
                 session_id: session_id.as_str().to_owned(),
+                run_limit: None,
             })
             .await?;
         if let Some(run) = session
@@ -275,7 +276,14 @@ pub async fn wait_for_terminal_run(
                 RunStatus::Completed | RunStatus::Failed | RunStatus::Cancelled
             )
         {
-            return Ok(run);
+            return Ok(api
+                .read_run(api::RunReadParams {
+                    session_id: session_id.as_str().to_owned(),
+                    run_id: run.id,
+                })
+                .await?
+                .result
+                .run);
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
@@ -324,6 +332,7 @@ pub async fn wait_for_session_status(
         let session = api
             .read_session(SessionReadParams {
                 session_id: session_id.as_str().to_owned(),
+                run_limit: None,
             })
             .await?;
         if session.result.session.status == expected {

@@ -187,6 +187,9 @@ pub struct McpToolDiscoveryLimits {
     pub max_pages: usize,
     pub max_tools: usize,
     pub max_response_bytes: usize,
+    /// Independent response budget for `tools/call`; changing discovery
+    /// inventory limits must not silently change tool execution policy.
+    pub max_tool_call_response_bytes: usize,
     pub max_name_bytes: usize,
     pub max_text_bytes: usize,
     pub max_schema_bytes: usize,
@@ -199,6 +202,7 @@ impl Default for McpToolDiscoveryLimits {
             max_pages: 8,
             max_tools: 256,
             max_response_bytes: 2 * 1024 * 1024,
+            max_tool_call_response_bytes: 2 * 1024 * 1024,
             max_name_bytes: 128,
             max_text_bytes: 4 * 1024,
             max_schema_bytes: 64 * 1024,

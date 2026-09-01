@@ -647,6 +647,8 @@ pub(crate) fn validate_run_trigger_context_keys(
         triggers.push(RunSourceContextTrigger {
             key: key.clone(),
             entry_id: entry.entry_id,
+            content_ref: Some(entry.content_ref.clone()),
+            media_type: entry.media_type.clone(),
         });
     }
     Ok(triggers)

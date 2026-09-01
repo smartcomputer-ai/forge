@@ -181,6 +181,22 @@ struct BoundedReqwestClient {
     client: reqwest::Client,
     budget: ResponseBudget,
     diagnostics: TransportDiagnostics,
+    operation: ResponseOperation,
+}
+
+#[derive(Clone, Copy)]
+enum ResponseOperation {
+    Discovery,
+    ToolCall,
+}
+
+impl ResponseOperation {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Discovery => "discovery",
+            Self::ToolCall => "tool call",
+        }
+    }
 }
 
 #[derive(Clone, Default)]
@@ -238,7 +254,7 @@ impl ResponseBudget {
 }
 
 #[derive(Debug, thiserror::Error)]
-#[error("MCP response exceeded the discovery byte limit")]
+#[error("MCP response exceeded its byte limit")]
 struct ResponseLimitError;
 
 #[derive(Debug, thiserror::Error)]
@@ -250,22 +266,31 @@ enum BoundedStreamError {
 }
 
 impl BoundedReqwestClient {
-    fn new(client: reqwest::Client, max_response_bytes: usize) -> Self {
+    fn new(
+        client: reqwest::Client,
+        max_response_bytes: usize,
+        operation: ResponseOperation,
+    ) -> Self {
         Self {
             client,
             budget: ResponseBudget::new(max_response_bytes),
             diagnostics: TransportDiagnostics::default(),
+            operation,
         }
     }
 
     fn response_too_large(&self) -> StreamableHttpError<reqwest::Error> {
         self.diagnostics.record(failure(
             FailureKind::ResponseTooLarge,
-            "MCP discovery exceeded the total response byte limit",
+            format!(
+                "MCP {} exceeded the total response byte limit",
+                self.operation.label()
+            ),
         ));
-        StreamableHttpError::UnexpectedServerResponse(Cow::Borrowed(
-            "MCP response exceeded the discovery byte limit",
-        ))
+        StreamableHttpError::UnexpectedServerResponse(Cow::Owned(format!(
+            "MCP response exceeded the {} byte limit",
+            self.operation.label()
+        )))
     }
 
     fn apply_headers(
@@ -316,19 +341,23 @@ impl BoundedReqwestClient {
         self.validate_content_length(&response)?;
         let budget = self.budget.clone();
         let diagnostics = self.diagnostics.clone();
+        let operation = self.operation;
         let chunks = response.bytes_stream().map(move |chunk| match chunk {
             Ok(chunk) => match budget.reserve(chunk.len()) {
                 Ok(()) => Ok(chunk),
                 Err(error) => {
                     diagnostics.record(failure(
                         FailureKind::ResponseTooLarge,
-                        "MCP discovery exceeded the total response byte limit",
+                        format!(
+                            "MCP {} exceeded the total response byte limit",
+                            operation.label()
+                        ),
                     ));
                     Err(BoundedStreamError::from(error))
                 }
             },
             Err(error) => {
-                diagnostics.record(request_failure(&error));
+                diagnostics.record(request_failure(&error, operation));
                 Err(BoundedStreamError::from(error))
             }
         });
@@ -409,11 +438,13 @@ impl StreamableHttpClient for BoundedReqwestClient {
             request = request.header(HEADER_SESSION_ID, session_id.as_ref());
         }
         let response = request.send().await.map_err(|error| {
-            self.diagnostics.record(request_failure(&error));
+            self.diagnostics
+                .record(request_failure(&error, self.operation));
             StreamableHttpError::Client(error)
         })?;
         if let Some(error) = self.auth_failure(&response) {
-            self.diagnostics.record(status_failure(response.status()));
+            self.diagnostics
+                .record(status_failure(response.status(), self.operation));
             return Err(error);
         }
         let status = response.status();
@@ -427,7 +458,8 @@ impl StreamableHttpClient for BoundedReqwestClient {
             return Err(StreamableHttpError::SessionExpired);
         }
         if !status.is_success() {
-            self.diagnostics.record(status_failure(status));
+            self.diagnostics
+                .record(status_failure(status, self.operation));
             return Err(StreamableHttpError::Client(
                 response.error_for_status().expect_err("non-success status"),
             ));
@@ -601,10 +633,14 @@ impl HttpMcpToolDiscoverer {
         tokio::time::timeout(self.timeout, async {
             let client = self.pinned_client(&endpoint, allow_private_network).await?;
             let mut config = StreamableHttpClientTransportConfig::with_uri(endpoint.as_str())
-                .max_sse_event_size(limits.max_response_bytes)
+                .max_sse_event_size(limits.max_tool_call_response_bytes)
                 .reinit_on_expired_session(false);
             config = transport_auth(config, bearer, trusted_universe)?;
-            let client = BoundedReqwestClient::new(client, limits.max_response_bytes);
+            let client = BoundedReqwestClient::new(
+                client,
+                limits.max_tool_call_response_bytes,
+                ResponseOperation::ToolCall,
+            );
             let diagnostics = client.diagnostics.clone();
             let transport = StreamableHttpClientTransport::with_client(client, config);
             let service = ClientInfo::new(
@@ -616,7 +652,7 @@ impl HttpMcpToolDiscoverer {
             .map_err(|error| {
                 diagnostics
                     .current()
-                    .unwrap_or_else(|| map_initialize_error(error))
+                    .unwrap_or_else(|| map_initialize_error(error, ResponseOperation::ToolCall))
             })?;
             let result = service
                 .call_tool(CallToolRequestParams::new(tool_name).with_arguments(arguments))
@@ -624,7 +660,7 @@ impl HttpMcpToolDiscoverer {
                 .map_err(|error| {
                     diagnostics
                         .current()
-                        .unwrap_or_else(|| map_service_error(error))
+                        .unwrap_or_else(|| map_service_error(error, ResponseOperation::ToolCall))
                 });
             let _ = service.cancel().await;
             result
@@ -662,7 +698,11 @@ impl McpToolDiscoverer for HttpMcpToolDiscoverer {
                 .max_sse_event_size(limits.max_response_bytes)
                 .reinit_on_expired_session(false);
             config = transport_auth(config, bearer, trusted_universe)?;
-            let client = BoundedReqwestClient::new(client, limits.max_response_bytes);
+            let client = BoundedReqwestClient::new(
+                client,
+                limits.max_response_bytes,
+                ResponseOperation::Discovery,
+            );
             let diagnostics = client.diagnostics.clone();
             let transport = StreamableHttpClientTransport::with_client(client, config);
             let service = ClientInfo::new(
@@ -674,7 +714,7 @@ impl McpToolDiscoverer for HttpMcpToolDiscoverer {
             .map_err(|error| {
                 diagnostics
                     .current()
-                    .unwrap_or_else(|| map_initialize_error(error))
+                    .unwrap_or_else(|| map_initialize_error(error, ResponseOperation::Discovery))
             })?;
 
             let tools_list_changed = service.peer_info().is_some_and(|info| {
@@ -752,7 +792,7 @@ async fn discover_pages(
             .map_err(|error| {
                 diagnostics
                     .current()
-                    .unwrap_or_else(|| map_service_error(error))
+                    .unwrap_or_else(|| map_service_error(error, ResponseOperation::Discovery))
             })?;
         ttl_ms = match (ttl_ms, response.ttl_ms) {
             (Some(current), Some(page)) => Some(current.min(page)),
@@ -913,7 +953,10 @@ fn json_depth(value: &Value) -> usize {
     }
 }
 
-fn map_initialize_error(error: ClientInitializeError) -> McpToolDiscoveryFailure {
+fn map_initialize_error(
+    error: ClientInitializeError,
+    operation: ResponseOperation,
+) -> McpToolDiscoveryFailure {
     if matches!(
         error,
         ClientInitializeError::NoCompatibleProtocolVersion { .. }
@@ -924,15 +967,26 @@ fn map_initialize_error(error: ClientInitializeError) -> McpToolDiscoveryFailure
             "MCP endpoint does not support a compatible protocol version",
         );
     }
-    failure_from_error_chain(&error, "MCP endpoint initialization failed")
+    failure_from_error_chain(&error, operation, "MCP endpoint initialization failed")
 }
 
-fn map_service_error(error: rmcp::service::ServiceError) -> McpToolDiscoveryFailure {
-    failure_from_error_chain(&error, "MCP tools/list failed")
+fn map_service_error(
+    error: rmcp::service::ServiceError,
+    operation: ResponseOperation,
+) -> McpToolDiscoveryFailure {
+    failure_from_error_chain(
+        &error,
+        operation,
+        match operation {
+            ResponseOperation::Discovery => "MCP tools/list failed",
+            ResponseOperation::ToolCall => "MCP tools/call failed",
+        },
+    )
 }
 
 fn failure_from_error_chain(
     error: &(dyn std::error::Error + 'static),
+    operation: ResponseOperation,
     fallback: &'static str,
 ) -> McpToolDiscoveryFailure {
     let mut current = Some(error);
@@ -940,7 +994,10 @@ fn failure_from_error_chain(
         if source.is::<ResponseLimitError>() {
             return failure(
                 FailureKind::ResponseTooLarge,
-                "MCP discovery exceeded the total response byte limit",
+                format!(
+                    "MCP {} exceeded the total response byte limit",
+                    operation.label()
+                ),
             );
         }
         if source.is::<AuthRequiredError>() {
@@ -952,12 +1009,12 @@ fn failure_from_error_chain(
         if source.is::<InsufficientScopeError>() {
             return failure(
                 FailureKind::Forbidden,
-                "MCP endpoint denied access to tool discovery",
+                format!("MCP endpoint denied access to the {}", operation.label()),
             );
         }
         if let Some(error) = source.downcast_ref::<reqwest::Error>() {
             if let Some(status) = error.status() {
-                return status_failure(status);
+                return status_failure(status, operation);
             }
             return failure(
                 FailureKind::Unreachable,
@@ -971,11 +1028,14 @@ fn failure_from_error_chain(
         if let Some(error) = source.downcast_ref::<StreamableHttpError<reqwest::Error>>() {
             return match error {
                 StreamableHttpError::UnexpectedServerResponse(message)
-                    if message.contains("discovery byte limit") =>
+                    if message.contains("byte limit") =>
                 {
                     failure(
                         FailureKind::ResponseTooLarge,
-                        "MCP discovery exceeded the total response byte limit",
+                        format!(
+                            "MCP {} exceeded the total response byte limit",
+                            operation.label()
+                        ),
                     )
                 }
                 StreamableHttpError::UnexpectedContentType(_)
@@ -1000,7 +1060,10 @@ fn failure_from_error_chain(
     failure(FailureKind::RemoteFailure, fallback)
 }
 
-fn status_failure(status: reqwest::StatusCode) -> McpToolDiscoveryFailure {
+fn status_failure(
+    status: reqwest::StatusCode,
+    operation: ResponseOperation,
+) -> McpToolDiscoveryFailure {
     match status {
         reqwest::StatusCode::UNAUTHORIZED => failure(
             FailureKind::Unauthorized,
@@ -1008,19 +1071,22 @@ fn status_failure(status: reqwest::StatusCode) -> McpToolDiscoveryFailure {
         ),
         reqwest::StatusCode::FORBIDDEN => failure(
             FailureKind::Forbidden,
-            "MCP endpoint denied access to tool discovery",
+            format!("MCP endpoint denied access to the {}", operation.label()),
         ),
         reqwest::StatusCode::TOO_MANY_REQUESTS => failure(
             FailureKind::RemoteRateLimited,
-            "MCP endpoint rate limited tool discovery",
+            format!("MCP endpoint rate limited the {}", operation.label()),
         ),
         _ => failure(FailureKind::RemoteFailure, "MCP endpoint request failed"),
     }
 }
 
-fn request_failure(error: &reqwest::Error) -> McpToolDiscoveryFailure {
+fn request_failure(
+    error: &reqwest::Error,
+    operation: ResponseOperation,
+) -> McpToolDiscoveryFailure {
     match error.status() {
-        Some(status) => status_failure(status),
+        Some(status) => status_failure(status, operation),
         None => failure(
             FailureKind::Unreachable,
             if error.is_timeout() {
@@ -1276,6 +1342,21 @@ mod tests {
         )
         .expect_err("oversized schema");
         assert_eq!(error.kind, FailureKind::ResponseTooLarge);
+    }
+
+    #[test]
+    fn tool_call_response_limit_diagnostic_names_tool_call() {
+        let client =
+            BoundedReqwestClient::new(reqwest::Client::new(), 1, ResponseOperation::ToolCall);
+        let _ = client.response_too_large();
+        let failure = client.diagnostics.current().expect("diagnostic");
+        assert_eq!(failure.kind, FailureKind::ResponseTooLarge);
+        assert!(failure.message.contains("tool call"), "{}", failure.message);
+        assert!(
+            !failure.message.contains("discovery"),
+            "{}",
+            failure.message
+        );
     }
 
     #[test]

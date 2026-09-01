@@ -19,7 +19,12 @@ pub struct SessionView {
     pub created_at_ms: u64,
     pub updated_at_ms: u64,
     #[serde(default)]
-    pub runs: Vec<RunView>,
+    pub runs: Vec<RunSummaryView>,
+    /// The currently executing run, always present when one exists — the
+    /// paged `runs` window can omit it behind newer queued runs, so control
+    /// surfaces (steering, status) must read it from here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_run: Option<RunSummaryView>,
     pub active_context: ContextView,
     #[serde(default)]
     pub active_tools: ActiveToolsView,
@@ -33,6 +38,46 @@ pub struct SessionView {
     /// Sub-agent lineage; absent for root sessions.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin: Option<SessionOriginView>,
+}
+
+/// Bounded run metadata projected from reducer state. Transcript entries and
+/// tool payloads are available only from `session/runs/read` or the event
+/// stream.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct RunSummaryView {
+    pub id: RunId,
+    pub status: RunStatus,
+    pub accepted_at_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_at_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completed_at_ms: Option<u64>,
+    pub source: RunSummarySourceView,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<LlmUsageView>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pending_approvals: Vec<PendingApprovalView>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum RunSummarySourceView {
+    Input {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        content_ref: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        preview: Option<String>,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        preview_truncated: bool,
+    },
+    Context {
+        keys: Vec<String>,
+    },
 }
 
 /// Managed-session reads use the same immutable declaration document accepted
@@ -140,7 +185,25 @@ pub struct LlmUsageView {
 )]
 pub enum RunViewSource {
     Input { items: Vec<InputItem> },
-    Context { keys: Vec<String> },
+    Context { items: Vec<RunContextTriggerView> },
+}
+
+/// A context entry that triggered a context-sourced run, carrying the blob
+/// reference resolved at acceptance so run detail can render the trigger
+/// without scanning pre-acceptance events. `text` is a bounded inline body;
+/// the full content stays blob-addressed.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct RunContextTriggerView {
+    pub key: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub media_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub text_truncated: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -373,6 +436,10 @@ pub struct ContextEntryView {
     pub token_estimate: Option<TokenEstimateView>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
+    /// True when `text` is a bounded prefix of the blob body; fetch
+    /// `contentRef` for the complete content.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub text_truncated: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display: Option<ProviderContextDisplayView>,
     /// Where the entry came from: run input, a steering batch, model output,

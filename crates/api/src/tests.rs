@@ -1525,6 +1525,7 @@ fn provider_context_entry_serializes_debug_metadata() {
             quality: TokenEstimateQualityView::ProviderCounted,
         }),
         text: None,
+        text_truncated: false,
         display: None,
         source: None,
         supersedes: None,
@@ -1564,6 +1565,7 @@ fn provider_context_entry_serializes_mcp_display() {
         provider_item_id: Some("mcp_1".to_owned()),
         token_estimate: None,
         text: None,
+        text_truncated: false,
         display: Some(ProviderContextDisplayView {
             summary: ToolCallDisplayView {
                 group: ToolCallDisplayGroup::Other,
@@ -1867,7 +1869,7 @@ impl AgentApiService for TestService {
         params: SessionConfigPutParams,
     ) -> Result<AgentApiOutcome<SessionConfigPutResponse>, AgentApiError> {
         Ok(AgentApiOutcome::new(SessionConfigPutResponse {
-            session: test_session(params.session_id, SessionStatus::Idle),
+            session: test_session_mutation(params.session_id, SessionStatus::Idle),
         }))
     }
 
@@ -1925,7 +1927,7 @@ impl AgentApiService for TestService {
         params: SessionCloseParams,
     ) -> Result<AgentApiOutcome<SessionCloseResponse>, AgentApiError> {
         Ok(AgentApiOutcome::new(SessionCloseResponse {
-            session: test_session(params.session_id, SessionStatus::Closed),
+            session: test_session_mutation(params.session_id, SessionStatus::Closed),
         }))
     }
 
@@ -1951,7 +1953,7 @@ impl AgentApiService for TestService {
         params: ContextCompactParams,
     ) -> Result<AgentApiOutcome<ContextCompactResponse>, AgentApiError> {
         Ok(AgentApiOutcome::new(ContextCompactResponse {
-            session: test_session(params.session_id, SessionStatus::Idle),
+            session: test_session_mutation(params.session_id, SessionStatus::Idle),
         }))
     }
 
@@ -2006,6 +2008,26 @@ impl AgentApiService for TestService {
         assert_eq!(config.model.expect("model").model, "gpt-5.5");
         Ok(AgentApiOutcome::new(RunStartResponse {
             run: test_run("run_1".to_owned(), RunStatus::Running),
+        }))
+    }
+
+    async fn list_runs(
+        &self,
+        _params: RunListParams,
+    ) -> Result<AgentApiOutcome<RunListResponse>, AgentApiError> {
+        Ok(AgentApiOutcome::new(RunListResponse {
+            runs: Vec::new(),
+            next_cursor: None,
+            has_older_runs: false,
+        }))
+    }
+
+    async fn read_run(
+        &self,
+        params: RunReadParams,
+    ) -> Result<AgentApiOutcome<RunReadResponse>, AgentApiError> {
+        Ok(AgentApiOutcome::new(RunReadResponse {
+            run: test_run(params.run_id, RunStatus::Completed),
         }))
     }
 
@@ -3006,6 +3028,7 @@ fn test_session(id: SessionId, status: SessionStatus) -> SessionView {
         id,
         display_name: Some("Test session".to_owned()),
         status,
+        active_run: None,
         managed: false,
         config_revision: 0,
         config: None,
@@ -3017,6 +3040,16 @@ fn test_session(id: SessionId, status: SessionStatus) -> SessionView {
         active_tools: ActiveToolsView::default(),
         management: None,
         origin: None,
+    }
+}
+
+fn test_session_mutation(id: SessionId, status: SessionStatus) -> SessionMutationView {
+    SessionMutationView {
+        id,
+        status,
+        head_cursor: None,
+        config_revision: 0,
+        context_revision: 0,
     }
 }
 

@@ -5,9 +5,9 @@ use serde::{Deserialize, Serialize};
 use crate::{
     ActiveToolBatch, ApprovalId, ApprovalRecord, ApprovalStatus, BlobRef, CompletedToolBatch,
     ContextEntryId, ContextEntryInput, ContextEntryKey, CoreAgentEvent, CoreAgentEventProposal,
-    CoreAgentJoins, CoreAgentState, CoreAgentStatus, DomainError, PlanningError, PromiseId,
-    RunConfig, RunId, SteeringId, SubmissionId, ToolBatchId, ToolCallId, TurnId, TurnOutcome,
-    TurnState, TurnStatus,
+    CoreAgentJoins, CoreAgentState, CoreAgentStatus, DomainError, EventSeq, LlmUsage,
+    PlanningError, PromiseId, RunConfig, RunId, SteeringId, SubmissionId, ToolBatchId, ToolCallId,
+    TurnId, TurnOutcome, TurnState, TurnStatus,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -59,6 +59,11 @@ pub struct AcceptedRun {
     pub source: RunSource,
     pub run_config: RunConfig,
     pub config_revision: u64,
+    /// Durable event-log position and wall-clock time of acceptance. These
+    /// metadata facts let current-state readers page runs without replaying
+    /// their event ranges.
+    pub first_seq: EventSeq,
+    pub accepted_at_ms: u64,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub notify_on_terminal: Vec<RunTerminalNotifyIntent>,
 }
@@ -81,6 +86,13 @@ pub struct ActiveRun {
     pub input_consumed_by_turn_id: Option<TurnId>,
     pub run_config: RunConfig,
     pub config_revision: u64,
+    pub first_seq: EventSeq,
+    pub accepted_at_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_at_ms: Option<u64>,
+    /// Provider usage accumulated as generation-completed events apply.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<LlmUsage>,
     pub steering: Vec<SteeringBatch>,
     pub turns: BTreeMap<TurnId, TurnState>,
     pub active_turn_id: Option<TurnId>,
@@ -130,6 +142,17 @@ pub struct RunRecord {
     /// against completed runs.
     #[serde(default)]
     pub submission_digest: Option<u64>,
+    /// Accepted source retained as scalar metadata and CAS references only;
+    /// resolved content never enters reducer state.
+    pub source: RunSource,
+    pub first_seq: EventSeq,
+    pub terminal_seq: EventSeq,
+    pub accepted_at_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_at_ms: Option<u64>,
+    pub completed_at_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage: Option<LlmUsage>,
     pub output_ref: Option<BlobRef>,
     pub failure: Option<RunFailure>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -261,6 +284,13 @@ pub enum RunRequestSource {
 pub struct RunSourceContextTrigger {
     pub key: ContextEntryKey,
     pub entry_id: ContextEntryId,
+    /// Resolved from active context when the run is accepted, so run readers
+    /// can render trigger content without scanning pre-acceptance events.
+    /// References only; resolved content never enters reducer state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_ref: Option<BlobRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub media_type: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -541,7 +571,12 @@ pub(crate) fn latest_turn_is_terminal_run_outcome(
     Ok(terminal_run_proposal(active_run)?.is_some())
 }
 
-pub(crate) fn apply_event(state: &mut CoreAgentState, event: &Event) -> Result<(), DomainError> {
+pub(crate) fn apply_event(
+    state: &mut CoreAgentState,
+    event: &Event,
+    seq: EventSeq,
+    observed_at_ms: u64,
+) -> Result<(), DomainError> {
     match event {
         Event::Accepted(accepted) => {
             let AcceptedRunEvent {
@@ -580,6 +615,8 @@ pub(crate) fn apply_event(state: &mut CoreAgentState, event: &Event) -> Result<(
                 source: source.clone(),
                 run_config: run_config.clone(),
                 config_revision: *config_revision,
+                first_seq: seq,
+                accepted_at_ms: observed_at_ms,
                 notify_on_terminal: notify_on_terminal.clone(),
             });
             state.id_cursors.last_run_id = run_id.as_u64();
@@ -619,6 +656,10 @@ pub(crate) fn apply_event(state: &mut CoreAgentState, event: &Event) -> Result<(
                 input_consumed_by_turn_id: None,
                 run_config: queued.run_config,
                 config_revision: queued.config_revision,
+                first_seq: queued.first_seq,
+                accepted_at_ms: queued.accepted_at_ms,
+                started_at_ms: Some(observed_at_ms),
+                usage: None,
                 steering: Vec::new(),
                 turns: BTreeMap::new(),
                 active_turn_id: None,
@@ -681,6 +722,8 @@ pub(crate) fn apply_event(state: &mut CoreAgentState, event: &Event) -> Result<(
             RunStatus::Completed,
             output_ref.clone(),
             None,
+            seq,
+            observed_at_ms,
         ),
         Event::Failed { run_id, failure } => finish_active_run(
             state,
@@ -688,6 +731,8 @@ pub(crate) fn apply_event(state: &mut CoreAgentState, event: &Event) -> Result<(
             RunStatus::Failed,
             None,
             Some(failure.clone()),
+            seq,
+            observed_at_ms,
         ),
         Event::Cancelled { run_id } => {
             let Some(active_run) = state.runs.active.as_ref() else {
@@ -703,7 +748,15 @@ pub(crate) fn apply_event(state: &mut CoreAgentState, event: &Event) -> Result<(
                     "cancellation requires drained active work".into(),
                 ));
             }
-            finish_active_run(state, *run_id, RunStatus::Cancelled, None, None)
+            finish_active_run(
+                state,
+                *run_id,
+                RunStatus::Cancelled,
+                None,
+                None,
+                seq,
+                observed_at_ms,
+            )
         }
         Event::ForceCancelled { run_id } => {
             let Some(active_run) = state.runs.active.as_ref() else {
@@ -717,7 +770,15 @@ pub(crate) fn apply_event(state: &mut CoreAgentState, event: &Event) -> Result<(
                     "only non-terminal runs can be force-cancelled".into(),
                 ));
             }
-            finish_active_run(state, *run_id, RunStatus::Cancelled, None, None)
+            finish_active_run(
+                state,
+                *run_id,
+                RunStatus::Cancelled,
+                None,
+                None,
+                seq,
+                observed_at_ms,
+            )
         }
         Event::QueuedCancelled { run_id } => {
             let Some(position) = state
@@ -741,6 +802,13 @@ pub(crate) fn apply_event(state: &mut CoreAgentState, event: &Event) -> Result<(
                 status: RunStatus::Cancelled,
                 submission_id: queued.submission_id,
                 submission_digest,
+                source: compact_terminal_source(queued.source),
+                first_seq: queued.first_seq,
+                terminal_seq: seq,
+                accepted_at_ms: queued.accepted_at_ms,
+                started_at_ms: None,
+                completed_at_ms: observed_at_ms,
+                usage: None,
                 output_ref: None,
                 failure: None,
                 notify_on_terminal: queued.notify_on_terminal,
@@ -905,6 +973,8 @@ fn finish_active_run(
     status: RunStatus,
     output_ref: Option<BlobRef>,
     failure: Option<RunFailure>,
+    terminal_seq: EventSeq,
+    completed_at_ms: u64,
 ) -> Result<(), DomainError> {
     let Some(active_run) = state.runs.active.as_ref() else {
         return Err(DomainError::InvariantViolation("no active run".into()));
@@ -927,6 +997,8 @@ fn finish_active_run(
             source: active_run.source.clone(),
             run_config: active_run.run_config.clone(),
             config_revision: active_run.config_revision,
+            first_seq: active_run.first_seq,
+            accepted_at_ms: active_run.accepted_at_ms,
             notify_on_terminal: active_run.notify_on_terminal.clone(),
         };
         submission_digest_for_accepted_run(&accepted)
@@ -936,10 +1008,26 @@ fn finish_active_run(
         status,
         submission_id: active_run.submission_id,
         submission_digest,
+        source: compact_terminal_source(active_run.source),
+        first_seq: active_run.first_seq,
+        terminal_seq,
+        accepted_at_ms: active_run.accepted_at_ms,
+        started_at_ms: active_run.started_at_ms,
+        completed_at_ms,
+        usage: active_run.usage,
         output_ref,
         failure,
         notify_on_terminal: active_run.notify_on_terminal,
     });
     crate::core::components::context::expire_run_scoped_context_entries(state)?;
     Ok(())
+}
+
+fn compact_terminal_source(mut source: RunSource) -> RunSource {
+    if let RunSource::Input { input } = &mut source {
+        for entry in input {
+            entry.preview = None;
+        }
+    }
+    source
 }

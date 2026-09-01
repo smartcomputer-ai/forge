@@ -296,6 +296,7 @@ async fn bots_live_manual_event_runs_and_records_outcome() -> anyhow::Result<()>
         let session = api
             .read_session(SessionReadParams {
                 session_id: main_session.clone(),
+                run_limit: None,
             })
             .await?
             .result
@@ -630,6 +631,7 @@ async fn bots_live_close_and_delete_tear_down() -> anyhow::Result<()> {
         let session = api
             .read_session(SessionReadParams {
                 session_id: main_session.clone(),
+                run_limit: None,
             })
             .await?
             .result
@@ -661,7 +663,8 @@ async fn bots_live_close_and_delete_tear_down() -> anyhow::Result<()> {
         );
         assert!(
             api.read_session(SessionReadParams {
-                session_id: main_session
+                session_id: main_session,
+                run_limit: None,
             })
             .await
             .is_err()

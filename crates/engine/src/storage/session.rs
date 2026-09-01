@@ -1,8 +1,8 @@
 //! Session event-log storage contract.
 
 use crate::{
-    CORE_AGENT_LIFECYCLE_CLOSED_EVENT_KIND, CORE_AGENT_LIFECYCLE_OPENED_EVENT_KIND, CoreAgentCodec,
-    CoreAgentEvent, SubagentLimits, WorkflowToolConfigEvent,
+    BlobRef, CORE_AGENT_LIFECYCLE_CLOSED_EVENT_KIND, CORE_AGENT_LIFECYCLE_OPENED_EVENT_KIND,
+    CoreAgentCodec, CoreAgentEvent, SubagentLimits, WorkflowToolConfigEvent,
     session::{EventSeq, SessionId, SessionPosition, StoredSessionEntry, UncommittedStoredEvent},
 };
 use async_trait::async_trait;
@@ -200,6 +200,34 @@ pub struct SessionPage {
     pub complete: bool,
 }
 
+/// Disposable pointer to a CAS-backed reducer checkpoint. The event log is
+/// authoritative; stores may return no checkpoint support at all.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionCheckpoint {
+    pub session_id: SessionId,
+    pub through_seq: EventSeq,
+    pub format_version: u32,
+    pub state_ref: BlobRef,
+    pub lineage_source_session_id: Option<SessionId>,
+    pub lineage_source_seq: Option<EventSeq>,
+    pub byte_len: u64,
+    pub created_at_ms: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AdvanceSessionCheckpoint {
+    pub checkpoint: SessionCheckpoint,
+}
+
+/// Inclusive upper fence plus exclusive lower cursor for bounded event reads.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReadSessionEventRange {
+    pub session_id: SessionId,
+    pub after: EventSeq,
+    pub through: EventSeq,
+    pub limit: usize,
+}
+
 /// Keyset cursor for [`SessionStore::list_sessions`]: the sort key of the
 /// last row of the previous page (most-recently-updated-first ordering).
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -373,6 +401,47 @@ pub trait SessionStore: Send + Sync {
         request: ReadSessionEvents,
     ) -> Result<SessionPage, SessionStoreError>;
 
+    async fn read_range(
+        &self,
+        request: ReadSessionEventRange,
+    ) -> Result<SessionPage, SessionStoreError> {
+        if request.limit == 0 {
+            return Err(SessionStoreError::InvalidLimit { limit: 0 });
+        }
+        let mut page = self
+            .read_after(ReadSessionEvents {
+                session_id: request.session_id,
+                after: Some(request.after),
+                limit: request.limit,
+            })
+            .await?;
+        page.entries
+            .retain(|entry| entry.position.seq <= request.through);
+        page.next_after = page.entries.last().map(|entry| entry.position.seq);
+        page.complete = page.complete
+            || page
+                .entries
+                .last()
+                .is_none_or(|entry| entry.position.seq >= request.through);
+        Ok(page)
+    }
+
+    async fn load_checkpoint(
+        &self,
+        _session_id: &SessionId,
+    ) -> Result<Option<SessionCheckpoint>, SessionStoreError> {
+        Ok(None)
+    }
+
+    /// Advance the checkpoint pointer. Returns false when a newer pointer
+    /// already exists or the store intentionally does not support checkpoints.
+    async fn advance_checkpoint(
+        &self,
+        _request: AdvanceSessionCheckpoint,
+    ) -> Result<bool, SessionStoreError> {
+        Ok(false)
+    }
+
     async fn head(
         &self,
         session_id: &SessionId,
@@ -388,6 +457,7 @@ pub struct InMemorySessionStore {
 struct InMemorySessionStoreInner {
     records: BTreeMap<SessionId, SessionRecord>,
     entries: BTreeMap<SessionId, Vec<StoredSessionEntry>>,
+    checkpoints: BTreeMap<SessionId, SessionCheckpoint>,
 }
 
 impl InMemorySessionStore {
@@ -557,6 +627,7 @@ impl SessionStore for InMemorySessionStore {
 
         inner.records.remove(session_id);
         inner.entries.remove(session_id);
+        inner.checkpoints.remove(session_id);
         for candidate in inner.records.values_mut() {
             if candidate.source_session_id.as_ref() == Some(session_id) {
                 candidate.source_session_id = None;
@@ -742,6 +813,47 @@ impl SessionStore for InMemorySessionStore {
         })
     }
 
+    async fn load_checkpoint(
+        &self,
+        session_id: &SessionId,
+    ) -> Result<Option<SessionCheckpoint>, SessionStoreError> {
+        let inner = self.inner.read().map_err(|_| SessionStoreError::Store {
+            message: "session store read lock poisoned".into(),
+        })?;
+        if !inner.records.contains_key(session_id) {
+            return Err(SessionStoreError::SessionNotFound {
+                session_id: session_id.clone(),
+            });
+        }
+        Ok(inner.checkpoints.get(session_id).cloned())
+    }
+
+    async fn advance_checkpoint(
+        &self,
+        request: AdvanceSessionCheckpoint,
+    ) -> Result<bool, SessionStoreError> {
+        let mut inner = self.inner.write().map_err(|_| SessionStoreError::Store {
+            message: "session store write lock poisoned".into(),
+        })?;
+        let checkpoint = request.checkpoint;
+        if !inner.records.contains_key(&checkpoint.session_id) {
+            return Err(SessionStoreError::SessionNotFound {
+                session_id: checkpoint.session_id,
+            });
+        }
+        if inner
+            .checkpoints
+            .get(&checkpoint.session_id)
+            .is_some_and(|current| current.through_seq >= checkpoint.through_seq)
+        {
+            return Ok(false);
+        }
+        inner
+            .checkpoints
+            .insert(checkpoint.session_id.clone(), checkpoint);
+        Ok(true)
+    }
+
     async fn head(
         &self,
         session_id: &SessionId,
@@ -782,6 +894,25 @@ pub fn largest_safe_fork_seq(entries: &[StoredSessionEntry], head: u64) -> Event
         .values()
         .filter(|range| range.terminal_seq.is_none())
         .map(|range| range.first_seq)
+        .min();
+    EventSeq::new(earliest_open.map_or(head, |seq| seq.saturating_sub(1)))
+}
+
+/// Compute the latest safe fork point from already reduced state. Hosted
+/// callers use their checkpoint-plus-tail state instead of rereading the
+/// effective event log merely to locate an open run boundary.
+pub fn largest_safe_fork_seq_from_state(state: &crate::CoreAgentState) -> EventSeq {
+    let head = state
+        .reduced_to
+        .as_ref()
+        .map_or(0, |position| position.seq.as_u64());
+    let earliest_open = state
+        .runs
+        .active
+        .as_ref()
+        .map(|run| run.first_seq.as_u64())
+        .into_iter()
+        .chain(state.runs.queued.iter().map(|run| run.first_seq.as_u64()))
         .min();
     EventSeq::new(earliest_open.map_or(head, |seq| seq.saturating_sub(1)))
 }
@@ -865,14 +996,7 @@ fn run_boundary(entry: &StoredSessionEntry) -> Option<RunBoundary> {
                 .and_then(|kind| kind.get("run_id"))
                 .and_then(serde_json::Value::as_u64)
         })?;
-    let terminal = matches!(
-        entry.event.kind.as_str(),
-        "lightspeed.core.run.completed"
-            | "lightspeed.core.run.failed"
-            | "lightspeed.core.run.cancelled"
-            | "lightspeed.core.run.force_cancelled"
-            | "lightspeed.core.run.queued_cancelled"
-    );
+    let terminal = is_terminal_run_entry(entry);
     let is_run = terminal
         || matches!(
             entry.event.kind.as_str(),
@@ -882,6 +1006,17 @@ fn run_boundary(entry: &StoredSessionEntry) -> Option<RunBoundary> {
                 | "lightspeed.core.run.cancellation_requested"
         );
     is_run.then_some(RunBoundary { run_id, terminal })
+}
+
+pub fn is_terminal_run_entry(entry: &StoredSessionEntry) -> bool {
+    matches!(
+        entry.event.kind.as_str(),
+        "lightspeed.core.run.completed"
+            | "lightspeed.core.run.failed"
+            | "lightspeed.core.run.cancelled"
+            | "lightspeed.core.run.force_cancelled"
+            | "lightspeed.core.run.queued_cancelled"
+    )
 }
 
 fn commit_uncommitted_events(
@@ -1125,6 +1260,55 @@ mod tests {
         assert_eq!(
             result.head.as_ref().map(|head| head.seq),
             Some(EventSeq::new(2))
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn in_memory_checkpoint_pointer_never_regresses() {
+        let store = InMemorySessionStore::new();
+        let session_id = SessionId::new("checkpoint-pointer");
+        store
+            .create_session(CreateSession {
+                session_id: session_id.clone(),
+                display_name: None,
+                origin: None,
+                created_at_ms: 1,
+            })
+            .await
+            .expect("create session");
+        let checkpoint = |through_seq| AdvanceSessionCheckpoint {
+            checkpoint: SessionCheckpoint {
+                session_id: session_id.clone(),
+                through_seq: EventSeq::new(through_seq),
+                format_version: 1,
+                state_ref: BlobRef::from_bytes(format!("state-{through_seq}").as_bytes()),
+                lineage_source_session_id: None,
+                lineage_source_seq: None,
+                byte_len: 1,
+                created_at_ms: through_seq,
+            },
+        };
+
+        assert!(
+            store
+                .advance_checkpoint(checkpoint(2))
+                .await
+                .expect("advance")
+        );
+        assert!(
+            !store
+                .advance_checkpoint(checkpoint(1))
+                .await
+                .expect("reject stale")
+        );
+        assert_eq!(
+            store
+                .load_checkpoint(&session_id)
+                .await
+                .expect("load")
+                .expect("checkpoint")
+                .through_seq,
+            EventSeq::new(2)
         );
     }
 

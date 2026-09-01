@@ -1165,12 +1165,21 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
     "name": "lightspeed_session_read",
     "method": "session/read",
     "summary": "Read a session",
-    "description": "Returns the current projected session, including sparse config and revisions, lifecycle/run state, active context, and derived tools.",
+    "description": "Returns current state plus a bounded newest-first run-summary page. Follow nextRunCursor with session/runs/list when hasOlderRuns is true; use session/events/read for the transcript.",
     "paramsType": "SessionReadParams",
     "resultType": "AgentApiOutcome<SessionReadResponse>",
     "inputSchema": {
       "$schema": "http://json-schema.org/draft-07/schema#",
       "properties": {
+        "runLimit": {
+          "description": "Newest run summaries to include. Values above the server maximum are\nclamped.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "sessionId": {
           "type": "string"
         }
@@ -2737,6 +2746,65 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
           ]
         }
       }
+    }
+  },
+  {
+    "name": "lightspeed_session_runs_list",
+    "method": "session/runs/list",
+    "summary": "List session runs",
+    "description": "Returns a newest-first keyset page of bounded run summaries projected from current reducer state.",
+    "paramsType": "RunListParams",
+    "resultType": "AgentApiOutcome<RunListResponse>",
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "cursor": {
+          "description": "Exclusive upper run-id bound from a previous page.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "limit": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "sessionId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "sessionId"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "lightspeed_session_runs_read",
+    "method": "session/runs/read",
+    "summary": "Read one session run",
+    "description": "Reads and projects one run from its bounded event interval, paged by event sequence.",
+    "paramsType": "RunReadParams",
+    "resultType": "AgentApiOutcome<RunReadResponse>",
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "runId": {
+          "type": "string"
+        },
+        "sessionId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "sessionId",
+        "runId"
+      ],
+      "type": "object"
     }
   },
   {

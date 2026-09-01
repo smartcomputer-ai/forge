@@ -38,7 +38,11 @@ describe("Streamable HTTP configurator", () => {
       name: "lightspeed_models_list",
       arguments: { selectableOnly: true },
     });
-    expect(result.structuredContent).toEqual({
+    // One representation only: the JSON text block, no structuredContent.
+    expect(result.structuredContent).toBeUndefined();
+    const content = result.content as Array<{ type: string; text: string }>;
+    expect(content).toHaveLength(1);
+    expect(JSON.parse(content[0].text)).toEqual({
       result: { models: [], providers: [] },
       notifications: [],
     });

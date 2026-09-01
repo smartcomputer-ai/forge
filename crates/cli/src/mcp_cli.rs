@@ -696,6 +696,7 @@ async fn link(args: McpLinkArgs) -> Result<()> {
     let session = api
         .read_session(api::SessionReadParams {
             session_id: args.session.clone(),
+            run_limit: None,
         })
         .await
         .map_err(crate::api_client::api_error)?
@@ -735,6 +736,7 @@ async fn unlink(args: McpUnlinkArgs) -> Result<()> {
     let session = api
         .read_session(api::SessionReadParams {
             session_id: args.session.clone(),
+            run_limit: None,
         })
         .await
         .map_err(crate::api_client::api_error)?
@@ -772,6 +774,7 @@ async fn session_mcp_tools(api: &HttpAgentApi, session_id: &str) -> Result<Vec<a
     let session = api
         .read_session(api::SessionReadParams {
             session_id: session_id.to_owned(),
+            run_limit: None,
         })
         .await
         .map_err(crate::api_client::api_error)?

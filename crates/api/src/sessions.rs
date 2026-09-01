@@ -523,7 +523,20 @@ pub struct McpServerLink {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionStartResponse {
-    pub session: SessionView,
+    pub session: SessionMutationView,
+}
+
+/// Compact acknowledgement returned by session mutations. Call
+/// `session/read` when the complete current-state summary is needed.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionMutationView {
+    pub id: SessionId,
+    pub status: SessionStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub head_cursor: Option<EventCursor>,
+    pub config_revision: u64,
+    pub context_revision: u64,
 }
 
 /// Replace the session config with a complete document. Anything omitted
@@ -544,7 +557,7 @@ pub struct SessionConfigPutParams {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionConfigPutResponse {
-    pub session: SessionView,
+    pub session: SessionMutationView,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -629,7 +642,7 @@ pub struct ContextCompactParams {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ContextCompactResponse {
-    pub session: SessionView,
+    pub session: SessionMutationView,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -739,6 +752,10 @@ pub enum ContextRemoveStatus {
 #[serde(rename_all = "camelCase")]
 pub struct SessionReadParams {
     pub session_id: SessionId,
+    /// Newest run summaries to include. Values above the server maximum are
+    /// clamped.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_limit: Option<u32>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -867,6 +884,10 @@ pub struct SessionDeleteResponse {
 #[serde(rename_all = "camelCase")]
 pub struct SessionReadResponse {
     pub session: SessionView,
+    /// Exclusive upper run-id bound for `session/runs/list`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_run_cursor: Option<RunId>,
+    pub has_older_runs: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -913,7 +934,7 @@ pub struct SessionCloseParams {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionCloseResponse {
-    pub session: SessionView,
+    pub session: SessionMutationView,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

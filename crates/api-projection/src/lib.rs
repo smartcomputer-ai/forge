@@ -12,15 +12,15 @@ use api::{
     ContextEntrySourceView, ContextEntryView, ContextMessageRoleView, ContextView, EventCursor,
     EventJoinsView, InputItem, LlmUsageView, ManagedSessionWorkflowToolsInput, MediaKind,
     ModelConfig, PendingApprovalView, PrincipalKind, PrincipalRefView, ProviderContextDisplayView,
-    ProviderNativeToolExecutionView, RunAcceptedSourceView, RunStatus as ApiRunStatus, RunView,
-    RunViewSource, SessionEventKindView, SessionEventView, SessionManagementView,
-    SessionStatus as ApiSessionStatus, SessionView, TokenEstimateQualityView, TokenEstimateView,
-    ToolBatchView, ToolCallDisplayGroup, ToolCallDisplayView, ToolCallEventView, ToolCallView,
-    ToolEffectView, ToolItemStatus, ToolKindView, ToolParallelismView, ToolView,
-    WorkflowEndpointInput, WorkflowStartRefInput, WorkflowToolCompletionInput,
-    WorkflowToolCompletionKeySourceInput, WorkflowToolDeclarationInput,
-    WorkflowToolDefinitionInput, WorkflowToolKindInput, WorkflowToolSpecInput,
-    WorkflowToolTargetInput,
+    ProviderNativeToolExecutionView, RunAcceptedSourceView, RunStatus as ApiRunStatus,
+    RunSummarySourceView, RunSummaryView, RunView, RunViewSource, SessionEventKindView,
+    SessionEventView, SessionManagementView, SessionStatus as ApiSessionStatus, SessionView,
+    TokenEstimateQualityView, TokenEstimateView, ToolBatchView, ToolCallDisplayGroup,
+    ToolCallDisplayView, ToolCallEventView, ToolCallView, ToolEffectView, ToolItemStatus,
+    ToolKindView, ToolParallelismView, ToolView, WorkflowEndpointInput, WorkflowStartRefInput,
+    WorkflowToolCompletionInput, WorkflowToolCompletionKeySourceInput,
+    WorkflowToolDeclarationInput, WorkflowToolDefinitionInput, WorkflowToolKindInput,
+    WorkflowToolSpecInput, WorkflowToolTargetInput,
 };
 use engine::{
     CompactionPolicy, ContextCompactionStatus, ContextCompactionTrigger, ContextEntry,
@@ -36,20 +36,41 @@ use engine::{
         SessionStoreError, StoredSessionEntry,
     },
 };
+use futures_util::future::try_join_all;
 use serde_json::Value;
 
 pub const DEFAULT_EVENT_PAGE_LIMIT: u32 = 128;
 pub const MAX_EVENT_PAGE_LIMIT: u32 = 512;
+const MAX_INLINE_TEXT_BYTES: usize = 4_096;
 
 pub struct ProjectSession<'a> {
     pub session_id: &'a SessionId,
     pub state: &'a CoreAgentState,
     pub record: &'a SessionRecord,
-    pub entries: &'a [CoreAgentEntry],
+    pub run_limit: usize,
+    pub run_cursor: Option<RunId>,
 }
 
 pub struct CoreAgentProjector<'a> {
     blobs: &'a dyn BlobStore,
+}
+
+/// One run in reducer state, whichever queue bucket holds it.
+#[derive(Clone, Copy)]
+pub enum RunStateRef<'a> {
+    Completed(&'a engine::RunRecord),
+    Active(&'a engine::ActiveRun),
+    Queued(&'a engine::AcceptedRun),
+}
+
+impl RunStateRef<'_> {
+    fn id(&self) -> RunId {
+        match self {
+            Self::Completed(run) => run.run_id,
+            Self::Active(run) => run.run_id,
+            Self::Queued(run) => run.run_id,
+        }
+    }
 }
 
 impl<'a> CoreAgentProjector<'a> {
@@ -60,40 +81,18 @@ impl<'a> CoreAgentProjector<'a> {
     pub async fn project_session(
         &self,
         params: ProjectSession<'_>,
-    ) -> Result<SessionView, AgentApiError> {
-        let mut runs = Vec::new();
-
-        for record in &params.state.runs.completed {
-            runs.push(
-                self.project_run(params.entries, record.run_id, record.status)
-                    .await?,
-            );
-        }
-        if let Some(active_run) = params.state.runs.active.as_ref() {
-            runs.push(
-                self.project_run(params.entries, active_run.run_id, active_run.status)
-                    .await?,
-            );
-        }
-        // Queued runs are part of the session view so clients can show
-        // and cancel them before they start.
-        for queued in &params.state.runs.queued {
-            runs.push(
-                self.project_run_with_api_status(
-                    params.entries,
-                    queued.run_id,
-                    ApiRunStatus::Queued,
-                )
-                .await?,
-            );
-        }
+    ) -> Result<(SessionView, Option<api::RunId>, bool), AgentApiError> {
+        let (runs, next_run_cursor, has_older_runs) = self
+            .project_run_summaries(params.state, params.run_cursor, params.run_limit)
+            .await?;
+        let active_run = self.project_active_run_summary(params.state).await?;
 
         let config = match params.state.lifecycle.config.as_ref() {
             Some(config) => Some(self.project_session_config(config).await?),
             None => None,
         };
 
-        Ok(SessionView {
+        let session = SessionView {
             id: params.session_id.as_str().to_owned(),
             display_name: params.record.display_name.clone(),
             status: session_status(params.state),
@@ -103,6 +102,7 @@ impl<'a> CoreAgentProjector<'a> {
             created_at_ms: params.record.created_at_ms,
             updated_at_ms: params.record.updated_at_ms,
             runs,
+            active_run,
             active_context: self
                 .project_context_state(params.state.context.revision, &params.state.context.entries)
                 .await?,
@@ -123,33 +123,178 @@ impl<'a> CoreAgentProjector<'a> {
                 .as_ref()
                 .map(session_origin_to_api)
                 .transpose()?,
+        };
+        Ok((session, next_run_cursor, has_older_runs))
+    }
+
+    /// Project one newest-first keyset page directly from reducer state.
+    pub async fn project_run_summaries(
+        &self,
+        state: &CoreAgentState,
+        cursor: Option<RunId>,
+        limit: usize,
+    ) -> Result<(Vec<RunSummaryView>, Option<api::RunId>, bool), AgentApiError> {
+        let mut candidates = state
+            .runs
+            .completed
+            .iter()
+            .map(RunStateRef::Completed)
+            .chain(state.runs.active.iter().map(RunStateRef::Active))
+            .chain(state.runs.queued.iter().map(RunStateRef::Queued))
+            .filter(|run| cursor.is_none_or(|cursor| run.id() < cursor))
+            .collect::<Vec<_>>();
+        candidates.sort_by_key(|run| std::cmp::Reverse(run.id()));
+        let has_older_runs = candidates.len() > limit;
+        candidates.truncate(limit);
+        let runs_with_ids = try_join_all(
+            candidates
+                .into_iter()
+                .map(|run| async move { Ok((run.id(), self.run_state_summary(state, run).await?)) }),
+        )
+        .await?;
+        let last_run_id = runs_with_ids.last().map(|(id, _)| *id);
+        let runs = runs_with_ids
+            .into_iter()
+            .map(|(_, summary)| summary)
+            .collect();
+        let next_cursor = has_older_runs
+            .then(|| api_run_id(last_run_id.expect("older runs imply a non-empty page")));
+        Ok((runs, next_cursor, has_older_runs))
+    }
+
+    /// The currently executing run's summary, independent of any page window.
+    pub async fn project_active_run_summary(
+        &self,
+        state: &CoreAgentState,
+    ) -> Result<Option<RunSummaryView>, AgentApiError> {
+        match state.runs.active.as_ref() {
+            Some(active) => Ok(Some(
+                self.run_state_summary(state, RunStateRef::Active(active))
+                    .await?,
+            )),
+            None => Ok(None),
+        }
+    }
+
+    async fn run_state_summary(
+        &self,
+        state: &CoreAgentState,
+        run: RunStateRef<'_>,
+    ) -> Result<RunSummaryView, AgentApiError> {
+        let (id, status, accepted_at_ms, started_at_ms, completed_at_ms, usage, source) = match run
+        {
+            RunStateRef::Completed(run) => (
+                run.run_id,
+                core_run_status_to_api_status(run.status),
+                run.accepted_at_ms,
+                run.started_at_ms,
+                Some(run.completed_at_ms),
+                run.usage.as_ref(),
+                Some(&run.source),
+            ),
+            RunStateRef::Active(run) => (
+                run.run_id,
+                core_run_status_to_api_status(run.status),
+                run.accepted_at_ms,
+                run.started_at_ms,
+                None,
+                run.usage.as_ref(),
+                Some(&run.source),
+            ),
+            RunStateRef::Queued(run) => (
+                run.run_id,
+                ApiRunStatus::Queued,
+                run.accepted_at_ms,
+                None,
+                None,
+                None,
+                Some(&run.source),
+            ),
+        };
+        let pending_approvals = if let Some(active) = state
+            .runs
+            .active
+            .as_ref()
+            .filter(|active| active.run_id == id)
+        {
+            try_join_all(active.pending_approvals().map(|record| async move {
+                Ok(PendingApprovalView {
+                    approval_id: record.request.approval_id.as_str().to_owned(),
+                    requested_at_ms: record.requested_at_ms,
+                    subject: self
+                        .approval_subject_to_api(&record.request.subject)
+                        .await?,
+                })
+            }))
+            .await?
+        } else {
+            Vec::new()
+        };
+        Ok(RunSummaryView {
+            id: api_run_id(id),
+            status,
+            accepted_at_ms,
+            started_at_ms,
+            completed_at_ms,
+            source: self.project_run_summary_source(source).await?,
+            usage: usage.map(llm_usage_to_api),
+            pending_approvals,
         })
     }
 
-    pub async fn project_run(
+    async fn project_run_summary_source(
         &self,
-        entries: &[CoreAgentEntry],
-        run_id: RunId,
-        status: RunStatus,
-    ) -> Result<RunView, AgentApiError> {
-        self.project_run_with_api_status(entries, run_id, core_run_status_to_api_status(status))
-            .await
+        source: Option<&RunSource>,
+    ) -> Result<RunSummarySourceView, AgentApiError> {
+        const PREVIEW_BYTES: usize = 512;
+        match source {
+            Some(RunSource::Input { input }) => {
+                let first = input.first();
+                let content_ref = first.map(|entry| entry.content_ref.as_str().to_owned());
+                let text = match first {
+                    Some(entry) if is_text_message_media_type(entry.media_type.as_deref()) => {
+                        Some(self.read_blob_text(&entry.content_ref).await?)
+                    }
+                    Some(entry) => entry.preview.clone(),
+                    None => None,
+                };
+                let preview_truncated =
+                    text.as_ref().is_some_and(|text| text.len() > PREVIEW_BYTES);
+                Ok(RunSummarySourceView::Input {
+                    content_ref,
+                    preview: text.map(|text| truncate_utf8(&text, PREVIEW_BYTES)),
+                    preview_truncated,
+                })
+            }
+            Some(RunSource::Context { triggers }) => Ok(RunSummarySourceView::Context {
+                keys: triggers
+                    .iter()
+                    .map(|trigger| trigger.key.as_str().to_owned())
+                    .collect(),
+            }),
+            None => Ok(RunSummarySourceView::Input {
+                content_ref: None,
+                preview: None,
+                preview_truncated: false,
+            }),
+        }
     }
 
-    /// Project a run whose API status is already known — used for queued runs,
-    /// which have no engine run status until they start.
-    pub async fn project_run_with_api_status(
+    /// Project a sequence page using stable metadata from reducer state.
+    /// Event pages never need to repeat lifecycle events or generation facts.
+    pub async fn project_run_with_metadata(
         &self,
         entries: &[CoreAgentEntry],
         run_id: RunId,
         status: ApiRunStatus,
+        source: &RunSource,
+        started_at_ms: Option<u64>,
+        completed_at_ms: Option<u64>,
+        usage: Option<&engine::LlmUsage>,
     ) -> Result<RunView, AgentApiError> {
         let projection = CoreAgentProjection::new(entries);
-        let source = projection.accepted_source_for_run(run_id);
         let context_entries = projection.context_entries_for_run_with_source(run_id, source);
         let projected_entries = self.project_context_entries(&context_entries).await?;
-        let usage = sum_llm_usage(projection.generation_usage_for_run(run_id).into_iter());
-        let (started_at_ms, completed_at_ms) = projection.lifecycle_timestamps_for_run(run_id);
 
         Ok(RunView {
             id: api_run_id(run_id),
@@ -157,22 +302,18 @@ impl<'a> CoreAgentProjector<'a> {
             started_at_ms,
             completed_at_ms,
             source: match source {
-                Some(RunSource::Input { input }) => RunViewSource::Input {
+                RunSource::Input { input } => RunViewSource::Input {
                     items: self.project_input_entries(input).await?,
                 },
-                Some(RunSource::Context { triggers }) => RunViewSource::Context {
-                    keys: triggers
-                        .iter()
-                        .map(|trigger| trigger.key.as_str().to_owned())
-                        .collect(),
+                RunSource::Context { triggers } => RunViewSource::Context {
+                    items: self.project_context_trigger_items(triggers).await?,
                 },
-                None => RunViewSource::Input { items: Vec::new() },
             },
             entries: projected_entries,
             tool_batches: self
                 .project_tool_batches_for_run(&projection, &context_entries, run_id)
                 .await?,
-            usage,
+            usage: usage.map(llm_usage_to_api),
             pending_approvals: self.pending_approvals_for_run(&projection, run_id).await?,
         })
     }
@@ -268,7 +409,7 @@ impl<'a> CoreAgentProjector<'a> {
             // the blob as UTF-8 text would fail.
             ContextEntryKind::Message { .. } => {
                 if is_text_message_media_type(entry.media_type.as_deref()) {
-                    Some(self.read_blob_text(&entry.content_ref).await?)
+                    Some(self.bounded_blob_text(&entry.content_ref).await?)
                 } else {
                     None
                 }
@@ -276,9 +417,13 @@ impl<'a> CoreAgentProjector<'a> {
             ContextEntryKind::ToolCall { .. }
             | ContextEntryKind::ToolResult { .. }
             | ContextEntryKind::Catalog { .. } => {
-                Some(self.read_blob_text(&entry.content_ref).await?)
+                Some(self.bounded_blob_text(&entry.content_ref).await?)
             }
             _ => None,
+        };
+        let (text, text_truncated) = match text {
+            Some((text, truncated)) => (Some(text), truncated),
+            None => (None, false),
         };
         let display = match &entry.kind {
             ContextEntryKind::ProviderOpaque => self.provider_context_display(entry).await,
@@ -295,11 +440,53 @@ impl<'a> CoreAgentProjector<'a> {
             provider_item_id: entry.provider_item_id.clone(),
             token_estimate: entry.token_estimate.as_ref().map(token_estimate_to_api),
             text,
+            text_truncated,
             display,
             source: Some(context_entry_source_to_api(&entry.source)),
             supersedes: entry.supersedes.map(api_item_id),
             superseded_by: superseded_by.map(api_item_id),
         })
+    }
+
+    /// Read a blob's text bounded to the inline budget, reporting whether the
+    /// inline copy is a prefix of a longer body.
+    async fn bounded_blob_text(
+        &self,
+        content_ref: &engine::BlobRef,
+    ) -> Result<(String, bool), AgentApiError> {
+        let full = self.read_blob_text(content_ref).await?;
+        let truncated = full.len() > MAX_INLINE_TEXT_BYTES;
+        Ok((truncate_utf8(&full, MAX_INLINE_TEXT_BYTES), truncated))
+    }
+
+    /// Project a context-sourced run's triggers from the blob references the
+    /// engine resolved at acceptance; no pre-acceptance events are needed.
+    async fn project_context_trigger_items(
+        &self,
+        triggers: &[engine::RunSourceContextTrigger],
+    ) -> Result<Vec<api::RunContextTriggerView>, AgentApiError> {
+        try_join_all(triggers.iter().map(|trigger| async move {
+            let (text, text_truncated) = match trigger.content_ref.as_ref() {
+                Some(content_ref)
+                    if is_text_message_media_type(trigger.media_type.as_deref()) =>
+                {
+                    let (text, truncated) = self.bounded_blob_text(content_ref).await?;
+                    (Some(text), truncated)
+                }
+                _ => (None, false),
+            };
+            Ok(api::RunContextTriggerView {
+                key: trigger.key.as_str().to_owned(),
+                content_ref: trigger
+                    .content_ref
+                    .as_ref()
+                    .map(|content_ref| content_ref.as_str().to_owned()),
+                media_type: trigger.media_type.clone(),
+                text,
+                text_truncated,
+            })
+        }))
+        .await
     }
 
     /// Project active context entries, resolving `supersededBy` across them.
@@ -308,48 +495,46 @@ impl<'a> CoreAgentProjector<'a> {
         entries: &[&ContextEntry],
     ) -> Result<Vec<ContextEntryView>, AgentApiError> {
         let superseded_by = superseded_by_map(entries);
-        let mut projected = Vec::with_capacity(entries.len());
-        for entry in entries {
-            projected.push(
-                self.project_context_entry(entry, superseded_by.get(&entry.entry_id).copied())
-                    .await?,
-            );
-        }
-        Ok(projected)
+        try_join_all(entries.iter().map(|entry| {
+            self.project_context_entry(entry, superseded_by.get(&entry.entry_id).copied())
+        }))
+        .await
     }
 
     pub async fn project_input_entries(
         &self,
         input: &[ContextEntryInput],
     ) -> Result<Vec<InputItem>, AgentApiError> {
-        let mut projected = Vec::with_capacity(input.len());
-        for entry in input {
-            match entry.kind {
+        try_join_all(input.iter().map(|entry| async move {
+            Ok(match entry.kind {
                 ContextEntryKind::Message {
                     role: ContextMessageRole::User,
                 } => {
                     // Binary media entries project as media items; decoding
                     // the blob as UTF-8 text would fail.
                     if is_text_message_media_type(entry.media_type.as_deref()) {
-                        projected.push(InputItem::Text {
-                            text: self.read_blob_text(&entry.content_ref).await?,
-                        });
+                        InputItem::Text {
+                            text: truncate_utf8(
+                                &self.read_blob_text(&entry.content_ref).await?,
+                                MAX_INLINE_TEXT_BYTES,
+                            ),
+                        }
                     } else {
                         let mime = entry.media_type.clone().unwrap_or_default();
-                        projected.push(InputItem::Media {
+                        InputItem::Media {
                             blob_ref: entry.content_ref.as_str().to_owned(),
                             kind: media_kind_for_mime(&mime),
                             mime,
                             name: None,
-                        });
+                        }
                     }
                 }
-                _ => projected.push(InputItem::TextRef {
+                _ => InputItem::TextRef {
                     blob_ref: entry.content_ref.as_str().to_owned(),
-                }),
-            }
-        }
-        Ok(projected)
+                },
+            })
+        }))
+        .await
     }
 
     pub async fn project_session_config(
@@ -842,18 +1027,17 @@ impl<'a> CoreAgentProjector<'a> {
         &self,
         calls: &[ObservedToolCall],
     ) -> Result<Vec<ToolCallEventView>, AgentApiError> {
-        let mut projected = Vec::with_capacity(calls.len());
-        for call in calls {
+        try_join_all(calls.iter().map(|call| async move {
             let arguments = self.read_blob_text(&call.arguments_ref).await?;
-            projected.push(ToolCallEventView {
+            Ok(ToolCallEventView {
                 call_id: call.call_id.as_str().to_owned(),
                 tool_name: call.tool_name.as_str().to_owned(),
                 arguments_ref: call.arguments_ref.as_str().to_owned(),
-                arguments: Some(arguments.clone()),
+                arguments: Some(truncate_utf8(&arguments, MAX_INLINE_TEXT_BYTES)),
                 display: tool_call_display(call.tool_name.as_str(), &arguments),
-            });
-        }
-        Ok(projected)
+            })
+        }))
+        .await
     }
 
     async fn project_tool_batches_for_run(
@@ -879,15 +1063,14 @@ impl<'a> CoreAgentProjector<'a> {
                     calls,
                     ..
                 } if *event_run_id == run_id => {
-                    let mut projected_calls = Vec::with_capacity(calls.len());
-                    for call in calls {
+                    let projected_calls = try_join_all(calls.iter().map(|call| async {
                         let result = result_by_call.get(call.call_id.as_str());
                         let arguments = self.read_blob_text(&call.arguments_ref).await?;
-                        projected_calls.push(ToolCallView {
+                        Ok(ToolCallView {
                             call_id: call.call_id.as_str().to_owned(),
                             tool_name: call.tool_name.as_str().to_owned(),
                             arguments_ref: call.arguments_ref.as_str().to_owned(),
-                            arguments: Some(arguments.clone()),
+                            arguments: Some(truncate_utf8(&arguments, MAX_INLINE_TEXT_BYTES)),
                             output: result.and_then(|result| result.output.clone()),
                             is_error: result.is_some_and(|result| result.is_error),
                             status: result
@@ -898,8 +1081,9 @@ impl<'a> CoreAgentProjector<'a> {
                                 .cloned()
                                 .unwrap_or_default(),
                             display: tool_call_display(call.tool_name.as_str(), &arguments),
-                        });
-                    }
+                        })
+                    }))
+                    .await?;
                     batches.push(ToolBatchView {
                         id: api_tool_batch_id(*batch_id),
                         turn_id: api_turn_id(*turn_id),
@@ -963,25 +1147,30 @@ impl<'a> CoreAgentProjector<'a> {
         &self,
         context_entries: &[&ContextEntry],
     ) -> Result<BTreeMap<String, ProjectedToolResult>, AgentApiError> {
-        let mut result_by_call = BTreeMap::new();
-        for item in context_entries {
+        let projected = try_join_all(context_entries.iter().filter_map(|item| {
             let ContextEntryKind::ToolResult { call_id, is_error } = &item.kind else {
-                continue;
+                return None;
             };
-            result_by_call.insert(
-                call_id.as_str().to_owned(),
-                ProjectedToolResult {
-                    output: Some(self.read_blob_text(&item.content_ref).await?),
-                    is_error: *is_error,
-                    status: if *is_error {
-                        ToolItemStatus::Failed
-                    } else {
-                        ToolItemStatus::Succeeded
+            Some(async move {
+                Ok((
+                    call_id.as_str().to_owned(),
+                    ProjectedToolResult {
+                        output: Some(truncate_utf8(
+                            &self.read_blob_text(&item.content_ref).await?,
+                            MAX_INLINE_TEXT_BYTES,
+                        )),
+                        is_error: *is_error,
+                        status: if *is_error {
+                            ToolItemStatus::Failed
+                        } else {
+                            ToolItemStatus::Succeeded
+                        },
                     },
-                },
-            );
-        }
-        Ok(result_by_call)
+                ))
+            })
+        }))
+        .await?;
+        Ok(projected.into_iter().collect())
     }
 
     async fn provider_context_display(
@@ -1160,88 +1349,14 @@ impl<'a> CoreAgentProjection<'a> {
         self.entries
     }
 
-    pub fn accepted_source_for_run(&self, run_id: RunId) -> Option<&'a RunSource> {
-        self.entries.iter().find_map(|entry| {
-            let CoreAgentEvent::Run(RunEvent::Accepted(accepted)) = &entry.event else {
-                return None;
-            };
-            (accepted.run_id == run_id).then_some(&accepted.source)
-        })
-    }
-
-    /// Usage reported by each completed generation of the run, in turn order.
-    pub fn generation_usage_for_run(&self, run_id: RunId) -> Vec<&'a engine::LlmUsage> {
-        self.entries
-            .iter()
-            .filter_map(|entry| {
-                let CoreAgentEvent::Turn(TurnEvent::GenerationCompleted {
-                    run_id: event_run_id,
-                    facts,
-                    ..
-                }) = &entry.event
-                else {
-                    return None;
-                };
-                (*event_run_id == run_id)
-                    .then_some(facts.usage.as_ref())
-                    .flatten()
-            })
-            .collect()
-    }
-
-    /// Wall-clock lifecycle boundaries carried by the committed run events.
-    /// A queued run has neither timestamp; an active run has only `started`.
-    pub fn lifecycle_timestamps_for_run(&self, run_id: RunId) -> (Option<u64>, Option<u64>) {
-        let mut started_at_ms = None;
-        let mut completed_at_ms = None;
-        for entry in self.entries {
-            let CoreAgentEvent::Run(event) = &entry.event else {
-                continue;
-            };
-            match event {
-                RunEvent::Started {
-                    run_id: event_run_id,
-                } if *event_run_id == run_id => {
-                    started_at_ms.get_or_insert(entry.observed_at_ms);
-                }
-                RunEvent::Completed {
-                    run_id: event_run_id,
-                    ..
-                }
-                | RunEvent::Failed {
-                    run_id: event_run_id,
-                    ..
-                }
-                | RunEvent::Cancelled {
-                    run_id: event_run_id,
-                }
-                | RunEvent::ForceCancelled {
-                    run_id: event_run_id,
-                }
-                | RunEvent::QueuedCancelled {
-                    run_id: event_run_id,
-                } if *event_run_id == run_id => {
-                    completed_at_ms = Some(entry.observed_at_ms);
-                }
-                _ => {}
-            }
-        }
-        (started_at_ms, completed_at_ms)
-    }
-
-    pub fn context_entries_for_run(&self, run_id: RunId) -> Vec<&'a ContextEntry> {
-        self.context_entries_for_run_with_source(run_id, self.accepted_source_for_run(run_id))
-    }
-
-    /// Variant taking an already-located accepted source so callers projecting
-    /// a full `RunView` scan the event log for the acceptance event only once.
+    /// Select entries for a run using its reducer-owned accepted source.
     pub fn context_entries_for_run_with_source(
         &self,
         run_id: RunId,
-        source: Option<&'a RunSource>,
+        source: &'a RunSource,
     ) -> Vec<&'a ContextEntry> {
         let mut trigger_entry_ids = BTreeSet::new();
-        if let Some(RunSource::Context { triggers }) = source {
+        if let RunSource::Context { triggers } = source {
             for trigger in triggers {
                 trigger_entry_ids.insert(trigger.entry_id);
             }
@@ -2388,31 +2503,6 @@ fn llm_usage_to_api(usage: &engine::LlmUsage) -> LlmUsageView {
     }
 }
 
-/// Sum usage over a run's completed generations; `None` when no generation
-/// reported usage.
-fn sum_llm_usage<'a>(usages: impl Iterator<Item = &'a engine::LlmUsage>) -> Option<LlmUsageView> {
-    let mut total: Option<LlmUsageView> = None;
-    for usage in usages {
-        let view = llm_usage_to_api(usage);
-        let acc = total.get_or_insert_with(LlmUsageView::default);
-        fn add(acc: &mut Option<u32>, value: Option<u32>) {
-            if let Some(value) = value {
-                *acc = Some(acc.unwrap_or(0).saturating_add(value));
-            }
-        }
-        add(&mut acc.input_tokens, view.input_tokens);
-        add(&mut acc.output_tokens, view.output_tokens);
-        add(&mut acc.reasoning_tokens, view.reasoning_tokens);
-        add(&mut acc.total_tokens, view.total_tokens);
-        add(&mut acc.cached_input_tokens, view.cached_input_tokens);
-        add(
-            &mut acc.cache_write_input_tokens,
-            view.cache_write_input_tokens,
-        );
-    }
-    total
-}
-
 #[cfg(test)]
 mod tests {
     use engine::{
@@ -2569,6 +2659,50 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn run_summaries_page_newest_first_with_explicit_continuation() {
+        let blobs = InMemoryBlobStore::new();
+        let projector = CoreAgentProjector::new(&blobs);
+        let mut state = CoreAgentState::new();
+        for id in 1..=3 {
+            state.runs.completed.push(engine::RunRecord {
+                run_id: RunId::new(id),
+                status: RunStatus::Completed,
+                submission_id: None,
+                submission_digest: None,
+                source: RunSource::Input { input: Vec::new() },
+                first_seq: EventSeq::new(id * 2 - 1),
+                terminal_seq: EventSeq::new(id * 2),
+                accepted_at_ms: id,
+                started_at_ms: Some(id + 10),
+                completed_at_ms: id + 20,
+                usage: None,
+                output_ref: None,
+                failure: None,
+                notify_on_terminal: Vec::new(),
+            });
+        }
+
+        let (first, next, has_older) = projector
+            .project_run_summaries(&state, None, 2)
+            .await
+            .expect("first page");
+        assert_eq!(
+            first.iter().map(|run| run.id.as_str()).collect::<Vec<_>>(),
+            vec!["run_3", "run_2"]
+        );
+        assert!(has_older);
+        assert_eq!(next.as_deref(), Some("run_2"));
+
+        let (last, next, has_older) = projector
+            .project_run_summaries(&state, Some(RunId::new(2)), 2)
+            .await
+            .expect("last page");
+        assert_eq!(last[0].id, "run_1");
+        assert!(!has_older);
+        assert!(next.is_none());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn detailed_session_projects_managed_catalog_flag() {
         let blobs = InMemoryBlobStore::new();
         let projector = CoreAgentProjector::new(&blobs);
@@ -2593,12 +2727,13 @@ mod tests {
                 session_id: &session_id,
                 state: &state,
                 record: &record,
-                entries: &[],
+                run_limit: 20,
+                run_cursor: None,
             })
             .await
             .expect("project detailed managed session");
 
-        assert!(session.managed);
+        assert!(session.0.managed);
     }
 
     #[test]
@@ -2619,34 +2754,12 @@ mod tests {
         );
         let entries = vec![entry(1, vec![first]), entry(2, vec![second])];
 
-        let projected = CoreAgentProjection::new(&entries).context_entries_for_run(RunId::new(1));
+        let source = RunSource::Input { input: Vec::new() };
+        let projected = CoreAgentProjection::new(&entries)
+            .context_entries_for_run_with_source(RunId::new(1), &source);
 
         assert_eq!(projected.len(), 1);
         assert_eq!(projected[0].entry_id, ContextEntryId::new(1));
-    }
-
-    #[test]
-    fn run_lifecycle_timestamps_come_from_started_and_terminal_events() {
-        let run_id = RunId::new(7);
-        let entries = vec![
-            run_event_entry(10, RunEvent::Started { run_id }),
-            run_event_entry(
-                42,
-                RunEvent::Completed {
-                    run_id,
-                    output_ref: None,
-                },
-            ),
-        ];
-
-        assert_eq!(
-            CoreAgentProjection::new(&entries).lifecycle_timestamps_for_run(run_id),
-            (Some(10), Some(42)),
-        );
-        assert_eq!(
-            CoreAgentProjection::new(&entries).lifecycle_timestamps_for_run(RunId::new(8)),
-            (None, None),
-        );
     }
 
     #[test]
@@ -2659,13 +2772,17 @@ mod tests {
         replacement.key = Some(key.clone());
         replacement.preview = Some("replacement".to_owned());
         let run_id = RunId::new(7);
-        let entries = vec![
-            entry(1, vec![original]),
-            accepted_context_run_entry(2, run_id, key, ContextEntryId::new(1)),
-            entry(3, vec![replacement]),
-        ];
-
-        let projected = CoreAgentProjection::new(&entries).context_entries_for_run(run_id);
+        let entries = vec![entry(1, vec![original]), entry(3, vec![replacement])];
+        let source = RunSource::Context {
+            triggers: vec![engine::RunSourceContextTrigger {
+                key,
+                entry_id: ContextEntryId::new(1),
+                content_ref: None,
+                media_type: None,
+            }],
+        };
+        let projected =
+            CoreAgentProjection::new(&entries).context_entries_for_run_with_source(run_id, &source);
 
         assert_eq!(projected.len(), 1);
         assert_eq!(projected[0].entry_id, ContextEntryId::new(1));
@@ -2944,6 +3061,7 @@ mod tests {
                     quality: TokenEstimateQualityView::ProviderCounted,
                 }),
                 text: None,
+                text_truncated: false,
                 display: None,
                 source: Some(ContextEntrySourceView::AssistantOutput {
                     run_id: "run_7".to_owned(),
@@ -3001,6 +3119,7 @@ mod tests {
                 provider_item_id: Some("mcp_1".to_owned()),
                 token_estimate: None,
                 text: None,
+                text_truncated: false,
                 display: Some(ProviderContextDisplayView {
                     summary: ToolCallDisplayView {
                         group: ToolCallDisplayGroup::Other,
@@ -3269,42 +3388,6 @@ mod tests {
                 base_revision: seq - 1,
                 entries,
             }),
-        }
-    }
-
-    fn run_event_entry(observed_at_ms: u64, event: RunEvent) -> CoreAgentEntry {
-        CoreAgentEntry {
-            position: SessionPosition {
-                seq: EventSeq::new(observed_at_ms),
-            },
-            observed_at_ms,
-            joins: CoreAgentJoins::default(),
-            event: CoreAgentEvent::Run(event),
-        }
-    }
-
-    fn accepted_context_run_entry(
-        seq: u64,
-        run_id: RunId,
-        key: engine::ContextEntryKey,
-        entry_id: ContextEntryId,
-    ) -> CoreAgentEntry {
-        CoreAgentEntry {
-            position: SessionPosition {
-                seq: EventSeq::new(seq),
-            },
-            observed_at_ms: seq,
-            joins: CoreAgentJoins::default(),
-            event: CoreAgentEvent::Run(engine::RunEvent::Accepted(engine::AcceptedRunEvent {
-                notify_on_terminal: Vec::new(),
-                run_id,
-                submission_id: None,
-                source: engine::RunSource::Context {
-                    triggers: vec![engine::RunSourceContextTrigger { key, entry_id }],
-                },
-                run_config: engine::RunConfig::default(),
-                config_revision: 0,
-            })),
         }
     }
 

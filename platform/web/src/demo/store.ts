@@ -88,6 +88,8 @@ export interface SessionRecord {
   instructions: string | null;
   /// submissionId → run, so client retries dedupe like the engine.
   submissions: Map<string, RunView>;
+  /// All detailed runs; `view.runs` carries the bounded summary shape.
+  runs: Map<string, RunView>;
   /// Runs queued behind the active one.
   queue: Array<{ runId: string; begin: () => void }>;
   /// Steering admitted while a run is in flight; consumed at the run's

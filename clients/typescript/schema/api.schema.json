@@ -63,6 +63,11 @@
           "const": "environment_not_ready",
           "description": "The environment exists but is not reachable yet: it is still\nprovisioning/booting, or it was powered down and a wake (desired\npower `running`) has been initiated by this request. Distinct from\n`Rejected` so clients retry with backoff instead of failing —\npolling and automation callers lean on this for wake-on-use.",
           "type": "string"
+        },
+        {
+          "const": "response_too_large",
+          "description": "The requested page still exceeds the public serialized response\nbudget. Callers can retry with a smaller page limit or continuation.",
+          "type": "string"
         }
       ]
     },
@@ -1725,6 +1730,40 @@
         },
         "result": {
           "$ref": "#/definitions/RunCancelResponse"
+        }
+      },
+      "required": [
+        "result"
+      ],
+      "type": "object"
+    },
+    "AgentApiOutcomeOfRunListResponse": {
+      "properties": {
+        "notifications": {
+          "items": {
+            "$ref": "#/definitions/AgentNotification"
+          },
+          "type": "array"
+        },
+        "result": {
+          "$ref": "#/definitions/RunListResponse"
+        }
+      },
+      "required": [
+        "result"
+      ],
+      "type": "object"
+    },
+    "AgentApiOutcomeOfRunReadResponse": {
+      "properties": {
+        "notifications": {
+          "items": {
+            "$ref": "#/definitions/AgentNotification"
+          },
+          "type": "array"
+        },
+        "result": {
+          "$ref": "#/definitions/RunReadResponse"
         }
       },
       "required": [
@@ -6999,7 +7038,7 @@
     "ContextCompactResponse": {
       "properties": {
         "session": {
-          "$ref": "#/definitions/SessionView"
+          "$ref": "#/definitions/SessionMutationView"
         }
       },
       "required": [
@@ -7505,6 +7544,10 @@
             "string",
             "null"
           ]
+        },
+        "textTruncated": {
+          "description": "True when `text` is a bounded prefix of the blob body; fetch\n`contentRef` for the complete content.",
+          "type": "boolean"
         },
         "tokenEstimate": {
           "anyOf": [
@@ -11965,6 +12008,39 @@
       ],
       "type": "object"
     },
+    "RunContextTriggerView": {
+      "description": "A context entry that triggered a context-sourced run, carrying the blob\nreference resolved at acceptance so run detail can render the trigger\nwithout scanning pre-acceptance events. `text` is a bounded inline body;\nthe full content stays blob-addressed.",
+      "properties": {
+        "contentRef": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "key": {
+          "type": "string"
+        },
+        "mediaType": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "text": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "textTruncated": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "key"
+      ],
+      "type": "object"
+    },
     "RunLimitsConfig": {
       "properties": {
         "maxToolRounds": {
@@ -11984,6 +12060,83 @@
           ]
         }
       },
+      "type": "object"
+    },
+    "RunListParams": {
+      "properties": {
+        "cursor": {
+          "description": "Exclusive upper run-id bound from a previous page.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "limit": {
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "sessionId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "sessionId"
+      ],
+      "type": "object"
+    },
+    "RunListResponse": {
+      "properties": {
+        "hasOlderRuns": {
+          "type": "boolean"
+        },
+        "nextCursor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "runs": {
+          "default": [],
+          "items": {
+            "$ref": "#/definitions/RunSummaryView"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "hasOlderRuns"
+      ],
+      "type": "object"
+    },
+    "RunReadParams": {
+      "properties": {
+        "runId": {
+          "type": "string"
+        },
+        "sessionId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "sessionId",
+        "runId"
+      ],
+      "type": "object"
+    },
+    "RunReadResponse": {
+      "description": "The complete projection of one run. Run projection is stateful across the\nrun's events, so partial pages would silently lose cross-event state; a\nrun whose interval exceeds the server's detail ceiling is rejected with a\ntyped error and remains readable through `session/events/read`. Inline\nentry text is bounded; full bodies stay blob-addressed via `contentRef`.",
+      "properties": {
+        "run": {
+          "$ref": "#/definitions/RunView"
+        }
+      },
+      "required": [
+        "run"
+      ],
       "type": "object"
     },
     "RunStartConfig": {
@@ -12169,6 +12322,114 @@
       ],
       "type": "object"
     },
+    "RunSummarySourceView": {
+      "oneOf": [
+        {
+          "properties": {
+            "contentRef": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "preview": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "previewTruncated": {
+              "type": "boolean"
+            },
+            "type": {
+              "const": "input",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "properties": {
+            "keys": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "type": {
+              "const": "context",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "keys"
+          ],
+          "type": "object"
+        }
+      ]
+    },
+    "RunSummaryView": {
+      "description": "Bounded run metadata projected from reducer state. Transcript entries and\ntool payloads are available only from `session/runs/read` or the event\nstream.",
+      "properties": {
+        "acceptedAtMs": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "completedAtMs": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "pendingApprovals": {
+          "items": {
+            "$ref": "#/definitions/PendingApprovalView"
+          },
+          "type": "array"
+        },
+        "source": {
+          "$ref": "#/definitions/RunSummarySourceView"
+        },
+        "startedAtMs": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "status": {
+          "$ref": "#/definitions/RunStatus"
+        },
+        "usage": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/LlmUsageView"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "id",
+        "status",
+        "acceptedAtMs",
+        "source"
+      ],
+      "type": "object"
+    },
     "RunTerminalNotificationInput": {
       "additionalProperties": false,
       "properties": {
@@ -12271,9 +12532,9 @@
         },
         {
           "properties": {
-            "keys": {
+            "items": {
               "items": {
-                "type": "string"
+                "$ref": "#/definitions/RunContextTriggerView"
               },
               "type": "array"
             },
@@ -12284,7 +12545,7 @@
           },
           "required": [
             "type",
-            "keys"
+            "items"
           ],
           "type": "object"
         }
@@ -12347,7 +12608,7 @@
     "SessionCloseResponse": {
       "properties": {
         "session": {
-          "$ref": "#/definitions/SessionView"
+          "$ref": "#/definitions/SessionMutationView"
         }
       },
       "required": [
@@ -12441,7 +12702,7 @@
     "SessionConfigPutResponse": {
       "properties": {
         "session": {
-          "$ref": "#/definitions/SessionView"
+          "$ref": "#/definitions/SessionMutationView"
         }
       },
       "required": [
@@ -14378,6 +14639,44 @@
       },
       "type": "object"
     },
+    "SessionMutationView": {
+      "description": "Compact acknowledgement returned by session mutations. Call\n`session/read` when the complete current-state summary is needed.",
+      "properties": {
+        "configRevision": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "contextRevision": {
+          "format": "uint64",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "headCursor": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/EventCursor"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "id": {
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/definitions/SessionStatus"
+        }
+      },
+      "required": [
+        "id",
+        "status",
+        "configRevision",
+        "contextRevision"
+      ],
+      "type": "object"
+    },
     "SessionOriginKind": {
       "enum": [
         "subagent"
@@ -14431,6 +14730,15 @@
     },
     "SessionReadParams": {
       "properties": {
+        "runLimit": {
+          "description": "Newest run summaries to include. Values above the server maximum are\nclamped.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "sessionId": {
           "type": "string"
         }
@@ -14442,12 +14750,23 @@
     },
     "SessionReadResponse": {
       "properties": {
+        "hasOlderRuns": {
+          "type": "boolean"
+        },
+        "nextRunCursor": {
+          "description": "Exclusive upper run-id bound for `session/runs/list`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "session": {
           "$ref": "#/definitions/SessionView"
         }
       },
       "required": [
-        "session"
+        "session",
+        "hasOlderRuns"
       ],
       "type": "object"
     },
@@ -14521,7 +14840,7 @@
     "SessionStartResponse": {
       "properties": {
         "session": {
-          "$ref": "#/definitions/SessionView"
+          "$ref": "#/definitions/SessionMutationView"
         }
       },
       "required": [
@@ -14600,6 +14919,17 @@
             "null"
           ]
         },
+        "activeRun": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/RunSummaryView"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "The currently executing run, always present when one exists — the\npaged `runs` window can omit it behind newer queued runs, so control\nsurfaces (steering, status) must read it from here."
+        },
         "activeTools": {
           "allOf": [
             {
@@ -14670,7 +15000,7 @@
         "runs": {
           "default": [],
           "items": {
-            "$ref": "#/definitions/RunView"
+            "$ref": "#/definitions/RunSummaryView"
           },
           "type": "array"
         },

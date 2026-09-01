@@ -1388,6 +1388,15 @@ fn existing_run_submission_rejects_completed_duplicate_with_different_input() {
             &run_config,
             &[],
         )),
+        source: engine::RunSource::Input {
+            input: original_input,
+        },
+        first_seq: engine::EventSeq::new(1),
+        terminal_seq: engine::EventSeq::new(1),
+        accepted_at_ms: 1,
+        started_at_ms: Some(1),
+        completed_at_ms: 1,
+        usage: None,
         output_ref: None,
         failure: None,
     });
@@ -1396,13 +1405,12 @@ fn existing_run_submission_rejects_completed_duplicate_with_different_input() {
         existing_run_submission(&state, &submission_id, &changed_source, &run_config, &[]),
         Some(ExistingRunSubmission::Reject)
     ));
-    let Some(ExistingRunSubmission::ReturnRun { run_id, status }) =
+    let Some(ExistingRunSubmission::ReturnRun { run_id }) =
         existing_run_submission(&state, &submission_id, &original_source, &run_config, &[])
     else {
         panic!("identical duplicate should return existing completed run");
     };
     assert_eq!(run_id, RunId::new(7));
-    assert_eq!(status, RunStatus::Completed);
     assert!(matches!(
         existing_run_submission(
             &state,

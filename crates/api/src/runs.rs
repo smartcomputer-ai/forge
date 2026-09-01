@@ -22,6 +22,45 @@ pub struct RunStartParams {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct RunListParams {
+    pub session_id: SessionId,
+    /// Exclusive upper run-id bound from a previous page.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<RunId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u32>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct RunListResponse {
+    #[serde(default)]
+    pub runs: Vec<RunSummaryView>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<RunId>,
+    pub has_older_runs: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct RunReadParams {
+    pub session_id: SessionId,
+    pub run_id: RunId,
+}
+
+/// The complete projection of one run. Run projection is stateful across the
+/// run's events, so partial pages would silently lose cross-event state; a
+/// run whose interval exceeds the server's detail ceiling is rejected with a
+/// typed error and remains readable through `session/events/read`. Inline
+/// entry text is bounded; full bodies stay blob-addressed via `contentRef`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct RunReadResponse {
+    pub run: RunView,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RunTerminalNotificationInput {
     pub token: String,

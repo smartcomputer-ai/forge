@@ -33,7 +33,10 @@ pub use config::{
     default_session_config, environment_ready_activity_options, llm_activity_options,
     tool_batch_activity_options, tool_call_activity_options, tool_call_operation_timeout,
 };
-pub use rehydrate::{ReducedSession, RehydrateError, reduce_session_entries};
+pub use rehydrate::{
+    ReducedSession, RehydrateError, accumulate_session_entry, reduce_session_entries,
+    reduce_session_entries_from,
+};
 pub use temporal_helpers::connect_temporal;
 pub use types::{
     AgentActiveRunSummary, AgentAdmission, AgentAdmissionFailure, AgentAdmissionFailureKind,

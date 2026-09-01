@@ -1529,10 +1529,7 @@ function queuedRunText(
 ): string {
   const run = runs?.find((candidate) => String(candidate.id) === runId);
   if (run?.source.type === "input") {
-    const text = run.source.items
-      .map((item) => (item.type === "text" ? item.text : `[${item.type}]`))
-      .join("\n")
-      .trim();
+    const text = run.source.preview?.trim();
     if (text) {
       return text;
     }

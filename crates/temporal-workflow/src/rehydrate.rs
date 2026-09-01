@@ -14,12 +14,16 @@ use engine::{
     CoreAgentCodec, CoreAgentEntry, CoreAgentEvent, CoreAgentState, RunEvent, SubmissionId,
     storage::StoredSessionEntry,
 };
+use serde::{Deserialize, Serialize};
 
 /// Outcome of reducing a session's persisted log.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReducedSession {
     pub core_state: CoreAgentState,
     pub run_submissions: BTreeMap<u64, Option<SubmissionId>>,
+    /// Entries applied by this process; excluded from serialized checkpoints
+    /// because a checkpoint restart counts only its own tail.
+    #[serde(skip)]
     pub replayed_event_count: u64,
 }
 
@@ -51,18 +55,32 @@ impl std::error::Error for RehydrateError {}
 pub fn reduce_session_entries(
     entries: &[StoredSessionEntry],
 ) -> Result<ReducedSession, RehydrateError> {
-    let mut reduced = ReducedSession::default();
+    reduce_session_entries_from(ReducedSession::default(), entries)
+}
+
+/// Apply persisted entries onto an existing reduction. Checkpoint recovery
+/// and the live workflow both use this accumulator, so tail replay has exactly
+/// the same reducer semantics as a replay from sequence one.
+pub fn reduce_session_entries_from(
+    mut reduced: ReducedSession,
+    entries: &[StoredSessionEntry],
+) -> Result<ReducedSession, RehydrateError> {
     for entry in entries {
         let decoded = CoreAgentCodec
             .decode_entry(entry)
             .map_err(|error| RehydrateError::Decode(error.to_string()))?;
-        accumulate(&mut reduced, &decoded)?;
+        accumulate_session_entry(&mut reduced, &decoded)?;
     }
-    reduced.replayed_event_count = entries.len() as u64;
+    reduced.replayed_event_count = reduced
+        .replayed_event_count
+        .saturating_add(entries.len() as u64);
     Ok(reduced)
 }
 
-fn accumulate(reduced: &mut ReducedSession, entry: &CoreAgentEntry) -> Result<(), RehydrateError> {
+pub fn accumulate_session_entry(
+    reduced: &mut ReducedSession,
+    entry: &CoreAgentEntry,
+) -> Result<(), RehydrateError> {
     if let CoreAgentEvent::Run(RunEvent::Accepted(accepted)) = &entry.event {
         reduced
             .run_submissions
@@ -75,6 +93,10 @@ fn accumulate(reduced: &mut ReducedSession, entry: &CoreAgentEntry) -> Result<()
 #[cfg(test)]
 mod tests {
     use super::*;
+    use engine::{
+        CoreAgentEntry, CoreAgentJoins, CoreAgentLifecycleEvent, EventSeq, ModelSelection,
+        ProviderApiKind, SessionPosition,
+    };
 
     #[test]
     fn empty_log_reduces_to_default_state() {
@@ -82,5 +104,42 @@ mod tests {
         assert_eq!(reduced.replayed_event_count, 0);
         assert!(reduced.run_submissions.is_empty());
         assert_eq!(reduced.core_state, CoreAgentState::new());
+    }
+
+    #[test]
+    fn every_checkpoint_cut_reduces_to_the_same_state() {
+        let config = crate::default_session_config(ModelSelection {
+            api_kind: ProviderApiKind::OpenAiResponses,
+            provider_id: "test".to_owned(),
+            model: "test".to_owned(),
+        });
+        let events = [
+            CoreAgentEvent::Lifecycle(CoreAgentLifecycleEvent::Opened { config }),
+            CoreAgentEvent::Lifecycle(CoreAgentLifecycleEvent::Closed),
+        ];
+        let entries = events
+            .into_iter()
+            .enumerate()
+            .map(|(index, event)| {
+                CoreAgentCodec
+                    .encode_entry(&CoreAgentEntry {
+                        position: SessionPosition {
+                            seq: EventSeq::new(index as u64 + 1),
+                        },
+                        observed_at_ms: index as u64 + 1,
+                        joins: CoreAgentJoins::default(),
+                        event,
+                    })
+                    .expect("encode entry")
+            })
+            .collect::<Vec<_>>();
+        let full = reduce_session_entries(&entries).expect("reduce full log");
+
+        for cut in 0..=entries.len() {
+            let prefix = reduce_session_entries(&entries[..cut]).expect("reduce prefix");
+            let resumed =
+                reduce_session_entries_from(prefix, &entries[cut..]).expect("reduce suffix");
+            assert_eq!(resumed, full, "cut point {cut}");
+        }
     }
 }

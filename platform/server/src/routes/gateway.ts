@@ -465,7 +465,10 @@ export function gatewayRoutes(ctx: AppContext) {
         sessionId: c.req.param("sessionId"),
         force: body.data.force ?? false,
       });
-      return c.json(response.result.session);
+      const current = await client.call("session/read", {
+        sessionId: response.result.session.id,
+      });
+      return c.json(current.result.session);
     });
   });
 
@@ -532,7 +535,10 @@ export function gatewayRoutes(ctx: AppContext) {
         ...(input.displayName ? { displayName: input.displayName } : {}),
         profile: input.profile as ProfileSource,
       });
-      return c.json(response.result.session);
+      const current = await client.call("session/read", {
+        sessionId: response.result.session.id,
+      });
+      return c.json(current.result.session);
     });
   });
 
@@ -553,7 +559,10 @@ export function gatewayRoutes(ctx: AppContext) {
         config: body.data.config as SessionConfig,
         expectedConfigRevision: body.data.expectedConfigRevision,
       });
-      return c.json(response.result.session);
+      const current = await client.call("session/read", {
+        sessionId: response.result.session.id,
+      });
+      return c.json(current.result.session);
     });
   });
 

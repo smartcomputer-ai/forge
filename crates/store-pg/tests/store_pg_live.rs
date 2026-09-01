@@ -13,8 +13,9 @@ use engine::{
         EventSeq, SessionId, SessionPosition, StoredEvent, StoredJoins, UncommittedStoredEvent,
     },
     storage::{
-        AppendSessionEvents, BlobEdge, BlobGraphStore, BlobStore, CreateClonedSession,
-        CreateForkedSession, CreateSession, ListSessions, ReadSessionEvents, SessionBlobRoot,
+        AdvanceSessionCheckpoint, AppendSessionEvents, BlobEdge, BlobGraphStore, BlobStore,
+        CreateClonedSession, CreateForkedSession, CreateSession, ListSessions,
+        ReadSessionEventRange, ReadSessionEvents, SessionBlobRoot, SessionCheckpoint,
         SessionOrigin, SessionOriginKind, SessionStore, SessionStoreError,
     },
 };
@@ -99,6 +100,123 @@ async fn pg_live_sessions_are_isolated_by_universe() {
         .await
         .expect("read right events");
     assert!(right_page.entries.is_empty());
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires ./dev.sh infra or compatible Postgres + MinIO env"]
+async fn pg_live_session_ranges_are_fenced_and_checkpoint_pointers_only_advance() {
+    let store = live_store("session-checkpoints", 64).await;
+    let session_id = SessionId::new("checkpoint-session");
+    store
+        .create_session(CreateSession {
+            session_id: session_id.clone(),
+            display_name: None,
+            origin: None,
+            created_at_ms: 1,
+        })
+        .await
+        .expect("create checkpoint session");
+    store
+        .append(AppendSessionEvents {
+            session_id: session_id.clone(),
+            expected_head: None,
+            events: (1..=5).map(open_event).collect(),
+        })
+        .await
+        .expect("append checkpoint session events");
+
+    let first = store
+        .read_range(ReadSessionEventRange {
+            session_id: session_id.clone(),
+            after: EventSeq::new(1),
+            through: EventSeq::new(4),
+            limit: 2,
+        })
+        .await
+        .expect("read first fenced range page");
+    assert_eq!(
+        first
+            .entries
+            .iter()
+            .map(|entry| entry.position.seq.as_u64())
+            .collect::<Vec<_>>(),
+        vec![2, 3]
+    );
+    assert_eq!(first.next_after, Some(EventSeq::new(3)));
+    assert!(!first.complete);
+
+    let second = store
+        .read_range(ReadSessionEventRange {
+            session_id: session_id.clone(),
+            after: first.next_after.expect("first range cursor"),
+            through: EventSeq::new(4),
+            limit: 2,
+        })
+        .await
+        .expect("read second fenced range page");
+    assert_eq!(
+        second
+            .entries
+            .iter()
+            .map(|entry| entry.position.seq.as_u64())
+            .collect::<Vec<_>>(),
+        vec![4]
+    );
+    assert!(second.complete);
+
+    let newest_bytes = b"newest checkpoint".to_vec();
+    let newest_ref = store
+        .put_bytes(newest_bytes.clone())
+        .await
+        .expect("put newest checkpoint blob");
+    let newest = SessionCheckpoint {
+        session_id: session_id.clone(),
+        through_seq: EventSeq::new(4),
+        format_version: 1,
+        state_ref: newest_ref.clone(),
+        lineage_source_session_id: None,
+        lineage_source_seq: None,
+        byte_len: newest_bytes.len() as u64,
+        created_at_ms: 20,
+    };
+    assert!(
+        store
+            .advance_checkpoint(AdvanceSessionCheckpoint {
+                checkpoint: newest.clone(),
+            })
+            .await
+            .expect("advance checkpoint")
+    );
+
+    let stale_bytes = b"stale checkpoint".to_vec();
+    let stale_ref = store
+        .put_bytes(stale_bytes.clone())
+        .await
+        .expect("put stale checkpoint blob");
+    assert!(
+        !store
+            .advance_checkpoint(AdvanceSessionCheckpoint {
+                checkpoint: SessionCheckpoint {
+                    session_id: session_id.clone(),
+                    through_seq: EventSeq::new(2),
+                    format_version: 1,
+                    state_ref: stale_ref,
+                    lineage_source_session_id: None,
+                    lineage_source_seq: None,
+                    byte_len: stale_bytes.len() as u64,
+                    created_at_ms: 30,
+                },
+            })
+            .await
+            .expect("reject stale checkpoint")
+    );
+    assert_eq!(
+        store
+            .load_checkpoint(&session_id)
+            .await
+            .expect("load checkpoint"),
+        Some(newest)
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]

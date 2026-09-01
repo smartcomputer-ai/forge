@@ -503,12 +503,16 @@ fn apply_entries(
     entries: &[CoreAgentEntry],
     run_submissions: &mut BTreeMap<u64, Option<SubmissionId>>,
 ) -> anyhow::Result<()> {
+    let mut reduced = crate::ReducedSession {
+        core_state: std::mem::take(state),
+        run_submissions: std::mem::take(run_submissions),
+        replayed_event_count: 0,
+    };
     for entry in entries {
-        if let CoreAgentEvent::Run(RunEvent::Accepted(accepted)) = &entry.event {
-            run_submissions.insert(accepted.run_id.as_u64(), accepted.submission_id.clone());
-        }
-        engine::apply_event(state, entry)?;
+        crate::accumulate_session_entry(&mut reduced, entry)?;
     }
+    *state = reduced.core_state;
+    *run_submissions = reduced.run_submissions;
     Ok(())
 }
 

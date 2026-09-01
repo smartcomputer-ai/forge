@@ -88,10 +88,9 @@ use api::{
     SkillActivationSource as ApiSkillActivationSource,
 };
 use api_projection::{
-    CoreAgentProjector, MAX_EVENT_PAGE_LIMIT, ProjectSession, api_kind_from_str, api_run_id,
-    api_steering_id, core_run_status_to_api_status, decode_stored_entry, event_cursor,
-    event_page_limit, map_session_store_error, parse_api_run_id, project_context_entry_inputs,
-    read_all_session_entries, replay_core_agent_state,
+    CoreAgentProjector, ProjectSession, api_kind_from_str, api_run_id, api_steering_id,
+    core_run_status_to_api_status, decode_stored_entry, event_cursor, event_page_limit,
+    map_session_store_error, parse_api_run_id, project_context_entry_inputs,
 };
 use async_trait::async_trait;
 use auth::{
@@ -169,6 +168,13 @@ const ACTIVATION_TEXT_MAX_BYTES: usize = 4096;
 const DEFAULT_SESSION_LIST_LIMIT: usize = 50;
 /// Server-side cap for `session/list` page sizes; larger requests are clamped.
 const MAX_SESSION_LIST_LIMIT: usize = 200;
+const DEFAULT_RUN_SUMMARY_LIMIT: usize = 20;
+const MAX_RUN_SUMMARY_LIMIT: usize = 100;
+const MAX_RUN_DETAIL_LIMIT: usize = 512;
+/// Hard ceiling on the events scanned while projecting one run's complete
+/// interval; a run past this is served through `session/events/read` instead
+/// of an unbounded detail document.
+const MAX_RUN_DETAIL_EVENTS: usize = 20_000;
 /// Resource bound for the opaque managed-controller run terminal token.
 const MAX_RUN_TERMINAL_NOTIFICATION_TOKEN_BYTES: usize = 512;
 
@@ -262,7 +268,7 @@ fn approval_decision_failure(
 }
 
 enum ExistingRunSubmission {
-    ReturnRun { run_id: RunId, status: RunStatus },
+    ReturnRun { run_id: RunId },
     Reject,
 }
 
@@ -291,7 +297,6 @@ fn existing_run_submission(
             {
                 ExistingRunSubmission::ReturnRun {
                     run_id: active.run_id,
-                    status: active.status,
                 }
             } else {
                 ExistingRunSubmission::Reject
@@ -323,7 +328,6 @@ fn existing_run_submission(
             Some(existing) if existing != digest => ExistingRunSubmission::Reject,
             _ => ExistingRunSubmission::ReturnRun {
                 run_id: completed.run_id,
-                status: completed.status,
             },
         });
     }
@@ -1045,8 +1049,8 @@ impl GatewayAgentApi {
             &notify_on_terminal,
         ) {
             return match existing {
-                ExistingRunSubmission::ReturnRun { run_id, status } => {
-                    let run = self.project_run_by_id(&session_id, run_id, status).await?;
+                ExistingRunSubmission::ReturnRun { run_id } => {
+                    let run = self.project_run_by_id(&session_id, run_id).await?;
                     Ok(AgentApiOutcome::new(RunStartResponse { run }))
                 }
                 ExistingRunSubmission::Reject => Err(duplicate_submission_error(&submission_id)),
@@ -1146,7 +1150,7 @@ impl GatewayAgentApi {
                             workflow_tools,
                         )?;
                     }
-                    let session = self.project_session_by_id(&session_id).await?;
+                    let session = self.session_mutation_view_by_id(&session_id).await?;
                     return Ok(AgentApiOutcome::new(SessionStartResponse { session }));
                 }
                 Ok(loaded) => {
@@ -1241,10 +1245,11 @@ impl GatewayAgentApi {
                     )?;
                 }
                 if loaded.state.lifecycle.status == CoreAgentStatus::Closed {
-                    let session = self.project_session_by_id(&session_id).await?;
+                    let session = self.session_mutation_view_by_id(&session_id).await?;
                     return Ok(AgentApiOutcome::new(SessionStartResponse { session }));
                 }
-                let session = self.wait_for_open_session(&session_id).await?;
+                self.wait_for_open_session(&session_id).await?;
+                let session = self.session_mutation_view_by_id(&session_id).await?;
                 return Ok(AgentApiOutcome::new(SessionStartResponse { session }));
             }
             Err(error) => return Err(error),
@@ -1263,7 +1268,7 @@ impl GatewayAgentApi {
         }
         self.load_session_state_with_current_run_context(&session_id)
             .await?;
-        let session = self.project_session_by_id(&session_id).await?;
+        let session = self.session_mutation_view_by_id(&session_id).await?;
         Ok(AgentApiOutcome::new(SessionStartResponse { session }))
     }
 
@@ -1678,17 +1683,25 @@ impl GatewayAgentApi {
             .await
             .map_err(map_session_store_error)?
             .ok_or_else(|| AgentApiError::not_found(format!("session not found: {session_id}")))?;
-        let entries = read_all_session_entries(
-            self.store.as_ref(),
-            session_id,
-            MAX_EVENT_PAGE_LIMIT as usize,
-        )
-        .await?;
-        let state = replay_core_agent_state(&entries)?;
+        let loaded =
+            crate::checkpoint::load_reduction(self.store.as_ref(), self.store.as_ref(), &record)
+                .await
+                .map_err(|error| AgentApiError::internal(error.to_string()))?;
+        if crate::checkpoint::checkpoint_due(&loaded)
+            && let Err(error) = crate::checkpoint::write_checkpoint(
+                self.store.as_ref(),
+                self.store.as_ref(),
+                &record,
+                &loaded.reduced,
+                record.updated_at_ms,
+            )
+            .await
+        {
+            tracing::warn!(session_id = %session_id, error = %error, "session checkpoint write failed after gateway replay");
+        }
         Ok(LoadedSession {
             record,
-            entries,
-            state,
+            state: loaded.reduced.core_state,
         })
     }
 
@@ -1702,54 +1715,206 @@ impl GatewayAgentApi {
                 session_id,
                 state: &loaded.state,
                 record: &loaded.record,
-                entries: &loaded.entries,
+                run_limit: DEFAULT_RUN_SUMMARY_LIMIT,
+                run_cursor: None,
             })
             .await
+            .map(|(session, _, _)| session)
+    }
+
+    async fn project_session_page_by_id(
+        &self,
+        session_id: &SessionId,
+        run_limit: usize,
+    ) -> Result<(SessionView, Option<api::RunId>, bool), AgentApiError> {
+        let loaded = self.load_session_state(session_id).await?;
+        self.projector()
+            .project_session(ProjectSession {
+                session_id,
+                state: &loaded.state,
+                record: &loaded.record,
+                run_limit,
+                run_cursor: None,
+            })
+            .await
+    }
+
+    fn session_mutation_view(&self, loaded: &LoadedSession) -> SessionMutationView {
+        SessionMutationView {
+            id: loaded.record.session_id.as_str().to_owned(),
+            status: api_projection::session_status(&loaded.state),
+            head_cursor: loaded
+                .record
+                .head
+                .as_ref()
+                .map(|head| event_cursor(head.seq)),
+            config_revision: loaded.state.lifecycle.config_revision,
+            context_revision: loaded.state.context.revision,
+        }
+    }
+
+    async fn session_mutation_view_by_id(
+        &self,
+        session_id: &SessionId,
+    ) -> Result<SessionMutationView, AgentApiError> {
+        let loaded = self.load_session_state(session_id).await?;
+        Ok(self.session_mutation_view(&loaded))
     }
 
     async fn project_run_by_id(
         &self,
         session_id: &SessionId,
         run_id: RunId,
-        fallback_status: RunStatus,
     ) -> Result<RunView, AgentApiError> {
         let loaded = self.load_session_state(session_id).await?;
-        let status = loaded
-            .state
-            .runs
-            .completed
-            .iter()
-            .find(|run| run.run_id == run_id)
-            .map(|run| core_run_status_to_api_status(run.status))
-            .or_else(|| {
-                loaded
-                    .state
-                    .runs
-                    .active
-                    .as_ref()
-                    .filter(|run| run.run_id == run_id)
-                    .map(|run| core_run_status_to_api_status(run.status))
-            })
-            .or_else(|| {
-                loaded
-                    .state
-                    .runs
-                    .queued
-                    .iter()
-                    .any(|run| run.run_id == run_id)
-                    .then_some(api::RunStatus::Queued)
-            })
-            .unwrap_or(core_run_status_to_api_status(fallback_status));
+        self.project_loaded_run(&loaded, run_id).await
+    }
+
+    /// Project one run from its complete sequence interval. Run projection is
+    /// stateful across events (tool batches, approval pairs), so a partial
+    /// interval would silently drop cross-event state; the interval is always
+    /// read to completion and one pathological run is rejected with a typed
+    /// error instead of a truncated view.
+    async fn project_loaded_run(
+        &self,
+        loaded: &LoadedSession,
+        run_id: RunId,
+    ) -> Result<RunView, AgentApiError> {
+        let metadata = run_projection_metadata(&loaded.state, run_id)
+            .ok_or_else(|| AgentApiError::not_found(format!("run not found: {run_id}")))?;
+        let entries = self
+            .read_run_interval(&loaded.record, run_id, metadata.first_seq, metadata.terminal_seq)
+            .await?;
         self.projector()
-            .project_run_with_api_status(&loaded.entries, run_id, status)
+            .project_run_with_metadata(
+                &entries,
+                run_id,
+                metadata.status,
+                metadata.source,
+                metadata.started_at_ms,
+                metadata.completed_at_ms,
+                metadata.usage,
+            )
             .await
+    }
+
+    async fn read_run_interval(
+        &self,
+        record: &engine::storage::SessionRecord,
+        run_id: RunId,
+        first_seq: engine::EventSeq,
+        terminal_seq: Option<engine::EventSeq>,
+    ) -> Result<Vec<engine::CoreAgentEntry>, AgentApiError> {
+        let through = terminal_seq
+            .or_else(|| record.head.as_ref().map(|head| head.seq))
+            .unwrap_or(first_seq);
+        let mut after = engine::EventSeq::new(first_seq.as_u64().saturating_sub(1));
+        let codec = engine::CoreAgentCodec;
+        let mut entries = Vec::new();
+        let mut scanned: usize = 0;
+        loop {
+            let page = self
+                .store
+                .read_range(engine::storage::ReadSessionEventRange {
+                    session_id: record.session_id.clone(),
+                    after,
+                    through,
+                    limit: MAX_RUN_DETAIL_LIMIT,
+                })
+                .await
+                .map_err(map_session_store_error)?;
+            scanned = scanned.saturating_add(page.entries.len());
+            if scanned > MAX_RUN_DETAIL_EVENTS {
+                return Err(AgentApiError::rejected(format!(
+                    "run {run_id} spans more than {MAX_RUN_DETAIL_EVENTS} events; page it through session/events/read"
+                )));
+            }
+            for entry in &page.entries {
+                let belongs = entry
+                    .joins
+                    .get("run_id")
+                    .is_some_and(|value| value == &run_id.as_u64().to_string());
+                if belongs {
+                    entries.push(decode_stored_entry(&codec, entry)?);
+                }
+            }
+            let Some(next_after) = page.next_after else {
+                break;
+            };
+            if page.complete {
+                break;
+            }
+            after = next_after;
+        }
+        Ok(entries)
     }
 }
 
 pub(super) struct LoadedSession {
     pub(super) record: engine::storage::SessionRecord,
-    pub(super) entries: Vec<engine::CoreAgentEntry>,
     pub(super) state: engine::CoreAgentState,
+}
+
+struct RunProjectionMetadata<'a> {
+    status: api::RunStatus,
+    first_seq: engine::EventSeq,
+    terminal_seq: Option<engine::EventSeq>,
+    source: &'a engine::RunSource,
+    started_at_ms: Option<u64>,
+    completed_at_ms: Option<u64>,
+    usage: Option<&'a engine::LlmUsage>,
+}
+
+fn run_projection_metadata(
+    state: &engine::CoreAgentState,
+    run_id: RunId,
+) -> Option<RunProjectionMetadata<'_>> {
+    state
+        .runs
+        .completed
+        .iter()
+        .find(|run| run.run_id == run_id)
+        .map(|run| RunProjectionMetadata {
+            status: core_run_status_to_api_status(run.status),
+            first_seq: run.first_seq,
+            terminal_seq: Some(run.terminal_seq),
+            source: &run.source,
+            started_at_ms: run.started_at_ms,
+            completed_at_ms: Some(run.completed_at_ms),
+            usage: run.usage.as_ref(),
+        })
+        .or_else(|| {
+            state
+                .runs
+                .active
+                .as_ref()
+                .filter(|run| run.run_id == run_id)
+                .map(|run| RunProjectionMetadata {
+                    status: core_run_status_to_api_status(run.status),
+                    first_seq: run.first_seq,
+                    terminal_seq: None,
+                    source: &run.source,
+                    started_at_ms: run.started_at_ms,
+                    completed_at_ms: None,
+                    usage: run.usage.as_ref(),
+                })
+        })
+        .or_else(|| {
+            state
+                .runs
+                .queued
+                .iter()
+                .find(|run| run.run_id == run_id)
+                .map(|run| RunProjectionMetadata {
+                    status: api::RunStatus::Queued,
+                    first_seq: run.first_seq,
+                    terminal_seq: None,
+                    source: &run.source,
+                    started_at_ms: None,
+                    completed_at_ms: None,
+                    usage: None,
+                })
+        })
 }
 
 fn managed_workflow_tools_from_api(
@@ -2528,7 +2693,7 @@ impl AgentApiService for GatewayAgentApi {
             self.load_session_state_with_current_run_context(&session_id)
                 .await?;
             return Ok(AgentApiOutcome::new(SessionConfigPutResponse {
-                session: self.project_session_by_id(&session_id).await?,
+                session: self.session_mutation_view_by_id(&session_id).await?,
             }));
         }
         let baseline_failures = self
@@ -2558,7 +2723,7 @@ impl AgentApiService for GatewayAgentApi {
             .await?;
         self.load_session_state_with_current_run_context(&session_id)
             .await?;
-        let session = self.project_session_by_id(&session_id).await?;
+        let session = self.session_mutation_view_by_id(&session_id).await?;
         Ok(AgentApiOutcome::new(SessionConfigPutResponse { session }))
     }
 
@@ -2576,8 +2741,25 @@ impl AgentApiService for GatewayAgentApi {
                 "agent workflow reported error: {error}"
             )));
         }
-        let session = self.project_session_by_id(&session_id).await?;
-        Ok(AgentApiOutcome::new(SessionReadResponse { session }))
+        let limit = match params.run_limit {
+            Some(0) => return Err(AgentApiError::invalid_request("runLimit must be positive")),
+            Some(limit) => (limit as usize).min(MAX_RUN_SUMMARY_LIMIT),
+            None => DEFAULT_RUN_SUMMARY_LIMIT,
+        };
+        let (session, next_run_cursor, has_older_runs) =
+            self.project_session_page_by_id(&session_id, limit).await?;
+        tracing::debug!(
+            session_id = %session_id,
+            summary_page_size = session.runs.len(),
+            preview_blob_reads_upper_bound = session.runs.len(),
+            has_older_runs,
+            "projected bounded session summary"
+        );
+        Ok(AgentApiOutcome::new(SessionReadResponse {
+            session,
+            next_run_cursor,
+            has_older_runs,
+        }))
     }
 
     async fn list_sessions(
@@ -2718,7 +2900,7 @@ impl AgentApiService for GatewayAgentApi {
         let loaded = self.load_session_state(&session_id).await?;
         if loaded.state.lifecycle.status == CoreAgentStatus::Closed {
             return Ok(AgentApiOutcome::new(SessionCloseResponse {
-                session: self.project_session_by_id(&session_id).await?,
+                session: self.session_mutation_view_by_id(&session_id).await?,
             }));
         }
         if !params.force {
@@ -2729,7 +2911,8 @@ impl AgentApiService for GatewayAgentApi {
             }
             self.submit_core_command(&session_id, CoreAgentCommand::CloseSession { force: false })
                 .await?;
-            let session = self.wait_for_closed_session(&session_id).await?;
+            self.wait_for_closed_session(&session_id).await?;
+            let session = self.session_mutation_view_by_id(&session_id).await?;
             self.close_session_owned_environments(&session_id).await;
             return Ok(AgentApiOutcome::new(SessionCloseResponse { session }));
         }
@@ -2741,8 +2924,9 @@ impl AgentApiService for GatewayAgentApi {
                 .submit_core_command(&session_id, CoreAgentCommand::CloseSession { force: true })
                 .await
                 .is_ok();
-            if signalled && let Ok(session) = self.wait_for_closed_session(&session_id).await {
+            if signalled && self.wait_for_closed_session(&session_id).await.is_ok() {
                 self.close_session_owned_environments(&session_id).await;
+                let session = self.session_mutation_view_by_id(&session_id).await?;
                 return Ok(AgentApiOutcome::new(SessionCloseResponse { session }));
             }
             // The workflow exists but never converged: it is wedged (e.g. a
@@ -2759,7 +2943,7 @@ impl AgentApiService for GatewayAgentApi {
         // row; the expected-head CAS protects against a concurrent writer.
         self.force_close_session_in_store(&session_id).await?;
         self.close_session_owned_environments(&session_id).await;
-        let session = self.project_session_by_id(&session_id).await?;
+        let session = self.session_mutation_view_by_id(&session_id).await?;
         Ok(AgentApiOutcome::new(SessionCloseResponse { session }))
     }
 
@@ -2798,9 +2982,13 @@ impl AgentApiService for GatewayAgentApi {
             .unwrap_or(0);
         self.submit_core_command(&session_id, CoreAgentCommand::CompactContext)
             .await?;
-        let session = self
-            .wait_for_context_compaction_complete(&session_id, baseline_revision, baseline_failures)
-            .await?;
+        self.wait_for_context_compaction_complete(
+            &session_id,
+            baseline_revision,
+            baseline_failures,
+        )
+        .await?;
+        let session = self.session_mutation_view_by_id(&session_id).await?;
         Ok(AgentApiOutcome::new(ContextCompactResponse { session }))
     }
 
@@ -3075,6 +3263,57 @@ impl AgentApiService for GatewayAgentApi {
         self.start_run_internal(params, Vec::new()).await
     }
 
+    async fn list_runs(
+        &self,
+        params: RunListParams,
+    ) -> Result<AgentApiOutcome<RunListResponse>, AgentApiError> {
+        let session_id = SessionId::try_new(params.session_id).map_err(|error| {
+            AgentApiError::invalid_request(format!("invalid session id: {error}"))
+        })?;
+        let limit = match params.limit {
+            Some(0) => return Err(AgentApiError::invalid_request("limit must be positive")),
+            Some(limit) => (limit as usize).min(MAX_RUN_SUMMARY_LIMIT),
+            None => DEFAULT_RUN_SUMMARY_LIMIT,
+        };
+        let cursor = params.cursor.as_deref().map(parse_api_run_id).transpose()?;
+        let loaded = self.load_session_state(&session_id).await?;
+        let (runs, next_cursor, has_older_runs) = self
+            .projector()
+            .project_run_summaries(&loaded.state, cursor, limit)
+            .await?;
+        tracing::debug!(
+            session_id = %session_id,
+            summary_page_size = runs.len(),
+            preview_blob_reads_upper_bound = runs.len(),
+            has_older_runs,
+            "projected run summary page"
+        );
+        Ok(AgentApiOutcome::new(RunListResponse {
+            runs,
+            next_cursor,
+            has_older_runs,
+        }))
+    }
+
+    async fn read_run(
+        &self,
+        params: RunReadParams,
+    ) -> Result<AgentApiOutcome<RunReadResponse>, AgentApiError> {
+        let session_id = SessionId::try_new(params.session_id).map_err(|error| {
+            AgentApiError::invalid_request(format!("invalid session id: {error}"))
+        })?;
+        let run_id = parse_api_run_id(&params.run_id)?;
+        let loaded = self.load_session_state(&session_id).await?;
+        let run = self.project_loaded_run(&loaded, run_id).await?;
+        tracing::debug!(
+            session_id = %session_id,
+            run_id = run_id.as_u64(),
+            detail_entries = run.entries.len(),
+            "projected complete run detail"
+        );
+        Ok(AgentApiOutcome::new(RunReadResponse { run }))
+    }
+
     async fn cancel_run(
         &self,
         params: RunCancelParams,
@@ -3206,26 +3445,10 @@ impl AgentApiService for GatewayAgentApi {
                 continue;
             }
             let Some(record) = active.approvals.get(&approval_id) else {
-                let belongs_to_other_run = loaded.entries.iter().rev().any(|entry| {
-                    matches!(
-                        &entry.event,
-                        engine::CoreAgentEvent::Approval(engine::ApprovalEvent::Requested {
-                            approval,
-                        }) if approval.approval_id == approval_id && approval.run_id != run_id
-                    )
-                });
                 results.push(approval_decision_failure(
                     input.approval_id,
-                    if belongs_to_other_run {
-                        ApprovalDecisionFailureKind::ForeignRun
-                    } else {
-                        ApprovalDecisionFailureKind::Unknown
-                    },
-                    if belongs_to_other_run {
-                        "approval belongs to a different run"
-                    } else {
-                        "approval was not found"
-                    },
+                    ApprovalDecisionFailureKind::Unknown,
+                    "approval was not found for the active run",
                 ));
                 continue;
             };
@@ -3327,9 +3550,7 @@ impl AgentApiService for GatewayAgentApi {
                 )),
             }
         }
-        let run = self
-            .project_run_by_id(&session_id, run_id, RunStatus::Active)
-            .await?;
+        let run = self.project_run_by_id(&session_id, run_id).await?;
         Ok(AgentApiOutcome::new(RunApprovalsDecideResponse {
             results,
             run,
@@ -3413,7 +3634,7 @@ impl AgentApiService for GatewayAgentApi {
             }],
         )
         .await?;
-        let (steering_id, status) = self
+        let steering_id = self
             .wait_for_steering_accepted(
                 &session_id,
                 requested_run_id,
@@ -3422,7 +3643,7 @@ impl AgentApiService for GatewayAgentApi {
             )
             .await?;
         let run = self
-            .project_run_by_id(&session_id, requested_run_id, status)
+            .project_run_by_id(&session_id, requested_run_id)
             .await?;
         Ok(AgentApiOutcome::new(RunSteerResponse {
             steering_id: api_steering_id(steering_id),

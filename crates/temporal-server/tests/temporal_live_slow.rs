@@ -94,6 +94,7 @@ async fn run_llm_timeout_live_client(
         let session = api
             .read_session(SessionReadParams {
                 session_id: session_id.as_str().to_owned(),
+                run_limit: None,
             })
             .await?;
         if let Some(run) = session

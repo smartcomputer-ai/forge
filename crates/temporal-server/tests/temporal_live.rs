@@ -19,10 +19,10 @@ use api::{
     McpServerToolsDiscoverParams, McpServerToolsDiscoverResponse, ProfileApplyParams,
     ProfileCreateParams, ProfileDeleteParams, ProfileDocument, ProfileId, ProfileInstructions,
     ProfileListParams, ProfilePutParams, ProfileReadParams, ProfileSource, RemoteMcpApprovalPolicy,
-    RunApprovalsDecideParams, RunCancelParams, RunStartParams, RunStartSource, RunSteerParams,
-    SessionConfig, SessionConfigPutParams, SessionDeleteParams, SessionEventsReadParams,
-    SessionLifecycleStatus, SessionListParams, SessionReadParams, SessionStartParams,
-    SessionStatus, TimersFeature,
+    RunApprovalsDecideParams, RunCancelParams, RunListParams, RunStartParams, RunStartSource,
+    RunSteerParams, SessionConfig, SessionConfigPutParams, SessionDeleteParams,
+    SessionEventsReadParams, SessionLifecycleStatus, SessionListParams, SessionReadParams,
+    SessionStartParams, SessionStatus, TimersFeature,
 };
 use api_projection::model_to_api;
 use async_trait::async_trait;
@@ -73,6 +73,17 @@ async fn temporal_live_session_start_then_run_start_completes_fake_runs() -> any
 
     let activities = fake_worker_activities().await?;
     run_with_live_worker(activities, run_fake_live_client).await
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires ./dev.sh infra or compatible Temporal + Postgres + MinIO env"]
+async fn temporal_live_session_checkpoints_and_bounded_run_reads() -> anyhow::Result<()> {
+    let _lock = LIVE_TEST_LOCK.lock().await;
+    let _ = dotenvy::dotenv();
+    require_storage_live_env()?;
+
+    let activities = fake_worker_activities().await?;
+    run_with_live_worker(activities, run_checkpoint_and_bounded_reads_live_client).await
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -1333,6 +1344,7 @@ async fn run_agent_run_inline_live_client(
     let child_view = api
         .read_session(SessionReadParams {
             session_id: child.session_id.as_str().to_owned(),
+            run_limit: None,
         })
         .await?
         .result
@@ -1355,6 +1367,7 @@ async fn run_agent_run_inline_live_client(
     let parent_view = api
         .read_session(SessionReadParams {
             session_id: session_id.as_str().to_owned(),
+            run_limit: None,
         })
         .await?;
     assert!(parent_view.result.session.origin.is_none());
@@ -1654,6 +1667,7 @@ async fn run_agent_run_inherit_environment_live_client(
     let parent_environment = api
         .read_session(SessionReadParams {
             session_id: session_id.as_str().to_owned(),
+            run_limit: None,
         })
         .await?
         .result
@@ -1769,6 +1783,7 @@ async fn run_agent_spawn_cancel_live_client(
         let view = api
             .read_session(SessionReadParams {
                 session_id: session_id.as_str().to_owned(),
+                run_limit: None,
             })
             .await?
             .result
@@ -1812,6 +1827,192 @@ async fn run_agent_spawn_cancel_live_client(
     Ok(())
 }
 
+async fn run_checkpoint_and_bounded_reads_live_client(
+    client: Client,
+    task_queue: String,
+    session_id: SessionId,
+) -> anyhow::Result<()> {
+    let store = pg_store_from_env().await?;
+    let model = default_model_from_env();
+    let api = GatewayAgentApi::builder(client, store.clone())
+        .with_task_queue(task_queue)
+        .with_default_model(model.clone())
+        .build();
+
+    api.start_session(SessionStartParams {
+        session_id: Some(session_id.as_str().to_owned()),
+        display_name: Some("Checkpoint and bounded reads live test".to_owned()),
+        config: Some(SessionConfig {
+            model: Some(model_to_api(&model)),
+            ..SessionConfig::default()
+        }),
+        profile: None,
+    })
+    .await?;
+
+    let mut run_ids = Vec::new();
+    for index in 0..21 {
+        let started = start_text_run(&api, &session_id, &format!("bounded run {index}")).await?;
+        wait_for_terminal_run(&api, &session_id, &started.id).await?;
+        run_ids.push(started.id);
+    }
+
+    let default_page = api
+        .read_session(SessionReadParams {
+            session_id: session_id.as_str().to_owned(),
+            run_limit: None,
+        })
+        .await?
+        .result;
+    assert_eq!(default_page.session.runs.len(), 20);
+    assert!(default_page.has_older_runs);
+    assert_eq!(
+        default_page
+            .session
+            .runs
+            .iter()
+            .map(|run| run.id.as_str())
+            .collect::<Vec<_>>(),
+        run_ids[1..]
+            .iter()
+            .rev()
+            .map(String::as_str)
+            .collect::<Vec<_>>()
+    );
+
+    let older_page = api
+        .list_runs(RunListParams {
+            session_id: session_id.as_str().to_owned(),
+            cursor: default_page.next_run_cursor,
+            limit: None,
+        })
+        .await?
+        .result;
+    assert_eq!(older_page.runs.len(), 1);
+    assert_eq!(older_page.runs[0].id, run_ids[0]);
+    assert!(!older_page.has_older_runs);
+    assert!(older_page.next_cursor.is_none());
+
+    let limited_page = api
+        .read_session(SessionReadParams {
+            session_id: session_id.as_str().to_owned(),
+            run_limit: Some(3),
+        })
+        .await?
+        .result;
+    assert_eq!(limited_page.session.runs.len(), 3);
+    assert!(limited_page.has_older_runs);
+    assert_eq!(
+        limited_page
+            .session
+            .runs
+            .iter()
+            .map(|run| run.id.as_str())
+            .collect::<Vec<_>>(),
+        run_ids[18..]
+            .iter()
+            .rev()
+            .map(String::as_str)
+            .collect::<Vec<_>>()
+    );
+
+    let record = store
+        .load_session(&session_id)
+        .await?
+        .expect("live session exists");
+    let checkpoint = store
+        .load_checkpoint(&session_id)
+        .await?
+        .expect("terminal cadence writes a checkpoint");
+    assert!(checkpoint.through_seq < record.head.as_ref().expect("session head").seq);
+    let checkpoint_bytes = store.read_bytes(&checkpoint.state_ref).await?;
+    assert_eq!(checkpoint_bytes.len() as u64, checkpoint.byte_len);
+    assert!(!checkpoint_bytes.is_empty());
+
+    sqlx::query(
+        "UPDATE session_checkpoints SET format_version = 999 WHERE universe_id = $1 AND session_id = $2",
+    )
+    .bind(store.config().universe_id)
+    .bind(session_id.as_str())
+    .execute(store.pool())
+    .await?;
+    let fallback = api
+        .read_session(SessionReadParams {
+            session_id: session_id.as_str().to_owned(),
+            run_limit: Some(1),
+        })
+        .await?
+        .result;
+    assert_eq!(fallback.session.runs.len(), 1);
+    assert_eq!(fallback.session.runs[0].id, run_ids[20]);
+
+    let fallback_record = store
+        .load_session(&session_id)
+        .await?
+        .expect("fallback live session exists");
+    let repaired = store
+        .load_checkpoint(&session_id)
+        .await?
+        .expect("full replay repairs a rejected checkpoint");
+    assert_eq!(repaired.format_version, 1);
+    assert_eq!(
+        repaired.through_seq,
+        fallback_record.head.as_ref().expect("fallback head").seq
+    );
+    assert!(repaired.through_seq > checkpoint.through_seq);
+
+    let repair_run = start_text_run(&api, &session_id, "checkpoint repair").await?;
+    wait_for_terminal_run(&api, &session_id, &repair_run.id).await?;
+    let repaired_record = store
+        .load_session(&session_id)
+        .await?
+        .expect("repaired live session exists");
+    let after_one_more_run = store
+        .load_checkpoint(&session_id)
+        .await?
+        .expect("repaired checkpoint remains available");
+    assert_eq!(after_one_more_run.through_seq, repaired.through_seq);
+    assert!(
+        after_one_more_run.through_seq < repaired_record.head.as_ref().expect("repaired head").seq
+    );
+
+    // Run detail is a single complete projection: partial pages would lose
+    // cross-event state such as tool batches and approval pairs.
+    let detail = api
+        .read_run(api::RunReadParams {
+            session_id: session_id.as_str().to_owned(),
+            run_id: repair_run.id.clone(),
+        })
+        .await?
+        .result;
+    assert_eq!(detail.run.id, repair_run.id);
+    assert_eq!(detail.run.status, api::RunStatus::Completed);
+    assert!(detail.run.started_at_ms.is_some());
+    assert!(detail.run.completed_at_ms.is_some());
+    assert!(matches!(detail.run.source, api::RunViewSource::Input { .. }));
+    assert!(detail.run.entries.iter().any(|entry| {
+        matches!(
+            entry.kind,
+            ContextEntryKindView::Message {
+                role: ContextMessageRoleView::Assistant,
+            }
+        )
+    }));
+
+    api.close_session(api::SessionCloseParams {
+        session_id: session_id.as_str().to_owned(),
+        force: false,
+    })
+    .await?;
+    wait_for_session_status(&api, &session_id, SessionStatus::Closed).await?;
+    api.delete_session(SessionDeleteParams {
+        session_id: session_id.as_str().to_owned(),
+    })
+    .await?;
+    assert!(store.load_checkpoint(&session_id).await?.is_none());
+    Ok(())
+}
+
 async fn run_fake_live_client(
     client: Client,
     task_queue: String,
@@ -1841,22 +2042,16 @@ async fn run_fake_live_client(
         })
         .await?;
     assert_eq!(started.result.session.id, session_id.as_str());
+    let started_view = read_session_view(&api, &session_id).await?;
     assert!(
-        !started
-            .result
-            .session
+        !started_view
             .active_context
             .entries
             .iter()
             .any(|entry| matches!(entry.kind, ContextEntryKindView::VfsCatalog))
     );
 
-    let mut enabled_config = started
-        .result
-        .session
-        .config
-        .clone()
-        .expect("started session config");
+    let mut enabled_config = started_view.config.clone().expect("started session config");
     let mut enabled_features = enabled_config.features.unwrap_or_default();
     enabled_features.vfs = Some(api::VfsFeature {
         version: api::CURRENT_FEATURE_VERSION,
@@ -1879,10 +2074,9 @@ async fn run_fake_live_client(
             config: enabled_config,
         })
         .await?;
+    let enabled_view = read_session_view(&api, &session_id).await?;
     assert!(
-        enabled
-            .result
-            .session
+        enabled_view
             .active_context
             .entries
             .iter()
@@ -1894,32 +2088,19 @@ async fn run_fake_live_client(
         tools::environment::control::ENVIRONMENT_DEACTIVATE_TOOL_NAME,
     ];
     assert!(
-        enabled
-            .result
-            .session
-            .active_tools
-            .tools
-            .iter()
-            .any(|tool| {
-                tool.tool_id == tools::environment::control::ENVIRONMENT_READ_TOOL_NAME
-            })
+        enabled_view.active_tools.tools.iter().any(|tool| {
+            tool.tool_id == tools::environment::control::ENVIRONMENT_READ_TOOL_NAME
+        })
     );
     assert!(selection_tool_names.iter().all(|name| {
-        enabled
-            .result
-            .session
+        enabled_view
             .active_tools
             .tools
             .iter()
             .all(|tool| tool.tool_id != *name)
     }));
 
-    let mut selection_config = enabled
-        .result
-        .session
-        .config
-        .clone()
-        .expect("enabled session config");
+    let mut selection_config = enabled_view.config.clone().expect("enabled session config");
     selection_config
         .features
         .as_mut()
@@ -1933,19 +2114,16 @@ async fn run_fake_live_client(
             config: selection_config,
         })
         .await?;
+    let selection_enabled_view = read_session_view(&api, &session_id).await?;
     assert!(selection_tool_names.iter().all(|name| {
-        selection_enabled
-            .result
-            .session
+        selection_enabled_view
             .active_tools
             .tools
             .iter()
             .any(|tool| tool.tool_id == *name)
     }));
     assert!(
-        selection_enabled
-            .result
-            .session
+        selection_enabled_view
             .active_tools
             .tools
             .iter()
@@ -1954,9 +2132,7 @@ async fn run_fake_live_client(
             })
     );
 
-    let mut disabled_config = selection_enabled
-        .result
-        .session
+    let mut disabled_config = selection_enabled_view
         .config
         .clone()
         .expect("enabled session config");
@@ -1964,17 +2140,15 @@ async fn run_fake_live_client(
         features.vfs = None;
         features.environments = None;
     }
-    let disabled = api
-        .put_session_config(SessionConfigPutParams {
-            session_id: session_id.as_str().to_owned(),
-            expected_config_revision: Some(selection_enabled.result.session.config_revision),
-            config: disabled_config,
-        })
-        .await?;
+    api.put_session_config(SessionConfigPutParams {
+        session_id: session_id.as_str().to_owned(),
+        expected_config_revision: Some(selection_enabled.result.session.config_revision),
+        config: disabled_config,
+    })
+    .await?;
+    let disabled_view = read_session_view(&api, &session_id).await?;
     assert!(
-        !disabled
-            .result
-            .session
+        !disabled_view
             .active_context
             .entries
             .iter()
@@ -2063,6 +2237,7 @@ async fn run_fake_live_client(
     let read = api
         .read_session(SessionReadParams {
             session_id: session_id.as_str().to_owned(),
+            run_limit: None,
         })
         .await?;
     assert!(read.result.session.runs.len() >= 2);
@@ -2205,6 +2380,7 @@ async fn wait_for_pending_approval(
             let session = api
                 .read_session(SessionReadParams {
                     session_id: session_id.as_str().to_owned(),
+                    run_limit: None,
                 })
                 .await?
                 .result
@@ -2221,11 +2397,12 @@ async fn wait_for_pending_approval(
                     api::RunStatus::Completed | api::RunStatus::Failed | api::RunStatus::Cancelled
                 )
             {
+                let detail = read_run(api, session_id, run_id).await?;
                 anyhow::bail!(
                     "run became terminal before approval: status={:?}, output={:?}, batches={:?}",
                     run.status,
-                    final_assistant_text(run),
-                    run.tool_batches
+                    detail.as_ref().and_then(final_assistant_text),
+                    detail.as_ref().map(|run| &run.tool_batches)
                 );
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
@@ -2311,6 +2488,7 @@ async fn run_lifecycle_delete_live_client(
     let read_deleted = api
         .read_session(SessionReadParams {
             session_id: session_id.as_str().to_owned(),
+            run_limit: None,
         })
         .await
         .expect_err("deleted session must not be readable");
@@ -2394,17 +2572,27 @@ async fn read_run(
     session_id: &SessionId,
     run_id: &str,
 ) -> anyhow::Result<Option<api::RunView>> {
-    let session = api
-        .read_session(SessionReadParams {
+    let response = api
+        .read_run(api::RunReadParams {
             session_id: session_id.as_str().to_owned(),
+            run_id: run_id.to_owned(),
         })
         .await?;
-    Ok(session
+    Ok(Some(response.result.run))
+}
+
+async fn read_session_view(
+    api: &GatewayAgentApi,
+    session_id: &SessionId,
+) -> anyhow::Result<api::SessionView> {
+    Ok(api
+        .read_session(SessionReadParams {
+            session_id: session_id.as_str().to_owned(),
+            run_limit: None,
+        })
+        .await?
         .result
-        .session
-        .runs
-        .into_iter()
-        .find(|run| run.id == run_id))
+        .session)
 }
 
 async fn wait_until(
@@ -2970,6 +3158,7 @@ async fn run_continue_as_new_live_client(
     let read = api
         .read_session(SessionReadParams {
             session_id: session_id.as_str().to_owned(),
+            run_limit: None,
         })
         .await?;
     assert!(
@@ -3397,6 +3586,7 @@ async fn run_context_append_live_client(
     let read = api
         .read_session(SessionReadParams {
             session_id: session_id.as_str().to_owned(),
+            run_limit: None,
         })
         .await?;
     let context_texts: Vec<&str> = read
@@ -3611,6 +3801,7 @@ async fn run_admission_failure_live_client(
     let session = api
         .read_session(SessionReadParams {
             session_id: session_id.as_str().to_owned(),
+            run_limit: None,
         })
         .await?;
     assert_eq!(session.result.session.status, SessionStatus::Closed);
@@ -3829,6 +4020,7 @@ async fn run_mcp_live_client(
     let session = api
         .read_session(SessionReadParams {
             session_id: session_id.as_str().to_owned(),
+            run_limit: None,
         })
         .await?
         .result
@@ -3849,11 +4041,10 @@ async fn run_mcp_live_client(
             config: linked_config.clone(),
         })
         .await?;
+    let linked_view = read_session_view(&api, &session_id).await?;
     let tool_id = format!("mcp_{server_id}");
     assert!(
-        linked
-            .result
-            .session
+        linked_view
             .active_tools
             .tools
             .iter()
@@ -3861,9 +4052,7 @@ async fn run_mcp_live_client(
         "declared MCP tool should materialize into the session toolset"
     );
 
-    let mcp_tools: Vec<_> = linked
-        .result
-        .session
+    let mcp_tools: Vec<_> = linked_view
         .active_tools
         .tools
         .iter()
@@ -3892,17 +4081,15 @@ async fn run_mcp_live_client(
     if let Some(features) = unlinked_config.features.as_mut() {
         features.mcp = None;
     }
-    let unlinked = api
-        .put_session_config(SessionConfigPutParams {
-            session_id: session_id.as_str().to_owned(),
-            expected_config_revision: Some(linked.result.session.config_revision),
-            config: unlinked_config,
-        })
-        .await?;
+    api.put_session_config(SessionConfigPutParams {
+        session_id: session_id.as_str().to_owned(),
+        expected_config_revision: Some(linked.result.session.config_revision),
+        config: unlinked_config,
+    })
+    .await?;
+    let unlinked_view = read_session_view(&api, &session_id).await?;
     assert!(
-        unlinked
-            .result
-            .session
+        unlinked_view
             .active_tools
             .tools
             .iter()
@@ -3910,9 +4097,7 @@ async fn run_mcp_live_client(
         "undeclared MCP tool should be removed from the session toolset"
     );
     assert!(
-        unlinked
-            .result
-            .session
+        unlinked_view
             .active_tools
             .tools
             .iter()
@@ -4201,6 +4386,7 @@ async fn run_profile_provision_live_client(
     assert!(
         api.read_session(api::SessionReadParams {
             session_id: format!("{}_rejected", session_id.as_str()),
+            run_limit: None,
         })
         .await
         .is_err(),
@@ -4219,10 +4405,9 @@ async fn run_profile_provision_live_client(
             }),
         })
     };
-    let started = start(session_id.as_str().to_owned()).await?;
-    let active = started
-        .result
-        .session
+    start(session_id.as_str().to_owned()).await?;
+    let started_view = read_session_view(&api, &session_id).await?;
+    let active = started_view
         .active_environment_id
         .clone()
         .expect("profile provisioning activates the new environment");
@@ -4260,9 +4445,10 @@ async fn run_profile_provision_live_client(
     );
 
     // Retry the start and re-apply the profile: still exactly one environment.
-    let restarted = start(session_id.as_str().to_owned()).await?;
+    start(session_id.as_str().to_owned()).await?;
+    let restarted_view = read_session_view(&api, &session_id).await?;
     assert_eq!(
-        restarted.result.session.active_environment_id.as_deref(),
+        restarted_view.active_environment_id.as_deref(),
         Some(active.as_str())
     );
     let applied = api
@@ -4333,23 +4519,21 @@ async fn run_profile_provision_live_client(
 
     // `retain`: the environment outlives its session.
     let retained_session = format!("{}_retain", session_id.as_str());
-    let retained_start = api
-        .start_session(SessionStartParams {
-            session_id: Some(retained_session.clone()),
-            display_name: None,
-            config: None,
-            profile: Some(ProfileSource::Inline {
-                profile: Box::new(api::InlineAgentProfile {
-                    display_name: None,
-                    description: None,
-                    document: provision_document(api::ProfileEnvironmentRetention::Retain),
-                }),
+    api.start_session(SessionStartParams {
+        session_id: Some(retained_session.clone()),
+        display_name: None,
+        config: None,
+        profile: Some(ProfileSource::Inline {
+            profile: Box::new(api::InlineAgentProfile {
+                display_name: None,
+                description: None,
+                document: provision_document(api::ProfileEnvironmentRetention::Retain),
             }),
-        })
-        .await?;
-    let retained_environment = retained_start
-        .result
-        .session
+        }),
+    })
+    .await?;
+    let retained_view = read_session_view(&api, &SessionId::new(retained_session.clone())).await?;
+    let retained_environment = retained_view
         .active_environment_id
         .clone()
         .expect("retained environment activated");
@@ -4598,35 +4782,35 @@ async fn run_environment_power_live_client(
     // Wake-on-use: activating the paused environment for a session admits it
     // as intent and flips desired power back to running; the reconciler then
     // brings it to ready.
-    let started = api
-        .start_session(SessionStartParams {
-            session_id: Some(session_id.as_str().to_owned()),
-            display_name: None,
-            config: Some(SessionConfig {
-                model: Some(model_to_api(&model)),
-                features: Some(api::FeaturesConfig {
-                    environments: Some(api::EnvironmentsFeature {
-                        version: api::CURRENT_FEATURE_VERSION,
-                        providers: None,
-                        selection_tools: false,
-                        jobs: false,
-                    }),
-                    ..api::FeaturesConfig::default()
+    api.start_session(SessionStartParams {
+        session_id: Some(session_id.as_str().to_owned()),
+        display_name: None,
+        config: Some(SessionConfig {
+            model: Some(model_to_api(&model)),
+            features: Some(api::FeaturesConfig {
+                environments: Some(api::EnvironmentsFeature {
+                    version: api::CURRENT_FEATURE_VERSION,
+                    providers: None,
+                    selection_tools: false,
+                    jobs: false,
                 }),
-                ..SessionConfig::default()
+                ..api::FeaturesConfig::default()
             }),
-            profile: None,
-        })
-        .await?;
-    assert!(started.result.session.active_environment_id.is_none());
-    let activated = api
-        .activate_session_environment(api::SessionEnvironmentActivateParams {
-            session_id: session_id.as_str().to_owned(),
-            environment_id: environment_id.clone(),
-        })
-        .await?;
+            ..SessionConfig::default()
+        }),
+        profile: None,
+    })
+    .await?;
+    let started_view = read_session_view(&api, &session_id).await?;
+    assert!(started_view.active_environment_id.is_none());
+    api.activate_session_environment(api::SessionEnvironmentActivateParams {
+        session_id: session_id.as_str().to_owned(),
+        environment_id: environment_id.clone(),
+    })
+    .await?;
+    let activated_view = read_session_view(&api, &session_id).await?;
     assert_eq!(
-        activated.result.session.active_environment_id.as_deref(),
+        activated_view.active_environment_id.as_deref(),
         Some(environment_id.as_str())
     );
     let woken = api
@@ -4930,20 +5114,19 @@ async fn run_profiles_live_client(
             .any(|profile| profile.profile_id == profile_id)
     );
 
-    let started = api
-        .start_session(SessionStartParams {
-            session_id: Some(session_id.as_str().to_owned()),
-            display_name: None,
-            config: Some(SessionConfig {
-                model: Some(model_to_api(&model)),
-                ..SessionConfig::default()
-            }),
-            profile: Some(ProfileSource::Named {
-                profile_id: profile_id.clone(),
-            }),
-        })
-        .await?;
-    let session = &started.result.session;
+    api.start_session(SessionStartParams {
+        session_id: Some(session_id.as_str().to_owned()),
+        display_name: None,
+        config: Some(SessionConfig {
+            model: Some(model_to_api(&model)),
+            ..SessionConfig::default()
+        }),
+        profile: Some(ProfileSource::Named {
+            profile_id: profile_id.clone(),
+        }),
+    })
+    .await?;
+    let session = read_session_view(&api, &session_id).await?;
     let config = session.config.as_ref().expect("session config");
     let features = config.features.as_ref().expect("session features");
     assert!(features.timers.is_some());
@@ -5005,13 +5188,12 @@ async fn run_profiles_live_client(
                 }),
             },
             expected_config_revision: Some(applied.result.session.config_revision),
-            expected_tools_revision: Some(applied.result.session.active_tools.revision),
+            expected_tools_revision: Some(session.active_tools.revision),
         })
         .await?;
     assert!(cleared.result.applied.instructions_changed);
-    let cleared_instructions = cleared
-        .result
-        .session
+    let cleared_view = read_session_view(&api, &session_id).await?;
+    let cleared_instructions = cleared_view
         .active_context
         .entries
         .iter()
@@ -5030,14 +5212,13 @@ async fn run_profiles_live_client(
                 profile_id: profile_id.clone(),
             },
             expected_config_revision: Some(cleared.result.session.config_revision),
-            expected_tools_revision: Some(cleared.result.session.active_tools.revision),
+            expected_tools_revision: Some(cleared_view.active_tools.revision),
         })
         .await?;
     assert!(restored.result.applied.instructions_changed);
+    let restored_view = read_session_view(&api, &session_id).await?;
     assert_eq!(
-        restored
-            .result
-            .session
+        restored_view
             .active_context
             .entries
             .iter()
@@ -5359,12 +5540,14 @@ async fn temporal_live_two_universes_share_one_worker_with_isolation() -> anyhow
         let closed_a = api_a
             .read_session(SessionReadParams {
                 session_id: session_id.as_str().to_owned(),
+                run_limit: None,
             })
             .await?;
         assert_eq!(closed_a.result.session.status, SessionStatus::Closed);
         let open_b = api_b
             .read_session(SessionReadParams {
                 session_id: session_id.as_str().to_owned(),
+                run_limit: None,
             })
             .await?;
         assert_eq!(open_b.result.session.status, SessionStatus::Idle);

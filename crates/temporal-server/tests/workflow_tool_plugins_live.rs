@@ -2300,6 +2300,7 @@ async fn workflow_tool_start_survives_continue_as_new() -> anyhow::Result<()> {
             let session = api
                 .read_session(SessionReadParams {
                     session_id: session_id.as_str().to_owned(),
+                    run_limit: None,
                 })
                 .await
                 .map_err(|error| anyhow::anyhow!("read continued Joined session: {error:?}"))?;

@@ -1,6 +1,16 @@
 # Lightspeed Roadmap
 
 ## Work
+- [ ] [P147](p147-session-checkpoints-and-bounded-reads.md) — session
+  checkpoints and bounded reads: keep the event log authoritative while one
+  CAS-backed reducer checkpoint per session (advance-only pointer row) makes
+  current-state reads and bootstrap replay only a bounded tail; run records in
+  reducer state carry sequence bounds and blob references, so summary pages
+  come from loaded state and run detail is a primary-key range scan — no SQL
+  run read model unless run counts later demand one. Also bounds
+  `session/read`, slims mutation responses, fixes quadratic projection and
+  sequential blob resolution, removes duplicated Configurator MCP results, and
+  distinguishes discovery from tool-call response limits.
 - [ ] [P143](p143-mcp-tool-discovery.md) — MCP tool discovery and catalog
   diagnostics (implementation slices 1–3 and first-party `single`-mode live
   acceptance complete 2026-08-31; authenticated live acceptance remains): a bounded

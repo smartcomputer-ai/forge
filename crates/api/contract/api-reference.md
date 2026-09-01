@@ -35,7 +35,7 @@ Creates a session with an immutable lifecycle controller and/or workflow tools u
 
 **Read a session**
 
-Returns the current projected session, including sparse config and revisions, lifecycle/run state, active context, and derived tools.
+Returns current state plus a bounded newest-first run-summary page. Follow nextRunCursor with session/runs/list when hasOlderRuns is true; use session/events/read for the transcript.
 
 - Params: `SessionReadParams`
 - Result: `AgentApiOutcome<SessionReadResponse>`
@@ -129,6 +129,24 @@ Accepts input or existing context keys and returns once the run is accepted — 
 
 - Params: `RunStartParams`
 - Result: `AgentApiOutcome<RunStartResponse>`
+
+### `session/runs/list`
+
+**List session runs**
+
+Returns a newest-first keyset page of bounded run summaries projected from current reducer state.
+
+- Params: `RunListParams`
+- Result: `AgentApiOutcome<RunListResponse>`
+
+### `session/runs/read`
+
+**Read one session run**
+
+Reads and projects one run from its bounded event interval, paged by event sequence.
+
+- Params: `RunReadParams`
+- Result: `AgentApiOutcome<RunReadResponse>`
 
 ### `session/runs/cancel`
 

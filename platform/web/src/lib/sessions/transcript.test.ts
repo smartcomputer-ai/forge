@@ -47,8 +47,8 @@ const runView = (
 ): SessionRunView => ({
   id,
   status,
-  source: { type: "input", items: text ? [{ type: "text", text }] : [] },
-  entries: [],
+  acceptedAtMs: 0,
+  source: { type: "input", preview: text || null, previewTruncated: false },
 });
 
 describe("session transcript traces", () => {

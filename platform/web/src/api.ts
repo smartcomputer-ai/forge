@@ -1,7 +1,7 @@
 import type {
   ContextEntryView,
+  RunSummaryView,
   RunStatus,
-  RunView,
   EnvironmentCredentialSourceView,
   EnvironmentCredentialView,
   EnvironmentProviderBindingView,
@@ -456,13 +456,12 @@ export interface SessionView {
   configRevision: number;
   management?: SessionManagement | null;
   origin?: SessionOrigin | null;
-  /// Every run of the session — completed, the active one, and runs queued
-  /// behind it — straight from the engine. Authoritative for run state; the
-  /// event tail is the live, incremental view.
+  /// Bounded newest-first run summary page. Authoritative for recent run
+  /// state; the event tail is the live, incremental transcript view.
   runs?: SessionRunView[];
 }
 
-export type SessionRunView = RunView;
+export type SessionRunView = RunSummaryView;
 export type SessionRunStatus = RunStatus;
 
 export type WorkspaceLinkTarget =
