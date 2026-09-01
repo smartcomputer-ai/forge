@@ -9,7 +9,7 @@
   },
   "dependencies": {
     "@hono/node-server": "^1.14.0",
-    "@lightspeed/agent-client": "*",
+    "@lightspeed-ai/agent-client": "*",
     "@lightspeed/platform-db": "*",
     "@lightspeed/platform-shared": "*",
     "better-auth": "^1.2.0",

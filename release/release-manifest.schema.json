@@ -73,7 +73,7 @@
       "additionalProperties": false,
       "required": ["name", "version", "sha256"],
       "properties": {
-        "name": { "const": "@lightspeed/agent-client" },
+        "name": { "const": "@lightspeed-ai/agent-client" },
         "version": { "type": "string", "minLength": 1 },
         "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
       }

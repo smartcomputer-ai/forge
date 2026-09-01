@@ -23,7 +23,7 @@ import type {
   LlmUsageView,
   RunView,
   WebhookPreset,
-} from "@lightspeed/agent-client";
+} from "@lightspeed-ai/agent-client";
 import type { ProfileDocument } from "@/api";
 import {
   DEFAULT_MODEL,

@@ -1,4 +1,4 @@
-import { LightspeedClient } from "@lightspeed/agent-client";
+import { LightspeedClient } from "@lightspeed-ai/agent-client";
 
 /** The service principal the host stamps on every core call (trusted-header mode). */
 export const CONNECTOR_PRINCIPAL = "service_account:lightspeed-connectors";

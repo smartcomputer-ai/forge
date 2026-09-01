@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type { OperatorChannelAccountView } from "@lightspeed/agent-client";
+import type { OperatorChannelAccountView } from "@lightspeed-ai/agent-client";
 import { CoreClient } from "../src/core/client.js";
 import type { AccountRunnerLike } from "../src/host/account-runner.js";
 import { ConnectorHost } from "../src/host/host.js";

@@ -1,5 +1,5 @@
 {
-  "name": "@lightspeed/agent-client",
+  "name": "@lightspeed-ai/agent-client",
   "version": "0.0.0",
   "private": false,
   "type": "module",

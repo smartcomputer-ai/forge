@@ -5,7 +5,7 @@ import {
   type AgentProfileInput,
   type LightspeedClient,
   type McpServerInput,
-} from "@lightspeed/agent-client";
+} from "@lightspeed-ai/agent-client";
 import { schema } from "@lightspeed/platform-db";
 import type { UniverseSetupState } from "@lightspeed/platform-db/schema";
 import type { AppContext, ApiVariables } from "../context.js";

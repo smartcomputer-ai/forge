@@ -129,7 +129,7 @@
   publish the `deliver_emission` protocol (envelope, producer types, id
   derivations with known-answer vectors, workflow-id scheme, start-on-call
   recipe/recovery types) from `temporal-workflow` as committed artifacts
-  with a staleness test, generate `@lightspeed/agent-client/workflow`, and
+  with a staleness test, generate `@lightspeed-ai/agent-client/workflow`, and
   delete the hand-mirrored Bots/Channels `contracts/emissions.ts`. The
   Temporal transport and producer authorization stay; an HTTP reply method
   is deferred.

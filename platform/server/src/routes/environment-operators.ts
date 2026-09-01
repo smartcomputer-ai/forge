@@ -3,7 +3,7 @@ import { z } from "zod";
 import type {
   OperatorEnvironmentProviderPutParams,
   OperatorProviderBindingPutParams,
-} from "@lightspeed/agent-client";
+} from "@lightspeed-ai/agent-client";
 import { schema } from "@lightspeed/platform-db";
 import type { AppContext, ApiVariables } from "../context.js";
 import { isPlatformAdmin } from "../context.js";

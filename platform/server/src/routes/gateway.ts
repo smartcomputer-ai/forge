@@ -20,7 +20,7 @@ import {
   type ModelListParams,
   type ProfileSource,
   type SessionConfig,
-} from "@lightspeed/agent-client";
+} from "@lightspeed-ai/agent-client";
 import { schema } from "@lightspeed/platform-db";
 import { slugify, workspaceCreateSchema } from "@lightspeed/platform-shared";
 import type { AppContext, ApiVariables } from "../context.js";

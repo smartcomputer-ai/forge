@@ -1,4 +1,4 @@
-import type { LightspeedClient, MethodParams } from "@lightspeed/agent-client";
+import type { LightspeedClient, MethodParams } from "@lightspeed-ai/agent-client";
 import {
   ProtocolError,
   ProtocolErrorCode,

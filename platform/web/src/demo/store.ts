@@ -36,7 +36,7 @@ import type {
   SessionEventView,
   SessionSummaryView,
   ToolCallDisplayView,
-} from "@lightspeed/agent-client";
+} from "@lightspeed-ai/agent-client";
 
 /// better-auth user shape as the client sees it (`admin` plugin fields
 /// included); everything the demo user is.

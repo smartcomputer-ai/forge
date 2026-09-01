@@ -76,7 +76,7 @@ for (const [name, artifact] of Object.entries(value.artifacts)) {
   }
 }
 if (value.artifacts.demo.basePath !== "/demo/") fail("demo artifact must be served under /demo/");
-if (value.typescriptClient.name !== "@lightspeed/agent-client") fail("unexpected client package");
+if (value.typescriptClient.name !== "@lightspeed-ai/agent-client") fail("unexpected client package");
 if (!/^[0-9a-f]{64}$/.test(value.typescriptClient.sha256)) fail("invalid client checksum");
 if (value.typescriptClient.version !== value.version) fail("client version mismatch");
 const clientFiles = fs.readdirSync("dist/npm").filter((entry) => entry.endsWith(".tgz"));

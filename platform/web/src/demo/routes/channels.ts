@@ -7,7 +7,7 @@ import { Hono } from "hono";
 import type {
   ChannelAccountView,
   ChannelPairingView,
-} from "@lightspeed/agent-client";
+} from "@lightspeed-ai/agent-client";
 import { connectorAccountHealth, type ChannelConnectorHealth, type ChannelConnectorStatus } from "@/api";
 import type { DemoStore, UniverseState } from "../store";
 import { badRequest, conflict, notFound, readBody, universeFor } from "./common";

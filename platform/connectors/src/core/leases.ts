@@ -1,4 +1,4 @@
-import type { LightspeedClient } from "@lightspeed/agent-client";
+import type { LightspeedClient } from "@lightspeed-ai/agent-client";
 
 /** Re-lease this long before the broker's expiry. */
 export const LEASE_EXPIRY_MARGIN_MS = 30_000;

@@ -85,7 +85,7 @@ const manifest = {
     },
   },
   typescriptClient: {
-    name: "@lightspeed/agent-client",
+    name: "@lightspeed-ai/agent-client",
     version,
     sha256: sha256(path.join("dist/npm", clientFile)),
   },

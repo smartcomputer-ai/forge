@@ -10,7 +10,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@lightspeed/agent-client": "*",
+    "@lightspeed-ai/agent-client": "*",
     "@temporalio/activity": "1.21.1",
     "@temporalio/common": "1.21.1",
     "@temporalio/worker": "1.21.1",

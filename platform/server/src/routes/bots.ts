@@ -8,7 +8,7 @@ import type {
   BotPutParams,
   BotTriggerPutParams,
   BotTriggerView,
-} from "@lightspeed/agent-client";
+} from "@lightspeed-ai/agent-client";
 import { Hono } from "hono";
 import type { AppContext, ApiVariables } from "../context.js";
 import { engineClientFor, withGateway } from "./gateway.js";
