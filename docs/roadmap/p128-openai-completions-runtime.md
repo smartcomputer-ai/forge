@@ -374,7 +374,7 @@ Phase 1 (in dependency order):
    `openai_completions_prompts_live.rs`, `openai_completions_skills_live.rs`
    — mirror the Responses files; `support/mod.rs` gains a completions
    model/client helper honouring `OPENAI_COMPLETIONS_MODEL/API_KEY/BASE_URL`.
-   `temporal-server/tests/temporal_live.rs` gets one end-to-end managed
+   `temporal-server/tests/sessions_live.rs` gets one end-to-end managed
    session on `openai:completions` (tool call + reply). All `#[ignore]`,
    fail loudly without keys.
 

@@ -416,7 +416,7 @@ Executed 2026-08-16:
   `npm run build`, `npm run check:identity`.
 - `store_pg_live::pg_live_universe_environments_are_independent_of_sessions`
   (origin-session round trip, filter, sweep query).
-- `temporal_live::temporal_live_profile_provisions_environment_for_session`:
+- `profiles_live::temporal_live_profile_provisions_environment_for_session`:
   unknown provider rejected before any session exists; `session/start`
   returns with the environment active while still `provisioning`; derived
   request id and origin provenance recorded; repeated start and

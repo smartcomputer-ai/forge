@@ -109,7 +109,7 @@ source scripts/dev/env.sh
 cargo test -p temporal-server --test <suite> [test_name] -- --ignored --test-threads=1
 ```
 
-Run `temporal_live_slow` by itself; it contains tests that wait out production
+Run `runs_live_slow` by itself; it contains tests that wait out production
 activity budgets and can take roughly 30 minutes.
 
 ## Generated Artifacts

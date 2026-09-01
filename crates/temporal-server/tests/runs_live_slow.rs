@@ -1,10 +1,10 @@
 //! Live tests that deliberately wait out production activity budgets. They
-//! share the Temporal/PostgreSQL stack with `temporal_live.rs` and are kept
+//! share the Temporal/PostgreSQL stack with the ordinary live suites and are kept
 //! in their own binary so the ordinary live suite stays fast:
 //!
 //! ```bash
 //! source scripts/dev/env.sh
-//! cargo test -p temporal-server --test temporal_live_slow -- --ignored --test-threads=1
+//! cargo test -p temporal-server --test runs_live_slow -- --ignored --test-threads=1
 //! ```
 
 mod support;

@@ -227,7 +227,7 @@ Run the fake hosted-agent live integration test against the same stack:
 
 ```bash
 source scripts/dev/env.sh
-cargo test -p temporal-server --test temporal_live temporal_live_session_start_then_run_start_completes_fake_runs -- --ignored --nocapture
+cargo test -p temporal-server --test sessions_live temporal_live_session_start_then_run_start_completes_fake_runs -- --ignored --test-threads=1 --nocapture
 ```
 
 Run the minimal live environment control-plane acceptance test. This uses real
@@ -245,7 +245,7 @@ Run only the OpenAI-backed hosted-agent live test:
 ```bash
 source scripts/dev/env.sh
 export OPENAI_API_KEY=...
-cargo test -p temporal-server --test temporal_live temporal_live_session_start_then_run_start_completes_openai_run -- --ignored --nocapture
+cargo test -p temporal-server --test sessions_live temporal_live_session_start_then_run_start_completes_openai_run -- --ignored --test-threads=1 --nocapture
 ```
 
 Set `LIGHTSPEED_OPENAI_MODEL`, `OPENAI_RESPONSES_MODEL`, or

@@ -110,7 +110,7 @@ cancellation UI.
   the call blocks until the queued run actually *starts*, or times out.
 - No live test exercises cancel of an active run, steering success, or
   queueing through the gateway. The only workflow-level steering test uses
-  it as a guaranteed-rejecting command (`temporal_live.rs:2808`).
+  it as a guaranteed-rejecting command (`runs_live.rs`).
 
 ### Platform UI (`platform/web`, `platform/server`)
 

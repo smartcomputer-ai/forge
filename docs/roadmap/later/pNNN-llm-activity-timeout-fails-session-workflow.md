@@ -115,7 +115,7 @@ call result. The LLM path is the exception.
 - `FakeLlm::with_stall_switch` (`crates/temporal-server/src/worker/fake.rs`)
   hangs generate while an `AtomicBool` is set; the stall is observable
   through the existing started/abandoned counters.
-- `crates/temporal-server/tests/temporal_live_slow.rs`:
+- `crates/temporal-server/tests/runs_live_slow.rs`:
   `temporal_live_llm_activity_timeout_fails_the_run_not_the_session` —
   stalled provider, first run fails after the budget on a pure timeout
   chain, workflow execution unchanged (`run_id` compared), stall cleared,
@@ -123,7 +123,7 @@ call result. The LLM path is the exception.
 
   ```bash
   source scripts/dev/env.sh
-  cargo test -p temporal-server --test temporal_live_slow -- --ignored --test-threads=1
+  cargo test -p temporal-server --test runs_live_slow -- --ignored --test-threads=1
   ```
 
 - Follow-ups above (reaper repair / recreate-on-start, the 15-minute

@@ -8,8 +8,8 @@ use std::{
 };
 
 use api::{
-    AgentApiService, ContextEntryKindView, ContextMessageRoleView, RunStatus, SessionReadParams,
-    SessionStatus,
+    AgentApiService, ContextEntryKindView, ContextMessageRoleView, InputItem, RunStartParams,
+    RunStartSource, RunStatus, SessionReadParams, SessionStatus,
 };
 use engine::{
     CoreAgentLlm, CoreAgentTools, ModelSelection, ProviderApiKind, SessionId, storage::BlobStore,
@@ -25,7 +25,7 @@ use temporal_workflow::{
     AgentAdmissionFailureKind, AgentSessionWorkflow, DEFAULT_TEMPORAL_NAMESPACE,
     DEFAULT_TEMPORAL_TARGET, connect_temporal,
 };
-use temporalio_client::{Client, WorkflowQueryOptions};
+use temporalio_client::{Client, WorkflowQueryOptions, WorkflowTerminateOptions};
 
 pub static LIVE_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
@@ -286,6 +286,109 @@ pub async fn wait_for_terminal_run(
                 .run);
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+pub async fn start_text_run(
+    api: &temporal_server::gateway::GatewayAgentApi,
+    session_id: &SessionId,
+    text: &str,
+) -> anyhow::Result<api::RunView> {
+    Ok(api
+        .start_run(RunStartParams {
+            notify_on_terminal: None,
+            submission_id: None,
+            session_id: session_id.as_str().to_owned(),
+            source: RunStartSource::Input {
+                items: vec![InputItem::Text {
+                    text: text.to_owned(),
+                }],
+            },
+            config: None,
+        })
+        .await?
+        .result
+        .run)
+}
+
+pub async fn read_run(
+    api: &temporal_server::gateway::GatewayAgentApi,
+    session_id: &SessionId,
+    run_id: &str,
+) -> anyhow::Result<Option<api::RunView>> {
+    let response = api
+        .read_run(api::RunReadParams {
+            session_id: session_id.as_str().to_owned(),
+            run_id: run_id.to_owned(),
+        })
+        .await?;
+    Ok(Some(response.result.run))
+}
+
+pub async fn read_session_view(
+    api: &temporal_server::gateway::GatewayAgentApi,
+    session_id: &SessionId,
+) -> anyhow::Result<api::SessionView> {
+    Ok(api
+        .read_session(SessionReadParams {
+            session_id: session_id.as_str().to_owned(),
+            run_limit: None,
+        })
+        .await?
+        .result
+        .session)
+}
+
+pub async fn wait_for_environment_status(
+    api: &temporal_server::gateway::GatewayAgentApi,
+    environment_id: &str,
+    expected: api::EnvironmentLifecycleStatusView,
+) -> anyhow::Result<api::EnvironmentView> {
+    let started = Instant::now();
+    loop {
+        api.reconcile_environments_once().await?;
+        let environment = api
+            .read_environment(api::EnvironmentReadParams {
+                environment_id: environment_id.to_owned(),
+            })
+            .await?
+            .result
+            .environment;
+        if environment.status == expected {
+            return Ok(environment);
+        }
+        if started.elapsed() > Duration::from_secs(20) {
+            anyhow::bail!(
+                "timed out waiting for environment {environment_id} to reach {expected:?}; current status is {:?}",
+                environment.status
+            );
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+pub async fn wait_until(
+    what: &str,
+    timeout: Duration,
+    mut check: impl AsyncFnMut() -> anyhow::Result<bool>,
+) -> anyhow::Result<()> {
+    let started = Instant::now();
+    loop {
+        if check().await? {
+            return Ok(());
+        }
+        if started.elapsed() > timeout {
+            anyhow::bail!("timed out waiting for {what}");
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+pub async fn terminate_live_session(client: &Client, session_id: &SessionId, reason: &str) {
+    if let Ok(handle) = live_workflow_handle(client, session_id) {
+        let _ = handle
+            .terminate(WorkflowTerminateOptions::builder().reason(reason).build())
+            .await;
     }
 }
 
