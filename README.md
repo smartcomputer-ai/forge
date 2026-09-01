@@ -1,9 +1,7 @@
 <p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/images/ls-logo-2026-v1-ls.svg">
-    <source media="(prefers-color-scheme: light)" srcset="docs/images/ls-logo-2026-v1-ls-light.svg">
-    <img src="docs/images/ls-logo-2026-v1-ls-light.svg" alt="Lightspeed logo" width="92">
-  </picture>
+  <a href="https://ls.bot/" target="_blank" rel="noopener">
+    <img src="docs/images/ls-logo-2026-v1-ls.svg" alt="Lightspeed logo" width="92">
+  </a>
 </p>
 
 # Lightspeed
@@ -81,7 +79,7 @@ Environment variables are documented separately in
 
 ## Features
 
-Lightspeed covers the table stakes of a modern agent harness and keeps shipping fast. Everything below works today. Run it with the [Quick start](#quick-start).
+Lightspeed covers the table stakes of a modern agent harness. Everything below works today. Run it with the [Quick start](#quick-start).
 
 **Models & providers**
 
