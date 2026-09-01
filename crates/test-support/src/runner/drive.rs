@@ -736,6 +736,7 @@ async fn failed_generation_result_from_error(
         failure_ref: Some(failure_ref),
         context_entries: Vec::new(),
         facts: LlmGenerationFacts {
+            duration_ms: None,
             provider_response_id: None,
             finish: LlmFinish::Failed,
             usage: None,
@@ -794,6 +795,7 @@ async fn failed_tool_batch_result(
         )
         .await?;
         results.push(ToolInvocationResult {
+            duration_ms: None,
             call_id: call.call_id.clone(),
             status: ToolCallStatus::Failed,
             output_ref: None,
@@ -1044,6 +1046,7 @@ mod tests {
                     failure_ref: None,
                     context_entries: Vec::new(),
                     facts: LlmGenerationFacts {
+                        duration_ms: None,
                         provider_response_id: Some("resp-tool".to_owned()),
                         finish: LlmFinish::ToolCalls,
                         usage: None,
@@ -1098,6 +1101,7 @@ mod tests {
                     failure_ref: None,
                     context_entries: Vec::new(),
                     facts: LlmGenerationFacts {
+                        duration_ms: None,
                         provider_response_id: Some("resp-read-skill".to_owned()),
                         finish: LlmFinish::ToolCalls,
                         usage: None,
@@ -1149,6 +1153,7 @@ mod tests {
                 token_estimate: None,
             }],
             facts: LlmGenerationFacts {
+                duration_ms: None,
                 provider_response_id: Some("resp-1".to_owned()),
                 finish: LlmFinish::Stop,
                 usage: None,
@@ -2358,6 +2363,7 @@ mod tests {
                 &entry.event,
                 CoreAgentEvent::Tool(engine::ToolEvent::CallCompleted {
                     result: ToolCallResult {
+                        duration_ms: None,
                         status: ToolCallStatus::Failed,
                         error_ref: Some(_),
                         ..

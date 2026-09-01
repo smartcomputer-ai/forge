@@ -1041,6 +1041,9 @@ impl<'a> CoreAgentProjector<'a> {
                                 .cloned()
                                 .unwrap_or_default(),
                             display: tool_call_display(call.tool_name.as_str(), &arguments),
+                            started_at_ms: None,
+                            completed_at_ms: None,
+                            duration_ms: None,
                         })
                     }))
                     .await?;
@@ -1050,6 +1053,26 @@ impl<'a> CoreAgentProjector<'a> {
                         status: ToolItemStatus::Running,
                         calls: projected_calls,
                     });
+                }
+                ToolEvent::CallStarted {
+                    run_id: event_run_id,
+                    batch_id,
+                    call_id,
+                    ..
+                } if *event_run_id == run_id => {
+                    let batch_id = api_tool_batch_id(*batch_id);
+                    if let Some(call) = batches
+                        .iter_mut()
+                        .find(|batch| batch.id == batch_id)
+                        .and_then(|batch| {
+                            batch
+                                .calls
+                                .iter_mut()
+                                .find(|call| call.call_id == call_id.as_str())
+                        })
+                    {
+                        call.started_at_ms = Some(entry.observed_at_ms);
+                    }
                 }
                 // The durable per-call completion carries the engine's call
                 // status; it distinguishes `cancelled` from `failed`, which
@@ -1073,6 +1096,8 @@ impl<'a> CoreAgentProjector<'a> {
                     {
                         call.status = core_tool_status_to_api_status(result.status);
                         call.is_error = result.status.is_error();
+                        call.completed_at_ms = Some(entry.observed_at_ms);
+                        call.duration_ms = result.duration_ms;
                     }
                 }
                 ToolEvent::BatchCompleted {
@@ -2475,6 +2500,9 @@ mod tests {
             status,
             effects: Vec::new(),
             display: None,
+            started_at_ms: None,
+            completed_at_ms: None,
+            duration_ms: None,
         }
     }
 
@@ -2917,6 +2945,7 @@ mod tests {
                 turn_id: TurnId::new(3),
                 batch_id: ToolBatchId::new(4),
                 result: engine::ToolCallResult {
+                    duration_ms: None,
                     call_id: engine::ToolCallId::new("call-5"),
                     status: engine::ToolCallStatus::Succeeded,
                     output_ref: None,

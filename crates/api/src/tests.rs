@@ -1627,6 +1627,9 @@ fn run_view_can_expose_tool_batches() {
             turn_id: "turn_1".to_owned(),
             status: ToolItemStatus::Succeeded,
             calls: vec![ToolCallView {
+                started_at_ms: None,
+                completed_at_ms: None,
+                duration_ms: None,
                 call_id: "call_1".to_owned(),
                 tool_name: "read_file".to_owned(),
                 arguments_ref: "sha256:args".to_owned(),

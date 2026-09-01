@@ -149,6 +149,7 @@ pub(super) async fn invoke_call(
                         ToolCallStatus::Succeeded
                     };
                     Ok(ToolCallExecution::Completed(ToolInvocationResult {
+                        duration_ms: None,
                         call_id: request.call.call_id.clone(),
                         status,
                         output_ref: Some(output_ref),
@@ -175,9 +176,16 @@ pub(super) async fn invoke_call(
                 .map(ToolCallExecution::Completed),
         }
     };
+    let started = std::time::Instant::now();
+    let stamp = |mut result: ToolInvocationResult| {
+        result.duration_ms = Some(u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX));
+        result
+    };
     match tokio::time::timeout(deadline, execution).await {
         Ok(Ok(ToolCallExecution::Completed(result))) => {
-            Ok(ToolInvokeCallActivityResult::Completed { result })
+            Ok(ToolInvokeCallActivityResult::Completed {
+                result: stamp(result),
+            })
         }
         Ok(Ok(ToolCallExecution::EnvironmentNotReady { environment_id, .. })) => {
             Ok(ToolInvokeCallActivityResult::EnvironmentNotReady { environment_id })
@@ -188,7 +196,9 @@ pub(super) async fn invoke_call(
         Ok(Err(error)) => {
             super::common::failed_tool_call_result(deps.blobs.as_ref(), &request, error.to_string())
                 .await
-                .map(|result| ToolInvokeCallActivityResult::Completed { result })
+                .map(|result| ToolInvokeCallActivityResult::Completed {
+                    result: stamp(result),
+                })
                 .map_err(activity_error)
         }
         Err(_elapsed) => super::common::failed_tool_call_result(
@@ -200,7 +210,9 @@ pub(super) async fn invoke_call(
             ),
         )
         .await
-        .map(|result| ToolInvokeCallActivityResult::Completed { result })
+        .map(|result| ToolInvokeCallActivityResult::Completed {
+            result: stamp(result),
+        })
         .map_err(activity_error),
     }
 }

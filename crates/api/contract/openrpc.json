@@ -15437,6 +15437,15 @@
           "callId": {
             "type": "string"
           },
+          "completedAtMs": {
+            "description": "When the call's terminal result was committed. The window to\n`startedAtMs` includes runtime scheduling overhead.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
           "display": {
             "anyOf": [
               {
@@ -15445,6 +15454,15 @@
               {
                 "type": "null"
               }
+            ]
+          },
+          "durationMs": {
+            "description": "Execution milliseconds measured by the runtime around the call body;\nthe remainder of the started/completed window is overhead.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
             ]
           },
           "effects": {
@@ -15460,6 +15478,15 @@
           "output": {
             "type": [
               "string",
+              "null"
+            ]
+          },
+          "startedAtMs": {
+            "description": "When the call was dispatched for execution, from the committed\n`toolCallStarted` event. Absent until dispatch.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
               "null"
             ]
           },

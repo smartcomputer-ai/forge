@@ -198,6 +198,7 @@ impl InlineToolRuntime {
         effects.extend(ctx.drain_tool_effects());
 
         Ok(ToolInvocationResult {
+            duration_ms: None,
             call_id: call.call_id.clone(),
             status: ToolCallStatus::Succeeded,
             output_ref: Some(output_ref),
@@ -229,6 +230,7 @@ impl InlineToolRuntime {
             .await?;
 
         Ok(ToolInvocationResult {
+            duration_ms: None,
             call_id: call.call_id.clone(),
             status: ToolCallStatus::Failed,
             output_ref: None,
@@ -258,6 +260,7 @@ impl InlineToolRuntime {
             .await?;
 
         Ok(ToolInvocationResult {
+            duration_ms: None,
             call_id: call.call_id.clone(),
             status: ToolCallStatus::Succeeded,
             output_ref: Some(output_ref),
@@ -284,6 +287,7 @@ impl InlineToolRuntime {
             .await?;
 
         Ok(ToolInvocationResult {
+            duration_ms: None,
             call_id: call.call_id.clone(),
             status: ToolCallStatus::Failed,
             output_ref: None,

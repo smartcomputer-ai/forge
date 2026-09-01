@@ -1294,6 +1294,7 @@ fn await_resume_result(
         turn_id: batch.turn_id,
         batch_id: batch.batch_id,
         results: vec![ToolInvocationResult {
+            duration_ms: None,
             call_id: call_id.clone(),
             status: ToolCallStatus::Succeeded,
             output_ref: Some(result_ref),
@@ -1390,6 +1391,7 @@ fn joined_workflow_resume_result(
             PromiseStatus::Pending => unreachable!("terminality was checked above"),
         };
         results.push(ToolInvocationResult {
+            duration_ms: None,
             call_id: joined.call_id.clone(),
             status,
             output_ref,
@@ -1452,6 +1454,7 @@ fn validate_minted_promise_id(
 fn invalid_await_tool_result(call_id: ToolCallId, _message: String) -> ToolInvocationResult {
     let error_ref = crate::unavailable_tool_result_ref();
     ToolInvocationResult {
+        duration_ms: None,
         call_id: call_id.clone(),
         status: ToolCallStatus::Failed,
         output_ref: None,
@@ -1918,6 +1921,7 @@ fn invocation_result_to_call_result(result: ToolInvocationResult) -> ToolCallRes
         model_visible_context_entries: result.model_visible_context_entries,
         error_ref: result.error_ref,
         effects: result.effects,
+        duration_ms: result.duration_ms,
     }
 }
 
@@ -2227,6 +2231,7 @@ mod tests {
                     failure_ref: None,
                     context_entries: Vec::new(),
                     facts: LlmGenerationFacts {
+                        duration_ms: None,
                         provider_response_id: Some("resp-tool".to_owned()),
                         finish: LlmFinish::ToolCalls,
                         usage: None,
@@ -2313,6 +2318,7 @@ mod tests {
             turn_id: request.turn_id,
             batch_id: request.batch_id,
             results: vec![ToolInvocationResult {
+                duration_ms: None,
                 call_id: request.calls[0].call_id.clone(),
                 status: ToolCallStatus::Succeeded,
                 output_ref: Some(BlobRef::from_bytes(b"wait completed")),
@@ -3507,6 +3513,7 @@ mod tests {
                         ),
                     ],
                     facts: LlmGenerationFacts {
+                        duration_ms: None,
                         provider_response_id: Some("resp-1".to_owned()),
                         finish: LlmFinish::Stop,
                         usage: None,
@@ -4202,6 +4209,7 @@ mod tests {
                 failure_ref: None,
                 context_entries: Vec::new(),
                 facts: LlmGenerationFacts {
+                    duration_ms: None,
                     provider_response_id: Some("resp-late".to_owned()),
                     finish: LlmFinish::Stop,
                     usage: None,
@@ -4289,6 +4297,7 @@ mod tests {
                     failure_ref: None,
                     context_entries: Vec::new(),
                     facts: LlmGenerationFacts {
+                        duration_ms: None,
                         provider_response_id: Some("resp-tool".to_owned()),
                         finish: LlmFinish::ToolCalls,
                         usage: None,
@@ -4377,6 +4386,7 @@ mod tests {
                 token_estimate: None,
             }],
             facts: LlmGenerationFacts {
+                duration_ms: None,
                 provider_response_id: None,
                 finish: LlmFinish::Stop,
                 usage: None,
@@ -4802,6 +4812,7 @@ mod tests {
                     failure_ref: None,
                     context_entries: Vec::new(),
                     facts: LlmGenerationFacts {
+                        duration_ms: None,
                         provider_response_id: Some("resp-1".to_owned()),
                         finish: LlmFinish::Stop,
                         usage: None,
@@ -4941,6 +4952,7 @@ mod tests {
                         token_estimate: None,
                     }],
                     facts: LlmGenerationFacts {
+                        duration_ms: None,
                         provider_response_id: Some("resp-1".to_owned()),
                         finish: LlmFinish::Stop,
                         usage: None,
@@ -5007,6 +5019,7 @@ mod tests {
                         partial_ref.clone(),
                     )],
                     facts: LlmGenerationFacts {
+                        duration_ms: None,
                         provider_response_id: Some("msg_cut".to_owned()),
                         finish: LlmFinish::Length,
                         usage: None,
@@ -5084,6 +5097,7 @@ mod tests {
                     failure_ref: Some(failure_ref.clone()),
                     context_entries: Vec::new(),
                     facts: LlmGenerationFacts {
+                        duration_ms: None,
                         provider_response_id: Some("msg_refused".to_owned()),
                         finish: LlmFinish::ContentFilter,
                         usage: None,
@@ -5152,6 +5166,7 @@ mod tests {
                     failure_ref: Some(failure_ref.clone()),
                     context_entries: Vec::new(),
                     facts: LlmGenerationFacts {
+                        duration_ms: None,
                         provider_response_id: None,
                         finish: LlmFinish::Failed,
                         usage: None,
@@ -5639,6 +5654,7 @@ mod tests {
                     failure_ref: None,
                     context_entries: Vec::new(),
                     facts: LlmGenerationFacts {
+                        duration_ms: None,
                         provider_response_id: Some("resp-1".to_owned()),
                         finish: LlmFinish::Stop,
                         usage: None,
@@ -6173,6 +6189,7 @@ mod tests {
                 turn_id: request.turn_id,
                 batch_id: request.batch_id,
                 results: vec![ToolInvocationResult {
+                    duration_ms: None,
                     call_id: call.call_id.clone(),
                     status: ToolCallStatus::Succeeded,
                     output_ref: None,
@@ -6378,6 +6395,7 @@ mod tests {
             if call.tool_name.as_str() == "local_echo" {
                 let content_ref = BlobRef::from_bytes(b"echo complete");
                 results.push(ToolInvocationResult {
+                    duration_ms: None,
                     call_id: call.call_id.clone(),
                     status: ToolCallStatus::Succeeded,
                     output_ref: Some(content_ref.clone()),
@@ -6424,6 +6442,7 @@ mod tests {
             };
             joined_ids.push((call.call_id.clone(), promise_id));
             results.push(ToolInvocationResult {
+                duration_ms: None,
                 call_id: call.call_id.clone(),
                 status: ToolCallStatus::Succeeded,
                 output_ref: None,
@@ -6633,6 +6652,7 @@ mod tests {
             )])),
         };
         let completed_results = vec![ToolInvocationResult {
+            duration_ms: None,
             call_id: workflow_call.call_id.clone(),
             status: ToolCallStatus::Succeeded,
             output_ref: None,
@@ -7447,6 +7467,7 @@ mod tests {
     ) -> ToolInvocationResult {
         let content_ref = BlobRef::from_bytes(call_id.as_str().as_bytes());
         ToolInvocationResult {
+            duration_ms: None,
             call_id: call_id.clone(),
             status,
             output_ref: (status == ToolCallStatus::Succeeded).then(|| content_ref.clone()),
@@ -7537,6 +7558,56 @@ mod tests {
         assert_eq!(completed.results[0].status, ToolCallStatus::Succeeded);
         assert_eq!(completed.results[1].status, ToolCallStatus::Failed);
         assert_ne!(active_run.active_tool_batch_id, Some(request.batch_id));
+    }
+
+    /// Runtime-measured per-call durations recorded by the execution
+    /// activity survive on the stored tool results, where analytics and
+    /// projections read them back per call.
+    #[test]
+    fn per_call_results_retain_runtime_durations() {
+        let session_id = SessionId::new("session-durations");
+        let mut drive = CoreAgentDrive::from_replayed(session_id, CoreAgentState::new(), None);
+        let request = two_call_tool_batch(&mut drive, config());
+
+        let mut first = per_call_result(
+            &request.calls[0].call_id,
+            ToolCallStatus::Succeeded,
+            Vec::new(),
+        );
+        first.duration_ms = Some(400);
+        let first = drive
+            .resume_tool_call(request.batch_id, first, 121)
+            .expect("resume first call");
+        commit_action(&mut drive, first);
+
+        let mut second = per_call_result(
+            &request.calls[1].call_id,
+            ToolCallStatus::Succeeded,
+            Vec::new(),
+        );
+        second.duration_ms = Some(600);
+        let second = drive
+            .resume_tool_call(request.batch_id, second, 122)
+            .expect("resume second call");
+        commit_action(&mut drive, second);
+
+        loop {
+            let action = drive.next_action(140, 64).expect("next action");
+            if matches!(
+                action,
+                CoreAgentAction::GenerateLlm { .. } | CoreAgentAction::Idle
+            ) {
+                break;
+            }
+            commit_action(&mut drive, action);
+        }
+        let active_run = drive.state().runs.active.as_ref().expect("active run");
+        let completed_batch = active_run
+            .completed_tool_batches
+            .get(&request.batch_id)
+            .expect("completed batch");
+        assert_eq!(completed_batch.results[0].duration_ms, Some(400));
+        assert_eq!(completed_batch.results[1].duration_ms, Some(600));
     }
 
     #[test]

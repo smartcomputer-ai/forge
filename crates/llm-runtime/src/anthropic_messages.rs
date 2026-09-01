@@ -1143,6 +1143,7 @@ pub async fn result_from_response(
         failure_ref,
         context_entries,
         facts: LlmGenerationFacts {
+            duration_ms: None,
             provider_response_id: Some(response.parsed.id.clone()),
             finish,
             usage,
@@ -1187,6 +1188,7 @@ async fn refused_generation_result(
         failure_ref: Some(failure_ref),
         context_entries: Vec::new(),
         facts: LlmGenerationFacts {
+            duration_ms: None,
             provider_response_id: Some(response.parsed.id.clone()),
             finish: LlmFinish::ContentFilter,
             usage: response.parsed.usage.as_ref().map(llm_usage),

@@ -2900,6 +2900,7 @@ mod tests {
                     failure_ref: None,
                     context_entries: Vec::new(),
                     facts: LlmGenerationFacts {
+                        duration_ms: None,
                         provider_response_id: Some("response-tool".to_owned()),
                         finish: LlmFinish::ToolCalls,
                         usage: None,
@@ -2959,6 +2960,7 @@ mod tests {
         let results = invocations
             .iter()
             .map(|invocation| ToolInvocationResult {
+                duration_ms: None,
                 call_id: invocation.tool_call_id.clone(),
                 status: ToolCallStatus::Succeeded,
                 output_ref: Some(BlobRef::from_bytes(b"accepted")),

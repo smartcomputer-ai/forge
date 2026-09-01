@@ -211,6 +211,18 @@ pub struct ToolCallView {
     pub effects: Vec<ToolEffectView>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display: Option<ToolCallDisplayView>,
+    /// When the call was dispatched for execution, from the committed
+    /// `toolCallStarted` event. Absent until dispatch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_at_ms: Option<u64>,
+    /// When the call's terminal result was committed. The window to
+    /// `startedAtMs` includes runtime scheduling overhead.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completed_at_ms: Option<u64>,
+    /// Execution milliseconds measured by the runtime around the call body;
+    /// the remainder of the started/completed window is overhead.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

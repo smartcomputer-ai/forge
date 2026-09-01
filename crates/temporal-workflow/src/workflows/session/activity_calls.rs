@@ -54,6 +54,7 @@ pub(super) async fn call_llm_generate(
                     failure_ref: Some(failure_ref),
                     context_entries: Vec::new(),
                     facts: engine::LlmGenerationFacts {
+                        duration_ms: None,
                         provider_response_id: None,
                         finish: engine::LlmFinish::Failed,
                         usage: None,

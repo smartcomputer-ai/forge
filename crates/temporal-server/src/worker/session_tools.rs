@@ -730,6 +730,7 @@ impl SessionTools {
             .await
             .map_err(map_blob_error)?;
         Ok(ToolInvocationResult {
+            duration_ms: None,
             call_id: call.call_id.clone(),
             status: ToolCallStatus::Succeeded,
             output_ref: Some(output_ref),
@@ -774,6 +775,7 @@ impl SessionTools {
                 .map_err(map_blob_error)?;
         }
         Ok(ToolInvocationResult {
+            duration_ms: None,
             call_id: call.call_id.clone(),
             status: ToolCallStatus::Succeeded,
             output_ref: Some(output_ref.clone()),
@@ -1806,6 +1808,7 @@ async fn failed_result_bytes(
 ) -> Result<ToolInvocationResult, CoreAgentIoError> {
     let error_ref = blobs.put_bytes(bytes).await.map_err(map_blob_error)?;
     Ok(ToolInvocationResult {
+        duration_ms: None,
         call_id: call_id.clone(),
         status: ToolCallStatus::Failed,
         output_ref: None,
