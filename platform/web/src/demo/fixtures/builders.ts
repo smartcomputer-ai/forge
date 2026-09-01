@@ -47,7 +47,7 @@ import type {
   ToolCallDisplayView,
   WebhookPreset,
   WebhookVerification,
-} from "@lightspeed/agent-client";
+} from "@lightspeed-ai/agent-client";
 import { DEFAULT_MODEL, newSession } from "../engine";
 import type { DemoStore, DemoToolCall, SessionRecord, UniverseState } from "../store";
 import { INCUS_PROVIDER_ID } from "./platform";

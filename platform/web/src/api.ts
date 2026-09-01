@@ -12,7 +12,7 @@ import type {
   SessionEventView,
   SessionEventsReadResponse,
   ToolCallDisplayView,
-} from "@lightspeed/agent-client";
+} from "@lightspeed-ai/agent-client";
 
 /// Thin fetch wrapper for /api/v1 (cookie-authenticated, same origin).
 
@@ -647,9 +647,9 @@ export type {
   SessionSummaryView,
   WebhookPreset,
   WebhookVerification,
-} from "@lightspeed/agent-client";
+} from "@lightspeed-ai/agent-client";
 
-import type { BotView } from "@lightspeed/agent-client";
+import type { BotView } from "@lightspeed-ai/agent-client";
 
 export function botLabel(bot: Pick<BotView, "botId" | "displayName">): string {
   return bot.displayName ?? bot.botId;

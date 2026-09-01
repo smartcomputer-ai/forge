@@ -1,5 +1,5 @@
 /// Engine simulation: sessions, runs, and the event log the transcript
-/// tail reads. Shapes follow the generated `@lightspeed/agent-client`
+/// tail reads. Shapes follow the generated `@lightspeed-ai/agent-client`
 /// contract so the real transcript reducer renders them unchanged.
 import type {
   ContextEntryView,
@@ -14,7 +14,7 @@ import type {
   SessionEventView,
   SessionEventsReadResponse,
   ToolCallEventView,
-} from "@lightspeed/agent-client";
+} from "@lightspeed-ai/agent-client";
 import type { SessionManagement, SessionOrigin, SessionView } from "@/api";
 import type {
   DemoResponder,

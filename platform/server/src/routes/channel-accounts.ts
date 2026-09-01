@@ -4,7 +4,7 @@ import type {
   ChannelAccountListParams,
   ChannelAccountPutParams,
   ChannelPairingListParams,
-} from "@lightspeed/agent-client";
+} from "@lightspeed-ai/agent-client";
 import { Hono } from "hono";
 import { z } from "zod";
 import {

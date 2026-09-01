@@ -7,7 +7,7 @@
 /// takes the Monday numbers from a metrics bot — the personal-agent pattern
 /// built from bots, triggers, workspaces, skills, and one Mac mini at home.
 import type { Environment, ProfileEnvironment, SecretGrant, UniverseSetup } from "@/api";
-import type { SessionSummaryView } from "@lightspeed/agent-client";
+import type { SessionSummaryView } from "@lightspeed-ai/agent-client";
 import { appendExchange, appendScriptedRun, closeSession, newSession } from "../engine";
 import type { DemoResponder, DemoStore, DemoToolCall, DemoTurn, SessionRecord, UniverseState } from "../store";
 import {

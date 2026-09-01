@@ -2,7 +2,7 @@ import { ApplicationFailure } from "@temporalio/common";
 import type {
   ChannelDeliveryCommand,
   ChannelDeliveryResult,
-} from "@lightspeed/agent-client/workflow";
+} from "@lightspeed-ai/agent-client/workflow";
 import { renderTelegramHtml } from "../../presentation/telegram.js";
 import { splitMessageText } from "../../presentation/text.js";
 import {

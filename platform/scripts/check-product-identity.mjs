@@ -5,6 +5,7 @@ const retiredIdentity = new RegExp(
   `${["ls", "bot"].join("")}|${["ls", "bot"].join("\\.")}`,
   "i",
 );
+const publicSiteOrigin = `https://${["ls", "bot"].join(".")}`;
 const files = execFileSync("git", ["ls-files", "-co", "--exclude-standard", "-z"], {
   encoding: "utf8",
 })
@@ -21,7 +22,7 @@ for (const file of files) {
     continue;
   }
   for (const [index, line] of body.toString("utf8").split("\n").entries()) {
-    if (retiredIdentity.test(line)) {
+    if (retiredIdentity.test(line.replaceAll(publicSiteOrigin, ""))) {
       violations.push(`${file}:${index + 1}:${line}`);
     }
   }

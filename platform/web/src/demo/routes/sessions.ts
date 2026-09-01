@@ -4,7 +4,7 @@
 /// tell the difference.
 import { Hono, type Context } from "hono";
 import type { Environment, ProfileSource, SessionView } from "@/api";
-import type { ProfileEnvironment, ProfileInstructions } from "@lightspeed/agent-client";
+import type { ProfileEnvironment, ProfileInstructions } from "@lightspeed-ai/agent-client";
 import {
   DEFAULT_MODEL,
   PROFILE_INSTRUCTIONS_KEY,

@@ -1,4 +1,4 @@
-import type { ChannelProvider, OperatorChannelAccountView } from "@lightspeed/agent-client";
+import type { ChannelProvider, OperatorChannelAccountView } from "@lightspeed-ai/agent-client";
 import type { CoreClient } from "../core/client.js";
 import type { AccountSelector } from "../core/identity.js";
 import type { AccountRunnerLike } from "./account-runner.js";

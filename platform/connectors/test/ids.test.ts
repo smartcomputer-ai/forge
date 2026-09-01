@@ -3,7 +3,7 @@ import {
   WORKFLOW_CONTRACT_VECTORS,
   connectorTaskQueue,
   sessionWorkflowId,
-} from "@lightspeed/agent-client/workflow";
+} from "@lightspeed-ai/agent-client/workflow";
 import { accountKey, parseAccountSelector } from "../src/core/identity.js";
 import { UNIVERSE_A, UNIVERSE_B } from "./fixtures.js";
 

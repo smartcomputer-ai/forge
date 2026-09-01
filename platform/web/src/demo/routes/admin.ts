@@ -6,7 +6,7 @@ import type { EnvironmentProviderBinding, EnvironmentTemplate } from "@/api";
 import type {
   OperatorChannelAccountView,
   OperatorEnvironmentProviderView,
-} from "@lightspeed/agent-client";
+} from "@lightspeed-ai/agent-client";
 import type { DemoStore, UniverseState } from "../store";
 import { badRequest, conflict, notFound, readBody } from "./common";
 

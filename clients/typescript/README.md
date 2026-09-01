@@ -8,17 +8,17 @@ JSON-RPC transport and small workflow helpers.
 
 ## Install
 
-Tagged Lightspeed releases publish `@lightspeed/agent-client` to npm. In-tree
+Tagged Lightspeed releases publish `@lightspeed-ai/agent-client` to npm. In-tree
 consumers use the repository workspace directly.
 
 ```bash
-npm install @lightspeed/agent-client
+npm install @lightspeed-ai/agent-client
 ```
 
 ## Use
 
 ```ts
-import { LightspeedClient } from "@lightspeed/agent-client";
+import { LightspeedClient } from "@lightspeed-ai/agent-client";
 
 const lightspeed = new LightspeedClient("http://127.0.0.1:18080/rpc");
 
@@ -51,13 +51,13 @@ from the generated schema types.
 
 ```bash
 npm install
-npm run check --workspace @lightspeed/agent-client
+npm run check --workspace @lightspeed-ai/agent-client
 ```
 
 `npm run check:generated` regenerates `src/generated/*` and the packaged
 schemas, and fails if the committed generated output is stale.
 
-Workflow receivers import `@lightspeed/agent-client/workflow`. That subpath
+Workflow receivers import `@lightspeed-ai/agent-client/workflow`. That subpath
 contains generated emission/start-on-call types and manifest-owned constants,
 plus Temporal-sandbox-safe parsing, id derivation, workflow-id, recipe, and
 reply helpers. It has no Temporal package dependency.

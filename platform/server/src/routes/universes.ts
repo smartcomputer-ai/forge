@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { z } from "zod";
 import { and, eq } from "drizzle-orm";
-import { LightspeedRpcError } from "@lightspeed/agent-client";
+import { LightspeedRpcError } from "@lightspeed-ai/agent-client";
 import { schema } from "@lightspeed/platform-db";
 import {
   memberAddSchema,

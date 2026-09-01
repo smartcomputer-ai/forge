@@ -7,7 +7,7 @@
 /// release-scribe drafts the changelog. Everything the universe pages show
 /// is seeded here, with timestamps hung off boot time.
 import type { Environment, GitHubApp, ProfileEnvironment, SecretGrant, SessionOrigin, UniverseSetup } from "@/api";
-import type { BotEventOutcome, ModelConfig, SessionSummaryView } from "@lightspeed/agent-client";
+import type { BotEventOutcome, ModelConfig, SessionSummaryView } from "@lightspeed-ai/agent-client";
 import { appendExchange, appendScriptedRun, closeSession, newSession } from "../engine";
 import type { DemoResponder, DemoStore, DemoToolCall, DemoTurn, SessionRecord, UniverseState } from "../store";
 import {

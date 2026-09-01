@@ -1,6 +1,6 @@
 import { Context } from "@temporalio/activity";
-import type { ChannelProvider } from "@lightspeed/agent-client";
-import type { MaintainChannelTypingInput } from "@lightspeed/agent-client/workflow";
+import type { ChannelProvider } from "@lightspeed-ai/agent-client";
+import type { MaintainChannelTypingInput } from "@lightspeed-ai/agent-client/workflow";
 
 export interface TypingLoopRuntime {
   cancelled: Promise<never>;

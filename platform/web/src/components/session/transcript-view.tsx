@@ -1,5 +1,5 @@
 import { Check, Loader2, ShieldQuestion, TriangleAlert, X } from "lucide-react";
-import type { PendingApprovalView } from "@lightspeed/agent-client";
+import type { PendingApprovalView } from "@lightspeed-ai/agent-client";
 import { Bubble, BubbleContent } from "@/components/ui/bubble";
 import { Button } from "@/components/ui/button";
 import { Marker, MarkerContent, MarkerIcon } from "@/components/ui/marker";

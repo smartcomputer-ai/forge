@@ -1,8 +1,8 @@
-import type { LightspeedClient, OperatorChannelAccountView } from "@lightspeed/agent-client";
+import type { LightspeedClient, OperatorChannelAccountView } from "@lightspeed-ai/agent-client";
 import {
   CHANNEL_CONNECTOR_ACTIVITIES,
   connectorTaskQueue,
-} from "@lightspeed/agent-client/workflow";
+} from "@lightspeed-ai/agent-client/workflow";
 import { Worker, type NativeConnection } from "@temporalio/worker";
 import type { CoreClient } from "../core/client.js";
 import { accountKey } from "../core/identity.js";

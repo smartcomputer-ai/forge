@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type { ChannelInbound, ChannelInboundDecision } from "@lightspeed/agent-client";
+import type { ChannelInbound, ChannelInboundDecision } from "@lightspeed-ai/agent-client";
 import { CoreClient, PRINCIPAL_HEADER, UNIVERSE_HEADER } from "../src/core/client.js";
 import {
   PAIRING_CONFIRMED_REPLY,

@@ -4,7 +4,7 @@ import { Plus, Trash2 } from "lucide-react";
 import type {
   EnvironmentProviderBindingView,
   OperatorEnvironmentProviderView,
-} from "@lightspeed/agent-client";
+} from "@lightspeed-ai/agent-client";
 import { api } from "@/api";
 import {
   AlertDialog,
