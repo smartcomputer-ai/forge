@@ -997,7 +997,7 @@ impl SessionStore for PgStore {
         .bind(
             checkpoint
                 .lineage_source_seq
-                .map(|seq| event_seq_to_i64(seq))
+                .map(event_seq_to_i64)
                 .transpose()?,
         )
         .bind(u64_to_i64(checkpoint.byte_len, "checkpoint byte length")?)

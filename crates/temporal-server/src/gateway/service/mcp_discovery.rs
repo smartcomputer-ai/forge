@@ -118,6 +118,11 @@ pub(crate) struct HttpMcpToolDiscoverer {
     timeout: Duration,
 }
 
+pub(crate) struct McpToolCallRequest {
+    pub tool_name: String,
+    pub arguments: serde_json::Map<String, Value>,
+}
+
 #[derive(Clone, Debug, Default)]
 pub(crate) struct ConfiguratorTrustedHeaderPolicy {
     endpoint: Option<Arc<str>>,
@@ -616,8 +621,7 @@ impl HttpMcpToolDiscoverer {
         trusted_universe: Option<uuid::Uuid>,
         allow_private_network: bool,
         limits: McpToolDiscoveryLimits,
-        tool_name: String,
-        arguments: serde_json::Map<String, Value>,
+        request: McpToolCallRequest,
     ) -> Result<CallToolResult, McpToolDiscoveryFailure> {
         let endpoint = Url::parse(server_url)
             .map_err(|_| failure(FailureKind::InvalidResponse, "MCP endpoint URL is invalid"))?;
@@ -655,7 +659,9 @@ impl HttpMcpToolDiscoverer {
                     .unwrap_or_else(|| map_initialize_error(error, ResponseOperation::ToolCall))
             })?;
             let result = service
-                .call_tool(CallToolRequestParams::new(tool_name).with_arguments(arguments))
+                .call_tool(
+                    CallToolRequestParams::new(request.tool_name).with_arguments(request.arguments),
+                )
                 .await
                 .map_err(|error| {
                     diagnostics

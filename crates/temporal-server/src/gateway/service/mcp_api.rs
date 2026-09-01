@@ -346,37 +346,6 @@ fn api_execution(value: mcp::McpExecution) -> api::RemoteMcpExecution {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn search_meta_tools_are_not_strict_functions() {
-        let blobs = engine::storage::InMemoryBlobStore::new();
-        let tool = search_meta_tool(
-            &blobs,
-            "mcp_call",
-            "Call a remote MCP tool".to_owned(),
-            serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "arguments": {"type": "object"}
-                },
-                "required": ["arguments"],
-                "additionalProperties": false
-            }),
-            false,
-        )
-        .await
-        .expect("meta-tool");
-
-        let engine::ToolKind::Function(function) = tool.kind else {
-            panic!("MCP search meta-tool must be a function");
-        };
-        assert_eq!(function.strict, Some(false));
-    }
-}
-
 fn engine_execution(value: mcp::McpExecution) -> engine::RemoteMcpExecution {
     match value {
         mcp::McpExecution::Provider => engine::RemoteMcpExecution::Provider,
@@ -571,5 +540,36 @@ fn api_status(value: mcp::McpServerStatus) -> api::McpServerStatus {
         mcp::McpServerStatus::NeedsAuthConfig => api::McpServerStatus::NeedsAuthConfig,
         mcp::McpServerStatus::Unverified => api::McpServerStatus::Unverified,
         mcp::McpServerStatus::Disabled => api::McpServerStatus::Disabled,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn search_meta_tools_are_not_strict_functions() {
+        let blobs = engine::storage::InMemoryBlobStore::new();
+        let tool = search_meta_tool(
+            &blobs,
+            "mcp_call",
+            "Call a remote MCP tool".to_owned(),
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "arguments": {"type": "object"}
+                },
+                "required": ["arguments"],
+                "additionalProperties": false
+            }),
+            false,
+        )
+        .await
+        .expect("meta-tool");
+
+        let engine::ToolKind::Function(function) = tool.kind else {
+            panic!("MCP search meta-tool must be a function");
+        };
+        assert_eq!(function.strict, Some(false));
     }
 }

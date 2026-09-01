@@ -88,7 +88,7 @@ use api::{
     SkillActivationSource as ApiSkillActivationSource,
 };
 use api_projection::{
-    CoreAgentProjector, ProjectSession, api_kind_from_str, api_run_id, api_steering_id,
+    CoreAgentProjector, ProjectRun, ProjectSession, api_kind_from_str, api_run_id, api_steering_id,
     core_run_status_to_api_status, decode_stored_entry, event_cursor, event_page_limit,
     map_session_store_error, parse_api_run_id, project_context_entry_inputs,
 };
@@ -1761,18 +1761,23 @@ impl GatewayAgentApi {
         let metadata = run_projection_metadata(&loaded.state, run_id)
             .ok_or_else(|| AgentApiError::not_found(format!("run not found: {run_id}")))?;
         let entries = self
-            .read_run_interval(&loaded.record, run_id, metadata.first_seq, metadata.terminal_seq)
+            .read_run_interval(
+                &loaded.record,
+                run_id,
+                metadata.first_seq,
+                metadata.terminal_seq,
+            )
             .await?;
         self.projector()
-            .project_run_with_metadata(
-                &entries,
+            .project_run_with_metadata(ProjectRun {
+                entries: &entries,
                 run_id,
-                metadata.status,
-                metadata.source,
-                metadata.started_at_ms,
-                metadata.completed_at_ms,
-                metadata.usage,
-            )
+                status: metadata.status,
+                source: metadata.source,
+                started_at_ms: metadata.started_at_ms,
+                completed_at_ms: metadata.completed_at_ms,
+                usage: metadata.usage,
+            })
             .await
     }
 

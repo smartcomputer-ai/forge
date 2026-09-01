@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 use anyhow::{Context, Result, anyhow, bail};
 use api::{ContextEntryKindView, ContextEntryView, ContextMessageRoleView, RunStatus};
 use api_projection::{
-    CoreAgentProjector, MAX_EVENT_PAGE_LIMIT, read_all_session_entries, started_run_id,
+    CoreAgentProjector, MAX_EVENT_PAGE_LIMIT, ProjectRun, read_all_session_entries, started_run_id,
 };
 use async_trait::async_trait;
 use casefile::{EvalCase, FileExpectation, SetupFile, load_cases};
@@ -576,6 +576,15 @@ struct EvalRuntime {
     diagnostics: Arc<LlmDiagnostics>,
 }
 
+struct EvalRunProjection<'a> {
+    run_id: engine::RunId,
+    status: engine::RunStatus,
+    source: &'a engine::RunSource,
+    started_at_ms: Option<u64>,
+    completed_at_ms: Option<u64>,
+    usage: Option<&'a engine::LlmUsage>,
+}
+
 impl EvalRuntime {
     async fn start_session(&self, session_id: &SessionId) -> Result<()> {
         self.sessions
@@ -645,20 +654,21 @@ impl EvalRuntime {
             .or_else(|| outcome.state.runs.completed.last().map(|run| run.run_id))
             .or_else(|| outcome.state.runs.active.as_ref().map(|run| run.run_id))
             .ok_or_else(|| anyhow!("eval request did not start a run"))?;
-        let (status, source, started_at_ms, completed_at_ms, usage) = if let Some(run) = outcome
+        let projection = if let Some(run) = outcome
             .state
             .runs
             .completed
             .iter()
             .find(|run| run.run_id == run_id)
         {
-            (
-                run.status,
-                &run.source,
-                run.started_at_ms,
-                Some(run.completed_at_ms),
-                run.usage.as_ref(),
-            )
+            EvalRunProjection {
+                run_id,
+                status: run.status,
+                source: &run.source,
+                started_at_ms: run.started_at_ms,
+                completed_at_ms: Some(run.completed_at_ms),
+                usage: run.usage.as_ref(),
+            }
         } else if let Some(run) = outcome
             .state
             .runs
@@ -666,26 +676,18 @@ impl EvalRuntime {
             .as_ref()
             .filter(|run| run.run_id == run_id)
         {
-            (
-                run.status,
-                &run.source,
-                run.started_at_ms,
-                None,
-                run.usage.as_ref(),
-            )
+            EvalRunProjection {
+                run_id,
+                status: run.status,
+                source: &run.source,
+                started_at_ms: run.started_at_ms,
+                completed_at_ms: None,
+                usage: run.usage.as_ref(),
+            }
         } else {
             bail!("eval run {run_id} has no reducer metadata");
         };
-        self.project_run(
-            session_id,
-            run_id,
-            status,
-            source,
-            started_at_ms,
-            completed_at_ms,
-            usage,
-        )
-        .await
+        self.project_run(session_id, projection).await
     }
 
     async fn drive(
@@ -740,12 +742,7 @@ impl EvalRuntime {
     async fn project_run(
         &self,
         session_id: &SessionId,
-        run_id: engine::RunId,
-        status: engine::RunStatus,
-        source: &engine::RunSource,
-        started_at_ms: Option<u64>,
-        completed_at_ms: Option<u64>,
-        usage: Option<&engine::LlmUsage>,
+        projection: EvalRunProjection<'_>,
     ) -> Result<api::RunView> {
         let entries = read_all_session_entries(
             self.sessions.as_ref(),
@@ -755,15 +752,15 @@ impl EvalRuntime {
         .await
         .map_err(api_error)?;
         CoreAgentProjector::new(self.blobs.as_ref())
-            .project_run_with_metadata(
-                &entries,
-                run_id,
-                api_projection::core_run_status_to_api_status(status),
-                source,
-                started_at_ms,
-                completed_at_ms,
-                usage,
-            )
+            .project_run_with_metadata(ProjectRun {
+                entries: &entries,
+                run_id: projection.run_id,
+                status: api_projection::core_run_status_to_api_status(projection.status),
+                source: projection.source,
+                started_at_ms: projection.started_at_ms,
+                completed_at_ms: projection.completed_at_ms,
+                usage: projection.usage,
+            })
             .await
             .map_err(api_error)
     }

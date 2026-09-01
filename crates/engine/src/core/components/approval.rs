@@ -384,8 +384,9 @@ mod tests {
         assert_eq!(run.status, RunStatus::Parked);
         assert_eq!(run.pending_approvals().count(), 1);
 
-        let duplicate = apply_approval_event(&mut state, &decide(1, ApprovalDecision::Rejected), 10)
-            .expect_err("approval is single use");
+        let duplicate =
+            apply_approval_event(&mut state, &decide(1, ApprovalDecision::Rejected), 10)
+                .expect_err("approval is single use");
         assert!(matches!(duplicate, DomainError::InvariantViolation(_)));
 
         apply_approval_event(&mut state, &decide(2, ApprovalDecision::Rejected), 11)

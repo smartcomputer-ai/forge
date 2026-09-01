@@ -51,6 +51,16 @@ pub struct ProjectSession<'a> {
     pub run_cursor: Option<RunId>,
 }
 
+pub struct ProjectRun<'a> {
+    pub entries: &'a [CoreAgentEntry],
+    pub run_id: RunId,
+    pub status: ApiRunStatus,
+    pub source: &'a RunSource,
+    pub started_at_ms: Option<u64>,
+    pub completed_at_ms: Option<u64>,
+    pub usage: Option<&'a engine::LlmUsage>,
+}
+
 pub struct CoreAgentProjector<'a> {
     blobs: &'a dyn BlobStore,
 }
@@ -146,12 +156,11 @@ impl<'a> CoreAgentProjector<'a> {
         candidates.sort_by_key(|run| std::cmp::Reverse(run.id()));
         let has_older_runs = candidates.len() > limit;
         candidates.truncate(limit);
-        let runs_with_ids = try_join_all(
-            candidates
-                .into_iter()
-                .map(|run| async move { Ok((run.id(), self.run_state_summary(state, run).await?)) }),
-        )
-        .await?;
+        let runs_with_ids =
+            try_join_all(candidates.into_iter().map(|run| async move {
+                Ok((run.id(), self.run_state_summary(state, run).await?))
+            }))
+            .await?;
         let last_run_id = runs_with_ids.last().map(|(id, _)| *id);
         let runs = runs_with_ids
             .into_iter()
@@ -278,34 +287,30 @@ impl<'a> CoreAgentProjector<'a> {
     /// Event pages never need to repeat lifecycle events or generation facts.
     pub async fn project_run_with_metadata(
         &self,
-        entries: &[CoreAgentEntry],
-        run_id: RunId,
-        status: ApiRunStatus,
-        source: &RunSource,
-        started_at_ms: Option<u64>,
-        completed_at_ms: Option<u64>,
-        usage: Option<&engine::LlmUsage>,
+        params: ProjectRun<'_>,
     ) -> Result<RunView, AgentApiError> {
-        let projection = CoreAgentProjection::new(entries);
-        let context_entries = projection.context_entries_for_run(run_id);
+        let projection = CoreAgentProjection::new(params.entries);
+        let context_entries = projection.context_entries_for_run(params.run_id);
         let projected_entries = self.project_context_entries(&context_entries).await?;
 
         Ok(RunView {
-            id: api_run_id(run_id),
-            status,
-            started_at_ms,
-            completed_at_ms,
-            source: match source {
+            id: api_run_id(params.run_id),
+            status: params.status,
+            started_at_ms: params.started_at_ms,
+            completed_at_ms: params.completed_at_ms,
+            source: match params.source {
                 RunSource::Input { input } => RunViewSource::Input {
                     items: self.project_input_entries(input).await?,
                 },
             },
             entries: projected_entries,
             tool_batches: self
-                .project_tool_batches_for_run(&projection, &context_entries, run_id)
+                .project_tool_batches_for_run(&projection, &context_entries, params.run_id)
                 .await?,
-            usage: usage.map(llm_usage_to_api),
-            pending_approvals: self.pending_approvals_for_run(&projection, run_id).await?,
+            usage: params.usage.map(llm_usage_to_api),
+            pending_approvals: self
+                .pending_approvals_for_run(&projection, params.run_id)
+                .await?,
         })
     }
 
@@ -2700,8 +2705,7 @@ mod tests {
         );
         let entries = vec![entry(1, vec![first]), entry(2, vec![second])];
 
-        let projected =
-            CoreAgentProjection::new(&entries).context_entries_for_run(RunId::new(1));
+        let projected = CoreAgentProjection::new(&entries).context_entries_for_run(RunId::new(1));
 
         assert_eq!(projected.len(), 1);
         assert_eq!(projected[0].entry_id, ContextEntryId::new(1));

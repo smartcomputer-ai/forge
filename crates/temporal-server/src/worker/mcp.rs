@@ -21,7 +21,7 @@ use url::Url;
 
 use crate::gateway::service::mcp_discovery::{
     ConfiguratorTrustedHeaderPolicy, DiscoveredMcpInventory, HttpMcpToolDiscoverer,
-    McpToolDiscoverer,
+    McpToolCallRequest, McpToolDiscoverer,
 };
 
 pub enum NativeMcpExecutionOutcome {
@@ -57,6 +57,9 @@ pub struct NativeMcpRuntime {
 pub const MCP_INVENTORY_CACHE_TTL: Duration = Duration::from_secs(300);
 /// Short fallback while Lightspeed does not maintain notification subscriptions.
 pub const MCP_LIST_CHANGED_CACHE_TTL: Duration = Duration::from_secs(60);
+
+type InventoryCacheKey = (String, u64);
+type InventoryLocks = HashMap<InventoryCacheKey, Arc<Mutex<()>>>;
 
 #[derive(Clone, Debug, Default)]
 pub struct McpPrivateNetworkPolicy {
@@ -130,8 +133,8 @@ pub struct NativeMcpInventoryResolver {
     private_networks: McpPrivateNetworkPolicy,
     trusted_header: ConfiguratorTrustedHeaderPolicy,
     universe_id: uuid::Uuid,
-    cache: Arc<Mutex<HashMap<(String, u64), CachedInventory>>>,
-    locks: Arc<Mutex<HashMap<(String, u64), Arc<Mutex<()>>>>>,
+    cache: Arc<Mutex<HashMap<InventoryCacheKey, CachedInventory>>>,
+    locks: Arc<Mutex<InventoryLocks>>,
     ttl: Duration,
     list_changed_ttl: Duration,
 }
@@ -386,15 +389,14 @@ impl NativeMcpRuntime {
                 matches.push((rank, target.server_id.clone(), tool));
             }
         }
-        if selected_server.is_some()
-            && matches.is_empty()
+        if matches.is_empty()
+            && let Some(selected_server) = selected_server
             && !targets
                 .iter()
-                .any(|target| Some(target.server_id.as_str()) == selected_server)
+                .any(|target| target.server_id == selected_server)
         {
             return Err(format!(
-                "unknown active search-exposure MCP server {}",
-                selected_server.expect("present")
+                "unknown active search-exposure MCP server {selected_server}"
             ));
         }
         matches.sort_by(|left, right| {
@@ -533,8 +535,10 @@ impl NativeMcpRuntime {
                 trusted_universe,
                 allow_private,
                 mcp::McpToolDiscoveryLimits::default(),
-                tool_name.to_owned(),
-                arguments,
+                McpToolCallRequest {
+                    tool_name: tool_name.to_owned(),
+                    arguments,
+                },
             )
             .await
             .map_err(|error| error.to_string())?;
