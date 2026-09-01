@@ -1015,31 +1015,9 @@ impl GatewayAgentApi {
             AgentApiError::invalid_request(format!("session is not open: {session_id}"))
         })?;
         let run_config = api_config::run_config_for_start(session_config, config)?;
-        let source = match source {
-            RunStartSource::Input { items } => engine::RunRequestSource::Input {
-                input: run_input_from_api(self.store.as_ref(), &items).await?,
-            },
-            RunStartSource::Context { keys } => {
-                if keys.is_empty() {
-                    return Err(AgentApiError::invalid_request(
-                        "session/runs/start source=context requires at least one key",
-                    ));
-                }
-                let mut parsed = Vec::with_capacity(keys.len());
-                let mut seen = BTreeSet::new();
-                for key in keys {
-                    let key = ContextEntryKey::try_new(key).map_err(|error| {
-                        AgentApiError::invalid_request(format!("invalid context key: {error}"))
-                    })?;
-                    if !seen.insert(key.clone()) {
-                        return Err(AgentApiError::invalid_request(format!(
-                            "duplicate trigger context key: {key}"
-                        )));
-                    }
-                    parsed.push(key);
-                }
-                engine::RunRequestSource::Context { keys: parsed }
-            }
+        let RunStartSource::Input { items } = source;
+        let source = engine::RunRequestSource::Input {
+            input: run_input_from_api(self.store.as_ref(), &items).await?,
         };
         if let Some(existing) = existing_run_submission(
             &loaded.state,

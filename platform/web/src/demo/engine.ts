@@ -293,14 +293,12 @@ export function startRun(
     const existing = session.submissions.get(input.submissionId);
     if (existing) return existing;
   }
-  const source = input.source?.type === "context"
-    ? input.source
-    : {
-        type: "input" as const,
-        items: input.source?.items ?? [{ type: "text" as const, text: input.text }],
-        preview: input.text,
-        previewTruncated: false,
-      };
+  const source = {
+    type: "input" as const,
+    items: input.source?.items ?? [{ type: "text" as const, text: input.text }],
+    preview: input.text,
+    previewTruncated: false,
+  };
   const run: DemoRun = {
     id: store.nextId("run"),
     status: "queued",

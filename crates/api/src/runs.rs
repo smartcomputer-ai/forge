@@ -74,7 +74,6 @@ pub struct RunTerminalNotificationInput {
 )]
 pub enum RunStartSource {
     Input { items: Vec<InputItem> },
-    Context { keys: Vec<String> },
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

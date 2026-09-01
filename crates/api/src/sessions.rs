@@ -1250,7 +1250,6 @@ pub enum SessionEventKindView {
 )]
 pub enum RunAcceptedSourceView {
     Input { entries: Vec<ContextEntryInputView> },
-    Context { keys: Vec<String> },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

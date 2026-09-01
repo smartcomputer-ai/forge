@@ -4,13 +4,20 @@
 
 - Review-fix pass 2026-09-01, after implementation review: run detail became
   one complete projection (stateful run projection must never be paged),
-  context-sourced runs carry blob-resolved trigger items, channel delivery
-  reads full reply bodies from CAS and tolerates unknown runs, the executing
-  run is a dedicated `activeRun` session fact so steering never depends on a
-  page window, `blobs/read` is exempt from the response byte budget, cloned
-  sessions checkpoint correctly, approval summaries carry the real request
-  time, CLI steering/interrupt track runs from the event tail, and the
-  Configurator emits one text representation.
+  channel delivery reads full reply bodies from CAS and tolerates unknown
+  runs, the executing run is a dedicated `activeRun` session fact so steering
+  never depends on a page window, `blobs/read` is exempt from the response
+  byte budget, cloned sessions checkpoint correctly, approval summaries carry
+  the real request time, CLI steering/interrupt track runs from the event
+  tail, and the Configurator emits one text representation.
+- Context-sourced runs removed 2026-09-01: `source=context` run starts had no
+  first-party caller — bot deliveries start input runs and ambient listening
+  is `context/append` — while the machinery (trigger validation, resolved
+  trigger refs, dedicated view variants) taxed every run-source change and
+  produced the pre-acceptance projection hole. Every run now starts from
+  explicit input; referencing an existing document is an `InputItem::TextRef`
+  at the same blob, and run-to-entry provenance can return later as an
+  optional annotation on input runs, not a distinct source kind.
 - Implemented 2026-09-01. Session bootstrap and gateway state reads now use
   validated CAS-backed reducer checkpoints plus an authoritative fenced tail;
   PostgreSQL checkpoint pointers advance monotonically at schema revision 11.
@@ -149,11 +156,6 @@ new shape without any migration of events:
   and `source_ref` — the `BlobRef` of the run's input — alongside the
   existing `output_ref` and failure facts. Every value comes from events the
   reducer already applies.
-- Context-sourced runs resolve their triggers to blob references at
-  acceptance planning: `RunSourceContextTrigger` carries the trigger entry's
-  `content_ref` and media type, so run detail renders the input the run
-  responded to without scanning pre-acceptance events (which carry no run
-  join and precede `first_seq`).
 - Approval records retain `requested_at_ms` from the request event, so
   summary and detail projections report the same request time without an
   event rescan.

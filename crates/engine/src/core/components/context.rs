@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     BlobRef, CompactionPolicy, ContextEntryKey, ContextItemId, CoreAgentEvent,
     CoreAgentEventProposal, CoreAgentJoins, CoreAgentState, CoreAgentStatus, DomainError,
-    PlanningError, ProviderApiKind, RunId, RunSource, RunSourceContextTrigger, RunStatus, SkillId,
+    PlanningError, ProviderApiKind, RunId, RunSource, RunStatus, SkillId,
     SteeringId, ToolBatchId, ToolCallId, ToolName, TurnId,
 };
 
@@ -622,38 +622,6 @@ pub(crate) fn validate_context_key_exists(
     }
 }
 
-pub(crate) fn validate_run_trigger_context_keys(
-    state: &CoreAgentState,
-    keys: &[ContextEntryKey],
-) -> Result<Vec<RunSourceContextTrigger>, DomainError> {
-    if keys.is_empty() {
-        return Err(DomainError::InvariantViolation(
-            "run trigger context keys must not be empty".to_owned(),
-        ));
-    }
-    let mut seen = BTreeSet::new();
-    let mut triggers = Vec::with_capacity(keys.len());
-    for key in keys {
-        if !seen.insert(key.clone()) {
-            return Err(DomainError::InvariantViolation(format!(
-                "duplicate run trigger context key: {key}"
-            )));
-        }
-        let Some(entry) = current_key_entry(state, key) else {
-            return Err(DomainError::InvariantViolation(format!(
-                "run trigger context key {key} does not exist"
-            )));
-        };
-        triggers.push(RunSourceContextTrigger {
-            key: key.clone(),
-            entry_id: entry.entry_id,
-            content_ref: Some(entry.content_ref.clone()),
-            media_type: entry.media_type.clone(),
-        });
-    }
-    Ok(triggers)
-}
-
 pub(crate) fn run_input_context_keys(
     run_id: RunId,
     input_len: usize,
@@ -942,9 +910,7 @@ fn missing_run_input_entries(state: &CoreAgentState) -> Result<Vec<ContextEntry>
     let Some(active_run) = state.runs.active.as_ref() else {
         return Ok(Vec::new());
     };
-    let RunSource::Input { input } = &active_run.source else {
-        return Ok(Vec::new());
-    };
+    let RunSource::Input { input } = &active_run.source;
     if active_run.input_entry_ids.len() >= input.len() {
         return Ok(Vec::new());
     }
@@ -1457,12 +1423,7 @@ fn record_entry_materialization(
         } => {
             let active_run = crate::core::components::run::active_run_mut(state, *run_id)?;
             let index = *input_index as usize;
-            let RunSource::Input { input } = &active_run.source else {
-                return Err(DomainError::InvariantViolation(format!(
-                    "run input context entry {} references context-triggered run {}",
-                    entry.entry_id, run_id
-                )));
-            };
+            let RunSource::Input { input } = &active_run.source;
             let Some(expected) = input.get(index) else {
                 return Err(DomainError::InvariantViolation(format!(
                     "run input context entry {} references missing input index {}",

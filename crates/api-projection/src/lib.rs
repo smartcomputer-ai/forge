@@ -266,12 +266,6 @@ impl<'a> CoreAgentProjector<'a> {
                     preview_truncated,
                 })
             }
-            Some(RunSource::Context { triggers }) => Ok(RunSummarySourceView::Context {
-                keys: triggers
-                    .iter()
-                    .map(|trigger| trigger.key.as_str().to_owned())
-                    .collect(),
-            }),
             None => Ok(RunSummarySourceView::Input {
                 content_ref: None,
                 preview: None,
@@ -293,7 +287,7 @@ impl<'a> CoreAgentProjector<'a> {
         usage: Option<&engine::LlmUsage>,
     ) -> Result<RunView, AgentApiError> {
         let projection = CoreAgentProjection::new(entries);
-        let context_entries = projection.context_entries_for_run_with_source(run_id, source);
+        let context_entries = projection.context_entries_for_run(run_id);
         let projected_entries = self.project_context_entries(&context_entries).await?;
 
         Ok(RunView {
@@ -304,9 +298,6 @@ impl<'a> CoreAgentProjector<'a> {
             source: match source {
                 RunSource::Input { input } => RunViewSource::Input {
                     items: self.project_input_entries(input).await?,
-                },
-                RunSource::Context { triggers } => RunViewSource::Context {
-                    items: self.project_context_trigger_items(triggers).await?,
                 },
             },
             entries: projected_entries,
@@ -457,36 +448,6 @@ impl<'a> CoreAgentProjector<'a> {
         let full = self.read_blob_text(content_ref).await?;
         let truncated = full.len() > MAX_INLINE_TEXT_BYTES;
         Ok((truncate_utf8(&full, MAX_INLINE_TEXT_BYTES), truncated))
-    }
-
-    /// Project a context-sourced run's triggers from the blob references the
-    /// engine resolved at acceptance; no pre-acceptance events are needed.
-    async fn project_context_trigger_items(
-        &self,
-        triggers: &[engine::RunSourceContextTrigger],
-    ) -> Result<Vec<api::RunContextTriggerView>, AgentApiError> {
-        try_join_all(triggers.iter().map(|trigger| async move {
-            let (text, text_truncated) = match trigger.content_ref.as_ref() {
-                Some(content_ref)
-                    if is_text_message_media_type(trigger.media_type.as_deref()) =>
-                {
-                    let (text, truncated) = self.bounded_blob_text(content_ref).await?;
-                    (Some(text), truncated)
-                }
-                _ => (None, false),
-            };
-            Ok(api::RunContextTriggerView {
-                key: trigger.key.as_str().to_owned(),
-                content_ref: trigger
-                    .content_ref
-                    .as_ref()
-                    .map(|content_ref| content_ref.as_str().to_owned()),
-                media_type: trigger.media_type.clone(),
-                text,
-                text_truncated,
-            })
-        }))
-        .await
     }
 
     /// Project active context entries, resolving `supersededBy` across them.
@@ -678,12 +639,6 @@ impl<'a> CoreAgentProjector<'a> {
                     source: match &accepted.source {
                         RunSource::Input { input } => RunAcceptedSourceView::Input {
                             entries: project_context_entry_inputs(input),
-                        },
-                        RunSource::Context { triggers } => RunAcceptedSourceView::Context {
-                            keys: triggers
-                                .iter()
-                                .map(|trigger| trigger.key.as_str().to_owned())
-                                .collect(),
                         },
                     },
                 }),
@@ -1349,18 +1304,8 @@ impl<'a> CoreAgentProjection<'a> {
         self.entries
     }
 
-    /// Select entries for a run using its reducer-owned accepted source.
-    pub fn context_entries_for_run_with_source(
-        &self,
-        run_id: RunId,
-        source: &'a RunSource,
-    ) -> Vec<&'a ContextEntry> {
-        let mut trigger_entry_ids = BTreeSet::new();
-        if let RunSource::Context { triggers } = source {
-            for trigger in triggers {
-                trigger_entry_ids.insert(trigger.entry_id);
-            }
-        }
+    /// Select committed context entries belonging to a run.
+    pub fn context_entries_for_run(&self, run_id: RunId) -> Vec<&'a ContextEntry> {
         let mut seen = BTreeSet::new();
         self.entries
             .iter()
@@ -1370,10 +1315,11 @@ impl<'a> CoreAgentProjection<'a> {
                 else {
                     return None;
                 };
-                Some(entries.iter().filter(|entry| {
-                    context_entry_run_id(entry) == Some(run_id)
-                        || trigger_entry_ids.contains(&entry.entry_id)
-                }))
+                Some(
+                    entries
+                        .iter()
+                        .filter(|entry| context_entry_run_id(entry) == Some(run_id)),
+                )
             })
             .flatten()
             .filter(|entry| seen.insert(entry.entry_id))
@@ -2754,39 +2700,11 @@ mod tests {
         );
         let entries = vec![entry(1, vec![first]), entry(2, vec![second])];
 
-        let source = RunSource::Input { input: Vec::new() };
-        let projected = CoreAgentProjection::new(&entries)
-            .context_entries_for_run_with_source(RunId::new(1), &source);
-
-        assert_eq!(projected.len(), 1);
-        assert_eq!(projected[0].entry_id, ContextEntryId::new(1));
-    }
-
-    #[test]
-    fn context_entries_for_run_prefers_resolved_trigger_entry_ids_over_replaced_keys() {
-        let key = engine::ContextEntryKey::new("message.1");
-        let mut original = context_entry(1, ContextEntrySource::ContextEdit);
-        original.key = Some(key.clone());
-        original.preview = Some("original".to_owned());
-        let mut replacement = context_entry(2, ContextEntrySource::ContextEdit);
-        replacement.key = Some(key.clone());
-        replacement.preview = Some("replacement".to_owned());
-        let run_id = RunId::new(7);
-        let entries = vec![entry(1, vec![original]), entry(3, vec![replacement])];
-        let source = RunSource::Context {
-            triggers: vec![engine::RunSourceContextTrigger {
-                key,
-                entry_id: ContextEntryId::new(1),
-                content_ref: None,
-                media_type: None,
-            }],
-        };
         let projected =
-            CoreAgentProjection::new(&entries).context_entries_for_run_with_source(run_id, &source);
+            CoreAgentProjection::new(&entries).context_entries_for_run(RunId::new(1));
 
         assert_eq!(projected.len(), 1);
         assert_eq!(projected[0].entry_id, ContextEntryId::new(1));
-        assert_eq!(projected[0].preview.as_deref(), Some("original"));
     }
 
     #[test]

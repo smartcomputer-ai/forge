@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     ActiveToolBatch, ApprovalId, ApprovalRecord, ApprovalStatus, BlobRef, CompletedToolBatch,
-    ContextEntryId, ContextEntryInput, ContextEntryKey, CoreAgentEvent, CoreAgentEventProposal,
+    ContextEntryId, ContextEntryInput, CoreAgentEvent, CoreAgentEventProposal,
     CoreAgentJoins, CoreAgentState, CoreAgentStatus, DomainError, EventSeq, LlmUsage,
     PlanningError, PromiseId, RunConfig, RunId, SteeringId, SubmissionId, ToolBatchId, ToolCallId,
     TurnId, TurnOutcome, TurnState, TurnStatus,
@@ -273,49 +273,25 @@ pub struct RunTerminalNotifyIntent {
     pub token: String,
 }
 
+/// Every run starts from explicit input entries. The tagged single-variant
+/// encoding keeps the wire shape (`{"type":"input",...}`) stable for any
+/// future source kind without a migration of stored accepted events.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "type")]
 pub enum RunRequestSource {
     Input { input: Vec<ContextEntryInput> },
-    Context { keys: Vec<ContextEntryKey> },
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RunSourceContextTrigger {
-    pub key: ContextEntryKey,
-    pub entry_id: ContextEntryId,
-    /// Resolved from active context when the run is accepted, so run readers
-    /// can render trigger content without scanning pre-acceptance events.
-    /// References only; resolved content never enters reducer state.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub content_ref: Option<BlobRef>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub media_type: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "type")]
 pub enum RunSource {
-    Input {
-        input: Vec<ContextEntryInput>,
-    },
-    Context {
-        triggers: Vec<RunSourceContextTrigger>,
-    },
+    Input { input: Vec<ContextEntryInput> },
 }
 
 impl RunRequestSource {
     pub fn input(&self) -> &[ContextEntryInput] {
         match self {
             Self::Input { input } => input,
-            Self::Context { .. } => &[],
-        }
-    }
-
-    pub fn context_keys(&self) -> &[ContextEntryKey] {
-        match self {
-            Self::Input { .. } => &[],
-            Self::Context { keys } => keys,
         }
     }
 }
@@ -324,46 +300,21 @@ impl RunSource {
     pub fn input(&self) -> &[ContextEntryInput] {
         match self {
             Self::Input { input } => input,
-            Self::Context { .. } => &[],
-        }
-    }
-
-    pub fn context_triggers(&self) -> &[RunSourceContextTrigger] {
-        match self {
-            Self::Input { .. } => &[],
-            Self::Context { triggers } => triggers,
-        }
-    }
-
-    pub fn context_keys(&self) -> Vec<ContextEntryKey> {
-        match self {
-            Self::Input { .. } => Vec::new(),
-            Self::Context { triggers } => {
-                triggers.iter().map(|trigger| trigger.key.clone()).collect()
-            }
         }
     }
 
     /// Whether this accepted source matches a client-requested source.
-    /// Context sources compare by trigger keys; resolved entry ids are an
-    /// admission-time snapshot, not part of the request identity.
     pub fn matches_request(&self, request: &RunRequestSource) -> bool {
         match (self, request) {
             (Self::Input { input }, RunRequestSource::Input { input: requested }) => {
                 input == requested
             }
-            (Self::Context { triggers }, RunRequestSource::Context { keys: requested }) => triggers
-                .iter()
-                .map(|trigger| &trigger.key)
-                .eq(requested.iter()),
-            _ => false,
         }
     }
 
     pub fn matches_message_input(&self, requested: &[ContextEntryInput]) -> bool {
         match self {
             Self::Input { input } => input == requested,
-            Self::Context { .. } => false,
         }
     }
 }
@@ -929,9 +880,6 @@ pub(crate) fn source_request_equivalent(source: &RunSource) -> RunRequestSource 
         RunSource::Input { input } => RunRequestSource::Input {
             input: input.clone(),
         },
-        RunSource::Context { triggers } => RunRequestSource::Context {
-            keys: triggers.iter().map(|trigger| trigger.key.clone()).collect(),
-        },
     }
 }
 
@@ -1024,10 +972,9 @@ fn finish_active_run(
 }
 
 fn compact_terminal_source(mut source: RunSource) -> RunSource {
-    if let RunSource::Input { input } = &mut source {
-        for entry in input {
-            entry.preview = None;
-        }
+    let RunSource::Input { input } = &mut source;
+    for entry in input {
+        entry.preview = None;
     }
     source
 }

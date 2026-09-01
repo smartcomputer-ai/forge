@@ -42,7 +42,7 @@ describe("Streamable HTTP configurator", () => {
     expect(result.structuredContent).toBeUndefined();
     const content = result.content as Array<{ type: string; text: string }>;
     expect(content).toHaveLength(1);
-    expect(JSON.parse(content[0].text)).toEqual({
+    expect(JSON.parse(content[0]?.text ?? "")).toEqual({
       result: { models: [], providers: [] },
       notifications: [],
     });

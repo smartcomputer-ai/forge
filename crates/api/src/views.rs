@@ -75,9 +75,6 @@ pub enum RunSummarySourceView {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         preview_truncated: bool,
     },
-    Context {
-        keys: Vec<String>,
-    },
 }
 
 /// Managed-session reads use the same immutable declaration document accepted
@@ -185,25 +182,6 @@ pub struct LlmUsageView {
 )]
 pub enum RunViewSource {
     Input { items: Vec<InputItem> },
-    Context { items: Vec<RunContextTriggerView> },
-}
-
-/// A context entry that triggered a context-sourced run, carrying the blob
-/// reference resolved at acceptance so run detail can render the trigger
-/// without scanning pre-acceptance events. `text` is a bounded inline body;
-/// the full content stays blob-addressed.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct RunContextTriggerView {
-    pub key: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub content_ref: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub media_type: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub text: Option<String>,
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub text_truncated: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

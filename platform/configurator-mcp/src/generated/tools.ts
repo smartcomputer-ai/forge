@@ -2653,25 +2653,6 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                 "items"
               ],
               "type": "object"
-            },
-            {
-              "properties": {
-                "keys": {
-                  "items": {
-                    "type": "string"
-                  },
-                  "type": "array"
-                },
-                "type": {
-                  "const": "context",
-                  "type": "string"
-                }
-              },
-              "required": [
-                "type",
-                "keys"
-              ],
-              "type": "object"
             }
           ]
         },

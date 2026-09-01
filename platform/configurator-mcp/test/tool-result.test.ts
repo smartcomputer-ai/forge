@@ -16,7 +16,7 @@ describe("single-representation MCP tool results", () => {
     expect(result.content).toHaveLength(1);
     expect(result.content[0]).toMatchObject({ type: "text" });
     expect(
-      JSON.parse((result.content[0] as { text: string }).text),
+      JSON.parse((result.content[0] as unknown as { text: string }).text),
     ).toEqual(outcome);
     // The duplication that once doubled a large session read: the same
     // outcome must not also travel as structuredContent.

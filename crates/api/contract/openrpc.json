@@ -11920,25 +11920,6 @@
               "entries"
             ],
             "type": "object"
-          },
-          {
-            "properties": {
-              "keys": {
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              "type": {
-                "const": "context",
-                "type": "string"
-              }
-            },
-            "required": [
-              "type",
-              "keys"
-            ],
-            "type": "object"
           }
         ]
       },
@@ -12005,39 +11986,6 @@
         },
         "required": [
           "run"
-        ],
-        "type": "object"
-      },
-      "RunContextTriggerView": {
-        "description": "A context entry that triggered a context-sourced run, carrying the blob\nreference resolved at acceptance so run detail can render the trigger\nwithout scanning pre-acceptance events. `text` is a bounded inline body;\nthe full content stays blob-addressed.",
-        "properties": {
-          "contentRef": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "key": {
-            "type": "string"
-          },
-          "mediaType": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "text": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "textTruncated": {
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "key"
         ],
         "type": "object"
       },
@@ -12248,25 +12196,6 @@
               "items"
             ],
             "type": "object"
-          },
-          {
-            "properties": {
-              "keys": {
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              "type": {
-                "const": "context",
-                "type": "string"
-              }
-            },
-            "required": [
-              "type",
-              "keys"
-            ],
-            "type": "object"
           }
         ]
       },
@@ -12348,25 +12277,6 @@
             },
             "required": [
               "type"
-            ],
-            "type": "object"
-          },
-          {
-            "properties": {
-              "keys": {
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              "type": {
-                "const": "context",
-                "type": "string"
-              }
-            },
-            "required": [
-              "type",
-              "keys"
             ],
             "type": "object"
           }
@@ -12521,25 +12431,6 @@
               },
               "type": {
                 "const": "input",
-                "type": "string"
-              }
-            },
-            "required": [
-              "type",
-              "items"
-            ],
-            "type": "object"
-          },
-          {
-            "properties": {
-              "items": {
-                "items": {
-                  "$ref": "#/components/schemas/RunContextTriggerView"
-                },
-                "type": "array"
-              },
-              "type": {
-                "const": "context",
                 "type": "string"
               }
             },

@@ -205,33 +205,16 @@ pub fn admit_command(
                 ))
             })?;
             let next_run_id = crate::RunId::new(next_run_id);
-            let source = match request.source {
-                RunRequestSource::Input { input } => {
-                    if input.is_empty() {
-                        return reject(
-                            CommandRejectionKind::InvariantViolation,
-                            "run input must contain at least one entry",
-                        );
-                    }
-                    crate::core::components::context::validate_run_input_entries(&input)
-                        .map_err(command_rejection_from_domain)?;
-                    RunSource::Input { input }
-                }
-                RunRequestSource::Context { keys } => {
-                    let triggers =
-                        crate::core::components::context::validate_run_trigger_context_keys(
-                            state, &keys,
-                        )
-                        .map_err(command_rejection_from_domain)?;
-                    RunSource::Context { triggers }
-                }
-            };
-            if source.input().is_empty() && source.context_triggers().is_empty() {
+            let RunRequestSource::Input { input } = request.source;
+            if input.is_empty() {
                 return reject(
                     CommandRejectionKind::InvariantViolation,
-                    "run source must contain input entries or trigger context keys",
+                    "run input must contain at least one entry",
                 );
             }
+            crate::core::components::context::validate_run_input_entries(&input)
+                .map_err(command_rejection_from_domain)?;
+            let source = RunSource::Input { input };
             let joins = CoreAgentJoins {
                 submission_id: request.submission_id.clone(),
                 run_id: Some(next_run_id),

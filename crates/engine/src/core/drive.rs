@@ -3080,49 +3080,6 @@ mod tests {
     }
 
     #[test]
-    fn context_source_run_acceptance_records_resolved_trigger_entry_ids() {
-        let session_id = SessionId::new("session-a");
-        let mut drive = CoreAgentDrive::from_replayed(session_id, CoreAgentState::new(), None);
-        open_session(&mut drive);
-        let key = ContextEntryKey::new("client.message.1");
-
-        let upsert = drive
-            .admit_command(
-                CoreAgentCommand::UpsertContext {
-                    expected_revision: None,
-                    key: key.clone(),
-                    entry: message_input(ContextMessageRole::User, BlobRef::from_bytes(b"hello")),
-                },
-                20,
-            )
-            .expect("context upsert");
-        commit_action(&mut drive, upsert);
-        let entry_id = drive.state().context.entries[0].entry_id;
-
-        let request = drive
-            .admit_command(
-                CoreAgentCommand::RequestRun(RunRequestCommand {
-                    notify_on_terminal: Vec::new(),
-                    submission_id: None,
-                    source: RunRequestSource::Context {
-                        keys: vec![key.clone()],
-                    },
-                    run_config: run_config(),
-                }),
-                30,
-            )
-            .expect("context source run");
-        commit_action(&mut drive, request);
-
-        let crate::RunSource::Context { triggers } = &drive.state().runs.queued[0].source else {
-            panic!("expected context source");
-        };
-        assert_eq!(triggers.len(), 1);
-        assert_eq!(triggers[0].key, key);
-        assert_eq!(triggers[0].entry_id, entry_id);
-    }
-
-    #[test]
     fn upsert_context_accepts_instruction_entry_with_instruction_key() {
         let session_id = SessionId::new("session-a");
         let mut drive = CoreAgentDrive::from_replayed(session_id, CoreAgentState::new(), None);

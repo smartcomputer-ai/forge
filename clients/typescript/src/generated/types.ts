@@ -245,17 +245,12 @@ export type ApprovalSubjectView = {
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "RunSummarySourceView".
  */
-export type RunSummarySourceView =
-  | {
-      contentRef?: string | null;
-      preview?: string | null;
-      previewTruncated?: boolean;
-      type: "input";
-    }
-  | {
-      keys: string[];
-      type: "context";
-    };
+export type RunSummarySourceView = {
+  contentRef?: string | null;
+  preview?: string | null;
+  previewTruncated?: boolean;
+  type: "input";
+};
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "RunStatus".
@@ -740,15 +735,10 @@ export type SessionEventKindView =
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "RunAcceptedSourceView".
  */
-export type RunAcceptedSourceView =
-  | {
-      entries: ContextEntryInputView[];
-      type: "input";
-    }
-  | {
-      keys: string[];
-      type: "context";
-    };
+export type RunAcceptedSourceView = {
+  entries: ContextEntryInputView[];
+  type: "input";
+};
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "PrincipalKind".
@@ -763,15 +753,10 @@ export type ApprovalDecisionKind = "approve" | "reject";
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "RunViewSource".
  */
-export type RunViewSource =
-  | {
-      items: InputItem[];
-      type: "input";
-    }
-  | {
-      items: RunContextTriggerView[];
-      type: "context";
-    };
+export type RunViewSource = {
+  items: InputItem[];
+  type: "input";
+};
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "InputItem".
@@ -1672,15 +1657,10 @@ export type ProfileSource =
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "RunStartSource".
  */
-export type RunStartSource =
-  | {
-      items: InputItem[];
-      type: "input";
-    }
-  | {
-      keys: string[];
-      type: "context";
-    };
+export type RunStartSource = {
+  items: InputItem[];
+  type: "input";
+};
 
 /**
  * All JSON-RPC wire types of the Lightspeed agent API.
@@ -2392,22 +2372,6 @@ export interface RunView {
    * (`cachedInputTokens / inputTokens`) is the prompt-cache hit rate.
    */
   usage?: LlmUsageView | null;
-}
-/**
- * A context entry that triggered a context-sourced run, carrying the blob
- * reference resolved at acceptance so run detail can render the trigger
- * without scanning pre-acceptance events. `text` is a bounded inline body;
- * the full content stays blob-addressed.
- *
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "RunContextTriggerView".
- */
-export interface RunContextTriggerView {
-  contentRef?: string | null;
-  key: string;
-  mediaType?: string | null;
-  text?: string | null;
-  textTruncated?: boolean;
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
