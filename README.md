@@ -1,12 +1,33 @@
 <p align="center">
-  <img src="docs/images/logo.png" alt="Lightspeed logo" width="100">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/images/ls-logo-2026-v1-ls.svg">
+    <source media="(prefers-color-scheme: light)" srcset="docs/images/ls-logo-2026-v1-ls-light.svg">
+    <img src="docs/images/ls-logo-2026-v1-ls-light.svg" alt="Lightspeed logo" width="92">
+  </picture>
 </p>
 
 # Lightspeed
 
-Lightspeed is a powerful agent harness built for durable workflow engines. It allows you to run complex agents and sub-agents that survive restarts, run for months, and scale to thousands, without needing a dedicated VM for each one.
+<p align="center"><strong>Run thousands of agents. Efficient, durable, auditable.</strong></p>
 
-[Temporal](https://temporal.io/) is fully supported today; others are coming soon: [Restate](https://www.restate.dev/), [Inngest](https://www.inngest.com/), Hatchet, AWS Step Functions, etc. The core is written in Rust. The production data backend is Postgres and optional S3.
+Lightspeed is open-source infrastructure for running long-lived agent fleets in
+production.
+
+It's a frontier-class agent harness that runs as a durable
+workflow, borrows real machines when a task needs one, and stays auditable, tenant-isolated, and cheap when idle.
+
+<p align="center">
+  <a href="https://ls.bot/demo/u/software-factory/bots/implementer" target="_blank" rel="noopener">
+    <img src="docs/images/ls-screenshot-factory.png" alt="Lightspeed software factory with a fleet of specialized bots and an implementer supervising a sub-agent" width="1100">
+  </a>
+</p>
+
+Lightspeed agents and sub-agents survive restarts, run for months, and scale to
+thousands without needing a dedicated VM for each one.
+
+[Temporal](https://temporal.io/) is fully supported today. We plan to support other engines in the future too: [Restate](https://www.restate.dev/), [Inngest](https://www.inngest.com/), Hatchet, AWS Step Functions, etc.
+
+The core is written in Rust. The production data backend is Postgres and optional S3. Frontend is TS/React.
 
 ## Why?
 
@@ -15,7 +36,7 @@ Lightspeed is a powerful agent harness built for durable workflow engines. It al
 Concretely, that means the harness—the agent loop, context management, session state—runs as a lightweight durable workflow, while OS-level work (shells, code execution, full file systems) happens on machines the agent attaches to only when a task needs them. The result: thousands of agents managed by a single worker node.
 
 <p align="center">
-  <img src="docs/images/readme-why-overview.png" alt="Comparison: on the left, one OS per agent — four large VMs each hosting a single tiny agent; on the right, Lightspeed with dozens of agents packed into one worker node, borrowing VMs and sandboxes via dashed connections only when needed" width="750">
+  <img src="docs/images/readme-why-overview.png" alt="Comparison: traditional infrastructure runs one agent per full VM, while Lightspeed packs many durable agents into one worker and attaches VMs or sandboxes only when needed" width="900">
 </p>
 
 Frontier agent harnesses like Claude Code, Codex, OpenCode, or OpenClaw are designed to run inside a guest OS and need an entire OS for themselves, which makes them difficult to scale and secure. Hence the emerging pattern to ["separate the harness from compute"](https://openai.com/index/the-next-evolution-of-the-agents-sdk/#:~:text=long%2Drunning%20task.-,Separating%20harness%20from%20compute%20for%20security%2C%20durability%2C%20and%20scale,-Agent%20systems%20should), and to run agents inside workflow engines for durability. This is especially interesting in enterprise or shared deployments, where you cannot easily co-locate agents on the same VM.
@@ -60,7 +81,7 @@ Environment variables are documented separately in
 
 ## Features
 
-Lightspeed covers the table stakes of a modern agent harness and keeps shipping fast. Everything below works today — run it with the [Quick start](#quick-start).
+Lightspeed covers the table stakes of a modern agent harness and keeps shipping fast. Everything below works today. Run it with the [Quick start](#quick-start).
 
 **Models & providers**
 
@@ -68,8 +89,7 @@ Lightspeed covers the table stakes of a modern agent harness and keeps shipping 
 - [x] **OpenAI-compatible providers**: OpenRouter, DeepSeek, vLLM, Ollama, and
   similar servers, each configured with its own endpoint and credential
 - [x] **Prompt caching**: cache breakpoints and cache keys are placed
-  automatically, context is append-only where it counts, and cache usage is
-  reported per run
+  automatically, context is append-only where it counts
 
 **Agent capabilities**
 
@@ -77,47 +97,34 @@ Lightspeed covers the table stakes of a modern agent harness and keeps shipping 
   snapshots/workspaces without an OS attached
 - [x] **Web access**: fetch, search, and extract tools
 - [x] **Skills**, automatically cataloged and loaded from linked VFS roots
-- [x] **Hosted and native MCP**, with universe-configured API-key and OAuth
-  identities and server-owned execution, exposure, tool, network, and approval
-  policy shared by every session selecting that MCP server id. Native servers
-  work across all model APIs through injected function tools or bounded
-  search-on-demand; inventories stay live and worker-local, never persisted.
-  Approval requests park the run and can be decided from the web console or CLI
-- [x] **Flexible prompt & instruction configuration**
+- [x] **Hosted and native MCP**: connect servers with API keys or OAuth,
+  discover tools automatically, and manage approvals from the web console or CLI. MCPs integration works via provider managed MCP or lightspeed injected tool calls (e.g. for local network MCP servers)
 - [x] **Sub-agents**: `agent_run` / `agent_spawn` over allowlisted profiles, supervised by an execution workflow, with root-scoped limits and typed lineage
-- [x] **Agent profiles**: reusable session setups, shared across clients and sub-agents;
-  a profile can activate an existing environment or provision a fresh one per session
+- [x] **Agent profiles**: reusable session setups, shared across clients and sub-agents
 
 **Bots & channels**
 
-- [x] **Bots**: durable event routers that own their sessions. Triggers fire on
-  schedules, webhooks, polls, or chat messages; events are filtered, coalesced,
-  and delivered under budgets and flood breakers
-- [x] **A numbered event log** per bot: every event gets a `#N` handle and a
-  write-once outcome the model records itself
-- [x] **Bot federation**: bots address each other through inbox triggers with
-  `bot_emit`, bounded by hop and rate limits, with deterministic reply receipts
-- [x] **Chat channels**: Telegram and WhatsApp today through a thin connector
-  host. A chat pairs to a bot once and keeps that route; replies, media, and
-  typing indicators flow both ways
-- [x] **Open channel model**: a new chat provider is a new connector, never a
-  core change
+Bots are Lightspeed's automation feature.
+
+- [x] **Bots**: create always-on agents that wake up for scheduled tasks,
+  incoming webhooks, data changes, or chat messages
+- [x] **Bot federation**: bots can talk to each other and coordinate work.
+- [x] **Timers, schedules, wake-ups**
+- [x] **Triggers & Pollers**: Wake a bot through various triggers such as web hooks, VM based pollers, and so on. Bots can build their own triggers and set them up
+- [x] **Chat channels**: Talk to bots via Telegram and WhatsApp
+
 
 **Durability & scale**
 
 - [x] **Long-running agents**: sessions that last weeks to months and survive restarts
-- [x] **Active-run control**: cancel a run (in-flight model and tool calls are
-  aborted, no farewell turn), steer it with a message the model sees at its
-  next turn, or queue the next message behind it
+- [x] **Active-run control**: cancel a run, steer it, or queue the next message behind the current run
 - [x] **Session fork & clone**: cheap forks of a running agent's full state, straight from the event-sourced log
 - [x] **Managed sessions and workflow-backed tools**: external workflows create
   sessions and add durable tools — deliveries, keyed completions, deadlines,
   cancellation — against the generated
   [workflow contract](crates/temporal-workflow/contract/workflow-contract.md)
-- [x] **Eval harness** for regression-testing agent and tool workflows
-- [x] **Timers, schedules, wake-ups**
-- [x] **One binary, every role**: `lightspeed-server` runs gateway, sessions,
-  bots, and channels together by default, or split per role and task type
+- [x] **One backend binary**: `lightspeed-server` runs gateway, sessions,
+  bots, and channels together by default. Start with a single process; but since Lightspeed is built around Temporal, you can easily spin as many parallel backend workers as you need.
 
 **Borrowed compute**
 
@@ -138,13 +145,9 @@ Lightspeed covers the table stakes of a modern agent harness and keeps shipping 
 - [x] **Web app**: manage universes, sessions, profiles, bots, and channels
   from the browser
 - [x] **Typed JSON-RPC API**: committed schema contract, generated TypeScript client
-- [x] **Configurator MCP**: a configurable universe API surface as generated tools over
-  Streamable HTTP
-- [x] **CLI** to connect to running agent sessions
+- [x] **Configurator MCP**: controll all of Lightspeed via MCP
+- [x] **CLI** to connect to running sessions through a TUI, or to complete admin tasks 
 
-The generated [JSON-RPC API reference](crates/api/contract/api-reference.md) is
-derived from the same Rust manifest and schemas that drive OpenRPC, the
-TypeScript client, and Configurator MCP tool descriptions.
 
 ## Design
 
