@@ -249,6 +249,7 @@ impl MatrixScriptedLlm {
                 token_estimate: None,
             }],
             facts: LlmGenerationFacts {
+                duration_ms: None,
                 provider_response_id: Some(format!("mcp-matrix-{}", request.turn_id.as_u64())),
                 finish: LlmFinish::ToolCalls,
                 usage: None,
@@ -292,6 +293,7 @@ impl MatrixScriptedLlm {
                 token_estimate: None,
             }],
             facts: LlmGenerationFacts {
+                duration_ms: None,
                 provider_response_id: Some(format!(
                     "mcp-matrix-final-{}",
                     request.turn_id.as_u64()
@@ -955,6 +957,7 @@ impl NativeMcpScriptedLlm {
                 token_estimate: None,
             }],
             facts: LlmGenerationFacts {
+                duration_ms: None,
                 provider_response_id: Some(format!("native-mcp-{}", request.turn_id.as_u64())),
                 finish: LlmFinish::ToolCalls,
                 usage: None,
@@ -998,6 +1001,7 @@ impl NativeMcpScriptedLlm {
                 token_estimate: None,
             }],
             facts: LlmGenerationFacts {
+                duration_ms: None,
                 provider_response_id: Some(format!(
                     "native-mcp-final-{}",
                     request.turn_id.as_u64()
@@ -1062,6 +1066,7 @@ impl CoreAgentLlm for ApprovalScriptedLlm {
                     token_estimate: None,
                 }],
                 facts: LlmGenerationFacts {
+                    duration_ms: None,
                     provider_response_id: Some(format!(
                         "approval-final-{}-{}",
                         request.run_id.as_u64(),
@@ -1114,6 +1119,7 @@ impl CoreAgentLlm for ApprovalScriptedLlm {
                 token_estimate: None,
             }],
             facts: LlmGenerationFacts {
+                duration_ms: None,
                 provider_response_id: Some(format!("approval-request-{}", request.run_id.as_u64())),
                 finish: LlmFinish::Stop,
                 usage: None,

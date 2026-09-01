@@ -765,6 +765,12 @@ pub struct ToolCallResult {
     pub error_ref: Option<BlobRef>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub effects: Vec<ToolEffect>,
+    /// Wall-clock milliseconds the executing runtime spent on this call,
+    /// measured around the execution activity. Absent for synthetic results
+    /// (cancelled, unavailable) and executors that do not measure. Recorded
+    /// telemetry only — planning never branches on it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
 }
 
 pub(crate) fn tool_result_context_item_exists(
@@ -1522,6 +1528,7 @@ fn cancelled_tool_result(call: &ObservedToolCall) -> ToolCallResult {
         }],
         error_ref: Some(error_ref),
         effects: Vec::new(),
+        duration_ms: None,
     }
 }
 
@@ -1546,6 +1553,7 @@ fn unavailable_tool_result(call: &ObservedToolCall) -> ToolCallResult {
         }],
         error_ref: Some(error_ref),
         effects: Vec::new(),
+        duration_ms: None,
     }
 }
 

@@ -2391,10 +2391,25 @@ export interface ToolCallView {
   arguments?: string | null;
   argumentsRef: string;
   callId: string;
+  /**
+   * When the call's terminal result was committed. The window to
+   * `startedAtMs` includes runtime scheduling overhead.
+   */
+  completedAtMs?: number | null;
   display?: ToolCallDisplayView | null;
+  /**
+   * Execution milliseconds measured by the runtime around the call body;
+   * the remainder of the started/completed window is overhead.
+   */
+  durationMs?: number | null;
   effects?: ToolEffectView[];
   isError?: boolean;
   output?: string | null;
+  /**
+   * When the call was dispatched for execution, from the committed
+   * `toolCallStarted` event. Absent until dispatch.
+   */
+  startedAtMs?: number | null;
   status: ToolItemStatus;
   toolName: string;
 }

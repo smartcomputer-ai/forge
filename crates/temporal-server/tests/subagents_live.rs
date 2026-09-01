@@ -196,6 +196,7 @@ impl SubagentScriptedLlm {
             failure_ref: None,
             context_entries,
             facts: LlmGenerationFacts {
+                duration_ms: None,
                 provider_response_id: Some(format!("subagent-tools-{}", request.turn_id.as_u64())),
                 finish: LlmFinish::ToolCalls,
                 usage: None,
@@ -233,6 +234,7 @@ impl SubagentScriptedLlm {
                 token_estimate: None,
             }],
             facts: LlmGenerationFacts {
+                duration_ms: None,
                 provider_response_id: Some(format!("subagent-final-{}", request.turn_id.as_u64())),
                 finish: LlmFinish::Stop,
                 usage: None,

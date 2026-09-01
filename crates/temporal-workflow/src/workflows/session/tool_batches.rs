@@ -497,6 +497,7 @@ fn boundary_call_result(
     error_ref: BlobRef,
 ) -> ToolInvocationResult {
     ToolInvocationResult {
+        duration_ms: None,
         call_id: call_id.clone(),
         status,
         output_ref: None,

@@ -1884,6 +1884,9 @@ mod tests {
                 turn_id: "turn_1".into(),
                 status: ToolItemStatus::Succeeded,
                 calls: vec![ToolCallView {
+                    started_at_ms: None,
+                    completed_at_ms: None,
+                    duration_ms: None,
                     call_id: "call_1".into(),
                     tool_name: "read_file".into(),
                     arguments_ref: "sha256:args".into(),

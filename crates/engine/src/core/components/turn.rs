@@ -224,6 +224,11 @@ pub struct LlmGenerationFacts {
     pub provider_response_id: Option<String>,
     pub finish: LlmFinish,
     pub usage: Option<LlmUsage>,
+    /// Wall-clock milliseconds the executing runtime spent on this
+    /// generation (provider round-trip measured around the client call).
+    /// Recorded telemetry only — planning never branches on it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
     pub tool_calls: Vec<ObservedToolCall>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub approval_requests: Vec<ObservedApprovalRequest>,

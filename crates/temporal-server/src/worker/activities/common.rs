@@ -115,6 +115,7 @@ pub(super) async fn failed_generation_result_from_error(
         failure_ref: Some(failure_ref),
         context_entries: Vec::new(),
         facts: LlmGenerationFacts {
+            duration_ms: None,
             provider_response_id: None,
             finish: LlmFinish::Failed,
             usage: None,
@@ -173,6 +174,7 @@ pub(super) async fn failed_tool_batch_result(
         )
         .await?;
         results.push(ToolInvocationResult {
+            duration_ms: None,
             call_id: call.call_id.clone(),
             status: ToolCallStatus::Failed,
             output_ref: None,
@@ -212,6 +214,7 @@ pub(super) async fn failed_tool_call_result(
     )
     .await?;
     Ok(ToolInvocationResult {
+        duration_ms: None,
         call_id: request.call.call_id.clone(),
         status: ToolCallStatus::Failed,
         output_ref: None,

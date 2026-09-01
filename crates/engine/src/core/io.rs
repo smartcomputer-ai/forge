@@ -489,6 +489,11 @@ pub struct ToolInvocationResult {
     pub error_ref: Option<BlobRef>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub effects: Vec<ToolEffect>,
+    /// Wall-clock milliseconds the executing runtime spent on this call.
+    /// Stamped by the execution activity; carried into the durable
+    /// `ToolCallResult` unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
 }
 
 impl ToolInvocationResult {
@@ -609,6 +614,7 @@ mod tests {
                 .calls
                 .iter()
                 .map(|call| ToolInvocationResult {
+                    duration_ms: None,
                     call_id: call.call_id.clone(),
                     status: ToolCallStatus::Succeeded,
                     output_ref: Some(call.arguments_ref.clone()),

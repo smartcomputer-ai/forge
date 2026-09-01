@@ -250,6 +250,7 @@ impl FakeLlm {
             failure_ref: None,
             context_entries,
             facts: LlmGenerationFacts {
+                duration_ms: None,
                 provider_response_id: Some(format!("fake-tool-{}", request.turn_id.as_u64())),
                 finish: LlmFinish::ToolCalls,
                 usage: None,
@@ -301,6 +302,7 @@ impl FakeLlm {
                 token_estimate: None,
             }],
             facts: LlmGenerationFacts {
+                duration_ms: None,
                 provider_response_id: Some(format!("fake-final-{}", request.turn_id.as_u64())),
                 finish: LlmFinish::Stop,
                 usage: None,
@@ -414,6 +416,7 @@ impl CoreAgentTools for FakeTools {
                     .await
                     .map_err(io_error)?;
                 results.push(ToolInvocationResult {
+                    duration_ms: None,
                     call_id: call.call_id.clone(),
                     status: ToolCallStatus::Failed,
                     output_ref: None,
@@ -436,6 +439,7 @@ impl CoreAgentTools for FakeTools {
                 .await
                 .map_err(io_error)?;
             results.push(ToolInvocationResult {
+                duration_ms: None,
                 call_id: call.call_id.clone(),
                 status: ToolCallStatus::Succeeded,
                 output_ref: Some(output_ref.clone()),

@@ -20,8 +20,10 @@ pub(super) async fn generate(
 ) -> Result<LlmGenerationResult, ActivityError> {
     let request = request.request;
     let session_id = request.session_id.clone();
+    let started = std::time::Instant::now();
     match deps.llm.generate(request.clone()).await {
-        Ok(result) => {
+        Ok(mut result) => {
+            result.facts.duration_ms = Some(elapsed_ms(started));
             if let Some(usage) = result.facts.usage.as_ref() {
                 observe_prompt_cache(&session_id, usage);
             }
@@ -42,8 +44,16 @@ pub(super) async fn generate(
         // result and are never retried.
         Err(error) => failed_generation_result_from_error(deps.blobs.as_ref(), request, error)
             .await
+            .map(|mut result| {
+                result.facts.duration_ms = Some(elapsed_ms(started));
+                result
+            })
             .map_err(activity_error),
     }
+}
+
+fn elapsed_ms(started: std::time::Instant) -> u64 {
+    u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
 }
 
 /// Prompts at least this long are expected to hit the provider cache once

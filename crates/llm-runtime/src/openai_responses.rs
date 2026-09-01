@@ -938,6 +938,7 @@ pub async fn result_from_response(
         failure_ref,
         context_entries,
         facts: LlmGenerationFacts {
+            duration_ms: None,
             provider_response_id: Some(response.parsed.id.clone()),
             finish,
             usage,

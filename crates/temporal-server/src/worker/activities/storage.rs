@@ -593,6 +593,7 @@ mod tests {
                 failure_ref: None,
                 context_entries: Vec::new(),
                 facts: LlmGenerationFacts {
+                    duration_ms: None,
                     provider_response_id: Some(format!("tool-response-{}", request.turn_id)),
                     finish: if first {
                         LlmFinish::ToolCalls
@@ -656,6 +657,7 @@ mod tests {
                         completion_promises: None,
                     };
                     ToolInvocationResult {
+                        duration_ms: None,
                         call_id: call.call_id.clone(),
                         status: ToolCallStatus::Succeeded,
                         output_ref: Some(BlobRef::from_bytes(b"accepted")),

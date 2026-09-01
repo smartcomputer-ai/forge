@@ -550,6 +550,7 @@ impl WorkflowToolScriptedLlm {
                 token_estimate: None,
             }],
             facts: LlmGenerationFacts {
+                duration_ms: None,
                 provider_response_id: Some(format!(
                     "workflow-tool-{}-{}",
                     tool_name,
@@ -597,6 +598,7 @@ impl WorkflowToolScriptedLlm {
                 token_estimate: None,
             }],
             facts: LlmGenerationFacts {
+                duration_ms: None,
                 provider_response_id: Some(format!(
                     "workflow-tool-final-{}",
                     request.turn_id.as_u64()
