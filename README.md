@@ -8,8 +8,7 @@
 
 <p align="center"><strong>Run thousands of agents. Efficient, durable, auditable.</strong></p>
 
-Lightspeed is open-source infrastructure for running long-lived agent fleets in
-production.
+Lightspeed is open-source infrastructure for running long-lived agent fleets as durable workflows.
 
 Agents survive restarts, can run for months, and stay cheap when idle. When they
 need an operating system, they borrow a real machine for as long as the task
@@ -32,19 +31,15 @@ requiring one operating system per agent.
 
 Most frontier harnesses live inside a guest OS, which makes them difficult to scale and secure. Hence the emerging pattern to
 ["separate the harness from compute"](https://openai.com/index/the-next-evolution-of-the-agents-sdk/#:~:text=long%2Drunning%20task.-,Separating%20harness%20from%20compute%20for%20security%2C%20durability%2C%20and%20scale,-Agent%20systems%20should). This is especially
-useful in enterprise with more stringent supervision and scaling requirements.
+useful in enterprises with more stringent supervision and scaling requirements.
 
-So, in Lightspeed, the harness—the agent loop, context, and session state—runs as a lightweight
+So, in Lightspeed, the harness (the agent loop, context, and session state) runs as a lightweight
 durable workflow. Shells, code execution, and full filesystems run on machines
-attached only when needed. One worker can therefore manage thousands of agents.
+attached only when needed. One worker can therefore manage hundreds of agents.
 
 <p align="center">
   <img src="docs/images/readme-why-overview.png" alt="Comparison: traditional infrastructure runs one agent per full VM, while Lightspeed packs many durable agents into one worker and attaches VMs or sandboxes only when needed" width="900">
 </p>
-
-However, models still perform best when they can use a real machine. Lightspeed preserves
-that capability by lending agents VMs, sandboxes, or delegated coding jobs on
-demand while keeping the harness outside the OS.
 
 **What you can build with Lightspeed**:
 
@@ -56,13 +51,18 @@ demand while keeping the harness outside the OS.
 ## Quick start
 
 You need Rust with edition 2024 support, Node.js 24 or newer, and Docker with
-Compose. Then configure at least one model provider and start the complete
+Compose. Then start the complete
 local product:
 
 ```bash
+./dev.sh
+```
+
+You can set the LLM API keys directly in the UI. But you can also set them via environment variable:
+```bash
 cp .env.example .env
 # Set OPENAI_API_KEY or ANTHROPIC_API_KEY in .env
-./dev.sh
+# Then restart ./dev.sh
 ```
 
 When the readiness checks pass, open
@@ -79,7 +79,7 @@ the [development environment guide](scripts/dev/README.md). See
 
 ## Features
 
-Lightspeed covers the table stakes of a modern agent harness. Everything below works today. Run it with the [Quick start](#quick-start).
+Lightspeed covers the table stakes of a modern agent harness. Everything below works today.
 
 **Models & providers**
 
@@ -118,7 +118,6 @@ Lightspeed covers the table stakes of a modern agent harness. Everything below w
   duplicating its data
 - [x] **Workflow-backed tools**: external workflows create sessions and add
   durable tools with delivery, deadlines, results, and cancellation
-  ([contract](crates/temporal-workflow/contract/workflow-contract.md))
 - [x] **One backend binary**: run every role in one process or scale them
   independently across Temporal workers
 
@@ -139,7 +138,6 @@ Lightspeed covers the table stakes of a modern agent harness. Everything below w
   exposing them to the model
 - [x] **Multi-tenant by default**: isolate tenants in universes on one deployment
   or run dedicated per-tenant deployments
-  ([docs](docs/multi-tenancy.md))
 
 **Interfaces**
 
@@ -151,8 +149,8 @@ Lightspeed covers the table stakes of a modern agent harness. Everything below w
 
 ## Design
 
-Every agent is driven by an event-sourced, deterministic core. It replays the
-session log, decides the next step, and emits effect _intents_ that runtime
+In Lightspeed, every agent is driven by an event-sourced, deterministic core. The runtime replays the
+session log, decides the next step, and emits effect _intents_ that
 adapters execute against LLM providers and tools. The core itself performs no
 I/O, which makes it a natural fit for durable workflow engines.
 
