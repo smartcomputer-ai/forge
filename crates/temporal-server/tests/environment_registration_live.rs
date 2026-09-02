@@ -34,8 +34,8 @@ use support::live::{LIVE_TEST_LOCK, require_storage_live_env};
 use temporal_server::{
     DeploymentStores, GatewayAuthMode, UniverseRuntime,
     gateway::{
-        DEFAULT_MAX_REQUEST_BODY_BYTES, GatewayAgentApi, GatewayOperatorApi, GatewayState,
-        gateway_router,
+        DEFAULT_MAX_REQUEST_BODY_BYTES, GatewayAgentApi, GatewayOperatorApi, GatewayRoutes,
+        GatewayState, gateway_router,
     },
 };
 use temporal_workflow::{DEFAULT_TEMPORAL_NAMESPACE, DEFAULT_TEMPORAL_TARGET, connect_temporal};
@@ -87,10 +87,63 @@ async fn registered_envd_dials_out_serves_routes_reconnects_and_is_spent_on_clos
     let gateway = tokio::spawn(async move {
         axum::serve(
             listener,
-            gateway_router(state, DEFAULT_MAX_REQUEST_BODY_BYTES),
+            gateway_router(state, DEFAULT_MAX_REQUEST_BODY_BYTES, GatewayRoutes::ALL),
         )
         .await
     });
+    // A process without the environment-gateway role has no registration
+    // routes at all: a misrouted daemon fails loudly with a 404 instead of
+    // registering somewhere no worker can reach.
+    let api_only_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let api_only_url = format!("http://{}", api_only_listener.local_addr()?);
+    let api_only_state = Arc::new(GatewayState::multi(
+        GatewayAuthMode::Single { universe_id },
+        runtime.clone(),
+        api_only_url.clone(),
+    ));
+    let api_only = tokio::spawn(async move {
+        axum::serve(
+            api_only_listener,
+            gateway_router(
+                api_only_state,
+                DEFAULT_MAX_REQUEST_BODY_BYTES,
+                GatewayRoutes {
+                    api: true,
+                    environment: false,
+                },
+            ),
+        )
+        .await
+    });
+    let http = reqwest::Client::new();
+    for path in ["/environment-gateway/connect", "/environment-gateway/data"] {
+        let status = http
+            .get(format!("{api_only_url}{path}"))
+            .send()
+            .await?
+            .status();
+        assert_eq!(
+            status,
+            reqwest::StatusCode::NOT_FOUND,
+            "{path} on an api-only process"
+        );
+    }
+    assert_eq!(
+        http.get(format!("{api_only_url}/health"))
+            .send()
+            .await?
+            .status(),
+        reqwest::StatusCode::OK
+    );
+    assert_ne!(
+        http.get(format!("{base_url}/environment-gateway/connect"))
+            .send()
+            .await?
+            .status(),
+        reqwest::StatusCode::NOT_FOUND,
+        "the environment-gateway process serves the connect route"
+    );
+    api_only.abort();
     let reconciler = tokio::spawn(runtime.clone().run_environment_reconciler());
     let api = runtime.state_for(universe_id, false).await?.api.clone();
     let sandbox = tempfile::tempdir()?;

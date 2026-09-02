@@ -166,8 +166,25 @@ impl UniverseRuntime {
         public_base_url: Option<String>,
         stores: DeploymentStores,
     ) -> anyhow::Result<Self> {
-        let environment_gateway =
-            EnvironmentGatewayClientConfig::from_env(public_base_url.as_deref())?;
+        Self::new_with_environment_gateway(client, task_queue, public_base_url, stores, true)
+    }
+
+    /// `local_environment_gateway` says whether this process serves the
+    /// environment routes itself; only then may the worker-side route default
+    /// to the local public base URL. Every other process must be told where
+    /// the environment gateway is.
+    pub fn new_with_environment_gateway(
+        client: Client,
+        task_queue: String,
+        public_base_url: Option<String>,
+        stores: DeploymentStores,
+        local_environment_gateway: bool,
+    ) -> anyhow::Result<Self> {
+        let environment_gateway = EnvironmentGatewayClientConfig::from_env(
+            public_base_url
+                .as_deref()
+                .filter(|_| local_environment_gateway),
+        )?;
         Ok(Self {
             client,
             task_queues: TaskQueues::derived_from(task_queue),

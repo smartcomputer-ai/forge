@@ -93,6 +93,25 @@ pub struct GatewayState {
     public_base_url: String,
 }
 
+/// Which route families one HTTP listener serves, derived from the
+/// process's roles: the `gateway` role owns the API surface, the
+/// `environment-gateway` role owns the environment data plane.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GatewayRoutes {
+    /// JSON-RPC, OAuth callbacks, and bot webhook ingest.
+    pub api: bool,
+    /// Worker environment routes plus the public daemon connect and data
+    /// routes.
+    pub environment: bool,
+}
+
+impl GatewayRoutes {
+    pub const ALL: Self = Self {
+        api: true,
+        environment: true,
+    };
+}
+
 impl GatewayState {
     /// Route every request to one existing service instance.
     pub fn for_api(api: Arc<GatewayAgentApi>) -> Self {
@@ -106,6 +125,14 @@ impl GatewayState {
 
     pub(super) fn registrations(&self) -> &Arc<RegisteredConnections> {
         &self.registrations
+    }
+
+    /// Tell daemons to dial a different public base than the general one.
+    pub fn with_environment_public_url(mut self, url: Option<String>) -> Self {
+        if let Some(url) = url {
+            self.public_base_url = url;
+        }
+        self
     }
 
     /// Public data route for reverse-dialed daemon sockets.
@@ -457,7 +484,7 @@ pub async fn serve_gateway(config: GatewayServerConfig) -> anyhow::Result<()> {
     prewarm_single_universe(&mode, &runtime).await?;
     let reconciler = tokio::spawn(runtime.clone().run_environment_reconciler());
     let state = Arc::new(GatewayState::multi(mode, runtime, public_base_url));
-    let app = gateway_router(state, config.max_request_body_bytes);
+    let app = gateway_router(state, config.max_request_body_bytes, GatewayRoutes::ALL);
     let listener = tokio::net::TcpListener::bind(config.bind).await?;
     tracing::info!(target: "temporal_server", bind = %config.bind, "gateway listening");
     axum::serve(listener, app).await?;
@@ -520,7 +547,7 @@ pub async fn serve_gateway_with_client_store(
         }
     });
     let state = Arc::new(GatewayState::for_api(api));
-    let app = gateway_router(state, config.max_request_body_bytes);
+    let app = gateway_router(state, config.max_request_body_bytes, GatewayRoutes::ALL);
     let listener = tokio::net::TcpListener::bind(config.bind).await?;
     tracing::info!(target: "temporal_server", bind = %config.bind, "gateway listening");
     axum::serve(listener, app).await?;
@@ -536,22 +563,32 @@ pub fn public_base_url_or_default(config: &GatewayServerConfig) -> String {
         .unwrap_or_else(|| format!("http://{}", config.bind))
 }
 
-pub fn gateway_router(state: Arc<GatewayState>, max_request_body_bytes: usize) -> Router {
-    Router::new()
-        .route("/health", get(|| async { "ok" }))
-        .route("/rpc", post(rpc))
-        .route("/auth/callback", get(oauth_callback))
-        .route("/auth/client-metadata.json", get(cimd_document))
-        .route(
-            "/hooks/bots/:universe/:bot/:trigger/:token",
-            post(bot_webhook_ingest),
-        )
-        .route(
-            &format!("{ROUTE_PATH_PREFIX}/:universe/:environment/:incarnation"),
-            get(environment_route_upgrade),
-        )
-        .route(CONNECT_PATH, get(registration::connect_upgrade))
-        .route(DATA_PATH, get(registration::data_upgrade))
+pub fn gateway_router(
+    state: Arc<GatewayState>,
+    max_request_body_bytes: usize,
+    routes: GatewayRoutes,
+) -> Router {
+    let mut router = Router::new().route("/health", get(|| async { "ok" }));
+    if routes.api {
+        router = router
+            .route("/rpc", post(rpc))
+            .route("/auth/callback", get(oauth_callback))
+            .route("/auth/client-metadata.json", get(cimd_document))
+            .route(
+                "/hooks/bots/:universe/:bot/:trigger/:token",
+                post(bot_webhook_ingest),
+            );
+    }
+    if routes.environment {
+        router = router
+            .route(
+                &format!("{ROUTE_PATH_PREFIX}/:universe/:environment/:incarnation"),
+                get(environment_route_upgrade),
+            )
+            .route(CONNECT_PATH, get(registration::connect_upgrade))
+            .route(DATA_PATH, get(registration::data_upgrade));
+    }
+    router
         .layer(DefaultBodyLimit::max(max_request_body_bytes))
         .with_state(state)
 }

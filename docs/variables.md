@@ -37,7 +37,8 @@ They do not configure the TypeScript Platform server.
 | --- | --- | --- |
 | `LIGHTSPEED_POSTGRES_URL` | **Required**; falls back to `LIGHTSPEED_TEST_POSTGRES_URL` | PostgreSQL connection URL used by the runtime, migration commands, and schema diagnostics. Production must use this name. |
 | `LIGHTSPEED_PG_UNIVERSE_ID` | **Required in `single` auth mode** | UUID of the sole universe in a single-tenant deployment. Not used to auto-create universes in multi-tenant modes. |
-| `LIGHTSPEED_ROLES` | `gateway,sessions,bots,channels` | Roles this process runs, a comma-separated subset of `gateway`, `sessions`, `bots`, `channels` (also `--roles`). Each worker role polls its own task queue with that subsystem's workflows, activities, and background loops. |
+| `LIGHTSPEED_ROLES` | `gateway,environment-gateway,sessions,bots,channels` | Roles this process runs, a comma-separated subset of `gateway` (JSON-RPC, OAuth callbacks, webhook hooks), `environment-gateway` (worker environment routes, the public daemon registration routes, the lifecycle reconciler, and the power reaper), `sessions`, `bots`, `channels` (also `--roles`). Each worker role polls its own task queue with that subsystem's workflows, activities, and background loops. Run exactly one `environment-gateway` process per deployment. |
+| `LIGHTSPEED_ENVIRONMENT_PUBLIC_URL` | Unset | Base URL outbound daemons are told to dial for data connections when it differs from `LIGHTSPEED_PUBLIC_BASE_URL`, for example a dedicated hostname in front of the environment gateway. |
 | `LIGHTSPEED_WORKER_TASK_TYPES` | `all` | What the worker roles poll: `all`, `workflows`, or `activities` (also `--task-types`). |
 | `LIGHTSPEED_TASK_QUEUE` | `lightspeed-sessions` | Sessions task queue shared by the gateway and the `sessions` role. Deployments sharing a Temporal namespace must use distinct queues. |
 | `LIGHTSPEED_TASK_QUEUE_BOTS` | `lightspeed-bots` | Task queue of the `bots` role (bot controllers, trigger fires, bot activities). |
@@ -116,22 +117,25 @@ remain in PostgreSQL-backed storage.
 
 ### Split environment routing
 
-A process running the `gateway` role derives a local environment route
-automatically. Worker-only processes (no `gateway` role) must provide both
-values.
-
 | Variable | Requirement/default | Purpose |
 | --- | --- | --- |
-| `LIGHTSPEED_ENVIRONMENT_GATEWAY_URL` | **Required for a worker-only process** | Stable gateway base URL used by workers for environment data routes. |
-| `LIGHTSPEED_ENVIRONMENT_GATEWAY_TOKEN` | **Required for a worker-only process** | Shared deployment bearer token for worker-to-gateway routing. |
+| `LIGHTSPEED_ENVIRONMENT_GATEWAY_URL` | **Required unless the process runs `environment-gateway`** | Stable environment-gateway base URL used by workers and `gateway`-only processes for environment data routes. |
+| `LIGHTSPEED_ENVIRONMENT_GATEWAY_TOKEN` | **Required unless the process runs `environment-gateway`** | Shared deployment bearer token for worker-to-gateway routing. |
 
-The `gateway` role also serves the public registration routes
-`/environment-gateway/connect` and `/environment-gateway/data` that outbound
-`lightspeed-envd` daemons dial. A registered daemon's control connection lives
-on the replica that accepted it, and the worker route for that environment
-must reach the same replica: **run exactly one replica of the process that
-serves these routes** until multi-replica owner routing is implemented.
-Workers may scale freely. Expose the routes through TLS; the daemon refuses
+A process running the `environment-gateway` role derives a local environment
+route automatically. Every other process, including one that runs only the
+`gateway` role, must provide both values.
+
+The `environment-gateway` role serves the worker route above plus the public
+registration routes `/environment-gateway/connect` and
+`/environment-gateway/data` that outbound `lightspeed-envd` daemons dial, and
+it runs the lifecycle reconciler and power reaper. A registered daemon's
+control connection lives in the process that accepted it, and the worker
+route for that environment must reach the same process: **run exactly one
+`environment-gateway` process per deployment** until multi-replica owner
+routing is implemented. `gateway`-only processes and workers may scale
+freely; they hold no daemon connections and do not answer the registration
+routes at all. Expose the two public routes through TLS; the daemon refuses
 plain `ws://` toward anything but loopback.
 
 ## Rust CLI

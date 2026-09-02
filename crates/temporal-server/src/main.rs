@@ -3,12 +3,13 @@ use std::{env, net::SocketAddr, sync::Arc, time::Duration};
 use clap::{Args, Parser, Subcommand};
 use temporal_server::{
     config::{
-        DeploymentStores, TaskQueues, gateway_auth_mode_from_env, postgres_pool_from_env,
-        task_queues_from_env,
+        DeploymentStores, TaskQueues, environment_public_url_from_env, gateway_auth_mode_from_env,
+        postgres_pool_from_env, task_queues_from_env,
     },
     gateway::{
         DEFAULT_GATEWAY_BIND, DEFAULT_MAX_REQUEST_BODY_BYTES, DEFAULT_TEMPORAL_NAMESPACE,
-        DEFAULT_TEMPORAL_TARGET, GatewayState, gateway_router, prewarm_single_universe,
+        DEFAULT_TEMPORAL_TARGET, GatewayRoutes, GatewayState, gateway_router,
+        prewarm_single_universe,
     },
     roles::{Role, RoleSet, TaskTypes},
     universe::UniverseRuntime,
@@ -89,7 +90,8 @@ enum ApiKeyCommand {
 #[derive(Clone, Debug, Args)]
 struct RunArgs {
     /// Roles this process runs: a comma-separated subset of gateway,
-    /// sessions, bots, channels (default: all).
+    /// environment-gateway, sessions, bots, channels (default: all). Run
+    /// exactly one environment-gateway process per deployment.
     #[arg(long, env = "LIGHTSPEED_ROLES")]
     roles: Option<String>,
 
@@ -336,11 +338,12 @@ async fn run_roles(args: RunArgs) -> anyhow::Result<()> {
         .clone()
         .unwrap_or_else(|| format!("http://{}", args.bind));
     let universes = Arc::new(
-        UniverseRuntime::new(
+        UniverseRuntime::new_with_environment_gateway(
             client.clone(),
             task_queues.sessions.clone(),
             Some(public_base_url.clone()),
             stores,
+            roles.has(Role::EnvironmentGateway),
         )?
         .with_task_queues(task_queues.clone()),
     );
@@ -361,7 +364,7 @@ async fn run_roles(args: RunArgs) -> anyhow::Result<()> {
     let mut background: Vec<tokio::task::JoinHandle<()>> = Vec::new();
     let mut workers: Vec<(Role, temporalio_sdk::Worker)> = Vec::new();
 
-    if roles.has(Role::Gateway) {
+    if roles.has(Role::EnvironmentGateway) {
         background.push(tokio::spawn(universes.clone().run_environment_reconciler()));
         background.push(tokio::spawn(universes.clone().run_power_reaper()));
     }
@@ -422,11 +425,24 @@ async fn run_roles(args: RunArgs) -> anyhow::Result<()> {
     }
 
     let gateway_future: std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<()>>>> =
-        if roles.has(Role::Gateway) {
-            let gateway_state = Arc::new(GatewayState::multi(mode, universes, public_base_url));
-            let app = gateway_router(gateway_state, args.max_request_body_bytes);
+        if roles.serves_http() {
+            let routes = GatewayRoutes {
+                api: roles.has(Role::Gateway),
+                environment: roles.has(Role::EnvironmentGateway),
+            };
+            let gateway_state = Arc::new(
+                GatewayState::multi(mode, universes, public_base_url)
+                    .with_environment_public_url(environment_public_url_from_env()?),
+            );
+            let app = gateway_router(gateway_state, args.max_request_body_bytes, routes);
             let listener = tokio::net::TcpListener::bind(args.bind).await?;
-            tracing::info!(target: "temporal_server", bind = %args.bind, "gateway listening");
+            tracing::info!(
+                target: "temporal_server",
+                bind = %args.bind,
+                api_routes = routes.api,
+                environment_routes = routes.environment,
+                "gateway listening"
+            );
             Box::pin(async move {
                 axum::serve(listener, app)
                     .with_graceful_shutdown(shutdown_signal())

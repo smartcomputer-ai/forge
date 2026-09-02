@@ -1607,6 +1607,7 @@ impl LiveConfigurator {
         let gateway = gateway_router(
             Arc::new(GatewayState::for_api(api)),
             DEFAULT_MAX_REQUEST_BODY_BYTES,
+            temporal_server::gateway::GatewayRoutes::ALL,
         );
         let gateway_task = tokio::spawn(async move {
             let _ = axum::serve(gateway_listener, gateway).await;

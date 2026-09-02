@@ -18,9 +18,13 @@
   Two defects surfaced only live and are fixed: a 64-bit decode of the
   integer active-limit column, and a read-modify-write on connection
   observations that could overwrite a concurrent close with `Offline` (now
-  one conditional update). Still open from slice 4: the environment-gateway
-  role split and multi-replica owner routing; the hosted deployment runs one
-  replica of the registration routes until then.
+  one conditional update). The `environment-gateway` role landed the same
+  day: it owns the worker environment route, the public registration routes,
+  the lifecycle reconciler, and the power reaper, so a `gateway`-only process
+  answers the registration routes with 404 and a deployment pins the daemon
+  connections to one process by role rather than by proxy convention. Still
+  open from slice 4: multi-replica owner routing, deferred until a deployment
+  needs a second `environment-gateway` process.
 - Builds on P119's environment protocol, gateway route, incarnation fencing,
   and canonical `lightspeed-envd` runtime. It adds one new environment source
   whose daemon opens its connections outbound.
@@ -817,10 +821,10 @@ worker routes.
   concurrent shared-key registration, capacity refusal, cleanup, and cascade
   revocation.
 - Split the environment gateway into its own role so the JSON-RPC gateway
-  scales independently of the single connection-owner replica.
+  scales independently of the single connection-owner replica. Done.
 - Implement the owner lease, direct worker dialing, signed data token, and
   relay hop before running more than one environment-gateway replica in
-  production.
+  production. Deferred until a deployment needs it.
 
 ## Tests
 

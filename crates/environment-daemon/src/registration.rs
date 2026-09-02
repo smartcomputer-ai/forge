@@ -108,7 +108,7 @@ async fn control_session(
         .context("gateway URL")?;
     let (socket, _) = connect_async_tls_with_config(request, None, false, tls.connector())
         .await
-        .context("connect to environment gateway")?;
+        .map_err(|error| describe_connect_error(&registration.gateway_url, error))?;
     let (mut writer, mut reader) = socket.split();
 
     let challenge = tokio::time::timeout(HANDSHAKE_TIMEOUT, next_control_message(&mut reader))
@@ -212,6 +212,28 @@ async fn control_session(
             Message::Binary(_) | Message::Pong(_) | Message::Frame(_) => {}
         }
     }
+}
+
+/// A gateway that answers the WebSocket upgrade with an HTTP status is
+/// reachable but not serving registration; say so instead of leaking a raw
+/// handshake error. Still retried, because a deploy can produce the same
+/// answer for a moment.
+fn describe_connect_error(
+    gateway_url: &str,
+    error: tokio_tungstenite::tungstenite::Error,
+) -> anyhow::Error {
+    if let tokio_tungstenite::tungstenite::Error::Http(response) = &error {
+        let status = response.status();
+        if status == 404 {
+            return anyhow!(
+                "{gateway_url} does not serve environment registration (HTTP 404): point LIGHTSPEED_ENVD_GATEWAY_URL at a Lightspeed process running the environment-gateway role"
+            );
+        }
+        return anyhow!(
+            "environment gateway {gateway_url} answered HTTP {status} instead of upgrading"
+        );
+    }
+    anyhow::Error::new(error).context(format!("connect to environment gateway {gateway_url}"))
 }
 
 fn rejection(code: RegistrationRejectionCode, message: String) -> Result<SessionEnd> {
