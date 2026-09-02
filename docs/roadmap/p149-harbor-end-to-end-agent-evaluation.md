@@ -236,7 +236,6 @@ disconnect grace remains the final cleanup mechanism.
    receipt, or artifact; pass only its file path to `envd`.
 2. Start `envd` as `environment.default_user` with:
    - the public WSS gateway URL;
-   - ephemeral identity mode;
    - a task working directory matching Harbor's agent working directory;
    - the filesystem root and operating-system privileges selected by the
      parity policy below;
@@ -332,7 +331,7 @@ The registration key is the only Lightspeed bootstrap secret inserted into a
 task sandbox. Use a dedicated P148 key with:
 
 - the evaluation universe as its only universe;
-- ephemeral identity as the default and, preferably, only allowed mode;
+- ephemeral identity mode, which is the key's policy and not a daemon setting;
 - an active-environment limit sized just above configured Harbor concurrency;
 - a campaign expiry and operator-visible label;
 - a rate limit appropriate to expected trial starts; and
@@ -615,8 +614,8 @@ On Harbor cancellation, the adapter immediately requests Lightspeed run
 cancellation and then performs bounded cleanup. Cleanup errors cannot replace
 the original failure. If the adapter or host is killed, the `envd` connection
 drops and P148's ephemeral cleanup closes the registered environment after its
-grace interval. A reconciliation command lists environments bearing a Harbor
-job correlation id so operators can find any leak.
+grace interval. Listing environments by the campaign registration key lets
+operators find any leak; the Harbor correlation metadata is diagnostic only.
 
 ## Network Policy
 

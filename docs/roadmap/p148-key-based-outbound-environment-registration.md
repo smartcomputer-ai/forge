@@ -2,14 +2,39 @@
 
 **Status**
 
-- Proposed 2026-09-01.
+- Proposed 2026-09-01. Reviewed and revised 2026-09-02, before
+  implementation.
 - Builds on P119's environment protocol, gateway route, incarnation fencing,
   and canonical `lightspeed-envd` runtime. It adds one new environment source
-  whose daemon opens the data-plane connection outbound.
+  whose daemon opens its connections outbound.
 - Replaces the direct-enrollment sketch in P117 for this scope: the only
   outbound registration credential is a reusable, universe-scoped
   registration key. There are no one-time enrollment tickets or pre-created
   pending environments.
+- Review decisions, in order:
+  1. The outbound socket is a **control channel**. Each worker route is
+     served by a fresh, reverse-dialed data socket that the existing gateway
+     proxy handles unchanged. There is no frame multiplexing over one daemon
+     socket.
+  2. Identity mode is **registration-key policy only**. `envd` has no mode
+     setting and always keeps its daemon key in its state directory; the
+     key's policy decides what Lightspeed does while a daemon is
+     disconnected.
+  3. There is no daemon-identity table. The daemon public key and the
+     registration-key id are columns on the environment row, with one unique
+     index over all rows, closed included.
+  4. There is no `Booting` phase and no new status. Registration creates the
+     environment `Ready`; disconnect maps to the existing `Offline`.
+  5. Ephemeral disconnect grace runs in the existing lifecycle reconciler
+     from a `last_seen_at_ms` heartbeat stamp, not from gateway timers.
+  6. The key record drops `max_registrations`, `allowed_identity_modes`,
+     and every stored counter; capacity is counted from environment rows
+     inside the admission transaction.
+  7. The registration key is the grouping axis for registered environments.
+     The session grant gains a `registrationKeys` allowlist beside
+     `providers`, `environments/list` gains a key filter, and model and UI
+     views show the key's display name as the group. Pool-claim intents are
+     deferred.
 - Harbor is an initial motivating use case, not part of this item.
   [P149](p149-harbor-end-to-end-agent-evaluation.md) defines the Harbor agent
   adapter, trial lifecycle, benchmark configuration, and result handling.
@@ -26,9 +51,9 @@ LIGHTSPEED_ENVD_REGISTRATION_KEY=<secret>
 
 `lightspeed-envd` connects outbound, authenticates with the key, and becomes a
 new environment in the key's universe. The same key may register one daemon or
-many unrelated daemons concurrently. Key policy may bound total registrations,
-active environments, lifetime, identity modes, and ephemeral cleanup without
-changing the image or bootstrap command.
+many unrelated daemons concurrently. Key policy bounds active environments,
+lifetime, identity mode, and ephemeral cleanup without changing the image or
+bootstrap command.
 
 The operator does not manage a client certificate or pre-create one
 environment per machine. `envd` generates its own daemon key pair, Lightspeed
@@ -42,7 +67,10 @@ This supports:
 - a Kubernetes StatefulSet whose `envd` identity lives on stable storage;
 - replaceable pods or batch workers that become new environments per instance;
 - externally provisioned compute pools whose members all receive the same
-  registration key; and
+  registration key;
+- locked-down enterprise footprints, such as one Kubernetes namespace or a few
+  VMs, where installing a daemon is possible but installing a provisioning
+  provider is not; and
 - Harbor started on a developer machine while its task sandboxes run in local
   Docker or any supported remote compute backend and connect to hosted
   Lightspeed.
@@ -92,19 +120,26 @@ The registered path has these fixed rules:
    shared registration key holder cannot name an existing environment or take
    it over.
 5. A first-seen daemon identity creates one environment atomically. A known,
-   active daemon identity reconnects that same environment and does not consume
-   another registration.
+   active daemon identity reconnects that same environment and does not touch
+   the registration key.
 6. The registration key admits a new daemon identity; it is not the daemon's
    permanent data-plane credential. After registration, the daemon private key
    authenticates reconnects without requiring an operator-managed certificate.
-7. Persistent and ephemeral identities have different disconnect semantics,
-   but use the same wire protocol and registration keys.
+7. Identity mode is a property of the registration key and is copied onto
+   each environment it admits. `envd` neither knows nor chooses a mode;
+   persistent and ephemeral daemons run the same binary with the same
+   configuration.
 8. Client-supplied names and metadata are correlation aids only. They never
    select a universe, environment id, incarnation, authority, or routing
    destination.
-9. Registered daemons keep one outbound data-plane connection while available.
-   Filesystem, process, PTY, and job calls remain direct gateway traffic and
-   never become Temporal activities or workflows per call.
+9. A registered daemon keeps one outbound control connection while available.
+   Every worker route is served by a separate data socket that `envd` opens on
+   request, so filesystem, process, PTY, and job calls stay direct gateway
+   traffic on their own connection and never become Temporal activities or
+   workflows per call.
+10. The registration key that admitted an environment is its group. Grants,
+    list filters, and user interfaces scope registered environments by key;
+    client metadata never does.
 
 This reverses P119's “no daemon-initiated transport” decision only for the new
 registered source. Existing passive external and provider-mediated routes stay
@@ -116,11 +151,11 @@ Five identities describe separate authorities and lifetimes:
 
 | Identity | Assigned by | Lifetime and purpose |
 |---|---|---|
-| `registrationKeyId` | Lightspeed | Identifies one reusable universe-scoped admission policy; never sent as authority without its secret |
+| `registrationKeyId` | Lightspeed | Identifies one reusable universe-scoped admission policy and the group of environments it admitted; never sent as authority without its secret |
 | `daemonId` | Lightspeed from the `envd` public-key fingerprint | Identifies one daemon installation or ephemeral instance |
 | `environmentId` | Lightspeed | Stable universe-owned logical environment bound to one daemon identity |
 | `incarnationId` | Lightspeed | Fences the current admitted generation of that environment |
-| `connectionId` | Gateway | Identifies one live outbound socket and changes on reconnect |
+| `connectionId` | Gateway | Identifies one live outbound control socket and changes on reconnect |
 
 The registration secret is not an identity. Multiple daemons intentionally
 present the same secret. The daemon public key distinguishes them.
@@ -131,57 +166,65 @@ present the same secret. The daemon public key distinguishes them.
 credentials, close operations, and gateway routes. Allowing an untrusted
 daemon to choose it would create collision and takeover semantics: a holder of
 one shared key could try to register as an existing environment. The gateway
-therefore accepts only a daemon public key, identity mode, and bounded
-descriptive metadata. The server allocates the logical ids and returns them in
-the receipt.
+therefore accepts only a daemon public key and bounded descriptive metadata.
+The server allocates the logical ids and returns them in the receipt.
 
-The durable create request id is derived server-side from the daemon identity,
-so retries of the same first registration converge on the same environment.
-The exact id string is an implementation detail; it must not depend on a
+The durable create request id is derived server-side from the daemon
+fingerprint, following the `session:` convention used for profile-provisioned
+environments, so retries of the same first registration converge on the same
+environment through the existing `(universe, requestId)` idempotency path. The
+exact id string is an implementation detail; it must not depend on a
 client-supplied hostname or correlation value.
 
 ### One daemon identity, one environment
 
-A daemon public key may be bound to at most one non-closed registered
-environment in the deployment. Presenting another registration key cannot move
-that identity to another universe or environment. Moving a machine deliberately
-requires closing/revoking the old environment and resetting the local daemon
-identity before registering again.
+A daemon public key is bound to at most one registered environment in the
+deployment, ever. The binding is a column on the environment row with one
+unique index over all rows, including closed ones. Presenting another
+registration key cannot move that identity to another universe or environment,
+and the identity of a closed environment cannot register again. Moving or
+re-registering a machine deliberately means closing the old environment and
+resetting the local daemon identity, which is deleting the daemon key file,
+before registering again.
 
-Two simultaneous sockets proving the same daemon identity represent reconnect
-races or a copied private key, not two environments. The gateway admits one
-current connection, assigns a new `connectionId`, and fences the superseded
-socket. Base images and snapshots must never contain an already generated
-daemon private key.
+Two simultaneous control connections proving the same daemon identity
+represent reconnect races or a copied private key, not two environments. The
+gateway admits one current connection, assigns a new `connectionId`, and
+fences the superseded socket together with its data sockets. Base images and
+snapshots must never contain an already generated daemon private key.
 
 ## Persistent and Ephemeral Identities
 
-Identity mode is immutable for one registered environment and is included in
-the authenticated registration request. The registration-key policy supplies a
-default and an allowed set; `envd` may request an allowed override.
+Identity mode is one immutable field on the registration key, copied onto
+every environment the key admits. There is no allowed set, no daemon-side
+override, and no daemon configuration for it. An operator who needs both
+behaviors from one image creates two keys.
+
+`envd` behaves identically in both modes. On start it loads the daemon key
+from its state directory or generates one there with restrictive permissions,
+connects, and reconnects with backoff until it is told to stop. Whether the
+identity survives a restart is decided by where the state directory lives.
+What Lightspeed does while the daemon is disconnected is decided by the key.
 
 ### Persistent
 
 Persistent mode is for a machine identity expected to survive daemon and host
 restarts:
 
-- `envd` atomically creates its private key in its configured state directory
-  before first registration and refuses persistent mode if it cannot read and
-  write that state with restrictive permissions; the operator is responsible
-  for placing the directory on storage that survives the intended restarts;
+- the state directory is on storage that survives the intended restarts; for a
+  Kubernetes StatefulSet that is a PVC from `volumeClaimTemplates`, not the
+  StatefulSet name or ordinal;
 - a reconnect proves the same daemon key and receives the same
   `environmentId` and `incarnationId`;
-- disconnect marks the environment unavailable/offline but never closes it
-  merely because time passed; and
-- closing the environment revokes the daemon binding. The same local identity
-  cannot silently reopen it; registering as a new environment requires an
-  explicit identity reset.
+- disconnect marks the environment `Offline` and never closes it merely
+  because time passed; and
+- closing the environment spends the identity. Registering the machine again
+  requires deleting the daemon key file, which registers a new environment.
 
-A Kubernetes StatefulSet is the common container example, but the StatefulSet
-name or ordinal is not the cryptographic identity. Stable behavior requires the
-`envd` state directory to be mounted on storage that follows the StatefulSet
-member, normally a PVC created by `volumeClaimTemplates`. A replacement Pod
-that mounts the same state reconnects the same Lightspeed environment.
+A persistent key whose daemons keep their state on volatile storage
+accumulates one `Offline` environment per restart until the key's active
+limit refuses more. That is visible in the key's group and is an operator
+error, not a protocol case.
 
 ### Ephemeral
 
@@ -189,69 +232,61 @@ Ephemeral mode is for replaceable pods, batch workers, benchmark sandboxes, and
 other instances that should disappear from Lightspeed after they disappear
 from the compute backend:
 
-- `envd` generates a fresh daemon key for the instance. It may retain the key
-  in instance-local state so an `envd` restart or brief network interruption
-  can reconnect during that instance's lifetime;
+- the state directory is instance-local, such as `emptyDir` or a directory
+  inside the sandbox, so a daemon restart or brief network loss within the
+  instance's lifetime reconnects the same environment;
 - the first connection creates a new server-assigned environment;
-- disconnect marks it unavailable and begins the key policy's bounded
-  ephemeral disconnect grace period;
-- reconnect with the same daemon key before expiry cancels cleanup and resumes
-  the same environment; and
-- expiry closes the environment and revokes the daemon binding. A replacement
-  instance with a new daemon key creates a new environment.
+- disconnect marks it `Offline` and starts the key's disconnect grace;
+- reconnect with the same daemon key before expiry resumes the same
+  environment; and
+- expiry closes the environment. A replacement instance with new storage
+  registers a new environment.
 
-A regular Kubernetes Deployment or Job naturally gets this behavior when the
-identity is held only in memory or on Pod-local storage such as `emptyDir`.
-`emptyDir` can preserve identity across a container restart inside the same
-Pod, but a replacement Pod receives new storage and therefore registers a new
+A Kubernetes Deployment or Job gets this behavior with default storage.
+`emptyDir` preserves identity across a container restart inside one Pod; a
+replacement Pod receives new storage and therefore registers a new
 environment.
-
-The default identity mode is part of registration-key policy rather than a
-global daemon default. A key intended for a disposable pool can therefore
-bootstrap pods with only the gateway URL and registration key, while a VM or
-StatefulSet key can default to persistent mode. A key may allow both modes when
-the caller explicitly configures each daemon.
 
 ## Registration Keys
 
 ### Durable record
 
-Add a universe-scoped registration-key record with at least:
+Add a universe-scoped registration-key record:
 
 ```text
 registration_key_id
 universe_id
-display_name
+display_name                    required; the group name
 key_prefix
 secret_hash
-status                  active | revoked
-default_identity_mode   persistent | ephemeral
-allowed_identity_modes
-max_registrations       optional; counts newly bound daemon identities
-max_active_environments optional; counts non-closed descendants
-ephemeral_disconnect_grace_ms
-expires_at_ms           optional
-registration_count
+identity_mode                   persistent | ephemeral; immutable
+max_active_environments         optional; non-closed environments admitted by this key
+ephemeral_disconnect_grace_ms   deployment default unless set
+expires_at_ms                   optional
 created_at_ms
-updated_at_ms
-last_used_at_ms          optional
-revoked_at_ms            optional
+revoked_at_ms                   optional
 ```
 
 The raw secret is generated with cryptographic randomness, returned once, and
-never stored. Reuse the existing API-key secret hashing and display-prefix
-conventions unless implementation review finds a reason to strengthen both
-together. Registration count and active-capacity admission are checked and
-updated atomically with creation of the environment and daemon binding.
+never stored. Reuse the API-key mint, SHA-256 hash, and display-prefix code in
+`crates/auth` with a distinct secret prefix; a 256-bit random secret needs no
+key-derivation function. Status derives from `revoked_at_ms` and
+`expires_at_ms`. Registration count, active count, and last use derive from
+environment rows carrying the key id; the key row stores no counters.
+`display_name` is required because it is the group name shown wherever
+registered environments are listed.
 
-Known-daemon reconnects do not increment `registration_count`, do not consume
-`max_registrations`, and remain allowed after non-cascading registration-key
-revocation. They authenticate with the daemon key, not with continued authority
-from the registration key.
+Admission locks the key row, counts the key's non-closed environments, and
+inserts the new environment in the same transaction. Concurrent registrations
+against one key serialize on that lock; registrations beyond the limit receive
+a typed capacity refusal and leave no rows.
+
+Known-daemon reconnects do not touch the key. They authenticate with the
+daemon key alone and remain allowed after non-cascading revocation.
 
 ### Management API
 
-Add trusted universe-management methods:
+Add universe-scoped management methods:
 
 ```text
 environments/registration-keys/create
@@ -260,26 +295,32 @@ environments/registration-keys/list
 environments/registration-keys/revoke
 ```
 
+These are ordinary universe methods, like `environments/external/create`,
+which already lets any universe caller add an arbitrary daemon endpoint. A
+registration key admits environments into the same universe and nothing more,
+so it needs no operator scope.
+
 Create returns the raw secret once and uses a redacted `Debug` implementation.
-Read and list return the display prefix, policy, counters, status, and audit
-times, never the hash or secret. Rotation is create-new then revoke-old; no
-method reveals or mutates secret material in place.
+Read and list return the display prefix, policy, derived counts, status, and
+audit times, never the hash or secret. Rotation is create-new then revoke-old;
+no method reveals or mutates secret material in place.
 
 Revoke has explicit behavior:
 
 - without cascade, reject new daemon identities while already registered
   daemon identities may reconnect; and
-- with cascade, also close every non-closed environment admitted by the key and
-  revoke its daemon identity.
+- with cascade, also close every non-closed environment admitted by the key
+  through the ordinary close path.
 
 These methods must never enter the Configurator MCP or any other model-facing
 tool catalog. The Platform and CLI may expose them to authenticated human or
 service administration surfaces. API responses, traces, audit records, and
-errors must not contain the raw registration secret.
+errors must not contain the raw registration secret. Audit is structured log
+events; no audit table is added.
 
 Unlimited reuse is supported by absent limits; it is not a bypass around rate
-limits. The gateway applies bounded per-key connection and failed-auth rates in
-addition to stored capacity limits.
+limits. The gateway applies bounded per-key connection and failed-auth rates
+in process memory, in addition to stored capacity limits.
 
 ## Daemon Configuration
 
@@ -288,58 +329,88 @@ Support a minimal image/bootstrap contract:
 ```text
 LIGHTSPEED_ENVD_GATEWAY_URL
 LIGHTSPEED_ENVD_REGISTRATION_KEY
-LIGHTSPEED_ENVD_IDENTITY_MODE             optional; otherwise key default
+LIGHTSPEED_ENVD_REGISTRATION_KEY_FILE     alternative to the direct form
 LIGHTSPEED_ENVD_REGISTRATION_NAME         optional
 LIGHTSPEED_ENVD_REGISTRATION_METADATA     optional bounded JSON object
 LIGHTSPEED_ENVD_REGISTRATION_RECEIPT      optional output-file path
+LIGHTSPEED_ENVD_CA_FILE                   optional additional trust anchors
+LIGHTSPEED_ENVD_STATE_DIR                 existing; also holds the daemon key
 ```
 
-Also support `LIGHTSPEED_ENVD_REGISTRATION_KEY_FILE` so Kubernetes and VM
-bootstrap systems can mount the secret instead of placing it directly in
-process environment. Supplying both direct and file forms is an error.
+There is no identity-mode setting; mode is key policy. Supplying both key
+forms is an error. `LIGHTSPEED_ENVD_CA_FILE` exists because the daemon trusts
+only the bundled WebPKI roots; an enterprise gateway behind a private CA
+cannot be reached without it. Outbound HTTP proxy support is deferred.
 
 The direct environment-variable form is a required convenience path: a
 preconfigured image may need no input other than the public gateway URL and
-shared key. `envd` reads the secret once, never writes it into its state
-directory or receipt, excludes it from diagnostics, and removes registration
-configuration variables from every process and job environment it spawns.
+shared key. `envd` reads the secret once, removes it from its own process
+environment, never writes it into its state directory or receipt, and excludes
+it from diagnostics. Today the daemon passes its whole environment to every
+child process and job; registration configuration must be removed from the
+daemon's environment before any child starts, and a test must prove children
+cannot see it.
 
-An environment with sufficient OS privilege can inspect or compromise the
-daemon process and its local identity. No in-guest secret representation can
-protect against root in the same security domain. For less-trusted workloads,
-prefer a mounted secret visible only during bootstrap, a distinct service
-user/process namespace, or a sidecar/VM boundary; constrain the reusable key's
-capacity and lifetime. The automatic daemon-key exchange narrows a post-
-bootstrap compromise from “register arbitrary new environments” to “impersonate
-this environment” once the registration key is no longer reachable.
+Removing the variable is not enough against code in the same security domain.
+On Linux, `/proc/<pid>/environ` exposes the daemon's initial environment for
+its whole lifetime, readable by any process with the same uid. The direct form
+is therefore for images whose workloads are trusted. Where the workload is not
+trusted, as in a benchmark sandbox, use the file form, delete the file after
+the receipt appears, and constrain the key's capacity and lifetime. The
+daemon-key exchange narrows a post-bootstrap compromise from “register
+arbitrary new environments” to “impersonate this environment”. No in-guest
+representation protects against root in the same security domain; prefer a
+distinct service user, process namespace, sidecar, or VM boundary for such
+workloads.
 
 ## Outbound Registration Handshake
 
 `envd` connects to one public gateway route over WSS. Plain WS is accepted only
-for explicit loopback/development configuration. The registration secret never
-appears in a URL, query string, close reason, or log field.
+for loopback URLs. The registration secret never appears in a URL, query
+string, close reason, or log field.
 
-The authenticated handshake is separate from the existing environment data-
-plane initialization but reuses its version and capability types:
+The control connection carries registration, heartbeat, and data-connection
+requests. It never carries environment-protocol frames.
 
 ```text
 envd                                      environment gateway
   │                                               │
   ├──────────── WebSocket connect ───────────────►│
-  │◄──────── bounded nonce/challenge ─────────────┤
+  │◄──────── challenge { nonce } ─────────────────┤
   ├─ register {                                   │
   │    protocolVersion,                           │
-  │    registrationKey? ,                         │
+  │    registrationKey?,                          │
   │    daemonPublicKey,                           │
-  │    signature(challenge),                      │
-  │    identityMode?, displayName?, metadata?     │
+  │    signature,                                 │
+  │    displayName?, metadata?                    │
   │  } ──────────────────────────────────────────►│
   │                                               ├─ authenticate/admit
   │                                               ├─ create or reconnect
   │◄─ accepted { environmentId, incarnationId,    │
-  │             daemonId, connectionId, mode } ───┤
-  │◄════════ environment-protocol requests ═══════╡
+  │             daemonId, connectionId,           │
+  │             identityMode } ───────────────────┤
+  │◄════════ heartbeat / openData requests ═══════╡
 ```
+
+Cryptography, fixed for the first version:
+
+- the daemon key is an Ed25519 key pair; the seed lives in
+  `<state dir>/daemon-key` with mode `0600` and comes from the operating
+  system's random source;
+- `daemonId` is `daemon_` followed by the hex SHA-256 of the 32-byte public
+  key;
+- the challenge nonce is 32 random bytes, single-use, bound to the socket, and
+  expires with the handshake timeout. A nonce is used instead of a signed
+  timestamp because sandbox clocks drift;
+- the signature covers the fixed domain string
+  `lightspeed-envd-registration/v1` followed by the nonce; and
+- there are no certificates, no key rotation, and no attestation.
+
+A symmetric daemon secret sent over TLS and hashed server-side would be equally
+safe under TLS server authentication and one message shorter. The key pair is
+kept because the secret never transits, a gateway logging bug cannot leak it,
+and the server holds nothing that can impersonate a daemon. `ed25519-dalek` is
+already a workspace dependency.
 
 For a first-seen daemon public key, `registrationKey` is required and must be
 active, unexpired, and within policy. For a known daemon identity, proof of its
@@ -351,25 +422,73 @@ an environment.
 Admission of a new daemon is one transaction:
 
 1. resolve and verify the registration-key secret;
-2. derive `daemonId` from the proved public key and confirm it is unbound;
-3. atomically enforce total and active limits;
+2. derive `daemonId` from the proved public key and confirm no environment
+   row carries that key;
+3. lock the key row and enforce the active limit;
 4. allocate `environmentId` and `incarnationId`;
-5. insert the registered environment, incarnation, and daemon binding;
-6. increment key audit counters; and
-7. return the receipt.
+5. insert the environment as `Ready` with its key id, daemon public key,
+   identity mode, and `last_seen_at_ms`; and
+6. return the receipt.
 
-The registration transaction creates the environment in `Booting`. It becomes
-`Ready` only after the ordinary data-plane initialization negotiates the
-current protocol, bounded roots, and capabilities. A disconnect before that
-point follows the normal identity-mode rule: a persistent environment remains
-unavailable and retryable by the same daemon identity, while an ephemeral one
-closes after its disconnect grace. A retry cannot create a duplicate because
-the durable daemon binding already exists.
+There is no `Booting` phase. `environments/external/create` already creates
+external environments `Ready`, and protocol version, roots, and capabilities
+are negotiated on every data connection exactly as they are today, so
+registration has nothing to wait for.
 
-After authentication, `envd` serves the same JSON-RPC filesystem, process,
-PTY, idle, and durable-job methods it serves on an accepted passive socket.
-Refactor the daemon around an authenticated WebSocket stream; do not fork a
-second method implementation for client mode.
+Rejections are typed and fall into two classes that `envd` treats
+differently:
+
+- **retryable**: gateway unavailable, handshake timeout, capacity refusal,
+  rate limit. `envd` reconnects with exponential backoff and jitter; and
+- **terminal**: unknown, revoked, or expired registration key for a new
+  daemon; closed environment for a known daemon; invalid signature;
+  unsupported protocol version. `envd` logs the reason, writes no receipt, and
+  exits non-zero. It never retries a terminal rejection and never generates a
+  new identity on its own.
+
+## Data Connections
+
+Every worker route is served by its own data socket, as today. Only the dial
+direction changes:
+
+```text
+worker               gateway                            envd
+  │ route request       │                                 │
+  ├────────────────────►│ openData { token }  (control)   │
+  │                     ├────────────────────────────────►│
+  │                     │◄─── WSS /environment-gateway/data
+  │                     │      Authorization: Bearer <token>
+  │                     ├─ pair, then the existing proxy ─┤
+  │◄════════ environment-protocol frames, unchanged ═════►│
+```
+
+- The gateway generates a random one-time token per route request, remembers
+  it with the waiting worker socket for a short timeout, and sends it over
+  the control connection.
+- `envd` dials the data route with the token as a bearer header and runs its
+  existing per-connection request loop on that socket. The daemon's method
+  handler is not modified for client mode; the accept loop gains a dial-out
+  sibling.
+- The gateway pairs the sockets and runs the same proxy it runs for passive
+  external environments, including the periodic re-authorization by universe,
+  environment, incarnation, and status. That check also compares the daemon's
+  current control connection, so a data socket from a superseded daemon
+  connection is fenced.
+- The worker sends `initialize` on the data socket exactly as it does for
+  every other source.
+- A route request while no control connection is current fails as
+  unavailable and never falls back to another environment admitted by the
+  same key.
+- The activation probe in `EnvironmentResolver::selectable` works unchanged:
+  it opens one data route, which costs one reverse dial.
+
+This costs one control round trip and one TLS handshake per route, on top of
+the route each tool activity already opens today. It avoids a frame
+multiplexer, keeps JSON-RPC id spaces and process-output notifications per
+connection, and keeps backpressure per route. If per-call latency from remote
+daemons ever matters, `envd` can keep one or two pre-opened standby data
+sockets so pairing is immediate; that is a later optimization, not part of
+this item.
 
 ## Environment Record and Routing
 
@@ -383,18 +502,35 @@ Registered {
 }
 ```
 
-Registered environments have no provider, provider binding, provider target,
-template, or stored daemon endpoint. They have no provider power controls or
-provider-managed public ingress. Their availability comes from the gateway's
-current authenticated connection observation.
+In PostgreSQL, `environments` gains `registration_key_id` and
+`daemon_public_key` columns, the source-kind check gains `registered`, the
+source-fields check gains the third case, and `daemon_public_key` gets a
+unique index over all rows. The in-memory store is per universe and can only
+enforce that uniqueness per universe; the PostgreSQL index is the
+deployment-wide guarantee.
 
-Persist the daemon public key and revocation state in a dedicated daemon-
-identity record bound to universe, environment, and incarnation. The
-environment source contains stable provenance, while raw socket ownership,
-request correlation, backpressure, and `connectionId` remain ephemeral gateway
-facts. PostgreSQL may hold a short-lived owner lease for multi-gateway routing,
-but such a lease never makes a disconnected environment Ready and is never
-authoritative lifecycle state.
+Registered environments have no provider, provider binding, provider target,
+template, stored daemon endpoint, power control, idle policy, or
+provider-managed public ingress. Validation mirrors the external source:
+desired power running, no idle policy, no ingress. The Environments page hides
+power controls for them as it does for external environments.
+
+Availability is projected from the control connection:
+
+- connect sets status `Ready` and stamps `last_seen_at_ms`;
+- the gateway re-stamps `last_seen_at_ms` on a fixed interval on the order of
+  tens of seconds while the connection lives;
+- disconnect sets status `Offline`. `Offline` already exists and the resolver
+  already passes it through for non-provisioned sources; wake-on-use applies
+  only to provisioned environments, so activating an `Offline` registered
+  environment fails with the typed unavailable error; and
+- a stale stamp under `Ready` means the gateway stopped without recording the
+  disconnect. Consumers treat it as `Offline` and the reconciler repairs the
+  row.
+
+No new status is added and the gateway holds no durable lifecycle authority.
+The stamp is also the future owner lease: record the gateway instance id
+beside it when multi-instance routing arrives.
 
 Temporal workers continue to connect to the stable internal route:
 
@@ -402,24 +538,37 @@ Temporal workers continue to connect to the stable internal route:
 /environment-gateway/routes/{universe}/{environment}/{incarnation}
 ```
 
-For a registered source, the gateway proxies those frames over the current
-outbound daemon socket. Every routed request is fenced by universe,
-environment, incarnation, daemon, and current connection. A route with no
-current connection fails as unavailable; it never falls back to a different
-environment registered by the same key.
+For a registered source the gateway serves it by the reverse dial above. Every
+routed request is fenced by universe, environment, incarnation, daemon, and
+current control connection.
 
-The gateway instance owning an outbound socket must be discoverable by other
-gateway instances. The first implementation may run the environment-gateway
-connection owner as a singleton, but multi-instance production support
-requires authenticated internal forwarding or an equivalent short-lived owner
-lease. Do not route individual environment calls through Temporal or store
-socket payloads in PostgreSQL.
+The gateway replica holding a control connection is the environment's owner.
+Worker route requests and the daemon's data dials must both reach it. The
+first implementation runs the process that accepts daemon connections as one
+replica and states so in the hosted deployment configuration. Workers are
+unaffected; they already dial the gateway over an internal URL. The JSON-RPC
+gateway may scale separately once the environment gateway is its own role.
 
-Unlike passive environments, an available registered environment holds one
-long-lived outbound socket while idle. Use WebSocket ping/pong, bounded idle
-health checks, reconnect backoff with jitter, frame/output limits, and explicit
-backpressure. Network disconnect is availability loss, not environment
-closure by itself.
+Multi-replica support is deferred to slice 4 and consists of:
+
+- an owner lease: the environment row records the owning replica and its
+  internal address beside the heartbeat stamp;
+- direct worker dialing: `connection_for` reads the owner address from the row
+  instead of one fixed base URL;
+- a self-describing data token: the owner signs its replica id into the
+  token. A replica that receives a data dial pairs locally when it is the
+  owner and otherwise relays the socket to the owner over an internal route
+  with the existing proxy loop. The relay is the only new code and runs only
+  when a dial scattered; and
+- optional sticky ingress by cookie or header, which keeps the relay from
+  firing at all.
+
+Do not route individual environment calls through Temporal or store socket
+payloads in PostgreSQL.
+
+Use WebSocket ping/pong, reconnect backoff with jitter, frame and output
+limits, and explicit backpressure on the control connection. Network
+disconnect is availability loss, not environment closure by itself.
 
 ## Correlation Metadata and Registration Receipt
 
@@ -439,9 +588,12 @@ string metadata when starting `envd`. Examples include:
 
 The daemon may add bounded implementation facts such as hostname, OS,
 architecture, and `envd` version. It must not scrape all environment variables,
-cloud instance metadata endpoints, or mounted Kubernetes credentials. Client
-metadata is size/count bounded, rejects control characters, and cannot use the
-reserved `lightspeed.*` namespace.
+cloud instance metadata endpoints, or mounted Kubernetes credentials.
+
+Bounds apply at the handshake only: at most 32 entries, keys up to 64 bytes,
+values up to 256 bytes, no control characters, and no key under the reserved
+`lightspeed.` prefix. The general environment metadata validation is not
+changed.
 
 The gateway records accepted values in the environment's existing metadata
 map at first registration. They are descriptive and queryable but never:
@@ -450,7 +602,7 @@ map at first registration. They are descriptive and queryable but never:
 - an idempotency or uniqueness key;
 - a substitute for the daemon public key;
 - authority to select an existing environment; or
-- a routing key.
+- a routing or grouping key.
 
 The accepted response is also written atomically to the configured receipt
 path and emitted as one bounded structured log event:
@@ -470,35 +622,89 @@ the receipt to target the exact environment they started even when many
 instances register concurrently with the same key. Harbor will use this
 mechanism, but its adapter and cleanup contract are specified separately.
 
+## Grouping and Selection
+
+Registered environments arrive without a provider, binding, or template, and
+a busy universe may hold dozens of them from several keys. Nothing today
+distinguishes them: the model's `environment_list` tool renders id, provider,
+display name, status, and active flag in an unfiltered id-ordered page; the
+trusted `environments/list` filters only by provider, binding, status, and
+origin session; the Environments page and the profile picker are flat lists;
+and a session grant that names allowed providers excludes provider-less
+environments entirely.
+
+The registration key is the group. It is server-assigned, trustworthy, and
+already the operator's unit of policy. Client metadata stays descriptive.
+
+- **Grant.** `EnvironmentsFeature` gains `registrationKeys`, an optional list
+  of key ids beside the existing `providers` list with the same semantics:
+  absent means every key is allowed; present means only environments admitted
+  by a listed key. An environment passes when its provider is allowed or its
+  key is allowed. A profile can therefore scope a session, and a bot through
+  its profile, to named pools without any new concept. Harbor's benchmark
+  profile restricts sessions to the campaign key.
+- **List and read.** `environments/list` gains a `registrationKeyId` filter.
+  `environments/read` and list rows expose the key id, daemon id, identity
+  mode, and last-seen time for registered environments.
+- **Model view.** The `environment_list` tool output gains a `group` field
+  holding the key's display name, and the tool accepts a `group` filter.
+  Nothing about the registration key beyond its display name is
+  model-visible.
+- **User interfaces.** The Environments page and the profile environment
+  picker group registered environments under the key's display name; the
+  registration-keys page lists each key's environments.
+- **Profiles and bots.** The existing intents are unchanged: `existing` binds
+  one environment by id, `inherit` follows the parent, and `provision` stays
+  provider-only. A bot's environment remains an `existing` environment, as
+  decided in [P140](p140-bot-environments-and-bot-lifecycle.md). Profile
+  validation warns when `existing` names an ephemeral registered environment,
+  because the key's grace will close it under the bot.
+
+Deferred, deliberately:
+
+- a pool intent such as `{ type: "pool", registrationKeyId }` that claims any
+  ready environment from a key exclusively for one session. That needs a claim
+  and release model and is a separate item; and
+- selection by name within a key, which would let a profile reference a
+  machine before it registers. Until then, register first and read the id
+  from the receipt or the key page.
+
 ## Lifecycle and Failure Semantics
 
-- **New daemon + valid key:** create one environment and return its receipt.
+- **New daemon + valid key:** create one `Ready` environment and return its
+  receipt.
 - **Known daemon reconnect:** return the same environment/incarnation with a
-  new connection id; do not increment registration counters.
-- **Unknown daemon + revoked/expired/exhausted key:** reject before creating
-  durable environment state.
-- **Known daemon after non-cascading key revocation:** allow reconnect based on
-  daemon-key proof.
-- **Known daemon after environment close or daemon revocation:** reject. An
-  explicit local identity reset plus an active registration key is required to
-  create a new environment.
-- **Persistent disconnect:** mark unavailable and retain the environment until
-  explicit close.
-- **Ephemeral disconnect:** mark unavailable, start the configured grace
-  period, and close unless the same daemon identity reconnects first.
-- **Gateway restart:** `envd` reconnects with exponential backoff and jitter.
-  Durable identity binding prevents duplicate environments.
-- **Duplicate live daemon identity:** one connection becomes current and the
-  old connection is fenced and closed.
-- **Key limit race:** one atomic transaction admits only the allowed number;
-  losers receive a typed capacity refusal.
+  new connection id, set `Ready`, stamp `last_seen_at_ms`; the key is not
+  consulted.
+- **Unknown daemon + revoked/expired/exhausted key:** terminal rejection
+  before any durable environment state.
+- **Known daemon after non-cascading key revocation:** allow reconnect based
+  on daemon-key proof.
+- **Known daemon after environment close:** terminal rejection. The identity
+  is spent; a local identity reset plus an active registration key registers
+  a new environment.
+- **Persistent disconnect:** `Offline` until explicit close.
+- **Ephemeral disconnect:** `Offline`; the lifecycle reconciler closes the
+  environment once `last_seen_at_ms` is older than the key's grace and no
+  control connection is current. A reconnect inside the grace refreshes the
+  stamp; there is no timer to cancel.
+- **Gateway restart:** all control connections drop and every registered
+  environment is `Offline` until its daemon reconnects with backoff. Ephemeral
+  environments keep their grace window from the last stamp. Durable identity
+  binding prevents duplicate environments.
+- **Duplicate live daemon identity:** one control connection becomes current;
+  the old connection and its data sockets are fenced and closed.
+- **Key limit race:** admissions serialize on the key row; losers receive a
+  typed, retryable capacity refusal and leave no rows.
+- **Data dial with an unknown or expired token:** rejected; the waiting worker
+  route fails as unavailable.
 - **Metadata collision:** display names need not be unique; metadata cannot
-  affect identity. Server ids remain authoritative.
+  affect identity or grouping. Server ids remain authoritative.
 
-Closing a registered environment closes its current socket through the
-gateway, revokes its daemon binding, and disables session selection. It does
-not terminate the underlying VM, Pod, or host; those remain owned by the
-external orchestrator.
+Closing a registered environment closes its control connection and data
+sockets through the gateway, spends its daemon identity, and disables session
+selection. It does not terminate the underlying VM, Pod, or host; those remain
+owned by the external orchestrator.
 
 ## Security Boundary
 
@@ -510,19 +716,24 @@ cluster-join credentials, not like a harmless correlation value.
 
 Required controls:
 
-- TLS server authentication for every non-loopback gateway URL;
+- TLS server authentication for every non-loopback gateway URL, with an
+  optional operator-supplied trust anchor file;
 - cryptographically random secrets, stored only as hashes and returned once;
 - explicit universe binding, expiry, revocation, capacity, and rate limits;
 - atomic limit enforcement under concurrent registrations;
 - proof of daemon private-key possession before binding or reconnecting;
 - server-assigned environment/incarnation ids and strict current-incarnation
   fencing;
+- one-time data tokens bound to one route request and one control connection;
 - no secret in URLs, metadata, receipts, traces, errors, command lines, child
   process environments, or persisted daemon state;
+- registration configuration removed from the daemon's environment before any
+  child starts, with a test, and the documented `/proc` limitation of the
+  direct form;
 - bounded pre-authentication work, frames, metadata, output, and connection
   counts;
-- audit of key creation, successful new registrations, refusals, last use,
-  revocation, and cascade close without storing the secret;
+- audit of key creation, successful new registrations, refusals, revocation,
+  and cascade close without storing the secret;
 - explicit cleanup of ephemeral environments and operator-visible stale
   persistent environments; and
 - a test proving that an identity baked into two images cannot create two
@@ -538,48 +749,61 @@ worker routes.
 
 ### 1. Domain, store, and management API
 
-- Add registration-key records, secret mint/hash/redaction, create/read/list/
-  revoke methods, policy validation, audit counters, and atomic capacity
-  enforcement.
-- Add `Registered` environment source and daemon-identity storage with domain
-  validation and memory/PostgreSQL parity.
+- Add the registration-key record, secret mint/hash/redaction, create/read/
+  list/revoke methods, policy validation, and row-locked capacity admission.
+- Add the `Registered` environment source, the two environment columns, the
+  amended check constraints, the unique daemon-key index, and memory/
+  PostgreSQL parity.
+- Add `registrationKeys` to the environments grant, the `registrationKeyId`
+  list filter, and the registered fields on read/list rows.
 - Keep registration-key methods out of Configurator MCP and generated
   model-facing catalogs while retaining normal generated Rust/TypeScript
   management clients.
 - Regenerate the public API contract and TypeScript consumers.
 
-### 2. Outbound gateway and daemon connector
+### 2. Control channel and daemon connector
 
-- Add the public WSS registration route, bounded challenge handshake, daemon
-  proof, create-or-reconnect transaction, live connection registry, and stable
-  worker-route proxy.
-- Refactor `lightspeed-envd` so its existing request handler can run over an
-  accepted passive socket or a daemon-initiated authenticated socket.
-- Add local key generation/persistence, persistent/ephemeral mode, receipt
-  output, heartbeat, reconnect backoff, and registration metadata.
-- Scrub registration configuration from spawned process and job environments
-  and all diagnostics.
+- Add the public WSS connect route, nonce challenge, Ed25519 proof,
+  create-or-reconnect transaction, in-memory control-connection registry, and
+  per-key rate limits.
+- Add the `openData` request, the data route, the token pairing map, and the
+  reuse of the existing external proxy with the extra control-connection
+  fence.
+- Give `lightspeed-envd` a dial-out sibling of its accept loop: daemon key
+  file, registration handshake, receipt output, heartbeat, reconnect backoff,
+  terminal-versus-retryable rejection handling, data-route dialing, and the
+  trust-anchor file option.
+- Scrub registration configuration from the daemon's own environment before
+  any child or job starts, and from all diagnostics.
 
 ### 3. Lifecycle and administration
 
-- Project gateway connect/disconnect observations into Ready/unavailable
-  status without treating observations as durable truth.
-- Add persistent offline behavior, ephemeral grace/auto-close, explicit daemon
-  revocation, and cascading registration-key revoke.
-- Add Platform and CLI creation, listing, rotation/revocation, copy-once secret
-  display, mode/limit configuration, and descendant-environment visibility.
+- Project connect/disconnect into `Ready`/`Offline` with `last_seen_at_ms`
+  stamps, and repair stale `Ready` rows in the reconciler.
+- Add ephemeral grace close in the lifecycle reconciler and cascading
+  registration-key revoke.
+- Add Platform and CLI key creation, listing, rotation/revocation, copy-once
+  secret display, and mode/limit configuration.
+- Group registered environments by key on the Environments page and in the
+  profile picker, add the `group` field and filter to the model list tool,
+  and add the ephemeral `existing` warning to profile validation.
 
 ### 4. Deployment and live acceptance
 
-- Publish the public gateway route through the hosted ingress with TLS and
-  bounded metrics.
+- Publish the public connect and data routes through the hosted ingress with
+  TLS and bounded metrics, and pin one environment-gateway replica in the
+  hosted deployment configuration.
 - Document VM, plain Docker, Kubernetes Deployment/Job, and StatefulSet + PVC
-  bootstrap examples using the same daemon image.
+  bootstrap examples using the same daemon image, including the private-CA
+  case.
 - Prove hosted Lightspeed with externally started compute, restart/reconnect,
   concurrent shared-key registration, capacity refusal, cleanup, and cascade
   revocation.
-- Decide and implement the multi-gateway connection-owner routing mechanism
-  before running more than one environment-gateway owner in production.
+- Split the environment gateway into its own role so the JSON-RPC gateway
+  scales independently of the single connection-owner replica.
+- Implement the owner lease, direct worker dialing, signed data token, and
+  relay hop before running more than one environment-gateway replica in
+  production.
 
 ## Tests
 
@@ -590,8 +814,10 @@ worker routes.
   outcomes.
 - One shared key concurrently creates distinct server-assigned environments
   for distinct daemon public keys.
-- Registration and active limits are atomic under concurrency; reconnects do
-  not consume them.
+- The active limit is atomic under concurrency and reconnects do not consume
+  it; refused registrations leave no rows.
+- A grant naming only providers hides registered environments; a grant naming
+  registration keys shows exactly those; the list filter by key id matches.
 - Registration-key methods cannot appear in Configurator MCP or session tools.
 - Non-cascading and cascading revocation have the documented descendant
   behavior.
@@ -600,27 +826,32 @@ worker routes.
 
 - Persistent identity reconnects after daemon and gateway restart with the
   same environment/incarnation and a new connection id.
-- Ephemeral replacement with a new daemon key creates a new environment;
-  disconnect grace closes the old one; reconnect inside the grace cancels
-  cleanup.
-- A closed/revoked daemon identity cannot resurrect its old environment even
-  when the original registration key remains active.
-- A copied daemon identity yields one current connection and never two
-  environments.
+- Ephemeral replacement with a new daemon key creates a new environment; the
+  reconciler closes the old one after grace; a reconnect inside the grace
+  keeps it.
+- A closed environment's daemon identity receives a terminal rejection even
+  when the original registration key remains active, and `envd` exits
+  instead of retrying.
+- A copied daemon identity yields one current control connection, fences the
+  other's data sockets, and never two environments.
 - A registration key cannot move a known daemon identity between universes.
+- A stale `Ready` row with an old stamp is treated as unavailable and repaired.
 
 ### Protocol and security
 
-- Protocol-version/capability negotiation and the complete existing envd
-  filesystem/process/PTY/job conformance suite pass over outbound transport.
+- The complete existing envd filesystem/process/PTY/job conformance suite
+  passes over reverse-dialed data sockets, with several concurrent routes to
+  one daemon.
 - Invalid signatures, oversized metadata/frames, handshake timeout, replayed
-  challenges, and authentication floods fail before environment creation.
+  nonces, and authentication floods fail before environment creation.
+- Data tokens are single-use, expire, and are bound to the control connection
+  that received them.
 - Environment, incarnation, daemon, and connection fencing rejects stale
   sockets and cross-environment requests.
 - Registration secrets do not appear in `Debug`, logs, close frames, receipts,
   persisted daemon state, or child process/job environments.
 - Metadata is bounded, reserved names are rejected, and correlation values
-  never influence identity or routing.
+  never influence identity, routing, or grouping.
 
 ### Live
 
@@ -638,10 +869,14 @@ worker routes.
 
 - One-time enrollment tickets, short-lived per-environment bootstrap tokens,
   or pre-creating a pending environment before `envd` connects.
-- Letting `envd` choose its universe, `environmentId`, `incarnationId`, or an
-  existing environment to claim.
+- Letting `envd` choose its universe, `environmentId`, `incarnationId`,
+  identity mode, or an existing environment to claim.
+- Multiplexing environment-protocol frames over the control connection.
 - Using client-supplied hostname, Pod UID, VM id, or Harbor identifiers as
-  authentication or durable identity.
+  authentication, durable identity, or grouping.
+- A pool-claim profile intent or selection by name within a key; both are
+  later items.
+- Outbound HTTP proxy support in `envd`.
 - Replacing passive external environments or provider-mediated Incus routes.
 - Defining the Harbor adapter, benchmark suite, task correlation workflow, or
   result publication; those belong to
@@ -653,7 +888,7 @@ worker routes.
   native attestation. They may become alternate registration authorities
   later; reusable keys are the only authority in this item.
 - Provisioning or deleting the underlying VM, container, Pod, or host.
-- Provider power control, public application ingress, environment pools,
-  scheduling, billing, or capacity placement for registered environments.
+- Provider power control, public application ingress, scheduling, billing, or
+  capacity placement for registered environments.
 - Making the registration key a general universe API credential or a
   permanent data-plane bearer credential.

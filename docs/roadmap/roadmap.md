@@ -16,12 +16,17 @@
   universe-scoped registration keys for outbound `lightspeed-envd`
   connections: one shared key may admit many independently identified VMs,
   containers, or pods; `envd` mints only its daemon key while Lightspeed
-  assigns and fences the environment/incarnation ids; persisted daemon state
-  reconnects a stable environment, ephemeral state creates a new environment
-  per instance and auto-closes after disconnect grace; bounded correlation
-  metadata and a registration receipt let external orchestrators match their
-  compute to the resulting environment. No one-time enrollment tickets or
-  Harbor-specific adapter in this item.
+  assigns and fences the environment/incarnation ids. Reviewed 2026-09-02:
+  the outbound socket is a control channel and each worker route gets a
+  reverse-dialed data socket through the unchanged gateway proxy; identity
+  mode is key policy copied onto the environment, with persistent state
+  reconnecting the same environment and volatile state creating a new one
+  that auto-closes after disconnect grace; the daemon key is a column on the
+  environment row; the registration key is the group, with a grant allowlist
+  and list filter; bounded correlation metadata and a registration receipt
+  let external orchestrators match their compute to the resulting
+  environment. No one-time enrollment tickets, frame multiplexing, pool-claim
+  intents, or Harbor-specific adapter in this item.
 - [ ] [P147](p147-session-checkpoints-and-bounded-reads.md) — session
   checkpoints and bounded reads: keep the event log authoritative while one
   CAS-backed reducer checkpoint per session (advance-only pointer row) makes
