@@ -125,6 +125,15 @@ values.
 | `LIGHTSPEED_ENVIRONMENT_GATEWAY_URL` | **Required for a worker-only process** | Stable gateway base URL used by workers for environment data routes. |
 | `LIGHTSPEED_ENVIRONMENT_GATEWAY_TOKEN` | **Required for a worker-only process** | Shared deployment bearer token for worker-to-gateway routing. |
 
+The `gateway` role also serves the public registration routes
+`/environment-gateway/connect` and `/environment-gateway/data` that outbound
+`lightspeed-envd` daemons dial. A registered daemon's control connection lives
+on the replica that accepted it, and the worker route for that environment
+must reach the same replica: **run exactly one replica of the process that
+serves these routes** until multi-replica owner routing is implemented.
+Workers may scale freely. Expose the routes through TLS; the daemon refuses
+plain `ws://` toward anything but loopback.
+
 ## Rust CLI
 
 These variables configure the `lightspeed` CLI, not the server. Command-line
@@ -149,14 +158,33 @@ name. Those caller-chosen secret names are not Lightspeed configuration keys.
 
 ### Environment daemon
 
-`lightspeed-envd` is passive and requires no Lightspeed identity or credential.
+`lightspeed-envd` runs in one of two transports, or both. Passive: it listens
+and Lightspeed (or a provider) dials it; it needs no identity or credential.
+Outbound: given a gateway URL, it dials Lightspeed, proves an Ed25519 identity
+it keeps in its state directory, and registers as an environment through a
+registration key the first time. Every `LIGHTSPEED_ENVD_*` variable is removed
+from the environment of each process and job the daemon starts.
 
 | Variable | Requirement/default | Purpose |
 | --- | --- | --- |
-| `LIGHTSPEED_ENVD_LISTEN` | `127.0.0.1:19091` | WebSocket listener address. |
+| `LIGHTSPEED_ENVD_LISTEN` | `127.0.0.1:19091` unless a gateway URL is set | WebSocket listener address for the passive transport. Set it explicitly to listen while also registering outbound. |
+| `LIGHTSPEED_ENVD_GATEWAY_URL` | Unset | Public connect route to dial, `wss://<host>/environment-gateway/connect`. Plain `ws://` is accepted only toward loopback. |
+| `LIGHTSPEED_ENVD_REGISTRATION_KEY` | Unset | Registration key admitting a first-seen daemon identity. Read once and dropped from the process environment; on Linux the initial environment stays readable through `/proc`, so use the file form for untrusted workloads. |
+| `LIGHTSPEED_ENVD_REGISTRATION_KEY_FILE` | Unset | File holding the registration key; mutually exclusive with the direct form. Delete the file once the receipt appears. |
+| `LIGHTSPEED_ENVD_REGISTRATION_NAME` | Unset | Display-name hint recorded on the environment at first registration. |
+| `LIGHTSPEED_ENVD_REGISTRATION_METADATA` | Unset | JSON object of string correlation metadata (at most 32 entries; keys up to 64 bytes, values up to 256; the `lightspeed.` prefix is reserved). Descriptive only. |
+| `LIGHTSPEED_ENVD_REGISTRATION_RECEIPT` | Unset | Path the daemon writes `{environmentId, incarnationId, daemonId, connectionId, identityMode}` to once admitted. |
+| `LIGHTSPEED_ENVD_CA_FILE` | Unset | PEM bundle of additional TLS trust anchors for a gateway behind a private CA. |
 | `LIGHTSPEED_ENVD_CWD` | Current directory | Default working directory exposed to jobs. |
 | `LIGHTSPEED_ENVD_FS_ROOT` | Native filesystem root containing the working directory | Filesystem boundary exposed by the daemon. |
-| `LIGHTSPEED_ENVD_STATE_DIR` | `<cwd>/.lightspeed-envd` | Durable daemon state directory; relative paths resolve under the working directory. |
+| `LIGHTSPEED_ENVD_STATE_DIR` | `<cwd>/.lightspeed-envd` | Durable daemon state directory; relative paths resolve under the working directory. Holds the daemon key (`daemon-key`, mode `0600`): keep it on storage that survives the restarts the environment should survive, delete it to register as a new environment. |
+
+Identity mode (persistent or ephemeral) is not daemon configuration: it is
+the registration key's policy, minted with
+`lightspeed env registration-keys create` or on the Platform Environments
+page. A closed environment's daemon identity is spent; the daemon exits with
+a non-zero status on any terminal rejection and never generates a new
+identity on its own.
 
 `./dev.sh full` and `./dev.sh runtime` also start one daemon on the developer
 machine (opt out with `./dev.sh --no-envd` or `LIGHTSPEED_DEV_ENVD=off`):

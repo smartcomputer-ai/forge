@@ -4,6 +4,23 @@
 
 - Proposed 2026-09-01. Reviewed and revised 2026-09-02, before
   implementation.
+- **Implemented 2026-09-02**, slices 1 through 3 plus the deployment
+  documentation of slice 4, in four commits on `harbor`: domain, store, and
+  API; the outbound transport; lifecycle, model-tool group, and CLI; the
+  Platform key management and demo. Verified by the unit suites of every
+  touched crate and by the live suite
+  `crates/temporal-server/tests/environment_registration_live.rs`, which
+  runs an in-process `envd` against the real gateway, Postgres, and Temporal:
+  first registration, two concurrent reverse-dialed routes, offline and
+  identity-only reconnect, a second identity under one key, refusal of a new
+  daemon after revocation while reconnects continue, a closed environment
+  spending its identity, and ephemeral close through the reconciler.
+  Two defects surfaced only live and are fixed: a 64-bit decode of the
+  integer active-limit column, and a read-modify-write on connection
+  observations that could overwrite a concurrent close with `Offline` (now
+  one conditional update). Still open from slice 4: the environment-gateway
+  role split and multi-replica owner routing; the hosted deployment runs one
+  replica of the registration routes until then.
 - Builds on P119's environment protocol, gateway route, incarnation fencing,
   and canonical `lightspeed-envd` runtime. It adds one new environment source
   whose daemon opens its connections outbound.

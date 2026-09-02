@@ -12,7 +12,7 @@
   native prompt/context/tool loop; local Docker and remote sandbox compute,
   failure accounting, provenance, artifacts, and paired reporting are
   included, but harness-attribution ablations are not.
-- [ ] [P148](p148-key-based-outbound-environment-registration.md) — reusable
+- [x] [P148](p148-key-based-outbound-environment-registration.md) — reusable
   universe-scoped registration keys for outbound `lightspeed-envd`
   connections: one shared key may admit many independently identified VMs,
   containers, or pods; `envd` mints only its daemon key while Lightspeed
