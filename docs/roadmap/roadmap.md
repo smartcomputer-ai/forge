@@ -1,6 +1,12 @@
 # Lightspeed Roadmap
 
 ## Work
+- [ ] [P148](p148-scalable-mcp-discovery-and-tool-search.md) — scalable MCP
+  discovery and tool search: replace silent 4 KiB management truncation with
+  paginated summaries plus full tool detail, distinguish CAS-backed transcript
+  previews from source truncation, raise the bounded inventory envelope for
+  enterprise servers, and return small ranked search sets under an aggregate
+  context budget.
 - [ ] [P147](p147-session-checkpoints-and-bounded-reads.md) — session
   checkpoints and bounded reads: keep the event log authoritative while one
   CAS-backed reducer checkpoint per session (advance-only pointer row) makes
@@ -377,6 +383,10 @@ Superseded by [P134](p134-subagents.md); the entries below are history.
 - [ ] Design capability based model for agents
 
 ## MCP
+- [ ] [P148](p148-scalable-mcp-discovery-and-tool-search.md) — preserve large
+  MCP inventories within an explicit safety envelope while management views
+  paginate, transcript previews expand through CAS, and model search retrieves
+  only a small ranked set plus full definitions on demand
 - [x] [P110](p110-universe-owned-mcp-auth.md) — make authentication part of
   each universe-scoped MCP server configuration, remove grant selection and
   grant references from sessions, and resolve the server's current credential
