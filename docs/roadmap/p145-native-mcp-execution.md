@@ -173,20 +173,17 @@ the concurrency tools pulled in when a workflow binding exposes model-owned
 promises):
 
 ```text
-mcp_find_tools { server?, query? }
+mcp_find_tools { server?, query?, names?, cursor? }
 mcp_call       { server, tool, arguments }
 ```
 
-- `mcp_find_tools` browses or searches one server's live inventory through
-  the same worker-local cached resolver that injection uses. Results are
-  ordinary tool results: the matching tools' names, descriptions, and full
-  input schemas for a bounded top-K; browse (no query) returns names and
-  one-line descriptions, paginated. Matching is simple and deterministic:
-  separators and camelCase become token boundaries; exact names, token
-  coverage, name matches, conservative prefix/plural matches, and
-  Jaro-Winkler typo similarity determine rank in that order. Partial
-  multi-token matches remain eligible, and no embeddings are involved. Only
-  allowlisted tools are ever returned; search never widens Selected policy.
+- `mcp_find_tools` browses, searches, or loads selected full definitions from
+  one server's live inventory through the same worker-local cached resolver
+  that injection uses. The byte-bounded hit shape, pagination rules, detail
+  mode, and argument-name indexing are specified by
+  [P148](p148-scalable-mcp-discovery-and-tool-search.md). Matching remains
+  deterministic and lexical; only allowlisted tools are ever returned, so
+  search never widens Selected policy.
 - `mcp_call` executes one tool through the same pinned per-call path as an
   injected call: audience check, broker resolution, `tools/call`, result
   mapping, bounds. The runtime validates that `server` names an active

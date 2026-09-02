@@ -1397,6 +1397,7 @@ mod tests {
                 remote_name: "lookup".to_owned(),
                 description: Some("Lookup".to_owned()),
                 input_schema: json!({"type": "object"}),
+                annotations: None,
             }])
         }
     }

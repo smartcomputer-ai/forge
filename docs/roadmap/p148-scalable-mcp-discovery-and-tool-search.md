@@ -2,8 +2,10 @@
 
 **Status**
 
-- Proposed 2026-09-02 after validating Notion's 41-tool MCP server on hz01.
-- Reviewed and simplified 2026-09-02. Dropped: management pagination and a
+- Implemented 2026-09-02 across management discovery, transcript expansion,
+  native MCP search/detail retrieval, projection, and tests.
+- Proposed and reviewed 2026-09-02 after validating Notion's 41-tool MCP
+  server on hz01. Dropped: management pagination and a
   tool-detail method, truncation metadata, search-result tiers, aggregate
   context budgets, configurable limits, telemetry. Kept: one rendering rule
   for every search hit, byte-paged results, and a `names` mode that returns

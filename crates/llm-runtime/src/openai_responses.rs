@@ -1448,6 +1448,7 @@ mod tests {
                 remote_name: "search_issues".to_owned(),
                 description: Some("Search issues".to_owned()),
                 input_schema: json!({"type": "object", "properties": {"q": {"type": "string"}}}),
+                annotations: None,
             }])
         }
     }

@@ -5,6 +5,10 @@ import { Button } from "@/components/ui/button";
 import { Marker, MarkerContent, MarkerIcon } from "@/components/ui/marker";
 import { Message, MessageContent } from "@/components/ui/message";
 import { MarkdownContent } from "@/components/session/markdown-content";
+import {
+  ExpandableContent,
+  type FullTextLoader,
+} from "@/components/session/expandable-content";
 import { ReasoningTrace, ToolGroupTrace } from "@/components/session/tool-trace";
 import {
   type ActiveRun,
@@ -16,21 +20,36 @@ import { cn } from "@/lib/utils";
 /// is a tinted band, assistant output plain rendered text, tool activity
 /// and lifecycle notes are compact marker rows.
 
-export function TranscriptEntryView({ entry }: { entry: TranscriptEntry }) {
+export function TranscriptEntryView({
+  entry,
+  loadFullText,
+}: {
+  entry: TranscriptEntry;
+  loadFullText?: FullTextLoader;
+}) {
   switch (entry.kind) {
     case "message":
-      return entry.role === "user" ? (
-        <UserBand text={entry.text} steering={entry.steering === true} />
-      ) : (
-        <Message>
-          <MessageContent>
-            <Bubble variant="ghost" className="max-w-full">
-              <BubbleContent>
-                <MarkdownContent>{entry.text}</MarkdownContent>
-              </BubbleContent>
-            </Bubble>
-          </MessageContent>
-        </Message>
+      return (
+        <ExpandableContent
+          text={entry.text}
+          truncated={entry.textTruncated}
+          contentRef={entry.contentRef}
+          loadFullText={loadFullText}
+        >
+          {(text) => entry.role === "user" ? (
+            <UserBand text={text} steering={entry.steering === true} />
+          ) : (
+            <Message>
+              <MessageContent>
+                <Bubble variant="ghost" className="max-w-full">
+                  <BubbleContent>
+                    <MarkdownContent>{text}</MarkdownContent>
+                  </BubbleContent>
+                </Bubble>
+              </MessageContent>
+            </Message>
+          )}
+        </ExpandableContent>
       );
     case "system":
       return (
@@ -45,7 +64,7 @@ export function TranscriptEntryView({ entry }: { entry: TranscriptEntry }) {
     case "reasoning":
       return <ReasoningTrace text={entry.text} />;
     case "tool-group":
-      return <ToolGroupTrace group={entry} />;
+      return <ToolGroupTrace group={entry} loadFullText={loadFullText} />;
     case "marker":
       return entry.tone === "error" ? (
         <Marker className="text-destructive">

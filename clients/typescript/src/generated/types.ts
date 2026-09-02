@@ -119,7 +119,12 @@ export type AgentNotification =
  * via the `definition` "ToolItemStatus".
  */
 export type ToolItemStatus =
-  "requested" | "running" | "succeeded" | "failed" | "cancelled" | "unavailable";
+  | "requested"
+  | "running"
+  | "succeeded"
+  | "failed"
+  | "cancelled"
+  | "unavailable";
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "ToolCallDisplayGroup".
@@ -256,7 +261,13 @@ export type RunSummarySourceView = {
  * via the `definition` "RunStatus".
  */
 export type RunStatus =
-  "queued" | "running" | "parked" | "cancelling" | "completed" | "failed" | "cancelled";
+  | "queued"
+  | "running"
+  | "parked"
+  | "cancelling"
+  | "completed"
+  | "failed"
+  | "cancelled";
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "CompactionPolicy".
@@ -925,7 +936,11 @@ export type BotWhenBusy = "queue" | "steer" | "append";
  * via the `definition` "BotTriggerDisabledReason".
  */
 export type BotTriggerDisabledReason =
-  "breaker" | "poll_failed" | "one_shot" | "operator" | "bot_closed";
+  | "breaker"
+  | "poll_failed"
+  | "one_shot"
+  | "operator"
+  | "bot_closed";
 /**
  * Which session a trigger's events are delivered to; absent means the
  * bot's main session.
@@ -1174,7 +1189,11 @@ export type ChannelProvider = string;
  * via the `definition` "ChannelInboundDecision".
  */
 export type ChannelInboundDecision =
-  "bound" | "paired" | "pairing_required" | "pairing_pending" | "unbound";
+  | "bound"
+  | "paired"
+  | "pairing_required"
+  | "pairing_pending"
+  | "unbound";
 /**
  * How a chat got its route: claimed by an open trigger's first contact,
  * or paired by code.
