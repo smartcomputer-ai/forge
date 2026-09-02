@@ -2,6 +2,13 @@ use super::*;
 
 pub(super) const MCP_SERVER_SECRET_NAMESPACE: &str = "mcp_server";
 
+// Discovery is an unpaginated management response today. Preserve every tool
+// name while sharing a bounded amount of optional display text across broad
+// inventories, leaving ample room under the gateway's 2 MiB JSON-RPC budget
+// for names, annotations, and response framing.
+const DISCOVERY_VIEW_TEXT_BUDGET_BYTES: usize = 512 * 1024;
+const DISCOVERY_VIEW_MAX_FIELD_BYTES: usize = 4 * 1024;
+
 pub(super) fn put_mcp_server_record(
     server: McpServerInput,
     now_ms: i64,
@@ -61,13 +68,21 @@ pub(super) fn mcp_server_view(record: mcp::McpServerRecord) -> api::McpServerVie
 pub(super) fn mcp_tool_discovery_success(
     tools: Vec<mcp::DiscoveredMcpTool>,
 ) -> api::McpServerToolsDiscoverResponse {
+    let field_limit = DISCOVERY_VIEW_TEXT_BUDGET_BYTES
+        .checked_div(tools.len().saturating_mul(2).max(1))
+        .unwrap_or(0)
+        .min(DISCOVERY_VIEW_MAX_FIELD_BYTES);
     api::McpServerToolsDiscoverResponse::Success {
         tools: tools
             .into_iter()
             .map(|tool| api::McpAdvertisedToolView {
                 name: tool.name,
-                title: tool.title,
-                description: tool.description,
+                title: tool
+                    .title
+                    .map(|value| mcp::truncate_utf8_with_ellipsis(value, field_limit)),
+                description: tool
+                    .description
+                    .map(|value| mcp::truncate_utf8_with_ellipsis(value, field_limit)),
                 annotations: tool
                     .annotations
                     .map(|annotations| api::McpToolAnnotationsView {
@@ -571,5 +586,40 @@ mod tests {
             panic!("MCP search meta-tool must be a function");
         };
         assert_eq!(function.strict, Some(false));
+    }
+
+    #[test]
+    fn broad_discovery_projection_preserves_names_within_response_budget() {
+        let limits = mcp::McpToolDiscoveryLimits::default();
+        let tools = (0..limits.max_tools)
+            .map(|index| mcp::DiscoveredMcpTool {
+                name: format!("tool_{index:04}_{}", "n".repeat(96)),
+                title: Some("t".repeat(limits.max_text_bytes)),
+                description: Some("d".repeat(limits.max_text_bytes)),
+                input_schema: serde_json::json!({"type": "object"}),
+                annotations: Some(mcp::McpToolAnnotations {
+                    read_only_hint: Some(true),
+                    destructive_hint: Some(false),
+                    idempotent_hint: Some(true),
+                    open_world_hint: Some(false),
+                }),
+            })
+            .collect::<Vec<_>>();
+
+        let response = mcp_tool_discovery_success(tools);
+        let api::McpServerToolsDiscoverResponse::Success { tools } = &response else {
+            panic!("discovery projection must succeed");
+        };
+        assert_eq!(tools.len(), limits.max_tools);
+        assert_eq!(
+            tools.first().unwrap().name,
+            format!("tool_{:04}_{}", 0, "n".repeat(96))
+        );
+        assert!(
+            serde_json::to_vec(&response)
+                .expect("serialize discovery response")
+                .len()
+                < 2 * 1024 * 1024
+        );
     }
 }

@@ -532,21 +532,27 @@ proof that `tools/list` is authorized.
 
 ## Limits
 
-Initial production bounds should be configuration constants with conservative
-defaults and hard server caps, for example:
+Production bounds remain hard constants, but their defaults must accommodate
+broad enterprise catalogs rather than only small development fixtures:
 
-- 10 seconds total wall time;
-- 8 pages;
-- 256 tools;
-- 2 MiB total decoded response data;
-- 128 characters per tool name, 4 KiB per title/description;
-- 64 KiB per input/output schema and bounded JSON depth;
+- 30 seconds total wall time;
+- 64 pages;
+- 2,048 tools;
+- 16 MiB total decoded response data;
+- 128 bytes per tool name and 16 KiB per title/description;
+- 512 KiB per input/output schema and JSON depth 64;
 - no more than one active discovery per universe/server;
 - a short per-server cooldown after completion.
 
-Exact values may change during implementation, but every dimension must be
-bounded before the feature is enabled in production. Crossing any completeness
-bound fails discovery without returning a partial inventory.
+Every dimension remains bounded. Crossing an inventory-completeness bound still
+fails discovery without returning a partial inventory. Oversized titles and
+descriptions are the exception: they are untrusted, non-authoritative hints and
+are truncated on a UTF-8 boundary instead of taking down the entire server.
+The unpaginated management projection preserves every tool name but dynamically
+shares 512 KiB of optional title/description text across the inventory so a
+broad server remains below the gateway response budget. Native search keeps the
+larger bounded descriptions internally and returns only one result page at a
+time.
 
 ## Implementation Slices
 

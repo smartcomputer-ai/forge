@@ -587,7 +587,10 @@ impl StreamableHttpClient for BoundedReqwestClient {
 
 impl HttpMcpToolDiscoverer {
     pub(crate) fn new() -> Self {
-        let timeout = Duration::from_secs(10);
+        // One deadline covers DNS, initialization, every tools/list page, and
+        // shutdown. Large remote catalogs need more than the tiny-fixture
+        // budget while still remaining strictly bounded.
+        let timeout = Duration::from_secs(30);
         Self {
             public_http_policy: PinnedHttpPolicy::public_only().with_timeout(timeout),
             private_http_policy: PinnedHttpPolicy::allowing_private_networks()
@@ -860,12 +863,11 @@ fn project_tool(
     limits: McpToolDiscoveryLimits,
 ) -> Result<DiscoveredMcpTool, McpToolDiscoveryFailure> {
     let name = bounded_required_text(tool.name.as_ref(), "tool name", limits.max_name_bytes)?;
-    let direct_title = bounded_optional_text(tool.title, "tool title", limits.max_text_bytes)?;
-    let description = bounded_optional_text(
+    let direct_title = truncated_optional_text(tool.title, limits.max_text_bytes);
+    let description = truncated_optional_text(
         tool.description.map(|value| value.into_owned()),
-        "tool description",
         limits.max_text_bytes,
-    )?;
+    );
 
     let schema = Value::Object(tool.input_schema.as_ref().clone());
     if schema.get("type").and_then(Value::as_str) != Some("object") {
@@ -890,11 +892,7 @@ fn project_tool(
 
     let (annotation_title, annotations) = match tool.annotations {
         Some(annotations) => {
-            let title = bounded_optional_text(
-                annotations.title,
-                "annotation title",
-                limits.max_text_bytes,
-            )?;
+            let title = truncated_optional_text(annotations.title, limits.max_text_bytes);
             (
                 title,
                 Some(McpToolAnnotations {
@@ -937,18 +935,12 @@ fn bounded_required_text(
     Ok(value.to_owned())
 }
 
-fn bounded_optional_text(
-    value: Option<String>,
-    field: &str,
-    max_bytes: usize,
-) -> Result<Option<String>, McpToolDiscoveryFailure> {
-    match value {
-        Some(value) if value.len() > max_bytes => Err(failure(
-            FailureKind::ResponseTooLarge,
-            format!("MCP {field} exceeded the discovery limit"),
-        )),
-        value => Ok(value),
-    }
+fn truncated_optional_text(value: Option<String>, max_bytes: usize) -> Option<String> {
+    // Titles and descriptions are untrusted hints, not protocol identity or
+    // execution authority. A verbose hint must not make every otherwise valid
+    // tool on the server unusable. Names and schemas remain fail-closed; hints
+    // degrade independently and visibly with an ellipsis.
+    value.map(|value| mcp::truncate_utf8_with_ellipsis(value, max_bytes))
 }
 
 fn json_depth(value: &Value) -> usize {
@@ -1331,6 +1323,32 @@ mod tests {
         let annotations = tool.annotations.expect("annotations");
         assert_eq!(annotations.read_only_hint, Some(true));
         assert_eq!(annotations.destructive_hint, Some(false));
+    }
+
+    #[test]
+    fn tool_projection_truncates_verbose_metadata_without_losing_the_tool() {
+        let tool = project_tool(
+            tool(json!({
+                "name": "search",
+                "title": "A very long title",
+                "description": format!("Notion {}", "雪".repeat(32)),
+                "inputSchema": {"type": "object"},
+                "annotations": {"title": "An equally long annotation title"}
+            })),
+            McpToolDiscoveryLimits {
+                max_text_bytes: 17,
+                ..McpToolDiscoveryLimits::default()
+            },
+        )
+        .expect("verbose hints must not reject an otherwise valid tool");
+        assert_eq!(tool.name, "search");
+        assert!(tool.title.as_ref().is_some_and(|title| title.len() <= 17));
+        assert!(
+            tool.description
+                .as_ref()
+                .is_some_and(|description| description.len() <= 17)
+        );
+        assert!(tool.description.unwrap().ends_with('…'));
     }
 
     #[test]
