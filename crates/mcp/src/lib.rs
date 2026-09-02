@@ -199,16 +199,44 @@ pub struct McpToolDiscoveryLimits {
 impl Default for McpToolDiscoveryLimits {
     fn default() -> Self {
         Self {
-            max_pages: 8,
-            max_tools: 256,
-            max_response_bytes: 2 * 1024 * 1024,
+            // Enterprise MCPs commonly expose broad, paginated inventories.
+            // Keep hard memory/wire bounds, but size the defaults for those
+            // servers rather than for small development fixtures.
+            max_pages: 64,
+            max_tools: 2_048,
+            max_response_bytes: 16 * 1024 * 1024,
+            // Execution results have a separate context-safety envelope;
+            // broadening discovery must not silently admit giant tool output.
             max_tool_call_response_bytes: 2 * 1024 * 1024,
             max_name_bytes: 128,
-            max_text_bytes: 4 * 1024,
-            max_schema_bytes: 64 * 1024,
-            max_schema_depth: 32,
+            max_text_bytes: 16 * 1024,
+            max_schema_bytes: 512 * 1024,
+            max_schema_depth: 64,
         }
     }
+}
+
+/// Truncate untrusted human-facing MCP metadata without splitting UTF-8.
+/// Protocol identity and executable schemas must use validation instead.
+pub fn truncate_utf8_with_ellipsis(mut value: String, max_bytes: usize) -> String {
+    if value.len() <= max_bytes {
+        return value;
+    }
+    const ELLIPSIS: &str = "…";
+    let append_ellipsis = max_bytes >= ELLIPSIS.len();
+    let mut end = if append_ellipsis {
+        max_bytes - ELLIPSIS.len()
+    } else {
+        max_bytes
+    };
+    while !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    value.truncate(end);
+    if append_ellipsis {
+        value.push_str(ELLIPSIS);
+    }
+    value
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -849,6 +877,17 @@ mod tests {
         let record = put_request("echo", McpServerStatus::Active).into_record();
 
         record.validate().expect("valid MCP server record");
+    }
+
+    #[test]
+    fn metadata_truncation_preserves_utf8_and_byte_budget() {
+        let value = format!("prefix-{}-suffix", "雪".repeat(8));
+        let truncated = truncate_utf8_with_ellipsis(value, 17);
+        assert!(truncated.is_char_boundary(truncated.len()));
+        assert!(truncated.len() <= 17);
+        assert!(truncated.ends_with('…'));
+        assert_eq!(truncate_utf8_with_ellipsis("abc".to_owned(), 2), "ab");
+        assert_eq!(truncate_utf8_with_ellipsis("abc".to_owned(), 3), "abc");
     }
 
     #[test]
