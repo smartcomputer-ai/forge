@@ -488,6 +488,12 @@ pub struct EnvironmentsFeature {
     /// Absent means every registered provider is allowed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub providers: Option<Vec<EnvironmentProviderId>>,
+    /// Registration keys whose registered environments the session may
+    /// list and activate; absent means every key. Independent of
+    /// `providers`: each list scopes its own environment source, and
+    /// external environments pass only when neither list is set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub registration_keys: Option<Vec<EnvironmentRegistrationKeyId>>,
     /// Exposes `environment_list`, `environment_activate`, and
     /// `environment_deactivate` to the model. `environment_read` is available
     /// whenever environments are enabled, and external API/profile activation

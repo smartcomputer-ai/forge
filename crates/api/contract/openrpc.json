@@ -1176,6 +1176,74 @@
         ],
         "type": "object"
       },
+      "AgentApiOutcomeOfEnvironmentRegistrationKeyCreateResponse": {
+        "properties": {
+          "notifications": {
+            "items": {
+              "$ref": "#/components/schemas/AgentNotification"
+            },
+            "type": "array"
+          },
+          "result": {
+            "$ref": "#/components/schemas/EnvironmentRegistrationKeyCreateResponse"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "type": "object"
+      },
+      "AgentApiOutcomeOfEnvironmentRegistrationKeyListResponse": {
+        "properties": {
+          "notifications": {
+            "items": {
+              "$ref": "#/components/schemas/AgentNotification"
+            },
+            "type": "array"
+          },
+          "result": {
+            "$ref": "#/components/schemas/EnvironmentRegistrationKeyListResponse"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "type": "object"
+      },
+      "AgentApiOutcomeOfEnvironmentRegistrationKeyReadResponse": {
+        "properties": {
+          "notifications": {
+            "items": {
+              "$ref": "#/components/schemas/AgentNotification"
+            },
+            "type": "array"
+          },
+          "result": {
+            "$ref": "#/components/schemas/EnvironmentRegistrationKeyReadResponse"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "type": "object"
+      },
+      "AgentApiOutcomeOfEnvironmentRegistrationKeyRevokeResponse": {
+        "properties": {
+          "notifications": {
+            "items": {
+              "$ref": "#/components/schemas/AgentNotification"
+            },
+            "type": "array"
+          },
+          "result": {
+            "$ref": "#/components/schemas/EnvironmentRegistrationKeyRevokeResponse"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "type": "object"
+      },
       "AgentApiOutcomeOfEnvironmentTemplateListResponse": {
         "properties": {
           "notifications": {
@@ -7994,6 +8062,21 @@
         ],
         "type": "object"
       },
+      "EnvironmentIdentityModeView": {
+        "description": "What Lightspeed does with a registered environment while its daemon is\ndisconnected. Registration-key policy, copied onto each environment.",
+        "oneOf": [
+          {
+            "const": "persistent",
+            "description": "Stays offline until explicitly closed.",
+            "type": "string"
+          },
+          {
+            "const": "ephemeral",
+            "description": "Closed once the daemon has been away longer than the key's\ndisconnect grace.",
+            "type": "string"
+          }
+        ]
+      },
       "EnvironmentIdlePolicyPutParams": {
         "properties": {
           "environmentId": {
@@ -8317,6 +8400,13 @@
               "null"
             ]
           },
+          "registrationKeyId": {
+            "description": "Only registered environments admitted by this registration key.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "status": {
             "anyOf": [
               {
@@ -8534,6 +8624,234 @@
         ],
         "type": "object"
       },
+      "EnvironmentRegistrationKeyCreateParams": {
+        "properties": {
+          "displayName": {
+            "description": "Group name for the environments this key admits.",
+            "type": "string"
+          },
+          "ephemeralDisconnectGraceMs": {
+            "description": "Disconnect grace for ephemeral environments; omit for the default.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "expiresAtMs": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "identityMode": {
+            "$ref": "#/components/schemas/EnvironmentIdentityModeView"
+          },
+          "maxActiveEnvironments": {
+            "description": "Non-closed environments the key may have at once; omit for unlimited.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "displayName",
+          "identityMode"
+        ],
+        "type": "object"
+      },
+      "EnvironmentRegistrationKeyCreateResponse": {
+        "properties": {
+          "registrationKey": {
+            "$ref": "#/components/schemas/EnvironmentRegistrationKeyView"
+          },
+          "secret": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/EnvironmentRegistrationSecretView"
+              }
+            ],
+            "description": "The plaintext secret, returned only here."
+          }
+        },
+        "required": [
+          "registrationKey",
+          "secret"
+        ],
+        "type": "object"
+      },
+      "EnvironmentRegistrationKeyListParams": {
+        "type": "object"
+      },
+      "EnvironmentRegistrationKeyListResponse": {
+        "properties": {
+          "registrationKeys": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/EnvironmentRegistrationKeyView"
+            },
+            "type": "array"
+          }
+        },
+        "type": "object"
+      },
+      "EnvironmentRegistrationKeyReadParams": {
+        "properties": {
+          "registrationKeyId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "registrationKeyId"
+        ],
+        "type": "object"
+      },
+      "EnvironmentRegistrationKeyReadResponse": {
+        "properties": {
+          "registrationKey": {
+            "$ref": "#/components/schemas/EnvironmentRegistrationKeyView"
+          }
+        },
+        "required": [
+          "registrationKey"
+        ],
+        "type": "object"
+      },
+      "EnvironmentRegistrationKeyRevokeParams": {
+        "properties": {
+          "closeEnvironments": {
+            "default": false,
+            "description": "Also close every non-closed environment the key admitted.",
+            "type": "boolean"
+          },
+          "registrationKeyId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "registrationKeyId"
+        ],
+        "type": "object"
+      },
+      "EnvironmentRegistrationKeyRevokeResponse": {
+        "properties": {
+          "closedEnvironmentIds": {
+            "description": "Environments closed by this call.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "registrationKey": {
+            "$ref": "#/components/schemas/EnvironmentRegistrationKeyView"
+          }
+        },
+        "required": [
+          "registrationKey"
+        ],
+        "type": "object"
+      },
+      "EnvironmentRegistrationKeyStatusView": {
+        "enum": [
+          "active",
+          "revoked",
+          "expired"
+        ],
+        "type": "string"
+      },
+      "EnvironmentRegistrationKeyView": {
+        "properties": {
+          "activeEnvironmentCount": {
+            "description": "Non-closed environments admitted by this key.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "createdAtMs": {
+            "format": "int64",
+            "type": "integer"
+          },
+          "displayName": {
+            "description": "The group name shown wherever registered environments are listed.",
+            "type": "string"
+          },
+          "ephemeralDisconnectGraceMs": {
+            "description": "Effective disconnect grace for ephemeral environments.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "expiresAtMs": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "identityMode": {
+            "$ref": "#/components/schemas/EnvironmentIdentityModeView"
+          },
+          "keyPrefix": {
+            "description": "First characters of the secret, for identification only.",
+            "type": "string"
+          },
+          "lastRegisteredAtMs": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "maxActiveEnvironments": {
+            "format": "uint32",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "registeredEnvironmentCount": {
+            "description": "Environments ever admitted by this key, closed included.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "registrationKeyId": {
+            "type": "string"
+          },
+          "revokedAtMs": {
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "status": {
+            "$ref": "#/components/schemas/EnvironmentRegistrationKeyStatusView"
+          }
+        },
+        "required": [
+          "registrationKeyId",
+          "displayName",
+          "keyPrefix",
+          "identityMode",
+          "ephemeralDisconnectGraceMs",
+          "status",
+          "registeredEnvironmentCount",
+          "activeEnvironmentCount",
+          "createdAtMs"
+        ],
+        "type": "object"
+      },
+      "EnvironmentRegistrationSecretView": {
+        "description": "A freshly minted registration secret. `Debug` output is redacted so the\nplaintext cannot leak through derived logging; it is shown once.",
+        "type": "string"
+      },
       "EnvironmentSourceView": {
         "oneOf": [
           {
@@ -8569,6 +8887,31 @@
             "required": [
               "type",
               "connection"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "An envd that dialed the gateway outbound and was admitted by a\nregistration key. The key is the environment's group; the daemon id\nis derived from the daemon's public key and is its identity.",
+            "properties": {
+              "daemonId": {
+                "type": "string"
+              },
+              "identityMode": {
+                "$ref": "#/components/schemas/EnvironmentIdentityModeView"
+              },
+              "registrationKeyId": {
+                "type": "string"
+              },
+              "type": {
+                "const": "registered",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "registrationKeyId",
+              "daemonId",
+              "identityMode"
             ],
             "type": "object"
           }
@@ -8704,6 +9047,14 @@
           "incarnation": {
             "$ref": "#/components/schemas/EnvironmentIncarnationView"
           },
+          "lastSeenAtMs": {
+            "description": "Registered environments only: when the gateway last saw the daemon's\ncontrol connection.",
+            "format": "int64",
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
           "metadata": {
             "additionalProperties": {
               "type": "string"
@@ -8768,6 +9119,16 @@
           },
           "providers": {
             "description": "Absent means every registered provider is allowed.",
+            "items": {
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          },
+          "registrationKeys": {
+            "description": "Registration keys whose registered environments the session may\nlist and activate; absent means every key. Independent of\n`providers`: each list scopes its own environment source, and\nexternal environments pass only when neither list is set.",
             "items": {
               "type": "string"
             },
@@ -17568,6 +17929,90 @@
         }
       },
       "summary": "Cancel environment jobs"
+    },
+    {
+      "description": "Creates a reusable universe-scoped key that lets outbound envd daemons register as environments. The plaintext secret is returned exactly once; only its hash is stored. Identity mode, active limit, disconnect grace, and expiry are the key's policy. Treat the secret like a cluster-join credential.",
+      "name": "environments/registration-keys/create",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "params",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/EnvironmentRegistrationKeyCreateParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/AgentApiOutcomeOfEnvironmentRegistrationKeyCreateResponse"
+        }
+      },
+      "summary": "Mint an environment registration key"
+    },
+    {
+      "description": "Returns the key's display prefix, policy, status, and derived environment counts; never the secret or its hash.",
+      "name": "environments/registration-keys/read",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "params",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/EnvironmentRegistrationKeyReadParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/AgentApiOutcomeOfEnvironmentRegistrationKeyReadResponse"
+        }
+      },
+      "summary": "Read an environment registration key"
+    },
+    {
+      "description": "Lists this universe's registration keys with policy, status, and derived counts. Each key is the group of the environments it admitted.",
+      "name": "environments/registration-keys/list",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "params",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/EnvironmentRegistrationKeyListParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/AgentApiOutcomeOfEnvironmentRegistrationKeyListResponse"
+        }
+      },
+      "summary": "List environment registration keys"
+    },
+    {
+      "description": "Stops the key from admitting new daemon identities; already registered daemons keep reconnecting. With closeEnvironments, also closes every non-closed environment the key admitted. Idempotent.",
+      "name": "environments/registration-keys/revoke",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "params",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/EnvironmentRegistrationKeyRevokeParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/AgentApiOutcomeOfEnvironmentRegistrationKeyRevokeResponse"
+        }
+      },
+      "summary": "Revoke an environment registration key"
     },
     {
       "description": "Queries supported providers directly on every call and returns best-effort selectable routes. One provider failure does not discard successful results from others.",

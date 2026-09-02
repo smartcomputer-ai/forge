@@ -402,6 +402,10 @@ pub struct EnvironmentsFeature {
     pub version: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub providers: Option<Vec<String>>,
+    /// Registration keys whose registered environments the session may use;
+    /// absent allows every key. Independent of `providers`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub registration_keys: Option<Vec<String>>,
     /// Installs model-facing list/activate/deactivate tools. Environment read
     /// is present whenever the environments feature is granted.
     #[serde(default)]
@@ -417,6 +421,7 @@ impl Default for EnvironmentsFeature {
         Self {
             version: CURRENT_FEATURE_VERSION,
             providers: None,
+            registration_keys: None,
             selection_tools: false,
             jobs: false,
         }

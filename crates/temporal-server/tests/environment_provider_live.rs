@@ -477,6 +477,7 @@ async fn run_environment_power_live_client(
                 environments: Some(api::EnvironmentsFeature {
                     version: api::CURRENT_FEATURE_VERSION,
                     providers: None,
+                    registration_keys: None,
                     selection_tools: false,
                     jobs: false,
                 }),

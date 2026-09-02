@@ -1451,6 +1451,7 @@ fn environment_tool_subgrants_are_default_off_and_map_explicit_opt_in() {
                 environments: Some(api::EnvironmentsFeature {
                     version: api::CURRENT_FEATURE_VERSION,
                     providers: None,
+                    registration_keys: None,
                     selection_tools: true,
                     jobs: true,
                 }),

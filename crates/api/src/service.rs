@@ -268,6 +268,26 @@ pub trait AgentApiService: Send + Sync {
         params: EnvironmentJobCancelParams,
     ) -> Result<AgentApiOutcome<EnvironmentJobCancelResponse>, AgentApiError>;
 
+    async fn create_environment_registration_key(
+        &self,
+        params: EnvironmentRegistrationKeyCreateParams,
+    ) -> Result<AgentApiOutcome<EnvironmentRegistrationKeyCreateResponse>, AgentApiError>;
+
+    async fn read_environment_registration_key(
+        &self,
+        params: EnvironmentRegistrationKeyReadParams,
+    ) -> Result<AgentApiOutcome<EnvironmentRegistrationKeyReadResponse>, AgentApiError>;
+
+    async fn list_environment_registration_keys(
+        &self,
+        params: EnvironmentRegistrationKeyListParams,
+    ) -> Result<AgentApiOutcome<EnvironmentRegistrationKeyListResponse>, AgentApiError>;
+
+    async fn revoke_environment_registration_key(
+        &self,
+        params: EnvironmentRegistrationKeyRevokeParams,
+    ) -> Result<AgentApiOutcome<EnvironmentRegistrationKeyRevokeResponse>, AgentApiError>;
+
     async fn put_blobs(
         &self,
         params: BlobPutParams,

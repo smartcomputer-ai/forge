@@ -673,6 +673,13 @@ async fn environment_route_upgrade(
                 })
                 .into_response()
         }
+        environments::EnvironmentSource::Registered { .. } => {
+            // Served by a reverse-dialed data socket once the outbound
+            // registration transport lands; until then a registered
+            // environment has no route.
+            tracing::warn!(target: "temporal_server", environment = %key.environment_id, "registered environment has no data route yet");
+            StatusCode::SERVICE_UNAVAILABLE.into_response()
+        }
     }
 }
 

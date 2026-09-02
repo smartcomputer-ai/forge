@@ -1771,6 +1771,7 @@ fn features_config_to_api(
             .map(|environments| api::EnvironmentsFeature {
                 version: environments.version,
                 providers: environments.providers.clone(),
+                registration_keys: environments.registration_keys.clone(),
                 selection_tools: environments.selection_tools,
                 jobs: environments.jobs,
             }),
@@ -3259,6 +3260,7 @@ mod tests {
                     environments: Some(api::EnvironmentsFeature {
                         version: api::CURRENT_FEATURE_VERSION,
                         providers: None,
+                        registration_keys: None,
                         selection_tools: false,
                         jobs: false,
                     }),

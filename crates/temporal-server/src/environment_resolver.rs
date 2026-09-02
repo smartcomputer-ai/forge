@@ -2,12 +2,12 @@
 //!
 //! This is a shared runtime service, not a provider/plugin extension seam.
 
-use std::{collections::BTreeSet, sync::Arc};
+use std::sync::Arc;
 
 use environments::{
-    EnvironmentId, EnvironmentProviderStore, EnvironmentRecord, EnvironmentRegistryError,
-    EnvironmentSource, EnvironmentStatus, EnvironmentStore, ListEnvironments, PowerState,
-    SetEnvironmentPower,
+    EnvironmentAccessPolicy, EnvironmentId, EnvironmentProviderStore, EnvironmentRecord,
+    EnvironmentRegistryError, EnvironmentSource, EnvironmentStatus, EnvironmentStore,
+    ListEnvironments, PowerState, SetEnvironmentPower,
 };
 use store_pg::PgStore;
 use thiserror::Error;
@@ -53,38 +53,26 @@ impl EnvironmentResolver {
 
     pub(crate) async fn list_allowed(
         &self,
-        allowed_providers: Option<&BTreeSet<String>>,
+        policy: &EnvironmentAccessPolicy,
     ) -> Result<Vec<EnvironmentRecord>, EnvironmentResolveError> {
         let mut environments = self
             .environments
             .list_environments(ListEnvironments::default())
             .await?;
-        if let Some(allowed) = allowed_providers {
-            environments.retain(|environment| {
-                environment
-                    .provider_id()
-                    .is_some_and(|id| allowed.contains(id.as_str()))
-            });
-        }
+        environments.retain(|environment| policy.allows(environment));
         Ok(environments)
     }
 
     pub(crate) async fn read_allowed(
         &self,
         environment_id: &EnvironmentId,
-        allowed_providers: Option<&BTreeSet<String>>,
+        policy: &EnvironmentAccessPolicy,
     ) -> Result<EnvironmentRecord, EnvironmentResolveError> {
         let environment = self.environments.read_environment(environment_id).await?;
-        if allowed_providers.is_some_and(|allowed| {
-            environment
-                .provider_id()
-                .is_none_or(|id| !allowed.contains(id.as_str()))
-        }) {
-            return Err(EnvironmentResolveError::ProviderNotAllowed {
-                provider_id: environment
-                    .provider_id()
-                    .map(ToString::to_string)
-                    .unwrap_or_else(|| "external".to_owned()),
+        if !policy.allows(&environment) {
+            return Err(EnvironmentResolveError::NotAllowed {
+                environment_id: environment.environment_id.to_string(),
+                reason: policy.refusal(&environment),
             });
         }
         Ok(environment)
@@ -97,18 +85,14 @@ impl EnvironmentResolver {
     pub(crate) async fn activatable(
         &self,
         environment_id: &EnvironmentId,
-        allowed_providers: Option<&BTreeSet<String>>,
+        policy: &EnvironmentAccessPolicy,
         now_ms: i64,
     ) -> Result<(EnvironmentRecord, bool), EnvironmentResolveError> {
-        match self
-            .selectable(environment_id, allowed_providers, now_ms)
-            .await
-        {
+        match self.selectable(environment_id, policy, now_ms).await {
             Ok(environment) => Ok((environment, true)),
-            Err(EnvironmentResolveError::NotReady { .. }) => Ok((
-                self.read_allowed(environment_id, allowed_providers).await?,
-                false,
-            )),
+            Err(EnvironmentResolveError::NotReady { .. }) => {
+                Ok((self.read_allowed(environment_id, policy).await?, false))
+            }
             Err(error) => Err(error),
         }
     }
@@ -123,11 +107,11 @@ impl EnvironmentResolver {
     pub(crate) async fn selectable(
         &self,
         environment_id: &EnvironmentId,
-        allowed_providers: Option<&BTreeSet<String>>,
+        policy: &EnvironmentAccessPolicy,
         now_ms: i64,
     ) -> Result<EnvironmentRecord, EnvironmentResolveError> {
         let environment = self
-            .resolve_for_connection(environment_id, allowed_providers, now_ms)
+            .resolve_for_connection(environment_id, policy, now_ms)
             .await?;
         if let Some(gateway) = &self.gateway {
             let connection = gateway.connection_for(self.universe_id, &environment);
@@ -153,10 +137,10 @@ impl EnvironmentResolver {
     pub(crate) async fn resolve_for_connection(
         &self,
         environment_id: &EnvironmentId,
-        allowed_providers: Option<&BTreeSet<String>>,
+        policy: &EnvironmentAccessPolicy,
         now_ms: i64,
     ) -> Result<EnvironmentRecord, EnvironmentResolveError> {
-        let environment = self.read_allowed(environment_id, allowed_providers).await?;
+        let environment = self.read_allowed(environment_id, policy).await?;
         if let Some(provider_id) = environment.provider_id() {
             self.providers.read_provider(provider_id).await?;
         }
@@ -233,8 +217,11 @@ pub(crate) enum EnvironmentResolveError {
     #[error(transparent)]
     Store(#[from] EnvironmentRegistryError),
 
-    #[error("environment provider is not allowed by session config: {provider_id}")]
-    ProviderNotAllowed { provider_id: String },
+    #[error("environment {environment_id} is not allowed by session config: {reason}")]
+    NotAllowed {
+        environment_id: String,
+        reason: String,
+    },
 
     #[error("environment is unavailable: {environment_id} ({status})")]
     EnvironmentUnavailable {
@@ -355,39 +342,39 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn provider_filter_applies_to_list_read_and_selection() {
         let (resolver, environment_id) = resolver().await;
-        let denied = BTreeSet::from(["other".to_owned()]);
-        assert!(
-            resolver
-                .list_allowed(Some(&denied))
-                .await
-                .unwrap()
-                .is_empty()
-        );
+        let denied =
+            EnvironmentAccessPolicy::new(Some(vec!["other".to_owned()]), None::<Vec<String>>);
+        assert!(resolver.list_allowed(&denied).await.unwrap().is_empty());
         assert!(matches!(
-            resolver.read_allowed(&environment_id, Some(&denied)).await,
-            Err(EnvironmentResolveError::ProviderNotAllowed { .. })
+            resolver.read_allowed(&environment_id, &denied).await,
+            Err(EnvironmentResolveError::NotAllowed { .. })
         ));
         assert!(matches!(
-            resolver
-                .selectable(&environment_id, Some(&denied), 20)
-                .await,
-            Err(EnvironmentResolveError::ProviderNotAllowed { .. })
+            resolver.selectable(&environment_id, &denied, 20).await,
+            Err(EnvironmentResolveError::NotAllowed { .. })
         ));
     }
 
     #[tokio::test(flavor = "current_thread")]
     async fn offline_environment_without_gateway_is_unavailable_but_readable() {
         let (resolver, environment_id) = resolver().await;
-        assert!(resolver.read_allowed(&environment_id, None).await.is_ok());
         assert!(
             resolver
-                .resolve_for_connection(&environment_id, None, 111)
+                .read_allowed(&environment_id, &EnvironmentAccessPolicy::ALLOW_ALL)
+                .await
+                .is_ok()
+        );
+        assert!(
+            resolver
+                .resolve_for_connection(&environment_id, &EnvironmentAccessPolicy::ALLOW_ALL, 111)
                 .await
                 .is_ok(),
             "execution resolution should defer reachability to the real connection"
         );
         assert!(matches!(
-            resolver.selectable(&environment_id, None, 111).await,
+            resolver
+                .selectable(&environment_id, &EnvironmentAccessPolicy::ALLOW_ALL, 111)
+                .await,
             Err(EnvironmentResolveError::EnvironmentUnavailable { .. })
         ));
     }
@@ -417,7 +404,7 @@ mod tests {
             .expect("pause intent");
 
         let resolved = resolver
-            .resolve_for_connection(&environment_id, None, 30)
+            .resolve_for_connection(&environment_id, &EnvironmentAccessPolicy::ALLOW_ALL, 30)
             .await
             .expect("a ready environment resolves for use");
         assert_eq!(resolved.status, EnvironmentStatus::Ready);
@@ -462,7 +449,9 @@ mod tests {
         // Selecting a paused environment requests a wake and reports it as
         // not ready instead of probing an unreachable daemon.
         assert!(matches!(
-            resolver.selectable(&environment_id, None, 30).await,
+            resolver
+                .selectable(&environment_id, &EnvironmentAccessPolicy::ALLOW_ALL, 30)
+                .await,
             Err(EnvironmentResolveError::NotReady {
                 status: EnvironmentStatus::Paused,
                 ..
@@ -473,7 +462,7 @@ mod tests {
         assert!(woken.power_diverges());
         // Activation admits it as intent.
         let (record, ready) = resolver
-            .activatable(&environment_id, None, 31)
+            .activatable(&environment_id, &EnvironmentAccessPolicy::ALLOW_ALL, 31)
             .await
             .expect("activation admits a paused environment");
         assert!(!ready);
@@ -483,7 +472,9 @@ mod tests {
         // path applies (no gateway here → unavailable, not NotReady).
         observe(EnvironmentStatus::Ready, 40).await;
         assert!(matches!(
-            resolver.selectable(&environment_id, None, 50).await,
+            resolver
+                .selectable(&environment_id, &EnvironmentAccessPolicy::ALLOW_ALL, 50)
+                .await,
             Err(EnvironmentResolveError::EnvironmentUnavailable { .. })
         ));
 
@@ -500,7 +491,9 @@ mod tests {
             .await
             .expect("observe offline without power control");
         assert!(matches!(
-            resolver.selectable(&environment_id, None, 70).await,
+            resolver
+                .selectable(&environment_id, &EnvironmentAccessPolicy::ALLOW_ALL, 70)
+                .await,
             Err(EnvironmentResolveError::EnvironmentUnavailable { .. })
         ));
         assert_eq!(
@@ -538,7 +531,9 @@ mod tests {
         // probe and reported as not ready.
         observe(EnvironmentStatus::Provisioning).await;
         assert!(matches!(
-            resolver.selectable(&environment_id, None, 30).await,
+            resolver
+                .selectable(&environment_id, &EnvironmentAccessPolicy::ALLOW_ALL, 30)
+                .await,
             Err(EnvironmentResolveError::NotReady {
                 status: EnvironmentStatus::Provisioning,
                 ..
@@ -546,14 +541,16 @@ mod tests {
         ));
         observe(EnvironmentStatus::Booting).await;
         assert!(matches!(
-            resolver.selectable(&environment_id, None, 30).await,
+            resolver
+                .selectable(&environment_id, &EnvironmentAccessPolicy::ALLOW_ALL, 30)
+                .await,
             Err(EnvironmentResolveError::NotReady {
                 status: EnvironmentStatus::Booting,
                 ..
             })
         ));
         let (record, ready) = resolver
-            .activatable(&environment_id, None, 30)
+            .activatable(&environment_id, &EnvironmentAccessPolicy::ALLOW_ALL, 30)
             .await
             .expect("activation admits a booting environment");
         assert!(!ready);
@@ -568,7 +565,7 @@ mod tests {
             .await
             .expect("fail");
         assert!(matches!(
-            resolver.selectable(&environment_id, None, 50).await,
+            resolver.selectable(&environment_id, &EnvironmentAccessPolicy::ALLOW_ALL, 50).await,
             Err(EnvironmentResolveError::Failed { message, .. }) if message == "no capacity"
         ));
 
@@ -580,7 +577,9 @@ mod tests {
             .await
             .expect("close");
         assert!(matches!(
-            resolver.selectable(&environment_id, None, 70).await,
+            resolver
+                .selectable(&environment_id, &EnvironmentAccessPolicy::ALLOW_ALL, 70)
+                .await,
             Err(EnvironmentResolveError::Closed { .. })
         ));
     }

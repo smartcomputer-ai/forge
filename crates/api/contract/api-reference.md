@@ -400,6 +400,42 @@ Requests cancellation for selected jobs, optionally including dependents. Force 
 - Params: `EnvironmentJobCancelParams`
 - Result: `AgentApiOutcome<EnvironmentJobCancelResponse>`
 
+### `environments/registration-keys/create`
+
+**Mint an environment registration key**
+
+Creates a reusable universe-scoped key that lets outbound envd daemons register as environments. The plaintext secret is returned exactly once; only its hash is stored. Identity mode, active limit, disconnect grace, and expiry are the key's policy. Treat the secret like a cluster-join credential.
+
+- Params: `EnvironmentRegistrationKeyCreateParams`
+- Result: `AgentApiOutcome<EnvironmentRegistrationKeyCreateResponse>`
+
+### `environments/registration-keys/read`
+
+**Read an environment registration key**
+
+Returns the key's display prefix, policy, status, and derived environment counts; never the secret or its hash.
+
+- Params: `EnvironmentRegistrationKeyReadParams`
+- Result: `AgentApiOutcome<EnvironmentRegistrationKeyReadResponse>`
+
+### `environments/registration-keys/list`
+
+**List environment registration keys**
+
+Lists this universe's registration keys with policy, status, and derived counts. Each key is the group of the environments it admitted.
+
+- Params: `EnvironmentRegistrationKeyListParams`
+- Result: `AgentApiOutcome<EnvironmentRegistrationKeyListResponse>`
+
+### `environments/registration-keys/revoke`
+
+**Revoke an environment registration key**
+
+Stops the key from admitting new daemon identities; already registered daemons keep reconnecting. With closeEnvironments, also closes every non-closed environment the key admitted. Idempotent.
+
+- Params: `EnvironmentRegistrationKeyRevokeParams`
+- Result: `AgentApiOutcome<EnvironmentRegistrationKeyRevokeResponse>`
+
 ### `models/list`
 
 **Discover available models**

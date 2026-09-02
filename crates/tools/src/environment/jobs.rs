@@ -129,16 +129,23 @@ pub struct JobSubmitExecutionContextV1 {
     pub version: u32,
     pub environment_id: String,
     pub allowed_provider_ids: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allowed_registration_key_ids: Option<Vec<String>>,
 }
 
 impl JobSubmitExecutionContextV1 {
     pub const VERSION: u32 = 1;
 
-    pub fn new(environment_id: String, allowed_provider_ids: Option<Vec<String>>) -> Self {
+    pub fn new(
+        environment_id: String,
+        allowed_provider_ids: Option<Vec<String>>,
+        allowed_registration_key_ids: Option<Vec<String>>,
+    ) -> Self {
         Self {
             version: Self::VERSION,
             environment_id,
             allowed_provider_ids,
+            allowed_registration_key_ids,
         }
     }
 }
@@ -635,6 +642,7 @@ mod tests {
         let context = JobSubmitExecutionContextV1::new(
             "environment-active".to_owned(),
             Some(vec!["provider-a".to_owned()]),
+            None,
         );
 
         assert_eq!(context.version, JobSubmitExecutionContextV1::VERSION);

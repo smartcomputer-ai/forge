@@ -240,13 +240,11 @@ async fn list(args: ResourceArgs) -> Result<()> {
         .result;
     print_json_or(args.json, &response, || {
         for environment in &response.environments {
-            let provider = match &environment.source {
-                api::EnvironmentSourceView::Provisioned { provider_id, .. } => provider_id.as_str(),
-                api::EnvironmentSourceView::External { .. } => "external",
-            };
             println!(
                 "{} {} {:?}",
-                environment.environment_id, provider, environment.status
+                environment.environment_id,
+                source_label(&environment.source),
+                environment.status
             );
         }
     })
@@ -261,15 +259,26 @@ async fn read(args: EnvironmentResourceArgs) -> Result<()> {
         .map_err(crate::api_client::api_error)?
         .result;
     print_json_or(args.json, &response, || {
-        let provider = match &response.environment.source {
-            api::EnvironmentSourceView::Provisioned { provider_id, .. } => provider_id.as_str(),
-            api::EnvironmentSourceView::External { .. } => "external",
-        };
         println!(
             "{} {} {:?}",
-            response.environment.environment_id, provider, response.environment.status
+            response.environment.environment_id,
+            source_label(&response.environment.source),
+            response.environment.status
         );
     })
+}
+
+/// One-word origin of an environment for table output: the provider id, the
+/// registration key it was admitted by, or `external`.
+fn source_label(source: &api::EnvironmentSourceView) -> String {
+    match source {
+        api::EnvironmentSourceView::Provisioned { provider_id, .. } => provider_id.clone(),
+        api::EnvironmentSourceView::External { .. } => "external".to_owned(),
+        api::EnvironmentSourceView::Registered {
+            registration_key_id,
+            ..
+        } => format!("registered:{registration_key_id}"),
+    }
 }
 
 async fn activate(args: ActivateArgs) -> Result<()> {

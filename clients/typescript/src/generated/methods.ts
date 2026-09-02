@@ -49,6 +49,10 @@ export const METHODS = [
   "environments/jobs/create",
   "environments/jobs/read",
   "environments/jobs/cancel",
+  "environments/registration-keys/create",
+  "environments/registration-keys/read",
+  "environments/registration-keys/list",
+  "environments/registration-keys/revoke",
   "models/list",
   "profiles/create",
   "profiles/read",
@@ -351,6 +355,26 @@ export const METHOD_INFO = {
     scope: "universe",
     summary: "Cancel environment jobs",
     description: "Requests cancellation for selected jobs, optionally including dependents. Force is provider-specific escalation; inspect each per-job result.",
+  },
+  "environments/registration-keys/create": {
+    scope: "universe",
+    summary: "Mint an environment registration key",
+    description: "Creates a reusable universe-scoped key that lets outbound envd daemons register as environments. The plaintext secret is returned exactly once; only its hash is stored. Identity mode, active limit, disconnect grace, and expiry are the key's policy. Treat the secret like a cluster-join credential.",
+  },
+  "environments/registration-keys/read": {
+    scope: "universe",
+    summary: "Read an environment registration key",
+    description: "Returns the key's display prefix, policy, status, and derived environment counts; never the secret or its hash.",
+  },
+  "environments/registration-keys/list": {
+    scope: "universe",
+    summary: "List environment registration keys",
+    description: "Lists this universe's registration keys with policy, status, and derived counts. Each key is the group of the environments it admitted.",
+  },
+  "environments/registration-keys/revoke": {
+    scope: "universe",
+    summary: "Revoke an environment registration key",
+    description: "Stops the key from admitting new daemon identities; already registered daemons keep reconnecting. With closeEnvironments, also closes every non-closed environment the key admitted. Idempotent.",
   },
   "models/list": {
     scope: "universe",
@@ -1162,6 +1186,42 @@ export interface MethodMap {
   "environments/jobs/cancel": {
     params: Api.EnvironmentJobCancelParams;
     result: Api.AgentApiOutcomeOfEnvironmentJobCancelResponse;
+  };
+  /**
+   * Mint an environment registration key
+   *
+   * Creates a reusable universe-scoped key that lets outbound envd daemons register as environments. The plaintext secret is returned exactly once; only its hash is stored. Identity mode, active limit, disconnect grace, and expiry are the key's policy. Treat the secret like a cluster-join credential.
+   */
+  "environments/registration-keys/create": {
+    params: Api.EnvironmentRegistrationKeyCreateParams;
+    result: Api.AgentApiOutcomeOfEnvironmentRegistrationKeyCreateResponse;
+  };
+  /**
+   * Read an environment registration key
+   *
+   * Returns the key's display prefix, policy, status, and derived environment counts; never the secret or its hash.
+   */
+  "environments/registration-keys/read": {
+    params: Api.EnvironmentRegistrationKeyReadParams;
+    result: Api.AgentApiOutcomeOfEnvironmentRegistrationKeyReadResponse;
+  };
+  /**
+   * List environment registration keys
+   *
+   * Lists this universe's registration keys with policy, status, and derived counts. Each key is the group of the environments it admitted.
+   */
+  "environments/registration-keys/list": {
+    params: Api.EnvironmentRegistrationKeyListParams;
+    result: Api.AgentApiOutcomeOfEnvironmentRegistrationKeyListResponse;
+  };
+  /**
+   * Revoke an environment registration key
+   *
+   * Stops the key from admitting new daemon identities; already registered daemons keep reconnecting. With closeEnvironments, also closes every non-closed environment the key admitted. Idempotent.
+   */
+  "environments/registration-keys/revoke": {
+    params: Api.EnvironmentRegistrationKeyRevokeParams;
+    result: Api.AgentApiOutcomeOfEnvironmentRegistrationKeyRevokeResponse;
   };
   /**
    * Discover available models
@@ -2244,6 +2304,38 @@ export const rpc = {
    */
   environmentsJobsCancel(client: RpcCaller, params: Api.EnvironmentJobCancelParams): Promise<Api.AgentApiOutcomeOfEnvironmentJobCancelResponse> {
     return client.call("environments/jobs/cancel", params);
+  },
+  /**
+   * Mint an environment registration key
+   *
+   * Creates a reusable universe-scoped key that lets outbound envd daemons register as environments. The plaintext secret is returned exactly once; only its hash is stored. Identity mode, active limit, disconnect grace, and expiry are the key's policy. Treat the secret like a cluster-join credential.
+   */
+  environmentsRegistrationKeysCreate(client: RpcCaller, params: Api.EnvironmentRegistrationKeyCreateParams): Promise<Api.AgentApiOutcomeOfEnvironmentRegistrationKeyCreateResponse> {
+    return client.call("environments/registration-keys/create", params);
+  },
+  /**
+   * Read an environment registration key
+   *
+   * Returns the key's display prefix, policy, status, and derived environment counts; never the secret or its hash.
+   */
+  environmentsRegistrationKeysRead(client: RpcCaller, params: Api.EnvironmentRegistrationKeyReadParams): Promise<Api.AgentApiOutcomeOfEnvironmentRegistrationKeyReadResponse> {
+    return client.call("environments/registration-keys/read", params);
+  },
+  /**
+   * List environment registration keys
+   *
+   * Lists this universe's registration keys with policy, status, and derived counts. Each key is the group of the environments it admitted.
+   */
+  environmentsRegistrationKeysList(client: RpcCaller, params: Api.EnvironmentRegistrationKeyListParams): Promise<Api.AgentApiOutcomeOfEnvironmentRegistrationKeyListResponse> {
+    return client.call("environments/registration-keys/list", params);
+  },
+  /**
+   * Revoke an environment registration key
+   *
+   * Stops the key from admitting new daemon identities; already registered daemons keep reconnecting. With closeEnvironments, also closes every non-closed environment the key admitted. Idempotent.
+   */
+  environmentsRegistrationKeysRevoke(client: RpcCaller, params: Api.EnvironmentRegistrationKeyRevokeParams): Promise<Api.AgentApiOutcomeOfEnvironmentRegistrationKeyRevokeResponse> {
+    return client.call("environments/registration-keys/revoke", params);
   },
   /**
    * Discover available models

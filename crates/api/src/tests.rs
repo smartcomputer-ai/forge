@@ -2295,6 +2295,60 @@ impl AgentApiService for TestService {
         }))
     }
 
+    async fn create_environment_registration_key(
+        &self,
+        params: EnvironmentRegistrationKeyCreateParams,
+    ) -> Result<AgentApiOutcome<EnvironmentRegistrationKeyCreateResponse>, AgentApiError> {
+        assert_eq!(params.display_name, "harbor");
+        Ok(AgentApiOutcome::new(
+            EnvironmentRegistrationKeyCreateResponse {
+                registration_key: test_registration_key(),
+                secret: EnvironmentRegistrationSecretView("lsrk_test-secret".to_owned()),
+            },
+        ))
+    }
+
+    async fn read_environment_registration_key(
+        &self,
+        _params: EnvironmentRegistrationKeyReadParams,
+    ) -> Result<AgentApiOutcome<EnvironmentRegistrationKeyReadResponse>, AgentApiError> {
+        Ok(AgentApiOutcome::new(
+            EnvironmentRegistrationKeyReadResponse {
+                registration_key: test_registration_key(),
+            },
+        ))
+    }
+
+    async fn list_environment_registration_keys(
+        &self,
+        _params: EnvironmentRegistrationKeyListParams,
+    ) -> Result<AgentApiOutcome<EnvironmentRegistrationKeyListResponse>, AgentApiError> {
+        Ok(AgentApiOutcome::new(
+            EnvironmentRegistrationKeyListResponse {
+                registration_keys: vec![test_registration_key()],
+            },
+        ))
+    }
+
+    async fn revoke_environment_registration_key(
+        &self,
+        params: EnvironmentRegistrationKeyRevokeParams,
+    ) -> Result<AgentApiOutcome<EnvironmentRegistrationKeyRevokeResponse>, AgentApiError> {
+        let mut key = test_registration_key();
+        key.status = EnvironmentRegistrationKeyStatusView::Revoked;
+        key.revoked_at_ms = Some(20);
+        Ok(AgentApiOutcome::new(
+            EnvironmentRegistrationKeyRevokeResponse {
+                registration_key: key,
+                closed_environment_ids: if params.close_environments {
+                    vec!["evi_registered".to_owned()]
+                } else {
+                    Vec::new()
+                },
+            },
+        ))
+    }
+
     async fn put_blobs(
         &self,
         params: BlobPutParams,
@@ -3098,9 +3152,41 @@ fn test_environment_instance() -> EnvironmentView {
         public_endpoint: None,
         origin_session: None,
         metadata: BTreeMap::new(),
+        last_seen_at_ms: None,
         created_at_ms: 10,
         updated_at_ms: 10,
     }
+}
+
+fn test_registration_key() -> EnvironmentRegistrationKeyView {
+    EnvironmentRegistrationKeyView {
+        registration_key_id: "rk_harbor".to_owned(),
+        display_name: "harbor".to_owned(),
+        key_prefix: "lsrk_test-se".to_owned(),
+        identity_mode: EnvironmentIdentityModeView::Ephemeral,
+        max_active_environments: Some(8),
+        ephemeral_disconnect_grace_ms: 300_000,
+        expires_at_ms: None,
+        status: EnvironmentRegistrationKeyStatusView::Active,
+        registered_environment_count: 1,
+        active_environment_count: 1,
+        last_registered_at_ms: Some(10),
+        created_at_ms: 5,
+        revoked_at_ms: None,
+    }
+}
+
+#[test]
+fn registration_secret_views_redact_debug_output() {
+    let response = EnvironmentRegistrationKeyCreateResponse {
+        registration_key: test_registration_key(),
+        secret: EnvironmentRegistrationSecretView("lsrk_plaintext".to_owned()),
+    };
+    let debug = format!("{response:?}");
+    assert!(!debug.contains("lsrk_plaintext"));
+    assert!(debug.contains("<redacted>"));
+    let json = serde_json::to_value(&response).expect("serialize");
+    assert_eq!(json["secret"], "lsrk_plaintext");
 }
 
 fn test_external_environment() -> EnvironmentView {
@@ -3130,6 +3216,7 @@ fn test_external_environment() -> EnvironmentView {
         public_endpoint: None,
         origin_session: None,
         metadata: BTreeMap::new(),
+        last_seen_at_ms: None,
         created_at_ms: 10,
         updated_at_ms: 10,
     }

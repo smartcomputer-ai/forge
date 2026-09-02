@@ -793,6 +793,78 @@
       "summary": "Cancel environment jobs"
     },
     {
+      "description": "Creates a reusable universe-scoped key that lets outbound envd daemons register as environments. The plaintext secret is returned exactly once; only its hash is stored. Identity mode, active limit, disconnect grace, and expiry are the key's policy. Treat the secret like a cluster-join credential.",
+      "method": "environments/registration-keys/create",
+      "params": {
+        "schema": {
+          "$ref": "#/definitions/EnvironmentRegistrationKeyCreateParams"
+        },
+        "type": "EnvironmentRegistrationKeyCreateParams"
+      },
+      "result": {
+        "schema": {
+          "$ref": "#/definitions/AgentApiOutcomeOfEnvironmentRegistrationKeyCreateResponse"
+        },
+        "type": "AgentApiOutcome<EnvironmentRegistrationKeyCreateResponse>"
+      },
+      "scope": "universe",
+      "summary": "Mint an environment registration key"
+    },
+    {
+      "description": "Returns the key's display prefix, policy, status, and derived environment counts; never the secret or its hash.",
+      "method": "environments/registration-keys/read",
+      "params": {
+        "schema": {
+          "$ref": "#/definitions/EnvironmentRegistrationKeyReadParams"
+        },
+        "type": "EnvironmentRegistrationKeyReadParams"
+      },
+      "result": {
+        "schema": {
+          "$ref": "#/definitions/AgentApiOutcomeOfEnvironmentRegistrationKeyReadResponse"
+        },
+        "type": "AgentApiOutcome<EnvironmentRegistrationKeyReadResponse>"
+      },
+      "scope": "universe",
+      "summary": "Read an environment registration key"
+    },
+    {
+      "description": "Lists this universe's registration keys with policy, status, and derived counts. Each key is the group of the environments it admitted.",
+      "method": "environments/registration-keys/list",
+      "params": {
+        "schema": {
+          "$ref": "#/definitions/EnvironmentRegistrationKeyListParams"
+        },
+        "type": "EnvironmentRegistrationKeyListParams"
+      },
+      "result": {
+        "schema": {
+          "$ref": "#/definitions/AgentApiOutcomeOfEnvironmentRegistrationKeyListResponse"
+        },
+        "type": "AgentApiOutcome<EnvironmentRegistrationKeyListResponse>"
+      },
+      "scope": "universe",
+      "summary": "List environment registration keys"
+    },
+    {
+      "description": "Stops the key from admitting new daemon identities; already registered daemons keep reconnecting. With closeEnvironments, also closes every non-closed environment the key admitted. Idempotent.",
+      "method": "environments/registration-keys/revoke",
+      "params": {
+        "schema": {
+          "$ref": "#/definitions/EnvironmentRegistrationKeyRevokeParams"
+        },
+        "type": "EnvironmentRegistrationKeyRevokeParams"
+      },
+      "result": {
+        "schema": {
+          "$ref": "#/definitions/AgentApiOutcomeOfEnvironmentRegistrationKeyRevokeResponse"
+        },
+        "type": "AgentApiOutcome<EnvironmentRegistrationKeyRevokeResponse>"
+      },
+      "scope": "universe",
+      "summary": "Revoke an environment registration key"
+    },
+    {
       "description": "Queries supported providers directly on every call and returns best-effort selectable routes. One provider failure does not discard successful results from others.",
       "method": "models/list",
       "params": {

@@ -12,6 +12,8 @@ pub type EnvironmentIncarnationId = String;
 pub type EnvironmentTemplateId = String;
 pub type EnvironmentTargetId = String;
 pub type EnvironmentJobGroupId = String;
+pub type EnvironmentRegistrationKeyId = String;
+pub type EnvironmentDaemonId = String;
 
 const SESSION_ID_MAX_LEN: usize = 128;
 

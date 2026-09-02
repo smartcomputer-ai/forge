@@ -4,6 +4,10 @@
     "session/managed/start",
     "environments/jobs/create",
     "environments/jobs/read",
-    "environments/jobs/cancel"
+    "environments/jobs/cancel",
+    "environments/registration-keys/create",
+    "environments/registration-keys/read",
+    "environments/registration-keys/list",
+    "environments/registration-keys/revoke"
   ]
 }

@@ -10,6 +10,7 @@ mod blob_cache;
 mod bots;
 mod channels;
 mod environment;
+mod environment_registration;
 mod mcp;
 mod migrations;
 mod oauth;
@@ -43,6 +44,8 @@ pub const CHANNELS_SCHEMA_SQL: &str = include_str!("../migrations/009_channels.s
 pub const MCP_RUNTIME_SCHEMA_SQL: &str = include_str!("../migrations/010_mcp_runtime.sql");
 pub const SESSION_CHECKPOINTS_SCHEMA_SQL: &str =
     include_str!("../migrations/011_session_checkpoints.sql");
+pub const ENVIRONMENT_REGISTRATION_SCHEMA_SQL: &str =
+    include_str!("../migrations/012_environment_registration.sql");
 
 pub const DEFAULT_INLINE_THRESHOLD_BYTES: usize = 64 * 1024;
 
@@ -343,6 +346,9 @@ impl PgStore {
 pub use api_keys::PgApiKeyStore;
 pub use blob_cache::BlobCache;
 pub use channels::list_channel_accounts_all;
+pub use environment_registration::{
+    find_registered_environment_universe, find_registration_key_universe,
+};
 pub use migrations::{
     MIGRATIONS, REQUIRED_SCHEMA_REVISION, SchemaStatus, schema_status, verify_schema,
 };

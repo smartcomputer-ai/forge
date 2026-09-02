@@ -3,17 +3,19 @@ use auth::{AuthGrantId, AuthProviderId, SecretId};
 use environment_protocol::shared::ProviderTargetId;
 use environments::{
     AdoptEnvironment, BeginCloseEnvironment, CreateEnvironment, CreateExternalEnvironment,
-    EnvironmentCredentialRecord, EnvironmentCredentialSource, EnvironmentCredentialStore,
-    EnvironmentId, EnvironmentIncarnationId, EnvironmentIncarnationRecord,
-    EnvironmentOriginSession, EnvironmentProviderBindingId, EnvironmentProviderBindingRecord,
-    EnvironmentProviderBindingStatus, EnvironmentProviderBindingStore, EnvironmentProviderId,
-    EnvironmentProviderRecord, EnvironmentProviderStore, EnvironmentProvisionRequestId,
-    EnvironmentRecord, EnvironmentRegistryError, EnvironmentSource, EnvironmentStatus,
+    CreateRegisteredEnvironment, EnvironmentCredentialRecord, EnvironmentCredentialSource,
+    EnvironmentCredentialStore, EnvironmentDaemonId, EnvironmentId, EnvironmentIncarnationId,
+    EnvironmentIncarnationRecord, EnvironmentOriginSession, EnvironmentProviderBindingId,
+    EnvironmentProviderBindingRecord, EnvironmentProviderBindingStatus,
+    EnvironmentProviderBindingStore, EnvironmentProviderId, EnvironmentProviderRecord,
+    EnvironmentProviderStore, EnvironmentProvisionRequestId, EnvironmentRecord,
+    EnvironmentRegistrationKeyId, EnvironmentRegistryError, EnvironmentSource, EnvironmentStatus,
     EnvironmentStore, EnvironmentTemplateId, FailEnvironmentLifecycle, FinishCloseEnvironment,
     ListEnvironmentCredentials, ListEnvironmentProviders, ListEnvironments,
-    ObserveProvisionedEnvironment, PowerState, PutEnvironmentCredential, PutEnvironmentProvider,
-    PutEnvironmentProviderBinding, SessionId, SetEnvironmentIdlePolicy, SetEnvironmentIngress,
-    SetEnvironmentPower,
+    ObserveProvisionedEnvironment, ObserveRegisteredEnvironment, PowerState,
+    PutEnvironmentCredential, PutEnvironmentProvider, PutEnvironmentProviderBinding,
+    RegisteredIdentityMode, SessionId, SetEnvironmentIdlePolicy, SetEnvironmentIngress,
+    SetEnvironmentPower, apply_registered_observation,
 };
 use sqlx::{Postgres, Row, Transaction};
 use uuid::Uuid;
@@ -32,6 +34,7 @@ const BINDING_COLUMNS: &str = r#"
 
 const ENVIRONMENT_COLUMNS: &str = r#"
     e.environment_id, e.request_id, e.source_kind, e.provider_id, e.binding_id, e.daemon_connection_json,
+    e.registration_key_id, e.daemon_id, e.daemon_public_key, e.identity_mode, e.last_seen_at_ms,
     e.display_name, e.status, e.desired_power, e.idle_policy_json,
     e.public_ingress_enabled, e.public_endpoint, e.metadata_json,
     e.origin_session_id, e.origin_profile_id, e.origin_close_with_session,
@@ -545,6 +548,7 @@ impl EnvironmentStore for PgStore {
             public_endpoint: None,
             origin_session: None,
             metadata: request.metadata.clone(),
+            last_seen_at_ms: None,
             created_at_ms: request.created_at_ms,
             updated_at_ms: request.created_at_ms,
         };
@@ -613,6 +617,150 @@ impl EnvironmentStore for PgStore {
         self.read_environment(&request.environment_id).await
     }
 
+    async fn create_registered_environment(
+        &self,
+        request: CreateRegisteredEnvironment,
+    ) -> Result<EnvironmentRecord, EnvironmentRegistryError> {
+        self.ensure_universe()
+            .await
+            .map_err(|error| store_error("ensure universe", error))?;
+        if request.created_at_ms < 0 {
+            return invalid("environment timestamp must be nonnegative");
+        }
+        let daemon_id = request.daemon_id()?;
+        let request_id = EnvironmentProvisionRequestId::for_daemon(&daemon_id);
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|error| sql_error("begin registered environment create", error))?;
+        if let Some(existing_id) = sqlx::query_scalar::<_, String>(
+            "SELECT environment_id FROM environments WHERE universe_id = $1 AND request_id = $2",
+        )
+        .bind(self.config.universe_id)
+        .bind(request_id.as_str())
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(|error| sql_error("deduplicate registered environment create", error))?
+        {
+            tx.commit()
+                .await
+                .map_err(|error| sql_error("commit registered environment dedup", error))?;
+            let environment_id = EnvironmentId::try_new(existing_id)
+                .map_err(|error| store_message(format!("decode environment id: {error}")))?;
+            return self.read_environment(&environment_id).await;
+        }
+        // Lock the key row: concurrent registrations against one key
+        // serialize here, so the count below is exact.
+        let key = crate::environment_registration::lock_registration_key(
+            &mut tx,
+            self.config.universe_id,
+            &request.registration_key_id,
+        )
+        .await?;
+        key.check_admits(request.created_at_ms)?;
+        if let Some(limit) = key.max_active_environments {
+            let active: i64 = sqlx::query_scalar(
+                "SELECT count(*) FROM environments WHERE universe_id = $1 AND registration_key_id = $2 AND status <> 'closed'",
+            )
+            .bind(self.config.universe_id)
+            .bind(key.registration_key_id.as_str())
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(|error| sql_error("count registered environments", error))?;
+            if active >= i64::from(limit) {
+                return Err(EnvironmentRegistryError::RegistrationCapacityExhausted {
+                    registration_key_id: key.registration_key_id.to_string(),
+                    limit,
+                });
+            }
+        }
+        sqlx::query(
+            r#"
+            INSERT INTO environments (
+                universe_id, environment_id, request_id, source_kind,
+                registration_key_id, daemon_id, daemon_public_key, identity_mode, last_seen_at_ms,
+                display_name, status, current_incarnation_id, metadata_json,
+                created_at_ms, updated_at_ms
+            ) VALUES ($1,$2,$3,'registered',$4,$5,$6,$7,$8,$9,'ready',$10,$11,$8,$8)
+            "#,
+        )
+        .bind(self.config.universe_id)
+        .bind(request.environment_id.as_str())
+        .bind(request_id.as_str())
+        .bind(key.registration_key_id.as_str())
+        .bind(daemon_id.as_str())
+        .bind(&request.daemon_public_key)
+        .bind(key.identity_mode.as_str())
+        .bind(request.created_at_ms)
+        .bind(request.display_name.as_deref())
+        .bind(request.incarnation_id.as_str())
+        .bind(json_value(
+            "encode registered environment metadata",
+            &request.metadata,
+        )?)
+        .execute(&mut *tx)
+        .await
+        .map_err(|error| map_registered_insert_error(error, &daemon_id))?;
+        sqlx::query(
+            r#"
+            INSERT INTO environment_incarnations (
+                universe_id, environment_id, incarnation_id, created_at_ms, updated_at_ms
+            ) VALUES ($1,$2,$3,$4,$4)
+            "#,
+        )
+        .bind(self.config.universe_id)
+        .bind(request.environment_id.as_str())
+        .bind(request.incarnation_id.as_str())
+        .bind(request.created_at_ms)
+        .execute(&mut *tx)
+        .await
+        .map_err(|error| sql_error("insert registered environment incarnation", error))?;
+        tx.commit()
+            .await
+            .map_err(|error| sql_error("commit registered environment create", error))?;
+        self.read_environment(&request.environment_id).await
+    }
+
+    async fn read_environment_by_daemon_public_key(
+        &self,
+        daemon_public_key: &str,
+    ) -> Result<Option<EnvironmentRecord>, EnvironmentRegistryError> {
+        let query = format!(
+            "SELECT {ENVIRONMENT_COLUMNS} {ENVIRONMENT_JOIN} WHERE e.universe_id = $1 AND e.daemon_public_key = $2"
+        );
+        let row = sqlx::query(&query)
+            .bind(self.config.universe_id)
+            .bind(daemon_public_key)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|error| sql_error("read environment by daemon key", error))?;
+        row.as_ref().map(environment_from_row).transpose()
+    }
+
+    async fn observe_registered_environment(
+        &self,
+        request: ObserveRegisteredEnvironment,
+    ) -> Result<EnvironmentRecord, EnvironmentRegistryError> {
+        if request.observed_at_ms < 0 {
+            return invalid("observed_at_ms must be nonnegative");
+        }
+        let mut record = self.read_environment(&request.environment_id).await?;
+        apply_registered_observation(&mut record, request.observation, request.observed_at_ms)?;
+        sqlx::query(
+            "UPDATE environments SET status=$3, last_seen_at_ms=$4, updated_at_ms=$5 WHERE universe_id=$1 AND environment_id=$2",
+        )
+        .bind(self.config.universe_id)
+        .bind(request.environment_id.as_str())
+        .bind(environment_status_to_str(record.status))
+        .bind(record.last_seen_at_ms)
+        .bind(record.updated_at_ms)
+        .execute(&self.pool)
+        .await
+        .map_err(|error| sql_error("observe registered environment", error))?;
+        self.read_environment(&request.environment_id).await
+    }
+
     async fn read_environment(
         &self,
         environment_id: &EnvironmentId,
@@ -662,6 +810,10 @@ impl EnvironmentStore for PgStore {
         }
         if request.origin_session_id.is_some() {
             query.push_str(&format!(" AND e.origin_session_id = ${next}"));
+            next += 1;
+        }
+        if request.registration_key_id.is_some() {
+            query.push_str(&format!(" AND e.registration_key_id = ${next}"));
         }
         query.push_str(" ORDER BY e.environment_id");
         let mut sql = sqlx::query(&query).bind(self.config.universe_id);
@@ -676,6 +828,9 @@ impl EnvironmentStore for PgStore {
         }
         if let Some(session_id) = request.origin_session_id {
             sql = sql.bind(session_id.as_str().to_owned());
+        }
+        if let Some(id) = request.registration_key_id {
+            sql = sql.bind(id.to_string());
         }
         let rows = sql
             .fetch_all(&self.pool)
@@ -877,7 +1032,7 @@ impl EnvironmentStore for PgStore {
 
 fn check_power_mutable(record: &EnvironmentRecord) -> Result<(), EnvironmentRegistryError> {
     if !matches!(record.source, EnvironmentSource::Provisioned { .. }) {
-        return invalid_store("external environments have no power control");
+        return invalid_store("only provisioned environments have power control");
     }
     if matches!(
         record.status,
@@ -1046,6 +1201,16 @@ fn environment_from_row(
         "external" => EnvironmentSource::External {
             connection: json_column(row, "daemon_connection_json")?,
         },
+        "registered" => EnvironmentSource::Registered {
+            registration_key_id: parse_id(
+                row,
+                "registration_key_id",
+                EnvironmentRegistrationKeyId::try_new,
+            )?,
+            daemon_id: parse_id(row, "daemon_id", EnvironmentDaemonId::try_new)?,
+            daemon_public_key: column(row, "daemon_public_key")?,
+            identity_mode: identity_mode_from_str(&column(row, "identity_mode")?)?,
+        },
         other => {
             return Err(store_message(format!(
                 "unknown environment source: {other}"
@@ -1089,11 +1254,21 @@ fn environment_from_row(
             .map_err(|e| sql_error("decode public endpoint", e))?,
         origin_session: origin_session_from_row(row)?,
         metadata: json_column(row, "metadata_json")?,
+        last_seen_at_ms: row
+            .try_get("last_seen_at_ms")
+            .map_err(|e| sql_error("decode last seen", e))?,
         created_at_ms: scalar(row, "created_at_ms")?,
         updated_at_ms: scalar(row, "updated_at_ms")?,
     };
     record.validate()?;
     Ok(record)
+}
+
+pub(crate) fn identity_mode_from_str(
+    value: &str,
+) -> Result<RegisteredIdentityMode, EnvironmentRegistryError> {
+    RegisteredIdentityMode::parse(value)
+        .ok_or_else(|| store_message(format!("unknown identity mode: {value}")))
 }
 
 fn origin_session_from_row(
@@ -1311,13 +1486,13 @@ fn i64_to_u64(value: i64, name: &str) -> Result<u64, EnvironmentRegistryError> {
         .try_into()
         .map_err(|_| store_message(format!("{name} is negative")))
 }
-fn not_found(kind: &'static str, id: &impl ToString) -> EnvironmentRegistryError {
+pub(crate) fn not_found(kind: &'static str, id: &impl ToString) -> EnvironmentRegistryError {
     EnvironmentRegistryError::NotFound {
         kind,
         id: id.to_string(),
     }
 }
-fn invalid<T>(message: impl Into<String>) -> Result<T, EnvironmentRegistryError> {
+pub(crate) fn invalid<T>(message: impl Into<String>) -> Result<T, EnvironmentRegistryError> {
     Err(invalid_error(message))
 }
 fn invalid_error(message: impl Into<String>) -> EnvironmentRegistryError {
@@ -1328,10 +1503,10 @@ fn invalid_error(message: impl Into<String>) -> EnvironmentRegistryError {
 fn store_error(action: &str, error: crate::PgStoreError) -> EnvironmentRegistryError {
     store_message(format!("{action}: {error}"))
 }
-fn sql_error(action: &str, error: sqlx::Error) -> EnvironmentRegistryError {
+pub(crate) fn sql_error(action: &str, error: sqlx::Error) -> EnvironmentRegistryError {
     store_message(format!("{action}: {error}"))
 }
-fn store_message(message: impl Into<String>) -> EnvironmentRegistryError {
+pub(crate) fn store_message(message: impl Into<String>) -> EnvironmentRegistryError {
     EnvironmentRegistryError::Store {
         message: message.into(),
     }
@@ -1346,6 +1521,20 @@ fn map_environment_insert_error(error: sqlx::Error) -> EnvironmentRegistryError 
         };
     }
     sql_error("insert environment", error)
+}
+fn map_registered_insert_error(
+    error: sqlx::Error,
+    daemon_id: &EnvironmentDaemonId,
+) -> EnvironmentRegistryError {
+    if let Some(db) = error.as_database_error()
+        && db.constraint() == Some("environments_daemon_public_key_idx")
+    {
+        return EnvironmentRegistryError::AlreadyExists {
+            kind: "daemon_identity",
+            id: daemon_id.to_string(),
+        };
+    }
+    map_environment_insert_error(error)
 }
 fn map_binding_write_error(action: &str, error: sqlx::Error) -> EnvironmentRegistryError {
     if let Some(db) = error.as_database_error()

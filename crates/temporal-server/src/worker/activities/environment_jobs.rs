@@ -117,23 +117,14 @@ pub(super) async fn prepare_workflow_tool(
         .read_environment(&environment_id)
         .await
         .map_err(activity_error)?;
-    if execution_context
-        .allowed_provider_ids
-        .as_ref()
-        .is_some_and(|providers| {
-            !providers.iter().any(|provider| {
-                instance
-                    .provider_id()
-                    .is_some_and(|id| provider == id.as_str())
-            })
-        })
-    {
+    let policy = environments::EnvironmentAccessPolicy::new(
+        execution_context.allowed_provider_ids,
+        execution_context.allowed_registration_key_ids,
+    );
+    if !policy.allows(&instance) {
         return Err(activity_error(anyhow::anyhow!(
-            "environment provider is not allowed for this session: {}",
-            instance
-                .provider_id()
-                .map(ToString::to_string)
-                .unwrap_or_else(|| "enrolled".to_owned())
+            "environment is not allowed for this session: {}",
+            policy.refusal(&instance)
         )));
     }
     let request_id = format!(

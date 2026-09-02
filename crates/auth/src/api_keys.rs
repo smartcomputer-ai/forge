@@ -13,11 +13,12 @@
 //! recovered, only recognized). The plaintext is shown once at mint time.
 
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use thiserror::Error;
 use uuid::Uuid;
 
-use crate::{PrincipalRef, SecretValue};
+use crate::{
+    PrincipalRef, SecretValue, generate_prefixed_secret, secret_display_prefix, secret_sha256_hex,
+};
 
 /// Prefix of every Lightspeed API key secret.
 pub const API_KEY_SECRET_PREFIX: &str = "lsk_";
@@ -94,23 +95,15 @@ pub fn mint_api_key(
 
 /// Lowercase hex SHA-256 of an API key secret, the stored lookup key.
 pub fn api_key_hash(secret: &str) -> String {
-    hex::encode(Sha256::digest(secret.as_bytes()))
+    secret_sha256_hex(secret)
 }
 
 pub fn api_key_display_prefix(secret: &str) -> String {
-    secret.chars().take(API_KEY_DISPLAY_PREFIX_LEN).collect()
+    secret_display_prefix(secret, API_KEY_DISPLAY_PREFIX_LEN)
 }
 
 fn generate_api_key_secret() -> String {
-    use base64::Engine as _;
-    use rand::RngCore;
-
-    let mut bytes = [0u8; 32];
-    rand::rngs::OsRng.fill_bytes(&mut bytes);
-    format!(
-        "{API_KEY_SECRET_PREFIX}{}",
-        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
-    )
+    generate_prefixed_secret(API_KEY_SECRET_PREFIX)
 }
 
 /// Deployment-scoped API key persistence. Implementations sit above the
@@ -192,6 +185,7 @@ mod tests {
 
     #[test]
     fn api_key_hash_is_hex_sha256_of_the_secret() {
+        use sha2::{Digest, Sha256};
         assert_eq!(
             api_key_hash("lsk_test"),
             hex::encode(Sha256::digest(b"lsk_test"))

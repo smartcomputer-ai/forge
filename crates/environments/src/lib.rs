@@ -4,10 +4,14 @@
 //! environments are universe-scoped, and provider target facts live on an
 //! environment incarnation rather than on stable environment identity.
 
-use std::{collections::BTreeMap, fmt, str::FromStr};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fmt,
+    str::FromStr,
+};
 
 use async_trait::async_trait;
-use auth::{AuthGrantId, AuthProviderId, SecretId};
+use auth::{AuthGrantId, AuthProviderId, SecretId, SecretValue};
 pub use engine::{EnvironmentId, SessionId};
 use engine::{StringIdError, validate_general_string_id};
 pub use environment_protocol::control::targets::PowerState;
@@ -99,6 +103,8 @@ registry_string_id!(EnvironmentIncarnationId);
 registry_string_id!(EnvironmentProvisionRequestId);
 registry_string_id!(EnvironmentTemplateId);
 registry_string_id!(EnvironmentJobGroupId);
+registry_string_id!(EnvironmentRegistrationKeyId);
+registry_string_id!(EnvironmentDaemonId);
 
 /// Prefix of the request id a profile-provisioned environment derives from
 /// its originating session, so retries and repeated applies converge on the
@@ -124,6 +130,45 @@ impl EnvironmentProvisionRequestId {
         }
         Self::new(format!("{SESSION_PROVISION_REQUEST_PREFIX}sha256-{hex}"))
     }
+
+    /// The deterministic request id of the one environment a daemon identity
+    /// may register, so a retried first registration converges on the same
+    /// environment through the `(universe, request_id)` unique key.
+    pub fn for_daemon(daemon_id: &EnvironmentDaemonId) -> Self {
+        Self::new(format!(
+            "{DAEMON_PROVISION_REQUEST_PREFIX}{}",
+            daemon_id.as_str()
+        ))
+    }
+}
+
+/// Prefix of the request id a registered environment derives from its daemon
+/// identity.
+pub const DAEMON_PROVISION_REQUEST_PREFIX: &str = "daemon:";
+
+/// Prefix of every daemon id derived from an `envd` public key.
+pub const DAEMON_ID_PREFIX: &str = "daemon_";
+
+impl EnvironmentDaemonId {
+    /// The daemon id Lightspeed assigns to an `envd` public key: `daemon_`
+    /// followed by the lowercase hex SHA-256 of the raw key bytes. The key is
+    /// the identity; the id is its stable, bounded, log-safe handle.
+    pub fn from_public_key(public_key: &[u8]) -> Self {
+        use sha2::{Digest, Sha256};
+        Self::new(format!(
+            "{DAEMON_ID_PREFIX}{}",
+            hex_lower(&Sha256::digest(public_key))
+        ))
+    }
+}
+
+fn hex_lower(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
+    let mut hex = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        let _ = write!(hex, "{byte:02x}");
+    }
+    hex
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
@@ -146,6 +191,24 @@ pub enum EnvironmentRegistryError {
 
     #[error("invalid environment registry request: {message}")]
     InvalidInput { message: String },
+
+    /// The registration key exists but no longer admits new daemon
+    /// identities: revoked or past its expiry.
+    #[error("environment registration key {registration_key_id} is {reason}")]
+    RegistrationKeyUnavailable {
+        registration_key_id: String,
+        reason: &'static str,
+    },
+
+    /// The registration key's active-environment limit is reached; the
+    /// refused registration left no rows behind.
+    #[error(
+        "environment registration key {registration_key_id} has reached its active environment limit of {limit}"
+    )]
+    RegistrationCapacityExhausted {
+        registration_key_id: String,
+        limit: u32,
+    },
 
     #[error("environment registry store failure: {message}")]
     Store { message: String },
@@ -258,6 +321,36 @@ pub struct PutEnvironmentProviderBinding {
     pub updated_at_ms: i64,
 }
 
+/// What Lightspeed does with a registered environment while its daemon is
+/// disconnected. A property of the registration key, copied onto every
+/// environment the key admits; `envd` neither knows nor chooses it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RegisteredIdentityMode {
+    /// The environment stays `Offline` until it is explicitly closed.
+    Persistent,
+    /// The environment is closed once its daemon has been away longer than
+    /// the key's disconnect grace.
+    Ephemeral,
+}
+
+impl RegisteredIdentityMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Persistent => "persistent",
+            Self::Ephemeral => "ephemeral",
+        }
+    }
+
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "persistent" => Some(Self::Persistent),
+            "ephemeral" => Some(Self::Ephemeral),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum EnvironmentSource {
@@ -268,20 +361,48 @@ pub enum EnvironmentSource {
     External {
         connection: EnvironmentConnectionSpec,
     },
+    /// An `envd` that dialed the gateway outbound and was admitted by a
+    /// registration key. The daemon public key is the identity: one key
+    /// maps to at most one environment in the deployment, ever, so a closed
+    /// environment's daemon can never register again without a new key.
+    Registered {
+        registration_key_id: EnvironmentRegistrationKeyId,
+        daemon_id: EnvironmentDaemonId,
+        /// Lowercase hex of the daemon's raw Ed25519 public key.
+        daemon_public_key: String,
+        identity_mode: RegisteredIdentityMode,
+    },
 }
 
 impl EnvironmentSource {
     pub fn provider_id(&self) -> Option<&EnvironmentProviderId> {
         match self {
             Self::Provisioned { provider_id, .. } => Some(provider_id),
-            Self::External { .. } => None,
+            Self::External { .. } | Self::Registered { .. } => None,
         }
     }
 
     pub fn binding_id(&self) -> Option<&EnvironmentProviderBindingId> {
         match self {
             Self::Provisioned { binding_id, .. } => Some(binding_id),
-            Self::External { .. } => None,
+            Self::External { .. } | Self::Registered { .. } => None,
+        }
+    }
+
+    pub fn registration_key_id(&self) -> Option<&EnvironmentRegistrationKeyId> {
+        match self {
+            Self::Registered {
+                registration_key_id,
+                ..
+            } => Some(registration_key_id),
+            Self::Provisioned { .. } | Self::External { .. } => None,
+        }
+    }
+
+    pub fn identity_mode(&self) -> Option<RegisteredIdentityMode> {
+        match self {
+            Self::Registered { identity_mode, .. } => Some(*identity_mode),
+            Self::Provisioned { .. } | Self::External { .. } => None,
         }
     }
 }
@@ -459,11 +580,38 @@ pub struct EnvironmentRecord {
     /// session. Not ownership: the environment stays a universe resource.
     pub origin_session: Option<EnvironmentOriginSession>,
     pub metadata: BTreeMap<String, String>,
+    /// Registered environments only: when the gateway last saw the daemon's
+    /// control connection (connect, heartbeat). A stale stamp under `Ready`
+    /// means the gateway stopped without recording the disconnect.
+    pub last_seen_at_ms: Option<i64>,
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
 }
 
 impl EnvironmentRecord {
+    pub fn registration_key_id(&self) -> Option<&EnvironmentRegistrationKeyId> {
+        self.source.registration_key_id()
+    }
+
+    pub fn is_registered(&self) -> bool {
+        matches!(self.source, EnvironmentSource::Registered { .. })
+    }
+
+    /// True for a registered environment whose daemon is not currently
+    /// connected as far as durable state knows, including a `Ready` row
+    /// whose heartbeat stamp is older than `stale_after_ms`.
+    pub fn registered_daemon_absent(&self, now_ms: i64, stale_after_ms: i64) -> bool {
+        if !self.is_registered() {
+            return false;
+        }
+        match self.status {
+            EnvironmentStatus::Ready => self
+                .last_seen_at_ms
+                .is_none_or(|seen| now_ms.saturating_sub(seen) > stale_after_ms),
+            EnvironmentStatus::Offline => true,
+            _ => false,
+        }
+    }
     /// True when the observed steady power state differs from the desired
     /// one and the environment is in a state a power change can act on.
     pub fn power_diverges(&self) -> bool {
@@ -507,7 +655,13 @@ impl EnvironmentRecord {
         if self.public_ingress_enabled
             && !matches!(self.source, EnvironmentSource::Provisioned { .. })
         {
-            return invalid("external environments cannot have provider-managed ingress");
+            return invalid("only provisioned environments can have provider-managed ingress");
+        }
+        if self.last_seen_at_ms.is_some() && !self.is_registered() {
+            return invalid("only registered environments carry a last-seen stamp");
+        }
+        if let Some(seen) = self.last_seen_at_ms {
+            validate_nonnegative_i64(seen, "last_seen_at_ms")?;
         }
         if let Some(target_id) = &self.incarnation.provider_target_id {
             validate_provider_target_id(target_id)?;
@@ -536,20 +690,122 @@ impl EnvironmentRecord {
             }
             EnvironmentSource::External { connection } => {
                 connection.validate()?;
-                if self.incarnation.provision_request_id.is_some()
-                    || self.incarnation.provider_target_id.is_some()
-                    || self.incarnation.template_id.is_some()
-                    || self.incarnation.adoption_source_target.is_some()
-                    || !self.incarnation.power_states.is_empty()
+                self.validate_no_provider_linkage("external")?;
+            }
+            EnvironmentSource::Registered {
+                daemon_id,
+                daemon_public_key,
+                ..
+            } => {
+                validate_daemon_public_key(daemon_public_key)?;
+                if daemon_id
+                    != &EnvironmentDaemonId::from_public_key(&decode_hex(daemon_public_key)?)
                 {
-                    return invalid("external incarnation must not have provider linkage");
+                    return invalid("registered daemon id does not match its public key");
                 }
-                if self.desired_power != PowerState::Running || self.idle_policy.is_some() {
-                    return invalid("external environments have no power control");
+                if self.request_id != EnvironmentProvisionRequestId::for_daemon(daemon_id) {
+                    return invalid(
+                        "registered environment request id must derive from its daemon id",
+                    );
                 }
+                if matches!(
+                    self.status,
+                    EnvironmentStatus::Provisioning
+                        | EnvironmentStatus::Booting
+                        | EnvironmentStatus::Paused
+                        | EnvironmentStatus::Suspended
+                ) {
+                    return invalid(
+                        "registered environments are ready, offline, closing, or closed",
+                    );
+                }
+                self.validate_no_provider_linkage("registered")?;
             }
         }
         Ok(())
+    }
+
+    fn validate_no_provider_linkage(&self, kind: &str) -> Result<(), EnvironmentRegistryError> {
+        if self.incarnation.provision_request_id.is_some()
+            || self.incarnation.provider_target_id.is_some()
+            || self.incarnation.template_id.is_some()
+            || self.incarnation.adoption_source_target.is_some()
+            || !self.incarnation.power_states.is_empty()
+        {
+            return invalid(format!("{kind} incarnation must not have provider linkage"));
+        }
+        if self.desired_power != PowerState::Running || self.idle_policy.is_some() {
+            return invalid(format!("{kind} environments have no power control"));
+        }
+        Ok(())
+    }
+}
+
+/// Which environments a session may list, read, and activate, lowered from
+/// the session's environments grant. Each list is independent: an absent
+/// list allows every environment of that source kind. Provider-less
+/// environments that are also key-less (external) pass only when nothing is
+/// restricted at all.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct EnvironmentAccessPolicy {
+    pub providers: Option<BTreeSet<String>>,
+    pub registration_keys: Option<BTreeSet<String>>,
+}
+
+impl EnvironmentAccessPolicy {
+    pub const ALLOW_ALL: Self = Self {
+        providers: None,
+        registration_keys: None,
+    };
+
+    pub fn new(
+        providers: Option<impl IntoIterator<Item = String>>,
+        registration_keys: Option<impl IntoIterator<Item = String>>,
+    ) -> Self {
+        Self {
+            providers: providers.map(|ids| ids.into_iter().collect()),
+            registration_keys: registration_keys.map(|ids| ids.into_iter().collect()),
+        }
+    }
+
+    pub fn is_unrestricted(&self) -> bool {
+        self.providers.is_none() && self.registration_keys.is_none()
+    }
+
+    pub fn allows(&self, environment: &EnvironmentRecord) -> bool {
+        match &environment.source {
+            EnvironmentSource::Provisioned { provider_id, .. } => self
+                .providers
+                .as_ref()
+                .is_none_or(|allowed| allowed.contains(provider_id.as_str())),
+            EnvironmentSource::Registered {
+                registration_key_id,
+                ..
+            } => self
+                .registration_keys
+                .as_ref()
+                .is_none_or(|allowed| allowed.contains(registration_key_id.as_str())),
+            EnvironmentSource::External { .. } => self.is_unrestricted(),
+        }
+    }
+
+    /// Why `allows` refused, for typed rejections.
+    pub fn refusal(&self, environment: &EnvironmentRecord) -> String {
+        match &environment.source {
+            EnvironmentSource::Provisioned { provider_id, .. } => format!(
+                "environment provider {provider_id} is not allowed by features.environments.providers"
+            ),
+            EnvironmentSource::Registered {
+                registration_key_id,
+                ..
+            } => format!(
+                "registration key {registration_key_id} is not allowed by features.environments.registrationKeys"
+            ),
+            EnvironmentSource::External { .. } => {
+                "external environments are not allowed by a restricted environments grant"
+                    .to_owned()
+            }
+        }
     }
 }
 
@@ -568,6 +824,256 @@ impl EnvironmentOriginSession {
     pub fn validate(&self) -> Result<(), EnvironmentRegistryError> {
         validate_nonempty_optional("origin profile id", self.profile_id.as_deref())
     }
+}
+
+/// Default disconnect grace for ephemeral registered environments whose key
+/// does not set one: long enough for a pod restart or a brief network
+/// interruption, short enough that leaked benchmark sandboxes disappear.
+pub const DEFAULT_EPHEMERAL_DISCONNECT_GRACE_MS: u64 = 5 * 60 * 1_000;
+
+/// Prefix of every environment registration key secret.
+pub const REGISTRATION_KEY_SECRET_PREFIX: &str = "lsrk_";
+
+/// Length of the stored display prefix of a registration key secret.
+pub const REGISTRATION_KEY_DISPLAY_PREFIX_LEN: usize = 12;
+
+/// Longest accepted registration-key display name, in bytes.
+pub const REGISTRATION_KEY_DISPLAY_NAME_MAX_BYTES: usize = 128;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EnvironmentRegistrationKeyStatus {
+    Active,
+    Revoked,
+    Expired,
+}
+
+/// One reusable, universe-scoped admission policy for outbound `envd`
+/// registration, and the group of the environments it admitted. The row
+/// stores no counters: registration and active counts derive from
+/// environment rows carrying the key id.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EnvironmentRegistrationKeyRecord {
+    pub registration_key_id: EnvironmentRegistrationKeyId,
+    /// Required: the group name shown wherever registered environments are
+    /// listed.
+    pub display_name: String,
+    pub key_prefix: String,
+    pub identity_mode: RegisteredIdentityMode,
+    /// Non-closed environments this key may have at once; absent means
+    /// unlimited.
+    pub max_active_environments: Option<u32>,
+    /// Absent means [`DEFAULT_EPHEMERAL_DISCONNECT_GRACE_MS`].
+    pub ephemeral_disconnect_grace_ms: Option<u64>,
+    pub expires_at_ms: Option<i64>,
+    pub created_at_ms: i64,
+    pub revoked_at_ms: Option<i64>,
+}
+
+impl EnvironmentRegistrationKeyRecord {
+    pub fn status(&self, now_ms: i64) -> EnvironmentRegistrationKeyStatus {
+        if self.revoked_at_ms.is_some() {
+            EnvironmentRegistrationKeyStatus::Revoked
+        } else if self.expires_at_ms.is_some_and(|expires| expires <= now_ms) {
+            EnvironmentRegistrationKeyStatus::Expired
+        } else {
+            EnvironmentRegistrationKeyStatus::Active
+        }
+    }
+
+    /// Typed refusal when the key no longer admits new daemon identities.
+    pub fn check_admits(&self, now_ms: i64) -> Result<(), EnvironmentRegistryError> {
+        match self.status(now_ms) {
+            EnvironmentRegistrationKeyStatus::Active => Ok(()),
+            EnvironmentRegistrationKeyStatus::Revoked => {
+                Err(EnvironmentRegistryError::RegistrationKeyUnavailable {
+                    registration_key_id: self.registration_key_id.to_string(),
+                    reason: "revoked",
+                })
+            }
+            EnvironmentRegistrationKeyStatus::Expired => {
+                Err(EnvironmentRegistryError::RegistrationKeyUnavailable {
+                    registration_key_id: self.registration_key_id.to_string(),
+                    reason: "expired",
+                })
+            }
+        }
+    }
+
+    pub fn ephemeral_disconnect_grace_ms(&self) -> u64 {
+        self.ephemeral_disconnect_grace_ms
+            .unwrap_or(DEFAULT_EPHEMERAL_DISCONNECT_GRACE_MS)
+    }
+
+    pub fn validate(&self) -> Result<(), EnvironmentRegistryError> {
+        validate_registration_display_name(&self.display_name)?;
+        validate_nonempty_string("key_prefix", &self.key_prefix)?;
+        if self.max_active_environments == Some(0) {
+            return invalid("max_active_environments must be positive when set");
+        }
+        if self.ephemeral_disconnect_grace_ms == Some(0) {
+            return invalid("ephemeral_disconnect_grace_ms must be positive when set");
+        }
+        validate_nonnegative_i64(self.created_at_ms, "created_at_ms")?;
+        if let Some(expires) = self.expires_at_ms {
+            validate_nonnegative_i64(expires, "expires_at_ms")?;
+        }
+        if let Some(revoked) = self.revoked_at_ms {
+            validate_nonnegative_i64(revoked, "revoked_at_ms")?;
+            if revoked < self.created_at_ms {
+                return invalid("revoked_at_ms must be >= created_at_ms");
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Policy fields an operator chooses when minting a registration key.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RegistrationKeyPolicy {
+    pub display_name: String,
+    pub identity_mode: RegisteredIdentityMode,
+    pub max_active_environments: Option<u32>,
+    pub ephemeral_disconnect_grace_ms: Option<u64>,
+    pub expires_at_ms: Option<i64>,
+}
+
+/// A freshly minted registration key: the one-time plaintext secret plus the
+/// record and hash to persist. The secret is structurally not persistable.
+#[derive(Clone, Debug)]
+pub struct MintedRegistrationKey {
+    pub secret: SecretValue,
+    pub secret_hash: String,
+    pub record: EnvironmentRegistrationKeyRecord,
+}
+
+/// Mint a registration key. The secret is returned exactly once; only its
+/// SHA-256 hash and display prefix are persisted.
+pub fn mint_registration_key(
+    registration_key_id: EnvironmentRegistrationKeyId,
+    policy: RegistrationKeyPolicy,
+    created_at_ms: i64,
+) -> Result<MintedRegistrationKey, EnvironmentRegistryError> {
+    let secret = auth::generate_prefixed_secret(REGISTRATION_KEY_SECRET_PREFIX);
+    let record = EnvironmentRegistrationKeyRecord {
+        registration_key_id,
+        display_name: policy.display_name,
+        key_prefix: auth::secret_display_prefix(&secret, REGISTRATION_KEY_DISPLAY_PREFIX_LEN),
+        identity_mode: policy.identity_mode,
+        max_active_environments: policy.max_active_environments,
+        ephemeral_disconnect_grace_ms: policy.ephemeral_disconnect_grace_ms,
+        expires_at_ms: policy.expires_at_ms,
+        created_at_ms,
+        revoked_at_ms: None,
+    };
+    record.validate()?;
+    Ok(MintedRegistrationKey {
+        secret_hash: auth::secret_sha256_hex(&secret),
+        secret: SecretValue::new(secret),
+        record,
+    })
+}
+
+/// Lowercase hex SHA-256 of a presented registration secret: the lookup key.
+pub fn registration_key_hash(secret: &str) -> String {
+    auth::secret_sha256_hex(secret)
+}
+
+#[derive(Clone, Debug)]
+pub struct CreateEnvironmentRegistrationKey {
+    pub secret_hash: String,
+    pub record: EnvironmentRegistrationKeyRecord,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RevokeEnvironmentRegistrationKey {
+    pub registration_key_id: EnvironmentRegistrationKeyId,
+    pub revoked_at_ms: i64,
+}
+
+/// Derived per-key counts from environment rows.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RegistrationKeyUsage {
+    /// Environments ever admitted by the key, closed included.
+    pub registered: u64,
+    /// Non-closed environments admitted by the key.
+    pub active: u64,
+    pub last_registered_at_ms: Option<i64>,
+}
+
+#[async_trait]
+pub trait EnvironmentRegistrationKeyStore: Send + Sync {
+    async fn create_registration_key(
+        &self,
+        request: CreateEnvironmentRegistrationKey,
+    ) -> Result<EnvironmentRegistrationKeyRecord, EnvironmentRegistryError>;
+    async fn read_registration_key(
+        &self,
+        registration_key_id: &EnvironmentRegistrationKeyId,
+    ) -> Result<EnvironmentRegistrationKeyRecord, EnvironmentRegistryError>;
+    async fn list_registration_keys(
+        &self,
+    ) -> Result<Vec<EnvironmentRegistrationKeyRecord>, EnvironmentRegistryError>;
+    /// Idempotent: revoking a revoked key keeps the original revocation time.
+    async fn revoke_registration_key(
+        &self,
+        request: RevokeEnvironmentRegistrationKey,
+    ) -> Result<EnvironmentRegistrationKeyRecord, EnvironmentRegistryError>;
+    /// Resolve a presented secret by hash regardless of status; the caller
+    /// turns revoked/expired into typed refusals.
+    async fn resolve_registration_key(
+        &self,
+        secret_hash: &str,
+    ) -> Result<Option<EnvironmentRegistrationKeyRecord>, EnvironmentRegistryError>;
+    async fn registration_key_usage(
+        &self,
+        registration_key_id: &EnvironmentRegistrationKeyId,
+    ) -> Result<RegistrationKeyUsage, EnvironmentRegistryError>;
+}
+
+/// Admission of a first-seen daemon identity. The store locks the key row,
+/// re-checks that the key still admits, counts the key's non-closed
+/// environments against its limit, and inserts the environment `Ready`, all
+/// in one transaction. A retry with the same daemon converges through the
+/// derived request id.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CreateRegisteredEnvironment {
+    pub registration_key_id: EnvironmentRegistrationKeyId,
+    pub environment_id: EnvironmentId,
+    pub incarnation_id: EnvironmentIncarnationId,
+    /// Lowercase hex of the raw Ed25519 public key.
+    pub daemon_public_key: String,
+    pub display_name: Option<String>,
+    pub metadata: BTreeMap<String, String>,
+    pub created_at_ms: i64,
+}
+
+impl CreateRegisteredEnvironment {
+    pub fn daemon_id(&self) -> Result<EnvironmentDaemonId, EnvironmentRegistryError> {
+        validate_daemon_public_key(&self.daemon_public_key)?;
+        Ok(EnvironmentDaemonId::from_public_key(&decode_hex(
+            &self.daemon_public_key,
+        )?))
+    }
+}
+
+/// A gateway observation of a registered daemon's control connection.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RegisteredConnectionObservation {
+    /// A control connection was admitted: `Ready` plus a fresh stamp.
+    Connected,
+    /// The connection is still alive: fresh stamp only.
+    Heartbeat,
+    /// The connection ended: `Offline`; the stamp keeps its last value.
+    Disconnected,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ObserveRegisteredEnvironment {
+    pub environment_id: EnvironmentId,
+    pub observation: RegisteredConnectionObservation,
+    pub observed_at_ms: i64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -613,6 +1119,8 @@ pub struct ListEnvironments {
     pub binding_id: Option<EnvironmentProviderBindingId>,
     pub status: Option<EnvironmentStatus>,
     pub origin_session_id: Option<SessionId>,
+    /// Only environments admitted by this registration key.
+    pub registration_key_id: Option<EnvironmentRegistrationKeyId>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -774,6 +1282,20 @@ pub trait EnvironmentStore: Send + Sync {
         &self,
         request: CreateExternalEnvironment,
     ) -> Result<EnvironmentRecord, EnvironmentRegistryError>;
+    async fn create_registered_environment(
+        &self,
+        request: CreateRegisteredEnvironment,
+    ) -> Result<EnvironmentRecord, EnvironmentRegistryError>;
+    /// The one environment (closed included) bound to a daemon public key in
+    /// this universe.
+    async fn read_environment_by_daemon_public_key(
+        &self,
+        daemon_public_key: &str,
+    ) -> Result<Option<EnvironmentRecord>, EnvironmentRegistryError>;
+    async fn observe_registered_environment(
+        &self,
+        request: ObserveRegisteredEnvironment,
+    ) -> Result<EnvironmentRecord, EnvironmentRegistryError>;
     async fn read_environment(
         &self,
         environment_id: &EnvironmentId,
@@ -859,7 +1381,7 @@ pub fn template_record(
 }
 
 mod memory;
-pub use memory::InMemoryEnvironmentRegistryStore;
+pub use memory::{InMemoryEnvironmentRegistryStore, apply_registered_observation};
 
 fn invalid<T>(message: impl Into<String>) -> Result<T, EnvironmentRegistryError> {
     Err(EnvironmentRegistryError::InvalidInput {
@@ -893,6 +1415,50 @@ fn validate_provider_target_id(value: &ProviderTargetId) -> Result<(), Environme
             message: error.to_string(),
         }
     })
+}
+
+fn validate_registration_display_name(value: &str) -> Result<(), EnvironmentRegistryError> {
+    validate_nonempty_string("registration key display_name", value)?;
+    if value.len() > REGISTRATION_KEY_DISPLAY_NAME_MAX_BYTES
+        || value.chars().any(char::is_control)
+        || value.trim() != value
+    {
+        return invalid(format!(
+            "registration key display_name must be at most {REGISTRATION_KEY_DISPLAY_NAME_MAX_BYTES} bytes, trimmed, and contain no control characters"
+        ));
+    }
+    Ok(())
+}
+
+/// A daemon public key is the raw 32-byte Ed25519 key as lowercase hex.
+pub fn validate_daemon_public_key(value: &str) -> Result<(), EnvironmentRegistryError> {
+    if value.len() != 64
+        || !value
+            .bytes()
+            .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+    {
+        return invalid("daemon public key must be 64 lowercase hex characters");
+    }
+    Ok(())
+}
+
+fn decode_hex(value: &str) -> Result<Vec<u8>, EnvironmentRegistryError> {
+    if !value.len().is_multiple_of(2) {
+        return invalid("hex value has odd length");
+    }
+    (0..value.len())
+        .step_by(2)
+        .map(|index| {
+            u8::from_str_radix(&value[index..index + 2], 16)
+                .map_err(|_| invalid_error("hex value contains a non-hex character"))
+        })
+        .collect()
+}
+
+fn invalid_error(message: impl Into<String>) -> EnvironmentRegistryError {
+    EnvironmentRegistryError::InvalidInput {
+        message: message.into(),
+    }
 }
 
 fn validate_metadata(value: &BTreeMap<String, String>) -> Result<(), EnvironmentRegistryError> {

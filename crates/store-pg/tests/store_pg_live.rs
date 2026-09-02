@@ -1406,7 +1406,7 @@ async fn pg_live_universe_environments_are_independent_of_sessions() {
                 provider_id: Some(provider_id.clone()),
                 binding_id: Some(EnvironmentProviderBindingId::new("primary")),
                 status: Some(EnvironmentStatus::Offline),
-                origin_session_id: None,
+                ..ListEnvironments::default()
             })
             .await
             .expect("list instances"),
@@ -1464,10 +1464,8 @@ async fn pg_live_universe_environments_are_independent_of_sessions() {
     );
     let by_session = store
         .list_environments(ListEnvironments {
-            provider_id: None,
-            binding_id: None,
-            status: None,
             origin_session_id: Some(session_id.clone()),
+            ..ListEnvironments::default()
         })
         .await
         .expect("list by origin session");
