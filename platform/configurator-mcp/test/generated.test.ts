@@ -10,6 +10,10 @@ describe("generated universe tools", () => {
       "environments/jobs/create",
       "environments/jobs/read",
       "environments/jobs/cancel",
+      "environments/registration-keys/create",
+      "environments/registration-keys/read",
+      "environments/registration-keys/list",
+      "environments/registration-keys/revoke",
     ]);
     const expectedMethods = Object.entries(METHOD_INFO)
       .filter(([method, info]) => info.scope === "universe" && !excluded.has(method))
@@ -28,6 +32,8 @@ describe("generated universe tools", () => {
         "environments/jobs/create",
         "environments/jobs/read",
         "environments/jobs/cancel",
+        "environments/registration-keys/create",
+        "environments/registration-keys/revoke",
       ]),
     );
   });

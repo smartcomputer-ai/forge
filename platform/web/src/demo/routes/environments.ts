@@ -8,6 +8,7 @@ import type {
   Environment,
   EnvironmentCredential,
   EnvironmentCredentialSource,
+  EnvironmentRegistrationKey,
 } from "@/api";
 import type { DemoStore, UniverseState } from "../store";
 import { badRequest, conflict, notFound, readBody, universeFor } from "./common";
@@ -298,14 +299,81 @@ export function environmentRoutes(store: DemoStore): Hono {
     const bindingId = c.req.query("bindingId");
     const status = c.req.query("status");
     const originSessionId = c.req.query("originSessionId");
+    const registrationKeyId = c.req.query("registrationKeyId");
     const environments = [...universe.environments.values()].filter((environment) => {
       const source = environment.source;
       return (!providerId || (source.type === "provisioned" && source.providerId === providerId))
         && (!bindingId || (source.type === "provisioned" && source.bindingId === bindingId))
         && (!status || environment.status === status)
-        && (!originSessionId || environment.originSession?.sessionId === originSessionId);
+        && (!originSessionId || environment.originSession?.sessionId === originSessionId)
+        && (!registrationKeyId
+          || (source.type === "registered" && source.registrationKeyId === registrationKeyId));
     });
     return c.json(environments);
+  });
+
+  app.get("/:id/environment-registration-keys", (c) => {
+    const universe = universeFor(store, c);
+    if (!universe) return notFound(c);
+    return c.json(universe.registrationKeys.map((key) => withUsage(universe, key)));
+  });
+
+  app.post("/:id/environment-registration-keys", async (c) => {
+    const universe = universeFor(store, c);
+    if (!universe) return notFound(c);
+    const body = await readBody<{
+      displayName?: string;
+      identityMode?: "persistent" | "ephemeral";
+      maxActiveEnvironments?: number;
+      ephemeralDisconnectGraceMs?: number;
+      expiresAtMs?: number;
+    }>(c);
+    const displayName = body.displayName?.trim();
+    if (!displayName) return badRequest(c, "displayName is required");
+    const now = Date.now();
+    const random = crypto.randomUUID().replace(/-/g, "");
+    const secret = `lsrk_${random}${crypto.randomUUID().replace(/-/g, "").slice(0, 11)}`;
+    const key: EnvironmentRegistrationKey = {
+      registrationKeyId: `registration_key_${random}`,
+      displayName,
+      keyPrefix: secret.slice(0, 12),
+      identityMode: body.identityMode === "ephemeral" ? "ephemeral" : "persistent",
+      ...(body.maxActiveEnvironments === undefined ? {} : { maxActiveEnvironments: body.maxActiveEnvironments }),
+      ephemeralDisconnectGraceMs: body.ephemeralDisconnectGraceMs ?? 300_000,
+      ...(body.expiresAtMs === undefined ? {} : { expiresAtMs: body.expiresAtMs }),
+      status: "active",
+      registeredEnvironmentCount: 0,
+      activeEnvironmentCount: 0,
+      createdAtMs: now,
+    };
+    universe.registrationKeys.push(key);
+    return c.json({ registrationKey: withUsage(universe, key), secret }, 201);
+  });
+
+  app.post("/:id/environment-registration-keys/:keyId/revoke", async (c) => {
+    const universe = universeFor(store, c);
+    if (!universe) return notFound(c);
+    const key = universe.registrationKeys.find((k) => k.registrationKeyId === c.req.param("keyId"));
+    if (!key) return notFound(c);
+    const body = await readBody<{ closeEnvironments?: boolean }>(c);
+    if (key.status === "active") {
+      key.status = "revoked";
+      key.revokedAtMs = Date.now();
+    }
+    const closedEnvironmentIds: string[] = [];
+    if (body.closeEnvironments) {
+      for (const environment of universe.environments.values()) {
+        if (
+          environment.source.type === "registered"
+          && environment.source.registrationKeyId === key.registrationKeyId
+          && !["closing", "closed"].includes(environment.status)
+        ) {
+          closeEnvironment(universe, environment.environmentId);
+          closedEnvironmentIds.push(environment.environmentId);
+        }
+      }
+    }
+    return c.json({ registrationKey: withUsage(universe, key), closedEnvironmentIds });
   });
 
   app.post("/:id/environments", async (c) => {
@@ -528,4 +596,21 @@ export function environmentRoutes(store: DemoStore): Hono {
   });
 
   return app;
+}
+
+/// Counts derive from environment rows, exactly like the core's view.
+function withUsage(universe: UniverseState, key: EnvironmentRegistrationKey): EnvironmentRegistrationKey {
+  const mine = [...universe.environments.values()].filter((environment) =>
+    environment.source.type === "registered"
+    && environment.source.registrationKeyId === key.registrationKeyId);
+  const lastRegisteredAtMs = mine.reduce<number | null>(
+    (latest, environment) => (latest === null ? environment.createdAtMs : Math.max(latest, environment.createdAtMs)),
+    null,
+  );
+  return {
+    ...key,
+    registeredEnvironmentCount: mine.length,
+    activeEnvironmentCount: mine.filter((environment) => environment.status !== "closed").length,
+    ...(lastRegisteredAtMs === null ? {} : { lastRegisteredAtMs }),
+  };
 }
