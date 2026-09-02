@@ -1296,6 +1296,12 @@ pub trait EnvironmentStore: Send + Sync {
         &self,
         request: ObserveRegisteredEnvironment,
     ) -> Result<EnvironmentRecord, EnvironmentRegistryError>;
+    /// Registered environments that are not closing or closed: the
+    /// lifecycle reconciler's candidates for stale repair and ephemeral
+    /// cleanup.
+    async fn list_open_registered_environments(
+        &self,
+    ) -> Result<Vec<EnvironmentRecord>, EnvironmentRegistryError>;
     async fn read_environment(
         &self,
         environment_id: &EnvironmentId,

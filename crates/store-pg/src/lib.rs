@@ -371,11 +371,14 @@ pub async fn list_universes_with_pending_environments(
     pool: &PgPool,
 ) -> Result<Vec<Uuid>, PgStoreError> {
     // Universes with lifecycle work in flight, plus universes holding an open
-    // profile-provisioned environment that closes with its session:
-    // the sweep decides per environment whether that session is closed.
+    // profile-provisioned environment that closes with its session (the
+    // sweep decides per environment whether that session is closed), plus
+    // universes with an open registered environment (stale-heartbeat
+    // repair and ephemeral disconnect cleanup).
     let rows: Vec<(Uuid,)> = sqlx::query_as(
         "SELECT DISTINCT e.universe_id FROM environments e \
          WHERE e.status IN ('provisioning','booting','closing','unknown') \
+            OR (e.source_kind = 'registered' AND e.status NOT IN ('closing','closed')) \
             OR (e.source_kind = 'provisioned' AND ( \
                 (e.status = 'ready' AND e.desired_power <> 'running') \
                 OR (e.status = 'paused' AND e.desired_power <> 'paused') \

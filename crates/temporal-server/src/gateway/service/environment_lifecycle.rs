@@ -472,6 +472,7 @@ impl GatewayAgentApi {
         &self,
     ) -> Result<usize, AgentApiError> {
         let mut changed = self.reconcile_close_with_session_once().await?;
+        changed += self.reconcile_registered_once().await?;
         let environments =
             EnvironmentStore::list_environments_needing_reconcile(self.store.as_ref())
                 .await

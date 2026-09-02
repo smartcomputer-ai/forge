@@ -24,6 +24,10 @@ pub struct EnvironmentListArgs {
     pub cursor: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limit: Option<usize>,
+    /// Only environments in this group (the registration key that admitted
+    /// them, by display name).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
@@ -76,7 +80,7 @@ pub fn environment_control_tool_bundles(selection_tools: bool) -> ToolResult<Vec
         tools.extend([
             (
                 ENVIRONMENT_LIST_TOOL_NAME,
-                "List the live universe environments allowed by this session. Use this before activation when you do not know the environment id.",
+                "List the live universe environments allowed by this session. Use this before activation when you do not know the environment id. Registered environments carry a group, the name of the pool they registered under; filter by it to pick from one pool.",
                 list_schema(),
                 ToolParallelism::ParallelSafe,
                 read_execution,
@@ -169,7 +173,8 @@ fn list_schema() -> Value {
         "type": "object",
         "properties": {
             "cursor": { "type": ["string", "null"] },
-            "limit": { "type": ["integer", "null"], "minimum": 1, "maximum": MAX_ENVIRONMENT_LIST_LIMIT }
+            "limit": { "type": ["integer", "null"], "minimum": 1, "maximum": MAX_ENVIRONMENT_LIST_LIMIT },
+            "group": { "type": ["string", "null"], "minLength": 1, "description": "Only environments in this group (registered pool name)." }
         },
         "additionalProperties": false
     })

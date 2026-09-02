@@ -785,6 +785,20 @@ impl EnvironmentStore for PgStore {
         self.read_environment(&request.environment_id).await
     }
 
+    async fn list_open_registered_environments(
+        &self,
+    ) -> Result<Vec<EnvironmentRecord>, EnvironmentRegistryError> {
+        let query = format!(
+            "SELECT {ENVIRONMENT_COLUMNS} {ENVIRONMENT_JOIN} WHERE e.universe_id = $1 AND e.source_kind = 'registered' AND e.status NOT IN ('closing','closed') ORDER BY e.environment_id"
+        );
+        let rows = sqlx::query(&query)
+            .bind(self.config.universe_id)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|error| sql_error("list open registered environments", error))?;
+        rows.iter().map(environment_from_row).collect()
+    }
+
     async fn read_environment(
         &self,
         environment_id: &EnvironmentId,

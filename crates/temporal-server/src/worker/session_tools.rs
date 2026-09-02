@@ -66,6 +66,7 @@ pub struct SessionTools {
     workspace_store: Arc<dyn VfsWorkspaceStore>,
     environments: SessionEnvironmentManager,
     environment_store: Option<Arc<dyn EnvironmentStore>>,
+    registration_keys: Option<Arc<dyn environments::EnvironmentRegistrationKeyStore>>,
     environment_resolver: Option<crate::environment_resolver::EnvironmentResolver>,
     environment_credentials: Option<EnvironmentCredentialResolver>,
     environment_gateway: Option<crate::environment_gateway::EnvironmentGatewayClientConfig>,
@@ -80,6 +81,7 @@ impl SessionTools {
             workspace_store,
             environments,
             environment_store: None,
+            registration_keys: None,
             environment_resolver: None,
             environment_credentials: None,
             environment_gateway: None,
@@ -88,6 +90,16 @@ impl SessionTools {
 
     pub fn with_environment_store(mut self, environments: Arc<dyn EnvironmentStore>) -> Self {
         self.environment_store = Some(environments);
+        self
+    }
+
+    /// Registration keys name the groups registered environments belong to;
+    /// the model sees the group name, never the key.
+    pub fn with_registration_key_store(
+        mut self,
+        registration_keys: Arc<dyn environments::EnvironmentRegistrationKeyStore>,
+    ) -> Self {
+        self.registration_keys = Some(registration_keys);
         self
     }
 
@@ -128,12 +140,15 @@ impl SessionTools {
         let blob_graph: Arc<dyn BlobGraphStore> = store.clone();
         let workspace_store: Arc<dyn VfsWorkspaceStore> = store.clone();
         let environments: Arc<dyn EnvironmentStore> = store.clone();
+        let registration_keys: Arc<dyn environments::EnvironmentRegistrationKeyStore> =
+            store.clone();
         let credentials = EnvironmentCredentialResolver::from_pg_store(store.clone());
         let resolver =
             crate::environment_resolver::EnvironmentResolver::from_pg_store(store.clone());
         Self::new(blobs, workspace_store)
             .with_blob_graph(blob_graph)
             .with_environment_store(environments)
+            .with_registration_key_store(registration_keys)
             .with_environment_resolver(resolver)
             .with_environment_credentials(credentials)
     }
@@ -824,6 +839,13 @@ impl SessionTools {
                         .await;
                     }
                 };
+                let groups = self.environment_groups(&environments).await;
+                if let Some(group) = args.group.as_deref() {
+                    environments.retain(|environment| {
+                        group_of(environment, &groups)
+                            .is_some_and(|name| name.eq_ignore_ascii_case(group))
+                    });
+                }
                 if let Some(cursor) = args.cursor.as_deref() {
                     environments.retain(|environment| environment.environment_id.as_str() > cursor);
                 }
@@ -835,7 +857,7 @@ impl SessionTools {
                     .map(|environment| environment.environment_id.as_str().to_owned());
                 let output = serde_json::json!({
                     "environments": environments.iter().map(|environment| {
-                        environment_model_view(environment, active)
+                        environment_model_view(environment, active, group_of(environment, &groups))
                     }).collect::<Vec<_>>(),
                     "next_cursor": next_cursor,
                 });
@@ -875,7 +897,11 @@ impl SessionTools {
                         .await;
                     }
                 };
-                let output = environment_model_view(&environment, active);
+                let groups = self
+                    .environment_groups(std::slice::from_ref(&environment))
+                    .await;
+                let output =
+                    environment_model_view(&environment, active, group_of(&environment, &groups));
                 self.succeeded_tool_result(
                     call,
                     &output,
@@ -1034,6 +1060,31 @@ impl SessionTools {
         Ok(environments)
     }
 
+    /// Registration-key display names for the registered environments in a
+    /// listing, keyed by key id. A key that fails to load simply yields no
+    /// group; the listing itself is never blocked by it.
+    async fn environment_groups(
+        &self,
+        environments: &[EnvironmentRecord],
+    ) -> BTreeMap<String, String> {
+        let mut groups = BTreeMap::new();
+        let Some(registration_keys) = self.registration_keys.as_ref() else {
+            return groups;
+        };
+        for key_id in environments
+            .iter()
+            .filter_map(|environment| environment.registration_key_id())
+        {
+            if groups.contains_key(key_id.as_str()) {
+                continue;
+            }
+            if let Ok(key) = registration_keys.read_registration_key(key_id).await {
+                groups.insert(key_id.to_string(), key.display_name);
+            }
+        }
+        groups
+    }
+
     async fn runtime_environment_for_resource(
         &self,
         session_id: &SessionId,
@@ -1137,15 +1188,29 @@ struct EnvironmentJobRead {
 fn environment_model_view(
     environment: &EnvironmentRecord,
     active: Option<&EnvironmentId>,
+    group: Option<&str>,
 ) -> serde_json::Value {
     serde_json::json!({
         "environment_id": environment.environment_id.as_str(),
         "provider_id": environment.provider_id().map(|id| id.as_str()),
+        "group": group,
         "display_name": environment.display_name,
         "status": format!("{:?}", environment.status).to_lowercase(),
         "active": active == Some(&environment.environment_id),
         "observed_at_ms": environment.observed_at_ms(),
     })
+}
+
+/// The group name of a registered environment: its registration key's
+/// display name, when the key resolved.
+fn group_of<'a>(
+    environment: &EnvironmentRecord,
+    groups: &'a BTreeMap<String, String>,
+) -> Option<&'a str> {
+    environment
+        .registration_key_id()
+        .and_then(|id| groups.get(id.as_str()))
+        .map(String::as_str)
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

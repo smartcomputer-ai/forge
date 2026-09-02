@@ -361,6 +361,46 @@ async fn scenario(
         EnvironmentLifecycleStatusView::Closed,
     )
     .await?;
+
+    // Ephemeral grace: a key with a short grace closes an environment whose
+    // daemon stays away, through the lifecycle reconciler alone.
+    let short = api
+        .create_environment_registration_key(EnvironmentRegistrationKeyCreateParams {
+            display_name: "registration live short grace".to_owned(),
+            identity_mode: EnvironmentIdentityModeView::Ephemeral,
+            max_active_environments: None,
+            ephemeral_disconnect_grace_ms: Some(1_500),
+            expires_at_ms: None,
+        })
+        .await?
+        .result;
+    let short_key_id = short.registration_key.registration_key_id.clone();
+    let root_d = sandbox.join("d");
+    std::fs::create_dir_all(&root_d)?;
+    let daemon_d = spawn_daemon(daemon_config(
+        &root_d,
+        connect_url,
+        Some(&short.secret.0),
+        None,
+    )?);
+    let environment_d =
+        wait_for_registered(api, &short_key_id, 1, EnvironmentLifecycleStatusView::Ready).await?;
+    daemon_d.abort();
+    wait_for_status(
+        api,
+        &environment_d.environment_id,
+        EnvironmentLifecycleStatusView::Closed,
+    )
+    .await?;
+    let short_view = api
+        .read_environment_registration_key(EnvironmentRegistrationKeyReadParams {
+            registration_key_id: short_key_id,
+        })
+        .await?
+        .result
+        .registration_key;
+    assert_eq!(short_view.active_environment_count, 0);
+    assert_eq!(short_view.registered_environment_count, 1);
     Ok(())
 }
 

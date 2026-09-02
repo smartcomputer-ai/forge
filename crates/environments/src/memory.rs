@@ -546,6 +546,24 @@ impl EnvironmentStore for InMemoryEnvironmentRegistryStore {
         Ok(record.clone())
     }
 
+    async fn list_open_registered_environments(
+        &self,
+    ) -> Result<Vec<EnvironmentRecord>, EnvironmentRegistryError> {
+        Ok(self
+            .read_state()?
+            .environments
+            .values()
+            .filter(|record| {
+                record.is_registered()
+                    && !matches!(
+                        record.status,
+                        EnvironmentStatus::Closing | EnvironmentStatus::Closed
+                    )
+            })
+            .cloned()
+            .collect())
+    }
+
     async fn read_environment(
         &self,
         environment_id: &EnvironmentId,
