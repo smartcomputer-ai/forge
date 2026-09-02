@@ -1,6 +1,27 @@
 # Lightspeed Roadmap
 
 ## Work
+- [ ] [P149](p149-harbor-end-to-end-agent-evaluation.md) — Harbor-driven
+  end-to-end agent evaluation, implemented in a separate adapter repository:
+  a version-pinned external `BaseAgent` uploads and starts the canonical
+  `lightspeed-envd` in each Harbor-owned sandbox, correlates its P148 receipt,
+  runs the unchanged task through a hosted Lightspeed session, and leaves
+  Harbor to verify and destroy the sandbox. A paired Terminal-Bench matrix
+  compares Lightspeed and Codex on the same exact model, reasoning effort,
+  task/image/verifier, resources, and timeout while retaining each harness's
+  native prompt/context/tool loop; local Docker and remote sandbox compute,
+  failure accounting, provenance, artifacts, and paired reporting are
+  included, but harness-attribution ablations are not.
+- [ ] [P148](p148-key-based-outbound-environment-registration.md) — reusable
+  universe-scoped registration keys for outbound `lightspeed-envd`
+  connections: one shared key may admit many independently identified VMs,
+  containers, or pods; `envd` mints only its daemon key while Lightspeed
+  assigns and fences the environment/incarnation ids; persisted daemon state
+  reconnects a stable environment, ephemeral state creates a new environment
+  per instance and auto-closes after disconnect grace; bounded correlation
+  metadata and a registration receipt let external orchestrators match their
+  compute to the resulting environment. No one-time enrollment tickets or
+  Harbor-specific adapter in this item.
 - [ ] [P147](p147-session-checkpoints-and-bounded-reads.md) — session
   checkpoints and bounded reads: keep the event log authoritative while one
   CAS-backed reducer checkpoint per session (advance-only pointer row) makes
