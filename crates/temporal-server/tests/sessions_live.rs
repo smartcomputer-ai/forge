@@ -370,6 +370,7 @@ async fn run_fake_live_client(
     enabled_features.environments = Some(api::EnvironmentsFeature {
         version: api::CURRENT_FEATURE_VERSION,
         providers: None,
+        registration_keys: None,
         selection_tools: false,
         jobs: false,
     });

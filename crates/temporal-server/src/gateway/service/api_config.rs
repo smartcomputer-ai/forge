@@ -218,6 +218,7 @@ fn features_from_api(
             .map(|environments| engine::EnvironmentsFeature {
                 version: environments.version,
                 providers: environments.providers,
+                registration_keys: environments.registration_keys,
                 selection_tools: environments.selection_tools,
                 jobs: environments.jobs,
             }),

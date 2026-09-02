@@ -11,6 +11,7 @@ mod environment_lifecycle;
 mod environment_power;
 mod environment_projection;
 pub(crate) mod environment_providers;
+mod environment_registration;
 mod environments;
 mod errors;
 mod github_api;
@@ -3841,6 +3842,42 @@ impl AgentApiService for GatewayAgentApi {
             .map(AgentApiOutcome::new)
     }
 
+    async fn create_environment_registration_key(
+        &self,
+        params: EnvironmentRegistrationKeyCreateParams,
+    ) -> Result<AgentApiOutcome<EnvironmentRegistrationKeyCreateResponse>, AgentApiError> {
+        self.create_environment_registration_key_record(params)
+            .await
+            .map(AgentApiOutcome::new)
+    }
+
+    async fn read_environment_registration_key(
+        &self,
+        params: EnvironmentRegistrationKeyReadParams,
+    ) -> Result<AgentApiOutcome<EnvironmentRegistrationKeyReadResponse>, AgentApiError> {
+        self.read_environment_registration_key_record(params)
+            .await
+            .map(AgentApiOutcome::new)
+    }
+
+    async fn list_environment_registration_keys(
+        &self,
+        params: EnvironmentRegistrationKeyListParams,
+    ) -> Result<AgentApiOutcome<EnvironmentRegistrationKeyListResponse>, AgentApiError> {
+        self.list_environment_registration_key_records(params)
+            .await
+            .map(AgentApiOutcome::new)
+    }
+
+    async fn revoke_environment_registration_key(
+        &self,
+        params: EnvironmentRegistrationKeyRevokeParams,
+    ) -> Result<AgentApiOutcome<EnvironmentRegistrationKeyRevokeResponse>, AgentApiError> {
+        self.revoke_environment_registration_key_record(params)
+            .await
+            .map(AgentApiOutcome::new)
+    }
+
     async fn put_environment_ingress(
         &self,
         params: EnvironmentIngressPutParams,
@@ -4848,6 +4885,16 @@ impl GatewayAgentApi {
         }
     }
 }
+/// Server-side id allocation for registered environments admitted on the
+/// gateway's connect route.
+pub(crate) fn allocate_environment_id_public() -> ::environments::EnvironmentId {
+    environment_lifecycle::allocate_environment_id()
+}
+
+pub(crate) fn allocate_incarnation_id_public() -> ::environments::EnvironmentIncarnationId {
+    environment_lifecycle::allocate_incarnation_id()
+}
+
 #[cfg(test)]
 mod tests;
 

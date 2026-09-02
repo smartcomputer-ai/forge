@@ -246,6 +246,16 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                 "null"
               ]
             },
+            "registrationKeys": {
+              "description": "Registration keys whose registered environments the session may\nlist and activate; absent means every key. Independent of\n`providers`: each list scopes its own environment source, and\nexternal environments pass only when neither list is set.",
+              "items": {
+                "type": "string"
+              },
+              "type": [
+                "array",
+                "null"
+              ]
+            },
             "selectionTools": {
               "default": false,
               "description": "Exposes `environment_list`, `environment_activate`, and\n`environment_deactivate` to the model. `environment_read` is available\nwhenever environments are enabled, and external API/profile activation\nremains available when this is false.",
@@ -1361,6 +1371,16 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
             },
             "providers": {
               "description": "Absent means every registered provider is allowed.",
+              "items": {
+                "type": "string"
+              },
+              "type": [
+                "array",
+                "null"
+              ]
+            },
+            "registrationKeys": {
+              "description": "Registration keys whose registered environments the session may\nlist and activate; absent means every key. Independent of\n`providers`: each list scopes its own environment source, and\nexternal environments pass only when neither list is set.",
               "items": {
                 "type": "string"
               },
@@ -3342,6 +3362,16 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                 "null"
               ]
             },
+            "registrationKeys": {
+              "description": "Registration keys whose registered environments the session may\nlist and activate; absent means every key. Independent of\n`providers`: each list scopes its own environment source, and\nexternal environments pass only when neither list is set.",
+              "items": {
+                "type": "string"
+              },
+              "type": [
+                "array",
+                "null"
+              ]
+            },
             "selectionTools": {
               "default": false,
               "description": "Exposes `environment_list`, `environment_activate`, and\n`environment_deactivate` to the model. `environment_read` is available\nwhenever environments are enabled, and external API/profile activation\nremains available when this is false.",
@@ -4569,6 +4599,13 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
             "null"
           ]
         },
+        "registrationKeyId": {
+          "description": "Only registered environments admitted by this registration key.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "status": {
           "anyOf": [
             {
@@ -5234,6 +5271,16 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
             },
             "providers": {
               "description": "Absent means every registered provider is allowed.",
+              "items": {
+                "type": "string"
+              },
+              "type": [
+                "array",
+                "null"
+              ]
+            },
+            "registrationKeys": {
+              "description": "Registration keys whose registered environments the session may\nlist and activate; absent means every key. Independent of\n`providers`: each list scopes its own environment source, and\nexternal environments pass only when neither list is set.",
               "items": {
                 "type": "string"
               },
@@ -6377,6 +6424,16 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
             },
             "providers": {
               "description": "Absent means every registered provider is allowed.",
+              "items": {
+                "type": "string"
+              },
+              "type": [
+                "array",
+                "null"
+              ]
+            },
+            "registrationKeys": {
+              "description": "Registration keys whose registered environments the session may\nlist and activate; absent means every key. Independent of\n`providers`: each list scopes its own environment source, and\nexternal environments pass only when neither list is set.",
               "items": {
                 "type": "string"
               },

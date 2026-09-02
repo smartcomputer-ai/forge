@@ -891,6 +891,52 @@ function seedEnvironments(universe: UniverseState): void {
     updatedAtMs: ago(HOUR_MS + 42 * MINUTE_MS),
   };
   universe.environments.set(ENV_MAC_MINI, macMini);
+
+  // A registration key is the group of the daemons it admitted: Ada's
+  // laptop dials in from wherever she is, keeps its identity in its state
+  // directory, and simply shows as offline while the lid is closed.
+  const homeDevicesKey = "registration_key_home_devices";
+  universe.registrationKeys.push({
+    registrationKeyId: homeDevicesKey,
+    displayName: "Home devices",
+    keyPrefix: "lsrk_k9Qe2mB1",
+    identityMode: "persistent",
+    ephemeralDisconnectGraceMs: 300_000,
+    status: "active",
+    registeredEnvironmentCount: 1,
+    activeEnvironmentCount: 1,
+    lastRegisteredAtMs: ago(9 * DAY_MS),
+    createdAtMs: ago(9 * DAY_MS),
+  });
+  const laptopDaemonId = `daemon_${hex("ada-laptop-daemon", 64)}`;
+  universe.environments.set("env-ada-laptop", {
+    environmentId: "env-ada-laptop",
+    requestId: `daemon:${laptopDaemonId}`,
+    source: {
+      type: "registered",
+      registrationKeyId: homeDevicesKey,
+      daemonId: laptopDaemonId,
+      identityMode: "persistent",
+    },
+    displayName: "Ada's laptop",
+    status: "offline",
+    desiredPower: "running",
+    incarnation: {
+      incarnationId: `inc-${hex("ada-laptop-inc", 10)}`,
+      createdAtMs: ago(9 * DAY_MS),
+      updatedAtMs: ago(3 * HOUR_MS),
+    },
+    publicIngressEnabled: false,
+    publicEndpoint: null,
+    metadata: {
+      "envd.os": "macos",
+      "envd.arch": "arm64",
+      "lightspeed.envd.version": "0.1.0",
+    },
+    lastSeenAtMs: ago(3 * HOUR_MS),
+    createdAtMs: ago(9 * DAY_MS),
+    updatedAtMs: ago(3 * HOUR_MS),
+  });
   universe.providerBindings.push(
     providerBinding({
       revision: 1,

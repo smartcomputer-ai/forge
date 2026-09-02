@@ -2,13 +2,6 @@ use super::*;
 
 pub(super) const MCP_SERVER_SECRET_NAMESPACE: &str = "mcp_server";
 
-// Discovery is an unpaginated management response today. Preserve every tool
-// name while sharing a bounded amount of optional display text across broad
-// inventories, leaving ample room under the gateway's 2 MiB JSON-RPC budget
-// for names, annotations, and response framing.
-const DISCOVERY_VIEW_TEXT_BUDGET_BYTES: usize = 512 * 1024;
-const DISCOVERY_VIEW_MAX_FIELD_BYTES: usize = 4 * 1024;
-
 pub(super) fn put_mcp_server_record(
     server: McpServerInput,
     now_ms: i64,
@@ -68,21 +61,13 @@ pub(super) fn mcp_server_view(record: mcp::McpServerRecord) -> api::McpServerVie
 pub(super) fn mcp_tool_discovery_success(
     tools: Vec<mcp::DiscoveredMcpTool>,
 ) -> api::McpServerToolsDiscoverResponse {
-    let field_limit = DISCOVERY_VIEW_TEXT_BUDGET_BYTES
-        .checked_div(tools.len().saturating_mul(2).max(1))
-        .unwrap_or(0)
-        .min(DISCOVERY_VIEW_MAX_FIELD_BYTES);
     api::McpServerToolsDiscoverResponse::Success {
         tools: tools
             .into_iter()
             .map(|tool| api::McpAdvertisedToolView {
                 name: tool.name,
-                title: tool
-                    .title
-                    .map(|value| mcp::truncate_utf8_with_ellipsis(value, field_limit)),
-                description: tool
-                    .description
-                    .map(|value| mcp::truncate_utf8_with_ellipsis(value, field_limit)),
+                title: tool.title,
+                description: tool.description,
                 annotations: tool
                     .annotations
                     .map(|annotations| api::McpToolAnnotationsView {
@@ -254,13 +239,19 @@ impl GatewayAgentApi {
                 self.store.as_ref(),
                 "mcp_find_tools",
                 format!(
-                    "Browse or search live MCP tools by partial or fuzzy name/description terms. Available servers: {index}"
+                    "Browse, search, or load full definitions for live MCP tools. Browse with no query or names; search with query (tool names, descriptions, and argument names are indexed); load full definitions with server plus up to five names. Browse and search are byte-paged and may truncate oversized hits; use server plus names when a hit asks for its full definition. Available servers: {index}"
                 ),
                 serde_json::json!({
                     "type": "object",
                     "properties": {
                         "server": {"type": "string"},
                         "query": {"type": "string"},
+                        "names": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "minItems": 1,
+                            "maxItems": 5
+                        },
                         "cursor": {"type": "integer", "minimum": 0}
                     },
                     "additionalProperties": false
@@ -589,37 +580,19 @@ mod tests {
     }
 
     #[test]
-    fn broad_discovery_projection_preserves_names_within_response_budget() {
-        let limits = mcp::McpToolDiscoveryLimits::default();
-        let tools = (0..limits.max_tools)
-            .map(|index| mcp::DiscoveredMcpTool {
-                name: format!("tool_{index:04}_{}", "n".repeat(96)),
-                title: Some("t".repeat(limits.max_text_bytes)),
-                description: Some("d".repeat(limits.max_text_bytes)),
-                input_schema: serde_json::json!({"type": "object"}),
-                annotations: Some(mcp::McpToolAnnotations {
-                    read_only_hint: Some(true),
-                    destructive_hint: Some(false),
-                    idempotent_hint: Some(true),
-                    open_world_hint: Some(false),
-                }),
-            })
-            .collect::<Vec<_>>();
-
-        let response = mcp_tool_discovery_success(tools);
-        let api::McpServerToolsDiscoverResponse::Success { tools } = &response else {
+    fn discovery_projection_preserves_discoverer_retained_text() {
+        let retained = "d".repeat(mcp::McpToolDiscoveryLimits::default().max_text_bytes);
+        let response = mcp_tool_discovery_success(vec![mcp::DiscoveredMcpTool {
+            name: "long_description".to_owned(),
+            title: Some(retained.clone()),
+            description: Some(retained.clone()),
+            input_schema: serde_json::json!({"type": "object"}),
+            annotations: None,
+        }]);
+        let api::McpServerToolsDiscoverResponse::Success { tools } = response else {
             panic!("discovery projection must succeed");
         };
-        assert_eq!(tools.len(), limits.max_tools);
-        assert_eq!(
-            tools.first().unwrap().name,
-            format!("tool_{:04}_{}", 0, "n".repeat(96))
-        );
-        assert!(
-            serde_json::to_vec(&response)
-                .expect("serialize discovery response")
-                .len()
-                < 2 * 1024 * 1024
-        );
+        assert_eq!(tools[0].title.as_deref(), Some(retained.as_str()));
+        assert_eq!(tools[0].description.as_deref(), Some(retained.as_str()));
     }
 }

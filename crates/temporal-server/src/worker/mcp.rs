@@ -57,6 +57,11 @@ pub struct NativeMcpRuntime {
 pub const MCP_INVENTORY_CACHE_TTL: Duration = Duration::from_secs(300);
 /// Short fallback while Lightspeed does not maintain notification subscriptions.
 pub const MCP_LIST_CHANGED_CACHE_TTL: Duration = Duration::from_secs(60);
+const MCP_FIND_HIT_MAX_BYTES: usize = 8 * 1024;
+const MCP_FIND_PAGE_MAX_BYTES: usize = 64 * 1024;
+const MCP_FIND_DETAIL_MAX_NAMES: usize = 5;
+const MCP_FIND_TRUNCATED_NOTE: &str =
+    "Call mcp_find_tools with server and names for the full definition.";
 
 type InventoryCacheKey = (String, u64);
 type InventoryLocks = HashMap<InventoryCacheKey, Arc<Mutex<()>>>;
@@ -249,6 +254,7 @@ impl NativeMcpInventoryResolver {
                 remote_name: tool.name,
                 description: tool.description,
                 input_schema: tool.input_schema,
+                annotations: tool.annotations.map(native_tool_annotations),
             })
             .collect::<Vec<_>>();
         tools.sort_by(|left, right| left.remote_name.cmp(&right.remote_name));
@@ -353,12 +359,75 @@ impl NativeMcpRuntime {
             .as_object()
             .ok_or_else(|| "mcp_find_tools arguments must be a JSON object".to_owned())?;
         let selected_server = object.get("server").and_then(serde_json::Value::as_str);
+        if let Some(server) = selected_server
+            && !targets.iter().any(|target| target.server_id == server)
+        {
+            return Err(format!(
+                "unknown active search-exposure MCP server {server}"
+            ));
+        }
+        let names = match object.get("names") {
+            None => None,
+            Some(serde_json::Value::Array(names)) => {
+                if names.is_empty() {
+                    return Err("mcp_find_tools names must not be empty".to_owned());
+                }
+                if names.len() > MCP_FIND_DETAIL_MAX_NAMES {
+                    return Err(format!(
+                        "mcp_find_tools accepts at most {MCP_FIND_DETAIL_MAX_NAMES} names"
+                    ));
+                }
+                Some(
+                    names
+                        .iter()
+                        .map(|name| {
+                            name.as_str().ok_or_else(|| {
+                                "mcp_find_tools names must contain only strings".to_owned()
+                            })
+                        })
+                        .collect::<Result<Vec<_>, _>>()?,
+                )
+            }
+            Some(_) => return Err("mcp_find_tools names must be an array of strings".to_owned()),
+        };
         let query = object
             .get("query")
             .and_then(serde_json::Value::as_str)
             .map(str::trim)
             .filter(|query| !query.is_empty())
             .map(McpToolSearchQuery::new);
+        if let Some(names) = names {
+            let server =
+                selected_server.ok_or_else(|| "mcp_find_tools names requires server".to_owned())?;
+            if object.contains_key("query") || object.contains_key("cursor") {
+                return Err("mcp_find_tools detail mode does not accept query or cursor".to_owned());
+            }
+            let target = targets
+                .iter()
+                .find(|target| target.server_id == server)
+                .expect("selected server was validated");
+            let spec = spec_from_target(target, engine::RemoteMcpExposure::Search);
+            let inventory = self
+                .inventory
+                .list_tools(&spec)
+                .await
+                .map_err(|error| error.to_string())?;
+            let mut tools = Vec::with_capacity(names.len());
+            for name in names {
+                let tool = inventory
+                    .iter()
+                    .find(|tool| tool.remote_name == name)
+                    .ok_or_else(|| format!("MCP server {server} does not advertise tool {name}"))?;
+                tools.push(full_tool_definition(server, tool));
+            }
+            let output = serde_json::json!({"tools": tools, "nextCursor": null});
+            return Ok(NativeMcpExecutionOutcome::Completed {
+                visible: serde_json::to_string(&output).map_err(|error| error.to_string())?,
+                output,
+                is_error: false,
+                assets: Vec::new(),
+            });
+        }
         let cursor = object
             .get("cursor")
             .and_then(serde_json::Value::as_u64)
@@ -377,9 +446,11 @@ impl NativeMcpRuntime {
             {
                 let rank = match query.as_ref() {
                     Some(query) => {
-                        let Some(rank) =
-                            query.score(&tool.remote_name, tool.description.as_deref())
-                        else {
+                        let Some(rank) = query.score(
+                            &tool.remote_name,
+                            tool.description.as_deref(),
+                            &tool.input_schema,
+                        ) else {
                             continue;
                         };
                         Some(rank)
@@ -389,16 +460,6 @@ impl NativeMcpRuntime {
                 matches.push((rank, target.server_id.clone(), tool));
             }
         }
-        if matches.is_empty()
-            && let Some(selected_server) = selected_server
-            && !targets
-                .iter()
-                .any(|target| target.server_id == selected_server)
-        {
-            return Err(format!(
-                "unknown active search-exposure MCP server {selected_server}"
-            ));
-        }
         matches.sort_by(|left, right| {
             right
                 .0
@@ -406,30 +467,9 @@ impl NativeMcpRuntime {
                 .then_with(|| left.1.cmp(&right.1))
                 .then_with(|| left.2.remote_name.cmp(&right.2.remote_name))
         });
-        const PAGE_SIZE: usize = 20;
-        let page = matches
-            .iter()
-            .skip(cursor)
-            .take(PAGE_SIZE)
-            .map(|(_, server, tool)| {
-                let mut value = serde_json::json!({
-                    "server": server,
-                    "name": tool.remote_name,
-                    "description": tool.description,
-                });
-                if query.is_some() {
-                    value
-                        .as_object_mut()
-                        .expect("tool result object")
-                        .insert("inputSchema".to_owned(), tool.input_schema.clone());
-                }
-                value
-            })
-            .collect::<Vec<_>>();
-        let next_cursor = (cursor + page.len() < matches.len()).then_some(cursor + page.len());
-        let output = serde_json::json!({"tools": page, "nextCursor": next_cursor});
+        let output = paged_tool_output(&matches, cursor)?;
         Ok(NativeMcpExecutionOutcome::Completed {
-            visible: serde_json::to_string_pretty(&output).map_err(|error| error.to_string())?,
+            visible: serde_json::to_string(&output).map_err(|error| error.to_string())?,
             output,
             is_error: false,
             assets: Vec::new(),
@@ -467,14 +507,7 @@ impl NativeMcpRuntime {
                     target.server_id
                 )
             })?;
-        let validator = jsonschema::validator_for(&tool.input_schema).map_err(|error| {
-            format!("MCP tool {tool_name} has an invalid input schema: {error}")
-        })?;
-        validator
-            .validate(&serde_json::Value::Object(arguments.clone()))
-            .map_err(|error| {
-                format!("arguments for MCP tool {tool_name} do not match its schema: {error}")
-            })
+        validate_mcp_arguments(tool_name, tool, arguments)
     }
 
     async fn call(
@@ -611,6 +644,154 @@ impl NativeMcpRuntime {
             Err(error) => Err(format!("resolve MCP credential: {error}")),
         }
     }
+}
+
+fn native_tool_annotations(annotations: mcp::McpToolAnnotations) -> serde_json::Value {
+    let mut value = serde_json::Map::new();
+    for (name, hint) in [
+        ("readOnlyHint", annotations.read_only_hint),
+        ("destructiveHint", annotations.destructive_hint),
+        ("idempotentHint", annotations.idempotent_hint),
+        ("openWorldHint", annotations.open_world_hint),
+    ] {
+        if let Some(hint) = hint {
+            value.insert(name.to_owned(), serde_json::Value::Bool(hint));
+        }
+    }
+    serde_json::Value::Object(value)
+}
+
+fn validate_mcp_arguments(
+    tool_name: &str,
+    tool: &NativeMcpTool,
+    arguments: &serde_json::Map<String, serde_json::Value>,
+) -> Result<(), String> {
+    let schema = serde_json::to_string(&tool.input_schema).map_err(|error| error.to_string())?;
+    let validator = jsonschema::validator_for(&tool.input_schema).map_err(|error| {
+        format!("MCP tool {tool_name} has an invalid input schema: {error}; input schema: {schema}")
+    })?;
+    validator
+        .validate(&serde_json::Value::Object(arguments.clone()))
+        .map_err(|error| {
+            format!(
+                "arguments for MCP tool {tool_name} do not match its schema: {error}; input schema: {schema}"
+            )
+        })
+}
+
+fn full_tool_definition(server: &str, tool: &NativeMcpTool) -> serde_json::Value {
+    serde_json::json!({
+        "server": server,
+        "name": tool.remote_name,
+        "description": tool.description,
+        "inputSchema": tool.input_schema,
+        "annotations": tool.annotations,
+    })
+}
+
+fn compact_search_hit(server: &str, tool: &NativeMcpTool) -> Result<serde_json::Value, String> {
+    let full = full_tool_definition(server, tool);
+    if serde_json::to_vec(&full)
+        .map_err(|error| error.to_string())?
+        .len()
+        <= MCP_FIND_HIT_MAX_BYTES
+    {
+        return Ok(full);
+    }
+
+    let mut hit = serde_json::json!({
+        "server": server,
+        "name": tool.remote_name,
+        "description": tool.description.as_ref().map(|_| ""),
+        "inputSchema": tool.input_schema,
+        "annotations": tool.annotations,
+        "truncated": MCP_FIND_TRUNCATED_NOTE,
+    });
+
+    if serialized_len(&hit)? > MCP_FIND_HIT_MAX_BYTES {
+        let mut argument_names = tool
+            .input_schema
+            .get("properties")
+            .and_then(serde_json::Value::as_object)
+            .into_iter()
+            .flat_map(|properties| properties.keys().cloned())
+            .collect::<Vec<_>>();
+        argument_names.sort();
+        hit["inputSchema"] = serde_json::json!(argument_names);
+
+        // The schema bounds normally make the complete argument-name list fit.
+        // Keep the hit invariant defensive even for an adversarial schema with
+        // thousands of long top-level properties.
+        while serialized_len(&hit)? > MCP_FIND_HIT_MAX_BYTES {
+            let Some(names) = hit["inputSchema"].as_array_mut() else {
+                break;
+            };
+            if names.pop().is_none() {
+                break;
+            }
+        }
+    }
+
+    if let Some(description) = tool.description.as_deref() {
+        let mut boundaries = description
+            .char_indices()
+            .map(|(index, _)| index)
+            .collect::<Vec<_>>();
+        boundaries.push(description.len());
+        boundaries.sort_unstable();
+        boundaries.dedup();
+
+        let mut low = 0;
+        let mut high = boundaries.len();
+        while low < high {
+            let middle = (low + high) / 2;
+            hit["description"] =
+                serde_json::Value::String(description[..boundaries[middle]].to_owned());
+            if serialized_len(&hit)? <= MCP_FIND_HIT_MAX_BYTES {
+                low = middle + 1;
+            } else {
+                high = middle;
+            }
+        }
+        let selected = low.saturating_sub(1);
+        hit["description"] =
+            serde_json::Value::String(description[..boundaries[selected]].to_owned());
+    }
+
+    if serialized_len(&hit)? > MCP_FIND_HIT_MAX_BYTES {
+        return Err("MCP tool identity exceeds the search hit byte limit".to_owned());
+    }
+    Ok(hit)
+}
+
+fn paged_tool_output(
+    matches: &[(
+        Option<mcp::search::McpToolSearchScore>,
+        String,
+        NativeMcpTool,
+    )],
+    cursor: usize,
+) -> Result<serde_json::Value, String> {
+    let mut page = Vec::new();
+    for (_, server, tool) in matches.iter().skip(cursor) {
+        page.push(compact_search_hit(server, tool)?);
+        let next_cursor = (cursor + page.len() < matches.len()).then_some(cursor + page.len());
+        let candidate = serde_json::json!({"tools": page, "nextCursor": next_cursor});
+        if serialized_len(&candidate)? > MCP_FIND_PAGE_MAX_BYTES && page.len() > 1 {
+            page.pop();
+            break;
+        }
+    }
+    let next_cursor = (cursor + page.len() < matches.len()).then_some(cursor + page.len());
+    let output = serde_json::json!({"tools": page, "nextCursor": next_cursor});
+    debug_assert!(serialized_len(&output).is_ok_and(|length| length <= MCP_FIND_PAGE_MAX_BYTES));
+    Ok(output)
+}
+
+fn serialized_len(value: &serde_json::Value) -> Result<usize, String> {
+    serde_json::to_vec(value)
+        .map(|bytes| bytes.len())
+        .map_err(|error| error.to_string())
 }
 
 fn extract_mcp_assets(
@@ -803,6 +984,19 @@ mod tests {
 
     use super::*;
 
+    fn native_tool(
+        name: &str,
+        description: Option<String>,
+        input_schema: serde_json::Value,
+    ) -> NativeMcpTool {
+        NativeMcpTool {
+            remote_name: name.to_owned(),
+            description,
+            input_schema,
+            annotations: Some(serde_json::json!({"readOnlyHint": true})),
+        }
+    }
+
     struct CountingDiscoverer {
         calls: AtomicUsize,
         tools_list_changed: bool,
@@ -967,5 +1161,112 @@ mod tests {
         assert!(!value.to_string().contains("aGVsbG8="));
         attach_mcp_asset_refs(&mut value, &[engine::BlobRef::from_bytes(b"hello")]);
         assert!(value.to_string().contains("sha256:"));
+    }
+
+    #[test]
+    fn search_hits_are_uniform_and_oversized_descriptions_are_utf8_safe() {
+        let whole = compact_search_hit(
+            "docs",
+            &native_tool(
+                "read",
+                Some("Read a document".to_owned()),
+                serde_json::json!({
+                    "type": "object",
+                    "properties": {"page_id": {"type": "string"}}
+                }),
+            ),
+        )
+        .expect("whole hit");
+        assert_eq!(
+            whole["inputSchema"]["properties"]["page_id"]["type"],
+            "string"
+        );
+        assert_eq!(whole["annotations"]["readOnlyHint"], true);
+        assert!(whole.get("truncated").is_none());
+
+        let oversized = compact_search_hit(
+            "docs",
+            &native_tool(
+                "long",
+                Some("é".repeat(8_000)),
+                serde_json::json!({"type": "object"}),
+            ),
+        )
+        .expect("bounded hit");
+        assert!(serialized_len(&oversized).unwrap() <= MCP_FIND_HIT_MAX_BYTES);
+        assert_eq!(oversized["truncated"], MCP_FIND_TRUNCATED_NOTE);
+        assert!(
+            oversized["description"]
+                .as_str()
+                .unwrap()
+                .is_char_boundary(oversized["description"].as_str().unwrap().len())
+        );
+    }
+
+    #[test]
+    fn oversized_schemas_fall_back_to_top_level_argument_names() {
+        let hit = compact_search_hit(
+            "docs",
+            &native_tool(
+                "update",
+                Some("Update a page".to_owned()),
+                serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "page_id": {"type": "string", "description": "x".repeat(12_000)},
+                        "title": {"type": "string"}
+                    }
+                }),
+            ),
+        )
+        .expect("bounded hit");
+        assert_eq!(hit["inputSchema"], serde_json::json!(["page_id", "title"]));
+        assert_eq!(hit["truncated"], MCP_FIND_TRUNCATED_NOTE);
+        assert!(serialized_len(&hit).unwrap() <= MCP_FIND_HIT_MAX_BYTES);
+    }
+
+    #[test]
+    fn argument_validation_errors_include_the_full_input_schema() {
+        let tool = native_tool(
+            "update",
+            None,
+            serde_json::json!({
+                "type": "object",
+                "properties": {"page_id": {"type": "string"}},
+                "required": ["page_id"]
+            }),
+        );
+        let error = validate_mcp_arguments("update", &tool, &serde_json::Map::new())
+            .expect_err("missing required argument");
+        assert!(error.contains("input schema:"));
+        assert!(error.contains(r#""required":["page_id"]"#));
+    }
+
+    #[test]
+    fn search_pages_use_compact_byte_budget_and_advance_cursor() {
+        let matches = (0..40)
+            .map(|index| {
+                (
+                    None,
+                    "docs".to_owned(),
+                    native_tool(
+                        &format!("tool_{index:02}"),
+                        Some("d".repeat(2_000)),
+                        serde_json::json!({"type": "object"}),
+                    ),
+                )
+            })
+            .collect::<Vec<_>>();
+        let first = paged_tool_output(&matches, 0).expect("first page");
+        assert!(serialized_len(&first).unwrap() <= MCP_FIND_PAGE_MAX_BYTES);
+        let first_len = first["tools"].as_array().unwrap().len();
+        let cursor = first["nextCursor"].as_u64().expect("next cursor") as usize;
+        assert_eq!(cursor, first_len);
+        assert!(cursor > 0);
+
+        let second = paged_tool_output(&matches, cursor).expect("second page");
+        assert!(serialized_len(&second).unwrap() <= MCP_FIND_PAGE_MAX_BYTES);
+        assert_eq!(second["tools"][0]["name"], format!("tool_{cursor:02}"));
+        assert!(second["nextCursor"].is_null());
     }
 }

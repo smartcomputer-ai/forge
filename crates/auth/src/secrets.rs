@@ -46,6 +46,36 @@ impl From<&str> for SecretValue {
     }
 }
 
+/// Mint a server-generated bearer secret: `prefix` followed by 32 random
+/// bytes from the operating-system source, base64url-encoded without
+/// padding. Shared by API keys and environment registration keys so both
+/// kinds have the same entropy, hashing, and display conventions.
+pub fn generate_prefixed_secret(prefix: &str) -> String {
+    use base64::Engine as _;
+    use rand::RngCore;
+
+    let mut bytes = [0u8; 32];
+    rand::rngs::OsRng.fill_bytes(&mut bytes);
+    format!(
+        "{prefix}{}",
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
+    )
+}
+
+/// Lowercase hex SHA-256 of a minted secret: the stored lookup key. No KDF,
+/// because the secret is high-entropy random data rather than a human
+/// password, and no AEAD, because it only ever needs to be recognized.
+pub fn secret_sha256_hex(secret: &str) -> String {
+    use sha2::{Digest, Sha256};
+    hex::encode(Sha256::digest(secret.as_bytes()))
+}
+
+/// The first `len` characters of a minted secret: enough to identify it in
+/// listings without revealing meaningful entropy.
+pub fn secret_display_prefix(secret: &str, len: usize) -> String {
+    secret.chars().take(len).collect()
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SecretRecordMeta {
     pub secret_id: SecretId,

@@ -16,13 +16,13 @@ impl GatewayAgentApi {
                     "environment activation requires the environments feature to be granted",
                 )
             })?;
-        let allowed = feature
-            .providers
-            .as_ref()
-            .map(|providers| providers.iter().cloned().collect::<BTreeSet<_>>());
+        let policy = ::environments::EnvironmentAccessPolicy::new(
+            feature.providers.clone(),
+            feature.registration_keys.clone(),
+        );
         crate::environment_resolver::EnvironmentResolver::from_pg_store(self.store.clone())
             .with_gateway(self.environment_gateway.clone())
-            .activatable(environment_id, allowed.as_ref(), now_ms()?)
+            .activatable(environment_id, &policy, now_ms()?)
             .await
             .map(|(environment, _ready)| environment)
             .map_err(map_environment_resolve_error)

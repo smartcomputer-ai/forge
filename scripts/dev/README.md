@@ -198,9 +198,13 @@ cargo run -p temporal-server
 ```
 
 With no flags, the `lightspeed-server` binary runs every role — the JSON-RPC
-gateway plus the `sessions`, `bots`, and `channels` Temporal workers, each on
-its own task queue — in one process. For split-role runs, select roles per
-shell (`--task-types workflows|activities` splits a worker role further):
+`gateway`, the `environment-gateway` (worker environment routes, the public
+daemon registration routes, and the environment reconcilers), plus the
+`sessions`, `bots`, and `channels` Temporal workers, each on its own task
+queue — in one process. For split-role runs, select roles per shell
+(`--task-types workflows|activities` splits a worker role further); keep the
+`environment-gateway` role on exactly one process and point the others at it
+through `LIGHTSPEED_ENVIRONMENT_GATEWAY_URL`:
 
 ```bash
 source scripts/dev/env.sh
@@ -209,7 +213,7 @@ cargo run -p temporal-server -- --roles sessions,bots,channels
 
 ```bash
 source scripts/dev/env.sh
-cargo run -p temporal-server -- --roles gateway
+cargo run -p temporal-server -- --roles gateway,environment-gateway
 ```
 
 Then chat through the regular CLI over the gateway transport from another

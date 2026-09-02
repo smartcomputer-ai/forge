@@ -111,7 +111,7 @@ pub fn close_message(reason: &'static str) -> axum::extract::ws::Message {
     }))
 }
 
-fn websocket_base(url: &str) -> String {
+pub(crate) fn websocket_base(url: &str) -> String {
     if let Some(rest) = url.strip_prefix("https://") {
         format!("wss://{rest}")
     } else if let Some(rest) = url.strip_prefix("http://") {

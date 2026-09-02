@@ -10,9 +10,13 @@ use temporalio_common::worker::WorkerTaskTypes;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Role {
-    /// HTTP/JSON-RPC gateway, webhook hooks, environment reconciler, power
-    /// reaper.
+    /// HTTP/JSON-RPC gateway, OAuth callbacks, and webhook hooks.
     Gateway,
+    /// The environment data plane: the public routes outbound daemons dial,
+    /// the internal route workers use to reach environments, the lifecycle
+    /// reconciler, and the power reaper. Registered daemons hold their
+    /// connection in this process, so run exactly one replica of it.
+    EnvironmentGateway,
     /// Session, sub-agent, and environment-job workflows with their
     /// activities and the promise reaper.
     Sessions,
@@ -24,11 +28,18 @@ pub enum Role {
 }
 
 impl Role {
-    pub const ALL: [Role; 4] = [Role::Gateway, Role::Sessions, Role::Bots, Role::Channels];
+    pub const ALL: [Role; 5] = [
+        Role::Gateway,
+        Role::EnvironmentGateway,
+        Role::Sessions,
+        Role::Bots,
+        Role::Channels,
+    ];
 
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Gateway => "gateway",
+            Self::EnvironmentGateway => "environment-gateway",
             Self::Sessions => "sessions",
             Self::Bots => "bots",
             Self::Channels => "channels",
@@ -36,7 +47,7 @@ impl Role {
     }
 
     pub fn is_worker(self) -> bool {
-        !matches!(self, Self::Gateway)
+        !matches!(self, Self::Gateway | Self::EnvironmentGateway)
     }
 }
 
@@ -52,11 +63,12 @@ impl FromStr for Role {
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value.trim() {
             "gateway" => Ok(Self::Gateway),
+            "environment-gateway" => Ok(Self::EnvironmentGateway),
             "sessions" => Ok(Self::Sessions),
             "bots" => Ok(Self::Bots),
             "channels" => Ok(Self::Channels),
             other => Err(format!(
-                "unknown role {other:?}; expected a comma-separated subset of gateway, sessions, bots, channels"
+                "unknown role {other:?}; expected a comma-separated subset of gateway, environment-gateway, sessions, bots, channels"
             )),
         }
     }
@@ -97,6 +109,11 @@ impl RoleSet {
 
     pub fn has_worker(&self) -> bool {
         self.worker_roles().next().is_some()
+    }
+
+    /// Whether this process binds the HTTP listener at all.
+    pub fn serves_http(&self) -> bool {
+        self.has(Role::Gateway) || self.has(Role::EnvironmentGateway)
     }
 }
 
@@ -175,9 +192,27 @@ mod tests {
         assert!(set.has(Role::Gateway));
         assert!(set.has(Role::Bots));
         assert!(!set.has(Role::Sessions));
+        assert!(!set.has(Role::EnvironmentGateway));
         assert_eq!(set.to_string(), "gateway,bots");
         assert_eq!(set.worker_roles().collect::<Vec<_>>(), vec![Role::Bots]);
+        assert!(set.serves_http());
         assert!(RoleSet::parse("worker").is_err());
+    }
+
+    #[test]
+    fn environment_gateway_is_an_http_role_included_by_default() {
+        assert!(RoleSet::all().has(Role::EnvironmentGateway));
+        let only = RoleSet::parse("environment-gateway").unwrap();
+        assert!(only.serves_http());
+        assert!(!only.has_worker());
+        assert_eq!(only.to_string(), "environment-gateway");
+        let api_only = RoleSet::parse("gateway").unwrap();
+        assert!(!api_only.has(Role::EnvironmentGateway));
+        assert!(
+            RoleSet::parse("gateway,sessions,environment-gateway")
+                .unwrap()
+                .has(Role::EnvironmentGateway)
+        );
     }
 
     #[test]

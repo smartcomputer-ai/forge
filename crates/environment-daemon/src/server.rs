@@ -31,11 +31,34 @@ use tokio::net::TcpListener;
 use tokio::sync::{Semaphore, mpsc};
 use tokio_tungstenite::{accept_async, tungstenite::Message};
 
+/// Serve the daemon until a transport fails terminally: the passive listener
+/// when one is configured, the outbound registration loop when a gateway
+/// URL is configured, or both.
 pub async fn run(runtime: DaemonRuntime) -> anyhow::Result<()> {
-    let listener = TcpListener::bind(runtime.config().listen)
+    let listen = runtime.config().listen;
+    let registration = runtime.config().registration.clone();
+    match (listen, registration) {
+        (Some(listen), None) => run_listener(runtime, listen).await,
+        (None, Some(registration)) => {
+            crate::registration::run_outbound(runtime, registration).await
+        }
+        (Some(listen), Some(registration)) => {
+            let listener = tokio::spawn(run_listener(runtime.clone(), listen));
+            let outbound = tokio::spawn(crate::registration::run_outbound(runtime, registration));
+            tokio::select! {
+                result = listener => result.context("listener task")?,
+                result = outbound => result.context("registration task")?,
+            }
+        }
+        (None, None) => anyhow::bail!("configure a listener or a gateway URL"),
+    }
+}
+
+async fn run_listener(runtime: DaemonRuntime, listen: std::net::SocketAddr) -> anyhow::Result<()> {
+    let listener = TcpListener::bind(listen)
         .await
         .context("bind environment daemon listener")?;
-    tracing_line(&format!("listener ready on {}", runtime.config().listen));
+    tracing_line(&format!("listener ready on {listen}"));
     loop {
         let (stream, peer) = listener.accept().await?;
         let runtime = runtime.clone();
@@ -55,7 +78,9 @@ pub async fn run(runtime: DaemonRuntime) -> anyhow::Result<()> {
     }
 }
 
-async fn run_data_connection<S>(
+/// Serve the data protocol on one accepted or dialed socket. Outbound data
+/// sockets and passive connections run this same loop.
+pub(crate) async fn run_data_connection<S>(
     runtime: &DaemonRuntime,
     socket: tokio_tungstenite::WebSocketStream<S>,
 ) -> anyhow::Result<()>
@@ -296,6 +321,6 @@ async fn handle_data(
     }
 }
 
-fn tracing_line(message: &str) {
+pub(crate) fn tracing_line(message: &str) {
     eprintln!("lightspeed-envd {message}");
 }

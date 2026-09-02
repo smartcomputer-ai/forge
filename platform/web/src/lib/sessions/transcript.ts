@@ -15,6 +15,8 @@ export type TranscriptEntry =
       key: string;
       role: "user" | "assistant";
       text: string;
+      contentRef: string;
+      textTruncated: boolean;
       /// The run this entry belongs to, when the engine recorded one.
       runId?: string;
       /// A user message injected into a running run (steering) rather than
@@ -39,6 +41,8 @@ export interface TranscriptToolCall {
   status: ToolItemStatus;
   argumentsJson?: string | null;
   output?: string | null;
+  outputContentRef?: string;
+  outputTruncated?: boolean;
   error?: string | null;
   isError: boolean;
   display?: ToolCallDisplay | null;
@@ -551,6 +555,8 @@ function applyNonToolCallItem(
           key: item.id,
           role: kind.role,
           text: item.text,
+          contentRef: item.contentRef,
+          textTruncated: item.textTruncated === true,
           ...(runId ? { runId } : {}),
           ...(source?.type === "steering" ? { steering: true } : {}),
         });
@@ -616,6 +622,8 @@ function applyNonToolCallItem(
         ...call,
         status: item.display?.status ?? (isError ? "failed" : "succeeded"),
         output: item.display?.output ?? item.text,
+        outputContentRef: item.contentRef,
+        outputTruncated: item.textTruncated === true,
         error: item.display?.error ?? (isError ? item.display?.output ?? item.text : null),
         isError,
       }));

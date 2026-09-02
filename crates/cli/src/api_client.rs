@@ -572,6 +572,38 @@ impl HttpAgentApi {
             .await
     }
 
+    pub(crate) async fn create_environment_registration_key(
+        &self,
+        params: api::EnvironmentRegistrationKeyCreateParams,
+    ) -> Result<AgentApiOutcome<api::EnvironmentRegistrationKeyCreateResponse>, AgentApiError> {
+        self.request(api::METHOD_ENVIRONMENTS_REGISTRATION_KEYS_CREATE, params)
+            .await
+    }
+
+    pub(crate) async fn read_environment_registration_key(
+        &self,
+        params: api::EnvironmentRegistrationKeyReadParams,
+    ) -> Result<AgentApiOutcome<api::EnvironmentRegistrationKeyReadResponse>, AgentApiError> {
+        self.request(api::METHOD_ENVIRONMENTS_REGISTRATION_KEYS_READ, params)
+            .await
+    }
+
+    pub(crate) async fn list_environment_registration_keys(
+        &self,
+        params: api::EnvironmentRegistrationKeyListParams,
+    ) -> Result<AgentApiOutcome<api::EnvironmentRegistrationKeyListResponse>, AgentApiError> {
+        self.request(api::METHOD_ENVIRONMENTS_REGISTRATION_KEYS_LIST, params)
+            .await
+    }
+
+    pub(crate) async fn revoke_environment_registration_key(
+        &self,
+        params: api::EnvironmentRegistrationKeyRevokeParams,
+    ) -> Result<AgentApiOutcome<api::EnvironmentRegistrationKeyRevokeResponse>, AgentApiError> {
+        self.request(api::METHOD_ENVIRONMENTS_REGISTRATION_KEYS_REVOKE, params)
+            .await
+    }
+
     async fn request<P, R>(
         &self,
         method: &str,

@@ -342,6 +342,10 @@ impl GatewayAgentApi {
                         })
                     })
                     .transpose()?,
+                registration_key_id: params
+                    .registration_key_id
+                    .map(parse_registration_key_id)
+                    .transpose()?,
             },
         )
         .await
@@ -420,10 +424,8 @@ impl GatewayAgentApi {
         let Ok(environments) = EnvironmentStore::list_environments(
             self.store.as_ref(),
             ListEnvironments {
-                provider_id: None,
-                binding_id: None,
-                status: None,
                 origin_session_id: Some(session_id.clone()),
+                ..ListEnvironments::default()
             },
         )
         .await
@@ -470,6 +472,7 @@ impl GatewayAgentApi {
         &self,
     ) -> Result<usize, AgentApiError> {
         let mut changed = self.reconcile_close_with_session_once().await?;
+        changed += self.reconcile_registered_once().await?;
         let environments =
             EnvironmentStore::list_environments_needing_reconcile(self.store.as_ref())
                 .await
@@ -801,10 +804,18 @@ pub(super) fn parse_registry_environment_id(value: String) -> Result<Environment
         .map_err(|error| AgentApiError::invalid_request(format!("invalid environment id: {error}")))
 }
 
+pub(super) fn parse_registration_key_id(
+    value: String,
+) -> Result<::environments::EnvironmentRegistrationKeyId, AgentApiError> {
+    ::environments::EnvironmentRegistrationKeyId::try_new(value).map_err(|error| {
+        AgentApiError::invalid_request(format!("invalid registration key id: {error}"))
+    })
+}
+
 pub(super) fn allocate_environment_id() -> EnvironmentId {
     EnvironmentId::new(format!("environment_{}", uuid::Uuid::new_v4().simple()))
 }
 
-fn allocate_incarnation_id() -> EnvironmentIncarnationId {
+pub(super) fn allocate_incarnation_id() -> EnvironmentIncarnationId {
     EnvironmentIncarnationId::new(format!("incarnation_{}", uuid::Uuid::new_v4().simple()))
 }

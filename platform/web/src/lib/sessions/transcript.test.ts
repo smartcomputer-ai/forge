@@ -52,6 +52,40 @@ const runView = (
 });
 
 describe("session transcript traces", () => {
+  it("keeps blob references for truncated message and tool-result expansion", () => {
+    const state = applyEvents(emptyTranscript(), [
+      event(1, {
+        type: "contextEntriesApplied",
+        entries: [
+          item("message", { type: "message", role: "assistant" }, {
+            text: "message preview",
+            textTruncated: true,
+          }),
+          item("tool", { type: "toolCall", callId: "call", name: "read_file" }),
+          item("result", { type: "toolResult", callId: "call", isError: false }, {
+            text: "result preview",
+            textTruncated: true,
+          }),
+        ],
+      }),
+    ]);
+
+    expect(state.entries[0]).toMatchObject({
+      kind: "message",
+      contentRef: "sha256:message",
+      text: "message preview",
+      textTruncated: true,
+    });
+    expect(state.entries[1]).toMatchObject({
+      kind: "tool-group",
+      calls: [{
+        output: "result preview",
+        outputContentRef: "sha256:result",
+        outputTruncated: true,
+      }],
+    });
+  });
+
   it("keeps readable reasoning summaries and hides opaque continuation state", () => {
     const state = applyEvents(emptyTranscript(), [
       event(1, {
@@ -460,12 +494,22 @@ describe("session transcript run control", () => {
       }),
     ]);
     expect(state.entries).toEqual([
-      { kind: "message", key: "input", role: "user", text: "do the task", runId: "run_1" },
+      {
+        kind: "message",
+        key: "input",
+        role: "user",
+        text: "do the task",
+        contentRef: "sha256:input",
+        textTruncated: false,
+        runId: "run_1",
+      },
       {
         kind: "message",
         key: "steer",
         role: "user",
         text: "also mention the moon",
+        contentRef: "sha256:steer",
+        textTruncated: false,
         runId: "run_1",
         steering: true,
       },

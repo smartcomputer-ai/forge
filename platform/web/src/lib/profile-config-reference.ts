@@ -19,6 +19,8 @@ export const PROFILE_CONFIG_REFERENCE = `// Every field is optional — omit any
       "jobs": true | false,
       // Absent means every registered provider is allowed.
       "providers": ["string"],
+      // Registration keys whose registered environments the session may list and activate; absent means every key. Independent of \`providers\`: each list scopes its own environment source, and external environments pass only when neither list is set.
+      "registrationKeys": ["string"],
       // Exposes \`environment_list\`, \`environment_activate\`, and \`environment_deactivate\` to the model. \`environment_read\` is available whenever environments are enabled, and external API/profile activation remains available when this is false.
       "selectionTools": true | false,
       "version": 0,

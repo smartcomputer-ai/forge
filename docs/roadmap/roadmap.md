@@ -1,6 +1,38 @@
 # Lightspeed Roadmap
 
 ## Work
+- [ ] [P150](p150-scalable-mcp-discovery-and-tool-search.md) — scalable MCP
+  discovery and tool search: exempt management discovery from the gateway
+  response budget instead of truncating descriptions, expand truncated
+  transcript entries from CAS in the UI, and reshape `mcp_find_tools` into one
+  8 KiB-windowed hit shape with 64 KiB byte-paged results and a `names` mode
+  for full definitions.
+- [ ] [P149](p149-harbor-end-to-end-agent-evaluation.md) — Harbor-driven
+  end-to-end agent evaluation, implemented in a separate adapter repository:
+  a version-pinned external `BaseAgent` uploads and starts the canonical
+  `lightspeed-envd` in each Harbor-owned sandbox, correlates its P148 receipt,
+  runs the unchanged task through a hosted Lightspeed session, and leaves
+  Harbor to verify and destroy the sandbox. A paired Terminal-Bench matrix
+  compares Lightspeed and Codex on the same exact model, reasoning effort,
+  task/image/verifier, resources, and timeout while retaining each harness's
+  native prompt/context/tool loop; local Docker and remote sandbox compute,
+  failure accounting, provenance, artifacts, and paired reporting are
+  included, but harness-attribution ablations are not.
+- [x] [P148](p148-key-based-outbound-environment-registration.md) — reusable
+  universe-scoped registration keys for outbound `lightspeed-envd`
+  connections: one shared key may admit many independently identified VMs,
+  containers, or pods; `envd` mints only its daemon key while Lightspeed
+  assigns and fences the environment/incarnation ids. Reviewed 2026-09-02:
+  the outbound socket is a control channel and each worker route gets a
+  reverse-dialed data socket through the unchanged gateway proxy; identity
+  mode is key policy copied onto the environment, with persistent state
+  reconnecting the same environment and volatile state creating a new one
+  that auto-closes after disconnect grace; the daemon key is a column on the
+  environment row; the registration key is the group, with a grant allowlist
+  and list filter; bounded correlation metadata and a registration receipt
+  let external orchestrators match their compute to the resulting
+  environment. No one-time enrollment tickets, frame multiplexing, pool-claim
+  intents, or Harbor-specific adapter in this item.
 - [ ] [P147](p147-session-checkpoints-and-bounded-reads.md) — session
   checkpoints and bounded reads: keep the event log authoritative while one
   CAS-backed reducer checkpoint per session (advance-only pointer row) makes
@@ -377,6 +409,10 @@ Superseded by [P134](p134-subagents.md); the entries below are history.
 - [ ] Design capability based model for agents
 
 ## MCP
+- [ ] [P150](p150-scalable-mcp-discovery-and-tool-search.md) — return complete
+  MCP inventories to management views, expand transcript previews through CAS,
+  and give model search one 8 KiB hit shape, 64 KiB pages, and full
+  definitions by name
 - [x] [P110](p110-universe-owned-mcp-auth.md) — make authentication part of
   each universe-scoped MCP server configuration, remove grant selection and
   grant references from sessions, and resolve the server's current credential

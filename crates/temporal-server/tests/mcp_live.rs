@@ -160,17 +160,70 @@ impl CoreAgentLlm for MatrixScriptedLlm {
                 .await
             }
             "matrix_browse_1" => {
-                assert_find_page(&result, 20, Some(20), "catalog_tool_000")?;
+                let page = find_page(&result, "catalog_tool_000")?;
+                let cursor =
+                    page["nextCursor"]
+                        .as_u64()
+                        .ok_or_else(|| CoreAgentIoError::Failed {
+                            message: format!("first MCP browse page did not continue: {result}"),
+                        })?;
                 self.tool_call(
                     &request,
                     "mcp_find_tools",
                     "matrix_browse_2",
-                    json!({"server": self.ids.large, "cursor": 20}),
+                    json!({"server": self.ids.large, "cursor": cursor}),
                 )
                 .await
             }
             "matrix_browse_2" => {
-                assert_find_page(&result, 20, Some(40), "catalog_tool_020")?;
+                let page = find_page(&result, "catalog_tool_044")?;
+                if !page["nextCursor"].is_null() {
+                    return Err(CoreAgentIoError::Failed {
+                        message: format!("second MCP browse page did not finish: {result}"),
+                    });
+                }
+                self.tool_call(
+                    &request,
+                    "mcp_find_tools",
+                    "matrix_oversized",
+                    json!({"server": self.ids.large, "query": "catalog_tool_044"}),
+                )
+                .await
+            }
+            "matrix_oversized" => {
+                let page = find_page(&result, "catalog_tool_044")?;
+                let tool = page["tools"]
+                    .as_array()
+                    .and_then(|tools| tools.iter().find(|tool| tool["name"] == "catalog_tool_044"))
+                    .ok_or_else(|| CoreAgentIoError::Failed {
+                        message: format!("oversized MCP hit is absent: {result}"),
+                    })?;
+                if tool["truncated"].as_str().is_none()
+                    || serde_json::to_vec(tool).map_err(io_error)?.len() > 8 * 1024
+                {
+                    return Err(CoreAgentIoError::Failed {
+                        message: format!("oversized MCP hit was not bounded: {result}"),
+                    });
+                }
+                self.tool_call(
+                    &request,
+                    "mcp_find_tools",
+                    "matrix_detail",
+                    json!({"server": self.ids.large, "names": ["catalog_tool_044"]}),
+                )
+                .await
+            }
+            "matrix_detail" => {
+                let page = find_page(&result, "catalog_tool_044")?;
+                let tool = &page["tools"][0];
+                if tool.get("truncated").is_some()
+                    || tool["description"].as_str().map(str::len) != Some(16_000)
+                    || tool["inputSchema"]["properties"]["value"]["type"] != "string"
+                {
+                    return Err(CoreAgentIoError::Failed {
+                        message: format!("MCP detail did not return the full definition: {result}"),
+                    });
+                }
                 self.tool_call(
                     &request,
                     "mcp_find_tools",
@@ -185,7 +238,7 @@ impl CoreAgentLlm for MatrixScriptedLlm {
                     &request,
                     "mcp_find_tools",
                     "matrix_selected",
-                    json!({"server": self.ids.selected, "query": "catlog tools 039"}),
+                    json!({"server": self.ids.selected, "query": "value"}),
                 )
                 .await
             }
@@ -540,19 +593,13 @@ fn assert_find_page(
     next_cursor: Option<u64>,
     expected_name: &str,
 ) -> Result<(), CoreAgentIoError> {
-    let value: Value = serde_json::from_str(text).map_err(io_error)?;
+    let value = find_page(text, expected_name)?;
     let tools = value["tools"]
         .as_array()
         .ok_or_else(|| CoreAgentIoError::Failed {
             message: format!("MCP find result has no tools array: {text}"),
         })?;
-    if tools.len() != expected_len
-        || value["nextCursor"].as_u64() != next_cursor
-        || (!expected_name.is_empty()
-            && !tools
-                .iter()
-                .any(|tool| tool["name"].as_str() == Some(expected_name)))
-    {
+    if tools.len() != expected_len || value["nextCursor"].as_u64() != next_cursor {
         return Err(CoreAgentIoError::Failed {
             message: format!(
                 "unexpected MCP find page: len={}, next={:?}, expected name={expected_name:?}, value={text}",
@@ -562,6 +609,30 @@ fn assert_find_page(
         });
     }
     Ok(())
+}
+
+fn find_page(text: &str, expected_name: &str) -> Result<Value, CoreAgentIoError> {
+    if text.len() > 64 * 1024 {
+        return Err(CoreAgentIoError::Failed {
+            message: format!("MCP find result exceeded 64 KiB: {} bytes", text.len()),
+        });
+    }
+    let value: Value = serde_json::from_str(text).map_err(io_error)?;
+    let tools = value["tools"]
+        .as_array()
+        .ok_or_else(|| CoreAgentIoError::Failed {
+            message: format!("MCP find result has no tools array: {text}"),
+        })?;
+    if !expected_name.is_empty()
+        && !tools
+            .iter()
+            .any(|tool| tool["name"].as_str() == Some(expected_name))
+    {
+        return Err(CoreAgentIoError::Failed {
+            message: format!("MCP find page did not contain {expected_name:?}: {text}"),
+        });
+    }
+    Ok(value)
 }
 
 fn require_contains(text: &str, needle: &str, step: &str) -> Result<(), CoreAgentIoError> {
@@ -725,9 +796,14 @@ async fn fixture_tools_list(
     let end = (offset + LARGE_PAGE_SIZE).min(count);
     let tools = (offset..end)
         .map(|index| {
+            let description = if index == 44 {
+                "é".repeat(8_000)
+            } else {
+                format!("Catalog fixture operation {index:03} {}", "d".repeat(2_000))
+            };
             json!({
                 "name": format!("catalog_tool_{index:03}"),
-                "description": format!("Catalog fixture operation {index:03}"),
+                "description": description,
                 "inputSchema": {
                     "type": "object",
                     "properties": {"value": {"type": "string"}},
@@ -1607,6 +1683,7 @@ impl LiveConfigurator {
         let gateway = gateway_router(
             Arc::new(GatewayState::for_api(api)),
             DEFAULT_MAX_REQUEST_BODY_BYTES,
+            temporal_server::gateway::GatewayRoutes::ALL,
         );
         let gateway_task = tokio::spawn(async move {
             let _ = axum::serve(gateway_listener, gateway).await;

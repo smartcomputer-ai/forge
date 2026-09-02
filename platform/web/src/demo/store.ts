@@ -7,6 +7,7 @@ import type {
   Environment,
   EnvironmentCredential,
   EnvironmentProviderBinding,
+  EnvironmentRegistrationKey,
   EnvironmentTemplate,
   GitHubApp,
   McpOAuthFlow,
@@ -129,6 +130,9 @@ export interface UniverseState {
   sessions: Map<string, SessionRecord>;
   workspaces: Map<string, WorkspaceRecord>;
   environments: Map<string, Environment>;
+  /// Registration keys (core wire shape) with the secret the demo minted,
+  /// so a revoke or a re-mint can behave like the real gateway.
+  registrationKeys: EnvironmentRegistrationKey[];
   providerBindings: EnvironmentProviderBinding[];
   environmentTemplates: EnvironmentTemplate[];
   environmentCredentials: EnvironmentCredential[];
@@ -237,6 +241,7 @@ export class DemoStore {
       sessions: new Map(),
       workspaces: new Map(),
       environments: new Map(),
+      registrationKeys: [],
       providerBindings: [],
       environmentTemplates: [],
       environmentCredentials: [],

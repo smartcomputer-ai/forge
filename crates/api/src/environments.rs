@@ -72,6 +72,9 @@ pub struct EnvironmentListParams {
     pub binding_id: Option<EnvironmentProviderBindingId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<EnvironmentLifecycleStatusView>,
+    /// Only registered environments admitted by this registration key.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub registration_key_id: Option<EnvironmentRegistrationKeyId>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -216,6 +219,138 @@ pub enum EnvironmentSourceView {
     External {
         connection: EnvironmentConnectionView,
     },
+    /// An envd that dialed the gateway outbound and was admitted by a
+    /// registration key. The key is the environment's group; the daemon id
+    /// is derived from the daemon's public key and is its identity.
+    Registered {
+        registration_key_id: EnvironmentRegistrationKeyId,
+        daemon_id: EnvironmentDaemonId,
+        identity_mode: EnvironmentIdentityModeView,
+    },
+}
+
+/// What Lightspeed does with a registered environment while its daemon is
+/// disconnected. Registration-key policy, copied onto each environment.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum EnvironmentIdentityModeView {
+    /// Stays offline until explicitly closed.
+    Persistent,
+    /// Closed once the daemon has been away longer than the key's
+    /// disconnect grace.
+    Ephemeral,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum EnvironmentRegistrationKeyStatusView {
+    Active,
+    Revoked,
+    Expired,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct EnvironmentRegistrationKeyView {
+    pub registration_key_id: EnvironmentRegistrationKeyId,
+    /// The group name shown wherever registered environments are listed.
+    pub display_name: String,
+    /// First characters of the secret, for identification only.
+    pub key_prefix: String,
+    pub identity_mode: EnvironmentIdentityModeView,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_active_environments: Option<u32>,
+    /// Effective disconnect grace for ephemeral environments.
+    pub ephemeral_disconnect_grace_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at_ms: Option<i64>,
+    pub status: EnvironmentRegistrationKeyStatusView,
+    /// Environments ever admitted by this key, closed included.
+    pub registered_environment_count: u64,
+    /// Non-closed environments admitted by this key.
+    pub active_environment_count: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_registered_at_ms: Option<i64>,
+    pub created_at_ms: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revoked_at_ms: Option<i64>,
+}
+
+/// A freshly minted registration secret. `Debug` output is redacted so the
+/// plaintext cannot leak through derived logging; it is shown once.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(transparent)]
+pub struct EnvironmentRegistrationSecretView(pub String);
+
+impl fmt::Debug for EnvironmentRegistrationSecretView {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("EnvironmentRegistrationSecretView(<redacted>)")
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct EnvironmentRegistrationKeyCreateParams {
+    /// Group name for the environments this key admits.
+    pub display_name: String,
+    pub identity_mode: EnvironmentIdentityModeView,
+    /// Non-closed environments the key may have at once; omit for unlimited.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_active_environments: Option<u32>,
+    /// Disconnect grace for ephemeral environments; omit for the default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ephemeral_disconnect_grace_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at_ms: Option<i64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct EnvironmentRegistrationKeyCreateResponse {
+    pub registration_key: EnvironmentRegistrationKeyView,
+    /// The plaintext secret, returned only here.
+    pub secret: EnvironmentRegistrationSecretView,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct EnvironmentRegistrationKeyReadParams {
+    pub registration_key_id: EnvironmentRegistrationKeyId,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct EnvironmentRegistrationKeyReadResponse {
+    pub registration_key: EnvironmentRegistrationKeyView,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct EnvironmentRegistrationKeyListParams {}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct EnvironmentRegistrationKeyListResponse {
+    #[serde(default)]
+    pub registration_keys: Vec<EnvironmentRegistrationKeyView>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct EnvironmentRegistrationKeyRevokeParams {
+    pub registration_key_id: EnvironmentRegistrationKeyId,
+    /// Also close every non-closed environment the key admitted.
+    #[serde(default)]
+    pub close_environments: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct EnvironmentRegistrationKeyRevokeResponse {
+    pub registration_key: EnvironmentRegistrationKeyView,
+    /// Environments closed by this call.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub closed_environment_ids: Vec<EnvironmentId>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -277,6 +412,10 @@ pub struct EnvironmentView {
     pub origin_session: Option<EnvironmentOriginSessionView>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub metadata: BTreeMap<String, String>,
+    /// Registered environments only: when the gateway last saw the daemon's
+    /// control connection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_seen_at_ms: Option<i64>,
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
 }

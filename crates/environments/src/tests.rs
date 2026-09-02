@@ -389,10 +389,8 @@ async fn origin_session_is_recorded_listed_and_swept() {
 
     let by_session = store
         .list_environments(ListEnvironments {
-            provider_id: None,
-            binding_id: None,
-            status: None,
             origin_session_id: Some(SessionId::new("s-1")),
+            ..ListEnvironments::default()
         })
         .await
         .expect("list");
@@ -619,4 +617,420 @@ async fn power_intent_and_idle_policy_are_provisioned_only_and_drive_reconcile_l
             .await,
         Err(EnvironmentRegistryError::InvalidInput { .. })
     ));
+}
+
+fn registration_policy(mode: RegisteredIdentityMode) -> RegistrationKeyPolicy {
+    RegistrationKeyPolicy {
+        display_name: "harbor campaign".to_owned(),
+        identity_mode: mode,
+        max_active_environments: None,
+        ephemeral_disconnect_grace_ms: None,
+        expires_at_ms: None,
+    }
+}
+
+async fn minted_key(
+    store: &InMemoryEnvironmentRegistryStore,
+    id: &str,
+    policy: RegistrationKeyPolicy,
+) -> MintedRegistrationKey {
+    let minted =
+        mint_registration_key(EnvironmentRegistrationKeyId::new(id), policy, 1_000).expect("mint");
+    store
+        .create_registration_key(CreateEnvironmentRegistrationKey {
+            secret_hash: minted.secret_hash.clone(),
+            record: minted.record.clone(),
+        })
+        .await
+        .expect("create key");
+    minted
+}
+
+fn daemon_key(seed: u8) -> String {
+    (0..32).map(|_| format!("{seed:02x}")).collect()
+}
+
+fn register(
+    key: &str,
+    environment: &str,
+    public_key: &str,
+    at: i64,
+) -> CreateRegisteredEnvironment {
+    CreateRegisteredEnvironment {
+        registration_key_id: EnvironmentRegistrationKeyId::new(key),
+        environment_id: EnvironmentId::new(environment),
+        incarnation_id: EnvironmentIncarnationId::new(format!("{environment}-inc")),
+        daemon_public_key: public_key.to_owned(),
+        display_name: Some("worker".to_owned()),
+        metadata: BTreeMap::new(),
+        created_at_ms: at,
+    }
+}
+
+#[test]
+fn daemon_id_and_request_id_derive_from_the_public_key() {
+    let public_key = [7u8; 32];
+    let daemon_id = EnvironmentDaemonId::from_public_key(&public_key);
+    assert!(daemon_id.as_str().starts_with(DAEMON_ID_PREFIX));
+    assert_eq!(daemon_id.as_str().len(), DAEMON_ID_PREFIX.len() + 64);
+    assert_eq!(daemon_id, EnvironmentDaemonId::from_public_key(&public_key));
+    assert_ne!(daemon_id, EnvironmentDaemonId::from_public_key(&[8u8; 32]));
+    let request_id = EnvironmentProvisionRequestId::for_daemon(&daemon_id);
+    assert_eq!(
+        request_id.as_str(),
+        format!("{DAEMON_PROVISION_REQUEST_PREFIX}{}", daemon_id.as_str())
+    );
+    assert!(validate_daemon_public_key(&daemon_key(0xab)).is_ok());
+    assert!(validate_daemon_public_key("ABCD").is_err());
+}
+
+#[test]
+fn minted_registration_keys_return_the_secret_once_and_redact_debug() {
+    let minted = mint_registration_key(
+        EnvironmentRegistrationKeyId::new("rk-1"),
+        registration_policy(RegisteredIdentityMode::Ephemeral),
+        5,
+    )
+    .expect("mint");
+    let secret = minted.secret.expose().to_owned();
+    assert!(secret.starts_with(REGISTRATION_KEY_SECRET_PREFIX));
+    assert_eq!(minted.secret_hash, registration_key_hash(&secret));
+    assert_eq!(
+        minted.record.key_prefix.len(),
+        REGISTRATION_KEY_DISPLAY_PREFIX_LEN
+    );
+    assert!(secret.starts_with(&minted.record.key_prefix));
+    let debug = format!("{minted:?}");
+    assert!(!debug.contains(&secret[REGISTRATION_KEY_DISPLAY_PREFIX_LEN..]));
+    assert!(
+        mint_registration_key(
+            EnvironmentRegistrationKeyId::new("rk-2"),
+            RegistrationKeyPolicy {
+                display_name: " padded ".to_owned(),
+                ..registration_policy(RegisteredIdentityMode::Persistent)
+            },
+            5,
+        )
+        .is_err()
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn registered_admission_is_keyed_by_daemon_identity() {
+    let (_universe_id, store) = store().await;
+    let minted = minted_key(
+        &store,
+        "rk-eph",
+        registration_policy(RegisteredIdentityMode::Ephemeral),
+    )
+    .await;
+    let resolved = store
+        .resolve_registration_key(&minted.secret_hash)
+        .await
+        .expect("resolve")
+        .expect("known");
+    assert_eq!(resolved.registration_key_id.as_str(), "rk-eph");
+    assert!(
+        store
+            .resolve_registration_key("0000")
+            .await
+            .expect("resolve")
+            .is_none()
+    );
+
+    let public_key = daemon_key(0x11);
+    let created = store
+        .create_registered_environment(register("rk-eph", "env-a", &public_key, 2_000))
+        .await
+        .expect("register");
+    assert_eq!(created.status, EnvironmentStatus::Ready);
+    assert_eq!(created.last_seen_at_ms, Some(2_000));
+    assert_eq!(
+        created.source.identity_mode(),
+        Some(RegisteredIdentityMode::Ephemeral)
+    );
+    assert_eq!(
+        created.request_id,
+        EnvironmentProvisionRequestId::for_daemon(&EnvironmentDaemonId::from_public_key(
+            &[0x11u8; 32]
+        ))
+    );
+
+    // A retried first registration converges on the same environment.
+    let retried = store
+        .create_registered_environment(register("rk-eph", "env-b", &public_key, 2_500))
+        .await
+        .expect("retry");
+    assert_eq!(retried.environment_id, created.environment_id);
+    assert_eq!(
+        store
+            .read_environment_by_daemon_public_key(&public_key)
+            .await
+            .expect("read")
+            .map(|record| record.environment_id),
+        Some(created.environment_id.clone())
+    );
+
+    let offline = store
+        .observe_registered_environment(ObserveRegisteredEnvironment {
+            environment_id: created.environment_id.clone(),
+            observation: RegisteredConnectionObservation::Disconnected,
+            observed_at_ms: 3_000,
+        })
+        .await
+        .expect("disconnect");
+    assert_eq!(offline.status, EnvironmentStatus::Offline);
+    assert_eq!(offline.last_seen_at_ms, Some(2_000));
+    assert!(offline.registered_daemon_absent(3_000, 60_000));
+
+    let back = store
+        .observe_registered_environment(ObserveRegisteredEnvironment {
+            environment_id: created.environment_id.clone(),
+            observation: RegisteredConnectionObservation::Connected,
+            observed_at_ms: 4_000,
+        })
+        .await
+        .expect("reconnect");
+    assert_eq!(back.status, EnvironmentStatus::Ready);
+    assert_eq!(back.last_seen_at_ms, Some(4_000));
+    assert!(!back.registered_daemon_absent(4_500, 60_000));
+    assert!(back.registered_daemon_absent(100_000, 60_000));
+
+    store
+        .begin_close_environment(BeginCloseEnvironment {
+            environment_id: created.environment_id.clone(),
+            updated_at_ms: 5_000,
+        })
+        .await
+        .expect("begin close");
+    let closed = store
+        .finish_close_environment(FinishCloseEnvironment {
+            environment_id: created.environment_id.clone(),
+            observed_at_ms: 5_100,
+        })
+        .await
+        .expect("close");
+    assert_eq!(closed.status, EnvironmentStatus::Closed);
+    // A late heartbeat cannot resurrect a closed environment.
+    let still_closed = store
+        .observe_registered_environment(ObserveRegisteredEnvironment {
+            environment_id: created.environment_id.clone(),
+            observation: RegisteredConnectionObservation::Connected,
+            observed_at_ms: 5_200,
+        })
+        .await
+        .expect("late heartbeat");
+    assert_eq!(still_closed.status, EnvironmentStatus::Closed);
+
+    // The identity is spent: the same key with a fresh environment id is
+    // refused, and a different registration key cannot move it either.
+    let spent = store
+        .create_registered_environment(register("rk-eph", "env-c", &public_key, 6_000))
+        .await
+        .expect("dedup");
+    assert_eq!(spent.environment_id, created.environment_id);
+    assert_eq!(spent.status, EnvironmentStatus::Closed);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn registration_key_policy_gates_admission_without_touching_reconnects() {
+    let (_universe_id, store) = store().await;
+    minted_key(
+        &store,
+        "rk-cap",
+        RegistrationKeyPolicy {
+            max_active_environments: Some(1),
+            ..registration_policy(RegisteredIdentityMode::Persistent)
+        },
+    )
+    .await;
+    let first = store
+        .create_registered_environment(register("rk-cap", "env-1", &daemon_key(0x21), 2_000))
+        .await
+        .expect("first");
+    let refused = store
+        .create_registered_environment(register("rk-cap", "env-2", &daemon_key(0x22), 2_100))
+        .await
+        .expect_err("capacity");
+    assert!(matches!(
+        refused,
+        EnvironmentRegistryError::RegistrationCapacityExhausted { limit: 1, .. }
+    ));
+    assert!(
+        store
+            .read_environment(&EnvironmentId::new("env-2"))
+            .await
+            .is_err()
+    );
+
+    store
+        .begin_close_environment(BeginCloseEnvironment {
+            environment_id: first.environment_id.clone(),
+            updated_at_ms: 3_000,
+        })
+        .await
+        .expect("begin close");
+    store
+        .finish_close_environment(FinishCloseEnvironment {
+            environment_id: first.environment_id.clone(),
+            observed_at_ms: 3_100,
+        })
+        .await
+        .expect("close");
+    store
+        .create_registered_environment(register("rk-cap", "env-2", &daemon_key(0x22), 3_200))
+        .await
+        .expect("capacity freed by close");
+
+    let usage = store
+        .registration_key_usage(&EnvironmentRegistrationKeyId::new("rk-cap"))
+        .await
+        .expect("usage");
+    assert_eq!(usage.registered, 2);
+    assert_eq!(usage.active, 1);
+    assert_eq!(usage.last_registered_at_ms, Some(3_200));
+
+    let revoked = store
+        .revoke_registration_key(RevokeEnvironmentRegistrationKey {
+            registration_key_id: EnvironmentRegistrationKeyId::new("rk-cap"),
+            revoked_at_ms: 4_000,
+        })
+        .await
+        .expect("revoke");
+    assert_eq!(revoked.revoked_at_ms, Some(4_000));
+    assert_eq!(
+        revoked.status(4_500),
+        EnvironmentRegistrationKeyStatus::Revoked
+    );
+    let again = store
+        .revoke_registration_key(RevokeEnvironmentRegistrationKey {
+            registration_key_id: EnvironmentRegistrationKeyId::new("rk-cap"),
+            revoked_at_ms: 9_000,
+        })
+        .await
+        .expect("revoke again");
+    assert_eq!(again.revoked_at_ms, Some(4_000));
+    let refused = store
+        .create_registered_environment(register("rk-cap", "env-3", &daemon_key(0x23), 5_000))
+        .await
+        .expect_err("revoked");
+    assert!(matches!(
+        refused,
+        EnvironmentRegistryError::RegistrationKeyUnavailable {
+            reason: "revoked",
+            ..
+        }
+    ));
+    // Known daemons never consult the key.
+    let reconnect = store
+        .observe_registered_environment(ObserveRegisteredEnvironment {
+            environment_id: EnvironmentId::new("env-2"),
+            observation: RegisteredConnectionObservation::Connected,
+            observed_at_ms: 5_500,
+        })
+        .await
+        .expect("reconnect after revoke");
+    assert_eq!(reconnect.status, EnvironmentStatus::Ready);
+
+    minted_key(
+        &store,
+        "rk-exp",
+        RegistrationKeyPolicy {
+            expires_at_ms: Some(1_500),
+            ..registration_policy(RegisteredIdentityMode::Ephemeral)
+        },
+    )
+    .await;
+    let expired = store
+        .create_registered_environment(register("rk-exp", "env-4", &daemon_key(0x24), 2_000))
+        .await
+        .expect_err("expired");
+    assert!(matches!(
+        expired,
+        EnvironmentRegistryError::RegistrationKeyUnavailable {
+            reason: "expired",
+            ..
+        }
+    ));
+    let keys = store.list_registration_keys().await.expect("list");
+    assert_eq!(keys.len(), 2);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn registered_environments_group_by_key_and_access_policy_scopes_them() {
+    let (_universe_id, store) = store().await;
+    minted_key(
+        &store,
+        "rk-a",
+        registration_policy(RegisteredIdentityMode::Persistent),
+    )
+    .await;
+    minted_key(
+        &store,
+        "rk-b",
+        registration_policy(RegisteredIdentityMode::Persistent),
+    )
+    .await;
+    let a = store
+        .create_registered_environment(register("rk-a", "env-a", &daemon_key(0x31), 2_000))
+        .await
+        .expect("a");
+    let b = store
+        .create_registered_environment(register("rk-b", "env-b", &daemon_key(0x32), 2_000))
+        .await
+        .expect("b");
+    let provisioned = store
+        .create_environment(create("p", "env-p", "inc-p", 2_000))
+        .await
+        .expect("provisioned");
+    let external = store
+        .create_external_environment(CreateExternalEnvironment {
+            request_id: EnvironmentProvisionRequestId::new("ext"),
+            environment_id: EnvironmentId::new("env-x"),
+            incarnation_id: EnvironmentIncarnationId::new("inc-x"),
+            connection: EnvironmentConnectionSpec::new(
+                "ws://envd.internal:19091",
+                EnvironmentTransport::WebSocket,
+            ),
+            display_name: None,
+            metadata: BTreeMap::new(),
+            created_at_ms: 2_000,
+        })
+        .await
+        .expect("external");
+
+    let by_key = store
+        .list_environments(ListEnvironments {
+            registration_key_id: Some(EnvironmentRegistrationKeyId::new("rk-a")),
+            ..ListEnvironments::default()
+        })
+        .await
+        .expect("list");
+    assert_eq!(by_key.len(), 1);
+    assert_eq!(by_key[0].environment_id, a.environment_id);
+
+    let open = EnvironmentAccessPolicy::ALLOW_ALL;
+    assert!(
+        open.allows(&a) && open.allows(&b) && open.allows(&provisioned) && open.allows(&external)
+    );
+
+    let keys_only =
+        EnvironmentAccessPolicy::new(None::<Vec<String>>, Some(vec!["rk-a".to_owned()]));
+    assert!(keys_only.allows(&a));
+    assert!(!keys_only.allows(&b));
+    assert!(keys_only.allows(&provisioned));
+    assert!(!keys_only.allows(&external));
+    assert!(keys_only.refusal(&b).contains("rk-b"));
+
+    let providers_only =
+        EnvironmentAccessPolicy::new(Some(vec!["incus-local".to_owned()]), None::<Vec<String>>);
+    assert!(providers_only.allows(&provisioned));
+    assert!(providers_only.allows(&a));
+    assert!(!providers_only.allows(&external));
+
+    let neither =
+        EnvironmentAccessPolicy::new(Some(vec!["other".to_owned()]), Some(Vec::<String>::new()));
+    assert!(!neither.allows(&provisioned));
+    assert!(!neither.allows(&a));
+    assert!(!neither.allows(&external));
 }

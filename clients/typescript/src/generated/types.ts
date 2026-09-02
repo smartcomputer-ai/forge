@@ -1227,6 +1227,12 @@ export type EnvironmentSourceView =
   | {
       connection: EnvironmentConnectionView;
       type: "external";
+    }
+  | {
+      daemonId: string;
+      identityMode: EnvironmentIdentityModeView;
+      registrationKeyId: string;
+      type: "registered";
     };
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
@@ -1239,6 +1245,14 @@ export type EnvironmentConnectionTransportView =
         provider_type: string;
       };
     };
+/**
+ * What Lightspeed does with a registered environment while its daemon is
+ * disconnected. Registration-key policy, copied onto each environment.
+ *
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "EnvironmentIdentityModeView".
+ */
+export type EnvironmentIdentityModeView = "persistent" | "ephemeral";
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "EnvironmentLifecycleStatusView".
@@ -1291,6 +1305,19 @@ export type SessionJobOutputStreamView = "stdout" | "stderr";
  * via the `definition` "EnvironmentProviderBindingStatusView".
  */
 export type EnvironmentProviderBindingStatusView = "enabled" | "disabled";
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "EnvironmentRegistrationKeyStatusView".
+ */
+export type EnvironmentRegistrationKeyStatusView = "active" | "revoked" | "expired";
+/**
+ * A freshly minted registration secret. `Debug` output is redacted so the
+ * plaintext cannot leak through derived logging; it is shown once.
+ *
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "EnvironmentRegistrationSecretView".
+ */
+export type EnvironmentRegistrationSecretView = string;
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "McpServerAuthPolicy".
@@ -1947,6 +1974,13 @@ export interface EnvironmentsFeature {
    * Absent means every registered provider is allowed.
    */
   providers?: string[] | null;
+  /**
+   * Registration keys whose registered environments the session may
+   * list and activate; absent means every key. Independent of
+   * `providers`: each list scopes its own environment source, and
+   * external environments pass only when neither list is set.
+   */
+  registrationKeys?: string[] | null;
   /**
    * Exposes `environment_list`, `environment_activate`, and
    * `environment_deactivate` to the model. `environment_read` is available
@@ -3950,6 +3984,11 @@ export interface EnvironmentView {
   environmentId: string;
   idlePolicy?: EnvironmentIdlePolicyView | null;
   incarnation: EnvironmentIncarnationView;
+  /**
+   * Registered environments only: when the gateway last saw the daemon's
+   * control connection.
+   */
+  lastSeenAtMs?: number | null;
   metadata?: {
     [k: string]: string;
   };
@@ -4355,6 +4394,108 @@ export interface AgentApiOutcomeOfEnvironmentReadResponse {
  */
 export interface EnvironmentReadResponse {
   environment: EnvironmentView;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "AgentApiOutcomeOfEnvironmentRegistrationKeyCreateResponse".
+ */
+export interface AgentApiOutcomeOfEnvironmentRegistrationKeyCreateResponse {
+  notifications?: AgentNotification[];
+  result: EnvironmentRegistrationKeyCreateResponse;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "EnvironmentRegistrationKeyCreateResponse".
+ */
+export interface EnvironmentRegistrationKeyCreateResponse {
+  registrationKey: EnvironmentRegistrationKeyView;
+  /**
+   * The plaintext secret, returned only here.
+   */
+  secret: EnvironmentRegistrationSecretView;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "EnvironmentRegistrationKeyView".
+ */
+export interface EnvironmentRegistrationKeyView {
+  /**
+   * Non-closed environments admitted by this key.
+   */
+  activeEnvironmentCount: number;
+  createdAtMs: number;
+  /**
+   * The group name shown wherever registered environments are listed.
+   */
+  displayName: string;
+  /**
+   * Effective disconnect grace for ephemeral environments.
+   */
+  ephemeralDisconnectGraceMs: number;
+  expiresAtMs?: number | null;
+  identityMode: EnvironmentIdentityModeView;
+  /**
+   * First characters of the secret, for identification only.
+   */
+  keyPrefix: string;
+  lastRegisteredAtMs?: number | null;
+  maxActiveEnvironments?: number | null;
+  /**
+   * Environments ever admitted by this key, closed included.
+   */
+  registeredEnvironmentCount: number;
+  registrationKeyId: string;
+  revokedAtMs?: number | null;
+  status: EnvironmentRegistrationKeyStatusView;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "AgentApiOutcomeOfEnvironmentRegistrationKeyListResponse".
+ */
+export interface AgentApiOutcomeOfEnvironmentRegistrationKeyListResponse {
+  notifications?: AgentNotification[];
+  result: EnvironmentRegistrationKeyListResponse;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "EnvironmentRegistrationKeyListResponse".
+ */
+export interface EnvironmentRegistrationKeyListResponse {
+  registrationKeys?: EnvironmentRegistrationKeyView[];
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "AgentApiOutcomeOfEnvironmentRegistrationKeyReadResponse".
+ */
+export interface AgentApiOutcomeOfEnvironmentRegistrationKeyReadResponse {
+  notifications?: AgentNotification[];
+  result: EnvironmentRegistrationKeyReadResponse;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "EnvironmentRegistrationKeyReadResponse".
+ */
+export interface EnvironmentRegistrationKeyReadResponse {
+  registrationKey: EnvironmentRegistrationKeyView;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "AgentApiOutcomeOfEnvironmentRegistrationKeyRevokeResponse".
+ */
+export interface AgentApiOutcomeOfEnvironmentRegistrationKeyRevokeResponse {
+  notifications?: AgentNotification[];
+  result: EnvironmentRegistrationKeyRevokeResponse;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "EnvironmentRegistrationKeyRevokeResponse".
+ */
+export interface EnvironmentRegistrationKeyRevokeResponse {
+  /**
+   * Environments closed by this call.
+   */
+  closedEnvironmentIds?: string[];
+  registrationKey: EnvironmentRegistrationKeyView;
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
@@ -6488,6 +6629,10 @@ export interface EnvironmentListParams {
    */
   originSessionId?: string | null;
   providerId?: string | null;
+  /**
+   * Only registered environments admitted by this registration key.
+   */
+  registrationKeyId?: string | null;
   status?: EnvironmentLifecycleStatusView | null;
 }
 /**
@@ -6520,6 +6665,49 @@ export interface EnvironmentProviderBindingReadParams {
  */
 export interface EnvironmentReadParams {
   environmentId: string;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "EnvironmentRegistrationKeyCreateParams".
+ */
+export interface EnvironmentRegistrationKeyCreateParams {
+  /**
+   * Group name for the environments this key admits.
+   */
+  displayName: string;
+  /**
+   * Disconnect grace for ephemeral environments; omit for the default.
+   */
+  ephemeralDisconnectGraceMs?: number | null;
+  expiresAtMs?: number | null;
+  identityMode: EnvironmentIdentityModeView;
+  /**
+   * Non-closed environments the key may have at once; omit for unlimited.
+   */
+  maxActiveEnvironments?: number | null;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "EnvironmentRegistrationKeyListParams".
+ */
+export interface EnvironmentRegistrationKeyListParams {}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "EnvironmentRegistrationKeyReadParams".
+ */
+export interface EnvironmentRegistrationKeyReadParams {
+  registrationKeyId: string;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "EnvironmentRegistrationKeyRevokeParams".
+ */
+export interface EnvironmentRegistrationKeyRevokeParams {
+  /**
+   * Also close every non-closed environment the key admitted.
+   */
+  closeEnvironments?: boolean;
+  registrationKeyId: string;
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema

@@ -152,15 +152,15 @@ impl GatewayAgentApi {
                 record.status
             )));
         }
-        if let Some(providers) = feature.providers.as_ref() {
-            let provider_allowed = record
-                .provider_id()
-                .is_some_and(|provider| providers.iter().any(|id| id == provider.as_str()));
-            if !provider_allowed {
-                return Err(AgentApiError::rejected(format!(
-                    "profile environment `inherit`: parent environment {environment_id} uses a provider this session\'s features.environments.providers does not allow"
-                )));
-            }
+        let policy = ::environments::EnvironmentAccessPolicy::new(
+            feature.providers.clone(),
+            feature.registration_keys.clone(),
+        );
+        if !policy.allows(&record) {
+            return Err(AgentApiError::rejected(format!(
+                "profile environment `inherit`: parent environment {environment_id}: {}",
+                policy.refusal(&record)
+            )));
         }
         let baseline_failures = self
             .query_status_optional(session_id)

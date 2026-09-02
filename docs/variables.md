@@ -37,7 +37,8 @@ They do not configure the TypeScript Platform server.
 | --- | --- | --- |
 | `LIGHTSPEED_POSTGRES_URL` | **Required**; falls back to `LIGHTSPEED_TEST_POSTGRES_URL` | PostgreSQL connection URL used by the runtime, migration commands, and schema diagnostics. Production must use this name. |
 | `LIGHTSPEED_PG_UNIVERSE_ID` | **Required in `single` auth mode** | UUID of the sole universe in a single-tenant deployment. Not used to auto-create universes in multi-tenant modes. |
-| `LIGHTSPEED_ROLES` | `gateway,sessions,bots,channels` | Roles this process runs, a comma-separated subset of `gateway`, `sessions`, `bots`, `channels` (also `--roles`). Each worker role polls its own task queue with that subsystem's workflows, activities, and background loops. |
+| `LIGHTSPEED_ROLES` | `gateway,environment-gateway,sessions,bots,channels` | Roles this process runs, a comma-separated subset of `gateway` (JSON-RPC, OAuth callbacks, webhook hooks), `environment-gateway` (worker environment routes, the public daemon registration routes, the lifecycle reconciler, and the power reaper), `sessions`, `bots`, `channels` (also `--roles`). Each worker role polls its own task queue with that subsystem's workflows, activities, and background loops. Run exactly one `environment-gateway` process per deployment. |
+| `LIGHTSPEED_ENVIRONMENT_PUBLIC_URL` | Unset | Base URL outbound daemons are told to dial for data connections when it differs from `LIGHTSPEED_PUBLIC_BASE_URL`, for example a dedicated hostname in front of the environment gateway. |
 | `LIGHTSPEED_WORKER_TASK_TYPES` | `all` | What the worker roles poll: `all`, `workflows`, or `activities` (also `--task-types`). |
 | `LIGHTSPEED_TASK_QUEUE` | `lightspeed-sessions` | Sessions task queue shared by the gateway and the `sessions` role. Deployments sharing a Temporal namespace must use distinct queues. |
 | `LIGHTSPEED_TASK_QUEUE_BOTS` | `lightspeed-bots` | Task queue of the `bots` role (bot controllers, trigger fires, bot activities). |
@@ -116,14 +117,26 @@ remain in PostgreSQL-backed storage.
 
 ### Split environment routing
 
-A process running the `gateway` role derives a local environment route
-automatically. Worker-only processes (no `gateway` role) must provide both
-values.
-
 | Variable | Requirement/default | Purpose |
 | --- | --- | --- |
-| `LIGHTSPEED_ENVIRONMENT_GATEWAY_URL` | **Required for a worker-only process** | Stable gateway base URL used by workers for environment data routes. |
-| `LIGHTSPEED_ENVIRONMENT_GATEWAY_TOKEN` | **Required for a worker-only process** | Shared deployment bearer token for worker-to-gateway routing. |
+| `LIGHTSPEED_ENVIRONMENT_GATEWAY_URL` | **Required unless the process runs `environment-gateway`** | Stable environment-gateway base URL used by workers and `gateway`-only processes for environment data routes. |
+| `LIGHTSPEED_ENVIRONMENT_GATEWAY_TOKEN` | **Required unless the process runs `environment-gateway`** | Shared deployment bearer token for worker-to-gateway routing. |
+
+A process running the `environment-gateway` role derives a local environment
+route automatically. Every other process, including one that runs only the
+`gateway` role, must provide both values.
+
+The `environment-gateway` role serves the worker route above plus the public
+registration routes `/environment-gateway/connect` and
+`/environment-gateway/data` that outbound `lightspeed-envd` daemons dial, and
+it runs the lifecycle reconciler and power reaper. A registered daemon's
+control connection lives in the process that accepted it, and the worker
+route for that environment must reach the same process: **run exactly one
+`environment-gateway` process per deployment** until multi-replica owner
+routing is implemented. `gateway`-only processes and workers may scale
+freely; they hold no daemon connections and do not answer the registration
+routes at all. Expose the two public routes through TLS; the daemon refuses
+plain `ws://` toward anything but loopback.
 
 ## Rust CLI
 
@@ -149,14 +162,33 @@ name. Those caller-chosen secret names are not Lightspeed configuration keys.
 
 ### Environment daemon
 
-`lightspeed-envd` is passive and requires no Lightspeed identity or credential.
+`lightspeed-envd` runs in one of two transports, or both. Passive: it listens
+and Lightspeed (or a provider) dials it; it needs no identity or credential.
+Outbound: given a gateway URL, it dials Lightspeed, proves an Ed25519 identity
+it keeps in its state directory, and registers as an environment through a
+registration key the first time. Every `LIGHTSPEED_ENVD_*` variable is removed
+from the environment of each process and job the daemon starts.
 
 | Variable | Requirement/default | Purpose |
 | --- | --- | --- |
-| `LIGHTSPEED_ENVD_LISTEN` | `127.0.0.1:19091` | WebSocket listener address. |
+| `LIGHTSPEED_ENVD_LISTEN` | `127.0.0.1:19091` unless a gateway URL is set | WebSocket listener address for the passive transport. Set it explicitly to listen while also registering outbound. |
+| `LIGHTSPEED_ENVD_GATEWAY_URL` | Unset | Public connect route to dial, `wss://<host>/environment-gateway/connect`. Plain `ws://` is accepted only toward loopback. |
+| `LIGHTSPEED_ENVD_REGISTRATION_KEY` | Unset | Registration key admitting a first-seen daemon identity. Read once and dropped from the process environment; on Linux the initial environment stays readable through `/proc`, so use the file form for untrusted workloads. |
+| `LIGHTSPEED_ENVD_REGISTRATION_KEY_FILE` | Unset | File holding the registration key; mutually exclusive with the direct form. Delete the file once the receipt appears. |
+| `LIGHTSPEED_ENVD_REGISTRATION_NAME` | Unset | Display-name hint recorded on the environment at first registration. |
+| `LIGHTSPEED_ENVD_REGISTRATION_METADATA` | Unset | JSON object of string correlation metadata (at most 32 entries; keys up to 64 bytes, values up to 256; the `lightspeed.` prefix is reserved). Descriptive only. |
+| `LIGHTSPEED_ENVD_REGISTRATION_RECEIPT` | Unset | Path the daemon writes `{environmentId, incarnationId, daemonId, connectionId, identityMode}` to once admitted. |
+| `LIGHTSPEED_ENVD_CA_FILE` | Unset | PEM bundle of additional TLS trust anchors for a gateway behind a private CA. |
 | `LIGHTSPEED_ENVD_CWD` | Current directory | Default working directory exposed to jobs. |
 | `LIGHTSPEED_ENVD_FS_ROOT` | Native filesystem root containing the working directory | Filesystem boundary exposed by the daemon. |
-| `LIGHTSPEED_ENVD_STATE_DIR` | `<cwd>/.lightspeed-envd` | Durable daemon state directory; relative paths resolve under the working directory. |
+| `LIGHTSPEED_ENVD_STATE_DIR` | `<cwd>/.lightspeed-envd` | Durable daemon state directory; relative paths resolve under the working directory. Holds the daemon key (`daemon-key`, mode `0600`): keep it on storage that survives the restarts the environment should survive, delete it to register as a new environment. |
+
+Identity mode (persistent or ephemeral) is not daemon configuration: it is
+the registration key's policy, minted with
+`lightspeed env registration-keys create` or on the Platform Environments
+page. A closed environment's daemon identity is spent; the daemon exits with
+a non-zero status on any terminal rejection and never generates a new
+identity on its own.
 
 `./dev.sh full` and `./dev.sh runtime` also start one daemon on the developer
 machine (opt out with `./dev.sh --no-envd` or `LIGHTSPEED_DEV_ENVD=off`):

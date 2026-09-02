@@ -265,6 +265,7 @@ async fn temporal_live_api_key_mode_scopes_requests() -> anyhow::Result<()> {
             let app = temporal_server::gateway::gateway_router(
                 gateway_state,
                 temporal_server::gateway::DEFAULT_MAX_REQUEST_BODY_BYTES,
+                temporal_server::gateway::GatewayRoutes::ALL,
             );
             axum::serve(listener, app).await
         }

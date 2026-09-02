@@ -28,7 +28,14 @@ export type EnvironmentOption = {
     templateId?: string | null;
   };
   status?: string;
+  /// Present on core environment views; registered environments show their
+  /// identity mode so an ephemeral pick can be flagged.
+  source?: { type: string; identityMode?: string };
 };
+
+function isEphemeralRegistered(environment: EnvironmentOption | undefined): boolean {
+  return environment?.source?.type === "registered" && environment.source.identityMode === "ephemeral";
+}
 
 export type ProviderBindingOption = {
   bindingId: string;
@@ -234,7 +241,9 @@ function ExistingEnvironmentField({
           ? "This saved environment is no longer available."
           : closed
             ? "This saved environment is closed and can no longer be activated."
-            : "The profile activates this environment and never closes it; a bot's sessions share it this way. Whether it sleeps while idle is the environment's own idle policy, set on the Environments page. Closed environments are not offered."}
+            : isEphemeralRegistered(selected)
+              ? "This is an ephemeral registered environment: it closes on its own once its daemon has been away longer than its key's disconnect grace, and sessions that name it will then fail to start. Prefer a persistent key for anything a profile or bot points at."
+              : "The profile activates this environment and never closes it; a bot's sessions share it this way. Whether it sleeps while idle is the environment's own idle policy, set on the Environments page. Closed environments are not offered."}
       </FieldDescription>
     </Field>
   );

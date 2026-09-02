@@ -9,6 +9,9 @@ pub struct NativeMcpTool {
     pub remote_name: String,
     pub description: Option<String>,
     pub input_schema: Value,
+    /// Standard MCP annotation hints retained for model-facing discovery.
+    /// They are untrusted metadata and never authorize execution or retries.
+    pub annotations: Option<Value>,
 }
 
 #[derive(Clone, Debug, thiserror::Error)]

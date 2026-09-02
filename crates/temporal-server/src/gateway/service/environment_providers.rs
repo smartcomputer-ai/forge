@@ -225,6 +225,16 @@ pub(crate) fn environment_view(record: &EnvironmentRecord) -> EnvironmentView {
                     },
                 },
             },
+            EnvironmentSource::Registered {
+                registration_key_id,
+                daemon_id,
+                identity_mode,
+                ..
+            } => EnvironmentSourceView::Registered {
+                registration_key_id: registration_key_id.to_string(),
+                daemon_id: daemon_id.to_string(),
+                identity_mode: identity_mode_view(*identity_mode),
+            },
         },
         display_name: record.display_name.clone(),
         status: lifecycle_status_view(record.status),
@@ -270,8 +280,35 @@ pub(crate) fn environment_view(record: &EnvironmentRecord) -> EnvironmentView {
         public_ingress_enabled: record.public_ingress_enabled,
         public_endpoint: record.public_endpoint.clone(),
         metadata: record.metadata.clone(),
+        last_seen_at_ms: record.last_seen_at_ms,
         created_at_ms: record.created_at_ms,
         updated_at_ms: record.updated_at_ms,
+    }
+}
+
+pub(crate) fn identity_mode_view(
+    value: ::environments::RegisteredIdentityMode,
+) -> api::EnvironmentIdentityModeView {
+    match value {
+        ::environments::RegisteredIdentityMode::Persistent => {
+            api::EnvironmentIdentityModeView::Persistent
+        }
+        ::environments::RegisteredIdentityMode::Ephemeral => {
+            api::EnvironmentIdentityModeView::Ephemeral
+        }
+    }
+}
+
+pub(crate) fn registry_identity_mode(
+    value: api::EnvironmentIdentityModeView,
+) -> ::environments::RegisteredIdentityMode {
+    match value {
+        api::EnvironmentIdentityModeView::Persistent => {
+            ::environments::RegisteredIdentityMode::Persistent
+        }
+        api::EnvironmentIdentityModeView::Ephemeral => {
+            ::environments::RegisteredIdentityMode::Ephemeral
+        }
     }
 }
 
@@ -365,6 +402,12 @@ pub(crate) fn map_environments_error(error: EnvironmentRegistryError) -> AgentAp
         )),
         EnvironmentRegistryError::InvalidInput { message } => {
             AgentApiError::invalid_request(message)
+        }
+        refused @ EnvironmentRegistryError::RegistrationKeyUnavailable { .. } => {
+            AgentApiError::rejected(refused.to_string())
+        }
+        refused @ EnvironmentRegistryError::RegistrationCapacityExhausted { .. } => {
+            AgentApiError::rejected(refused.to_string())
         }
         EnvironmentRegistryError::Store { message } => AgentApiError::internal(message),
     }

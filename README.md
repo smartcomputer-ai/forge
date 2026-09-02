@@ -131,6 +131,9 @@ Lightspeed covers the table stakes of a modern agent harness. Everything below w
 
 - [x] **Dedicated VMs**: attach an existing machine or provision one through the
   included Incus provider
+- [x] **Bring your own compute**: start `lightspeed-envd` anywhere with a
+  registration key and it dials in and registers itself, so NATed VMs,
+  Kubernetes pods, and benchmark sandboxes need no inbound address
 - [x] **Power states and idle policy**: environments pause, suspend, or stop when
   idle, then wake automatically when needed
 - [x] **Environment jobs**: run downloads, experiments, or delegated coding work

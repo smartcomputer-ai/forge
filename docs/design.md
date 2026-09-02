@@ -135,7 +135,11 @@ heads before runs, while environment files never participate in automatic
 prompt or skill discovery. Web fetch/search/extract tools remain independent.
 When a task genuinely needs a machine, the agent borrows one; dedicated VMs
 connect through a bridge daemon, and durable jobs run long tasks on that
-borrowed compute while the harness stays outside.
+borrowed compute while the harness stays outside. Machines Lightspeed cannot
+reach dial in instead: `lightspeed-envd` registers outbound with a reusable
+universe key, its own key pair is the environment identity, and each worker
+route is served by a socket the daemon dials back on request, so NATed VMs,
+pods, and benchmark sandboxes run the same data protocol as everything else.
 
 Sub-agents are just more sessions. `features.subagents` lists the profiles a session may run and root-scoped limits (depth, descendants, concurrency, deadline); `agent_run` (joined — the result returns inline, several calls in one turn fan out and join together) and `agent_spawn` (a promise for `await`) are system workflow-tool bindings whose start-on-call recipe runs a `SubagentExecutionWorkflow` per delegation. That execution creates the child from the pinned profile revision, records typed lineage (`SessionView.origin`), waits for the child's run terminal, resolves the parent's promise with a result envelope, and closes the child — so the session workflow and engine carry no delegation code, and cancelling the promise from any direction closes the child. Children are one-shot; the agent menu reaches the model as a refreshed catalog context entry, not as tool schema.
 

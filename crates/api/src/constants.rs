@@ -107,6 +107,12 @@ pub const METHOD_ENVIRONMENTS_TEMPLATES_READ: &str = "environments/templates/rea
 pub const METHOD_ENVIRONMENTS_JOBS_CREATE: &str = "environments/jobs/create";
 pub const METHOD_ENVIRONMENTS_JOBS_READ: &str = "environments/jobs/read";
 pub const METHOD_ENVIRONMENTS_JOBS_CANCEL: &str = "environments/jobs/cancel";
+pub const METHOD_ENVIRONMENTS_REGISTRATION_KEYS_CREATE: &str =
+    "environments/registration-keys/create";
+pub const METHOD_ENVIRONMENTS_REGISTRATION_KEYS_READ: &str = "environments/registration-keys/read";
+pub const METHOD_ENVIRONMENTS_REGISTRATION_KEYS_LIST: &str = "environments/registration-keys/list";
+pub const METHOD_ENVIRONMENTS_REGISTRATION_KEYS_REVOKE: &str =
+    "environments/registration-keys/revoke";
 
 // ── Universe: auth ──────────────────────────────────────────────────────────
 

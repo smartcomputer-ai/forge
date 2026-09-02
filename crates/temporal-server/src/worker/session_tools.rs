@@ -1,7 +1,4 @@
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    sync::Arc,
-};
+use std::{collections::BTreeMap, sync::Arc};
 
 use async_trait::async_trait;
 use engine::PromiseIdAllocator;
@@ -19,7 +16,10 @@ use environment_protocol::{
     },
     shared::{CURRENT_PROTOCOL_VERSION, EnvironmentDataConnection, EnvironmentTransport},
 };
-use environments::{EnvironmentId, EnvironmentRecord, EnvironmentRegistryError, EnvironmentStore};
+use environments::{
+    EnvironmentAccessPolicy, EnvironmentId, EnvironmentRecord, EnvironmentRegistryError,
+    EnvironmentStore,
+};
 use store_pg::PgStore;
 use tools::{
     concurrency::{
@@ -66,6 +66,7 @@ pub struct SessionTools {
     workspace_store: Arc<dyn VfsWorkspaceStore>,
     environments: SessionEnvironmentManager,
     environment_store: Option<Arc<dyn EnvironmentStore>>,
+    registration_keys: Option<Arc<dyn environments::EnvironmentRegistrationKeyStore>>,
     environment_resolver: Option<crate::environment_resolver::EnvironmentResolver>,
     environment_credentials: Option<EnvironmentCredentialResolver>,
     environment_gateway: Option<crate::environment_gateway::EnvironmentGatewayClientConfig>,
@@ -80,6 +81,7 @@ impl SessionTools {
             workspace_store,
             environments,
             environment_store: None,
+            registration_keys: None,
             environment_resolver: None,
             environment_credentials: None,
             environment_gateway: None,
@@ -88,6 +90,16 @@ impl SessionTools {
 
     pub fn with_environment_store(mut self, environments: Arc<dyn EnvironmentStore>) -> Self {
         self.environment_store = Some(environments);
+        self
+    }
+
+    /// Registration keys name the groups registered environments belong to;
+    /// the model sees the group name, never the key.
+    pub fn with_registration_key_store(
+        mut self,
+        registration_keys: Arc<dyn environments::EnvironmentRegistrationKeyStore>,
+    ) -> Self {
+        self.registration_keys = Some(registration_keys);
         self
     }
 
@@ -128,12 +140,15 @@ impl SessionTools {
         let blob_graph: Arc<dyn BlobGraphStore> = store.clone();
         let workspace_store: Arc<dyn VfsWorkspaceStore> = store.clone();
         let environments: Arc<dyn EnvironmentStore> = store.clone();
+        let registration_keys: Arc<dyn environments::EnvironmentRegistrationKeyStore> =
+            store.clone();
         let credentials = EnvironmentCredentialResolver::from_pg_store(store.clone());
         let resolver =
             crate::environment_resolver::EnvironmentResolver::from_pg_store(store.clone());
         Self::new(blobs, workspace_store)
             .with_blob_graph(blob_graph)
             .with_environment_store(environments)
+            .with_registration_key_store(registration_keys)
             .with_environment_resolver(resolver)
             .with_environment_credentials(credentials)
     }
@@ -572,11 +587,13 @@ impl SessionTools {
                 )
                 .await;
             };
-            let allowed_provider_ids = supplied_environment_policy(request)?
-                .map(|providers| providers.into_iter().collect());
+            let policy = supplied_environment_policy(request)?;
             let context = JobSubmitExecutionContextV1::new(
                 environment_id.as_str().to_owned(),
-                allowed_provider_ids,
+                policy.providers.map(|ids| ids.into_iter().collect()),
+                policy
+                    .registration_keys
+                    .map(|ids| ids.into_iter().collect()),
             );
             Some(
                 self.blobs
@@ -811,7 +828,7 @@ impl SessionTools {
                     .limit
                     .unwrap_or(DEFAULT_ENVIRONMENT_LIST_LIMIT)
                     .clamp(1, MAX_ENVIRONMENT_LIST_LIMIT);
-                let mut environments = match resolver.list_allowed(allowed.as_ref()).await {
+                let mut environments = match resolver.list_allowed(&allowed).await {
                     Ok(environments) => environments,
                     Err(error) => {
                         return failed_result(
@@ -822,6 +839,13 @@ impl SessionTools {
                         .await;
                     }
                 };
+                let groups = self.environment_groups(&environments).await;
+                if let Some(group) = args.group.as_deref() {
+                    environments.retain(|environment| {
+                        group_of(environment, &groups)
+                            .is_some_and(|name| name.eq_ignore_ascii_case(group))
+                    });
+                }
                 if let Some(cursor) = args.cursor.as_deref() {
                     environments.retain(|environment| environment.environment_id.as_str() > cursor);
                 }
@@ -833,7 +857,7 @@ impl SessionTools {
                     .map(|environment| environment.environment_id.as_str().to_owned());
                 let output = serde_json::json!({
                     "environments": environments.iter().map(|environment| {
-                        environment_model_view(environment, active)
+                        environment_model_view(environment, active, group_of(environment, &groups))
                     }).collect::<Vec<_>>(),
                     "next_cursor": next_cursor,
                 });
@@ -862,10 +886,7 @@ impl SessionTools {
                             .await;
                     }
                 };
-                let environment = match resolver
-                    .read_allowed(&environment_id, allowed.as_ref())
-                    .await
-                {
+                let environment = match resolver.read_allowed(&environment_id, &allowed).await {
                     Ok(environment) => environment,
                     Err(error) => {
                         return failed_result(
@@ -876,7 +897,11 @@ impl SessionTools {
                         .await;
                     }
                 };
-                let output = environment_model_view(&environment, active);
+                let groups = self
+                    .environment_groups(std::slice::from_ref(&environment))
+                    .await;
+                let output =
+                    environment_model_view(&environment, active, group_of(&environment, &groups));
                 self.succeeded_tool_result(
                     call,
                     &output,
@@ -900,7 +925,7 @@ impl SessionTools {
                 let (environment, ready) = match resolver
                     .activatable(
                         &environment_id,
-                        allowed.as_ref(),
+                        &allowed,
                         i64::try_from(now_unix_ms()?).map_err(io_error)?,
                     )
                     .await
@@ -972,7 +997,7 @@ impl SessionTools {
             match resolver
                 .resolve_for_connection(
                     environment_id,
-                    allowed.as_ref(),
+                    &allowed,
                     i64::try_from(now_unix_ms()?)
                         .map_err(|_| io_error("current timestamp does not fit in i64"))?,
                 )
@@ -1013,11 +1038,7 @@ impl SessionTools {
                 }
                 Err(_) => return Ok(environments),
             };
-            if allowed.as_ref().is_some_and(|providers| {
-                resource
-                    .provider_id()
-                    .is_none_or(|id| !providers.contains(id.as_str()))
-            }) {
+            if !allowed.allows(&resource) {
                 return Ok(environments);
             }
             resource
@@ -1037,6 +1058,31 @@ impl SessionTools {
         };
         environments.insert_environment(environment);
         Ok(environments)
+    }
+
+    /// Registration-key display names for the registered environments in a
+    /// listing, keyed by key id. A key that fails to load simply yields no
+    /// group; the listing itself is never blocked by it.
+    async fn environment_groups(
+        &self,
+        environments: &[EnvironmentRecord],
+    ) -> BTreeMap<String, String> {
+        let mut groups = BTreeMap::new();
+        let Some(registration_keys) = self.registration_keys.as_ref() else {
+            return groups;
+        };
+        for key_id in environments
+            .iter()
+            .filter_map(|environment| environment.registration_key_id())
+        {
+            if groups.contains_key(key_id.as_str()) {
+                continue;
+            }
+            if let Ok(key) = registration_keys.read_registration_key(key_id).await {
+                groups.insert(key_id.to_string(), key.display_name);
+            }
+        }
+        groups
     }
 
     async fn runtime_environment_for_resource(
@@ -1142,15 +1188,29 @@ struct EnvironmentJobRead {
 fn environment_model_view(
     environment: &EnvironmentRecord,
     active: Option<&EnvironmentId>,
+    group: Option<&str>,
 ) -> serde_json::Value {
     serde_json::json!({
         "environment_id": environment.environment_id.as_str(),
         "provider_id": environment.provider_id().map(|id| id.as_str()),
+        "group": group,
         "display_name": environment.display_name,
         "status": format!("{:?}", environment.status).to_lowercase(),
         "active": active == Some(&environment.environment_id),
         "observed_at_ms": environment.observed_at_ms(),
     })
+}
+
+/// The group name of a registered environment: its registration key's
+/// display name, when the key resolved.
+fn group_of<'a>(
+    environment: &EnvironmentRecord,
+    groups: &'a BTreeMap<String, String>,
+) -> Option<&'a str> {
+    environment
+        .registration_key_id()
+        .and_then(|id| groups.get(id.as_str()))
+        .map(String::as_str)
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1174,7 +1234,7 @@ fn environment_read_target(
 
 fn supplied_environment_policy(
     request: &ToolInvocationBatchRequest,
-) -> Result<Option<BTreeSet<String>>, CoreAgentIoError> {
+) -> Result<EnvironmentAccessPolicy, CoreAgentIoError> {
     let policy = request
         .environment_policy
         .as_ref()
@@ -1185,10 +1245,16 @@ fn supplied_environment_policy(
             policy.version
         )));
     }
-    Ok(policy
-        .allowed_provider_ids
-        .as_ref()
-        .map(|providers| providers.iter().cloned().collect()))
+    Ok(access_policy_from_runtime(policy))
+}
+
+fn access_policy_from_runtime(
+    policy: &engine::EnvironmentPolicyRuntime,
+) -> EnvironmentAccessPolicy {
+    EnvironmentAccessPolicy::new(
+        policy.allowed_provider_ids.clone(),
+        policy.allowed_registration_key_ids.clone(),
+    )
 }
 
 async fn job_read_entry_from_response(
@@ -1648,16 +1714,13 @@ impl SessionTools {
         let allowed = request
             .environment_policy
             .as_ref()
-            .and_then(|policy| policy.allowed_provider_ids.as_ref())
-            .map(|ids| ids.iter().cloned().collect::<BTreeSet<_>>());
+            .map(access_policy_from_runtime)
+            .unwrap_or_default();
         let mut last_status;
         loop {
             heartbeat();
             let now = i64::try_from(now_unix_ms().unwrap_or_default()).unwrap_or(i64::MAX);
-            match resolver
-                .selectable(&environment_id, allowed.as_ref(), now)
-                .await
-            {
+            match resolver.selectable(&environment_id, &allowed, now).await {
                 Ok(_) => return Outcome::Ready,
                 Err(crate::environment_resolver::EnvironmentResolveError::NotReady {
                     status,
@@ -2386,10 +2449,10 @@ mod tests {
             batch_id: ToolBatchId::new(1),
             promise_id_base: 1,
             active_environment_id: Some(EnvironmentId::new("environment-original")),
-            environment_policy: Some(engine::EnvironmentPolicyRuntime::v1(Some(vec![
-                "provider-b".to_owned(),
-                "provider-a".to_owned(),
-            ]))),
+            environment_policy: Some(engine::EnvironmentPolicyRuntime::new(
+                Some(vec!["provider-b".to_owned(), "provider-a".to_owned()]),
+                None,
+            )),
             subagents_policy: None,
             workspace_links: Vec::new(),
             calls: vec![call.clone()],
@@ -2444,7 +2507,7 @@ mod tests {
                 batch_id: ToolBatchId::new(1),
                 promise_id_base: 1,
                 active_environment_id: None,
-                environment_policy: Some(engine::EnvironmentPolicyRuntime::v1(None)),
+                environment_policy: Some(engine::EnvironmentPolicyRuntime::new(None, None)),
                 subagents_policy: None,
                 workspace_links: Vec::new(),
                 calls: vec![call],
@@ -2904,6 +2967,7 @@ mod tests {
             public_endpoint: None,
             origin_session: None,
             metadata: BTreeMap::new(),
+            last_seen_at_ms: None,
             created_at_ms: 1,
             updated_at_ms: 1,
         };
@@ -3009,9 +3073,10 @@ mod tests {
             promise_id_base: 1,
             workspace_links: Vec::new(),
             active_environment_id: Some(EnvironmentId::new("environment-allowed-1")),
-            environment_policy: Some(engine::EnvironmentPolicyRuntime::v1(Some(vec![
-                "allowed".to_owned(),
-            ]))),
+            environment_policy: Some(engine::EnvironmentPolicyRuntime::new(
+                Some(vec!["allowed".to_owned()]),
+                None,
+            )),
             subagents_policy: None,
             call: engine::ToolInvocationRequest {
                 call_id: ToolCallId::new("call-environment-list"),
@@ -3080,7 +3145,7 @@ mod tests {
             promise_id_base: 1,
             workspace_links: Vec::new(),
             active_environment_id: Some(EnvironmentId::new("environment-pending")),
-            environment_policy: Some(engine::EnvironmentPolicyRuntime::v1(None)),
+            environment_policy: Some(engine::EnvironmentPolicyRuntime::new(None, None)),
             subagents_policy: None,
             call: engine::ToolInvocationRequest {
                 call_id: ToolCallId::new("call-read-file"),
@@ -3246,9 +3311,10 @@ mod tests {
             batch_id: ToolBatchId::new(1),
             promise_id_base: 1,
             active_environment_id: Some(EnvironmentId::new("environment-allowed-1")),
-            environment_policy: Some(engine::EnvironmentPolicyRuntime::v1(Some(vec![
-                "allowed".to_owned(),
-            ]))),
+            environment_policy: Some(engine::EnvironmentPolicyRuntime::new(
+                Some(vec!["allowed".to_owned()]),
+                None,
+            )),
             subagents_policy: None,
             workspace_links: Vec::new(),
             calls: vec![engine::ToolInvocationRequest {
@@ -3413,7 +3479,7 @@ mod tests {
                 batch_id: ToolBatchId::new(1),
                 promise_id_base: 1,
                 active_environment_id: Some(EnvironmentId::new("test")),
-                environment_policy: Some(engine::EnvironmentPolicyRuntime::v1(None)),
+                environment_policy: Some(engine::EnvironmentPolicyRuntime::new(None, None)),
                 subagents_policy: None,
                 workspace_links,
                 calls: vec![

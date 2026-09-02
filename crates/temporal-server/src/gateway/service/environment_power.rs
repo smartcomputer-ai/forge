@@ -207,6 +207,7 @@ mod tests {
             public_endpoint: None,
             origin_session: None,
             metadata: BTreeMap::new(),
+            last_seen_at_ms: None,
             created_at_ms: 1,
             updated_at_ms: 1,
         }

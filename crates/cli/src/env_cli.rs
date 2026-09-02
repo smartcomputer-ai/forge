@@ -29,6 +29,76 @@ enum EnvCommand {
     IdlePolicy(IdlePolicyArgs),
     /// Bind, list, or unbind universe environment credentials.
     Credentials(CredentialArgs),
+    /// Mint, list, read, or revoke registration keys that let outbound
+    /// `lightspeed-envd` daemons register as environments.
+    RegistrationKeys(RegistrationKeyArgs),
+}
+
+#[derive(Args, Debug, Clone)]
+struct RegistrationKeyArgs {
+    #[command(subcommand)]
+    command: RegistrationKeyCommand,
+}
+
+#[derive(Subcommand, Debug, Clone)]
+enum RegistrationKeyCommand {
+    /// Mint a key. The secret is printed exactly once.
+    Create(RegistrationKeyCreateArgs),
+    /// List this universe's registration keys with their environment counts.
+    List(ResourceArgs),
+    /// Read one registration key.
+    Read(RegistrationKeyResourceArgs),
+    /// Stop a key from admitting new daemons; optionally close its
+    /// environments.
+    Revoke(RegistrationKeyRevokeArgs),
+}
+
+#[derive(Args, Debug, Clone)]
+struct RegistrationKeyCreateArgs {
+    #[arg(long = "api-url", env = "LIGHTSPEED_API_URL")]
+    api_url: String,
+    #[arg(long)]
+    json: bool,
+    /// Group name shown for every environment this key admits.
+    #[arg(long)]
+    name: String,
+    /// persistent: environments stay offline until closed; ephemeral: they
+    /// close once their daemon has been away longer than the grace.
+    #[arg(long, value_enum, default_value_t = IdentityModeArg::Persistent)]
+    mode: IdentityModeArg,
+    /// Non-closed environments the key may have at once.
+    #[arg(long = "max-active")]
+    max_active: Option<u32>,
+    /// Ephemeral disconnect grace in minutes (default: 5).
+    #[arg(long = "grace-min")]
+    grace_min: Option<u64>,
+    /// Stop admitting new daemons after this many hours.
+    #[arg(long = "expires-in-hours")]
+    expires_in_hours: Option<u64>,
+}
+
+#[derive(clap::ValueEnum, Debug, Clone, Copy)]
+enum IdentityModeArg {
+    Persistent,
+    Ephemeral,
+}
+
+#[derive(Args, Debug, Clone)]
+struct RegistrationKeyResourceArgs {
+    #[arg(long = "api-url", env = "LIGHTSPEED_API_URL")]
+    api_url: String,
+    #[arg(long)]
+    json: bool,
+    registration_key_id: String,
+}
+
+#[derive(Args, Debug, Clone)]
+struct RegistrationKeyRevokeArgs {
+    #[command(flatten)]
+    common: RegistrationKeyResourceArgs,
+    /// Also close every non-closed environment the key admitted.
+    #[arg(long = "close-environments")]
+    close_environments: bool,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -168,7 +238,110 @@ pub(crate) async fn handle(args: EnvArgs) -> Result<()> {
         EnvCommand::Power(args) => power(args).await,
         EnvCommand::IdlePolicy(args) => idle_policy(args).await,
         EnvCommand::Credentials(args) => credentials(args).await,
+        EnvCommand::RegistrationKeys(args) => registration_keys(args).await,
     }
+}
+
+async fn registration_keys(args: RegistrationKeyArgs) -> Result<()> {
+    match args.command {
+        RegistrationKeyCommand::Create(args) => {
+            let now_ms = i64::try_from(
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)?
+                    .as_millis(),
+            )?;
+            let response = HttpAgentApi::new(args.api_url)
+                .create_environment_registration_key(api::EnvironmentRegistrationKeyCreateParams {
+                    display_name: args.name,
+                    identity_mode: match args.mode {
+                        IdentityModeArg::Persistent => api::EnvironmentIdentityModeView::Persistent,
+                        IdentityModeArg::Ephemeral => api::EnvironmentIdentityModeView::Ephemeral,
+                    },
+                    max_active_environments: args.max_active,
+                    ephemeral_disconnect_grace_ms: args
+                        .grace_min
+                        .map(|minutes| minutes.saturating_mul(60_000)),
+                    expires_at_ms: args.expires_in_hours.map(|hours| {
+                        now_ms.saturating_add(
+                            i64::try_from(hours)
+                                .unwrap_or(i64::MAX)
+                                .saturating_mul(3_600_000),
+                        )
+                    }),
+                })
+                .await
+                .map_err(crate::api_client::api_error)?
+                .result;
+            print_json_or(args.json, &response, || {
+                print_registration_key(&response.registration_key);
+                println!();
+                println!("Registration key (shown once, store it now):");
+                println!("  {}", response.secret.0);
+                println!();
+                println!("Bootstrap a daemon with:");
+                println!(
+                    "  LIGHTSPEED_ENVD_GATEWAY_URL=wss://<gateway>/environment-gateway/connect"
+                );
+                println!("  LIGHTSPEED_ENVD_REGISTRATION_KEY_FILE=<file holding the key>");
+                println!("  lightspeed-envd");
+            })
+        }
+        RegistrationKeyCommand::List(args) => {
+            let response = HttpAgentApi::new(args.api_url)
+                .list_environment_registration_keys(api::EnvironmentRegistrationKeyListParams {})
+                .await
+                .map_err(crate::api_client::api_error)?
+                .result;
+            print_json_or(args.json, &response, || {
+                for key in &response.registration_keys {
+                    print_registration_key(key);
+                }
+            })
+        }
+        RegistrationKeyCommand::Read(args) => {
+            let response = HttpAgentApi::new(args.api_url)
+                .read_environment_registration_key(api::EnvironmentRegistrationKeyReadParams {
+                    registration_key_id: args.registration_key_id,
+                })
+                .await
+                .map_err(crate::api_client::api_error)?
+                .result;
+            print_json_or(args.json, &response, || {
+                print_registration_key(&response.registration_key)
+            })
+        }
+        RegistrationKeyCommand::Revoke(args) => {
+            let response = HttpAgentApi::new(args.common.api_url)
+                .revoke_environment_registration_key(api::EnvironmentRegistrationKeyRevokeParams {
+                    registration_key_id: args.common.registration_key_id,
+                    close_environments: args.close_environments,
+                })
+                .await
+                .map_err(crate::api_client::api_error)?
+                .result;
+            print_json_or(args.common.json, &response, || {
+                print_registration_key(&response.registration_key);
+                for environment_id in &response.closed_environment_ids {
+                    println!("closing {environment_id}");
+                }
+            })
+        }
+    }
+}
+
+fn print_registration_key(key: &api::EnvironmentRegistrationKeyView) {
+    println!(
+        "{} {:?} {} {:?} active={} total={} max={}",
+        key.registration_key_id,
+        key.status,
+        key.display_name,
+        key.identity_mode,
+        key.active_environment_count,
+        key.registered_environment_count,
+        key.max_active_environments
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "unlimited".to_owned())
+    );
 }
 
 async fn power(args: PowerArgs) -> Result<()> {
@@ -240,13 +413,11 @@ async fn list(args: ResourceArgs) -> Result<()> {
         .result;
     print_json_or(args.json, &response, || {
         for environment in &response.environments {
-            let provider = match &environment.source {
-                api::EnvironmentSourceView::Provisioned { provider_id, .. } => provider_id.as_str(),
-                api::EnvironmentSourceView::External { .. } => "external",
-            };
             println!(
                 "{} {} {:?}",
-                environment.environment_id, provider, environment.status
+                environment.environment_id,
+                source_label(&environment.source),
+                environment.status
             );
         }
     })
@@ -261,15 +432,26 @@ async fn read(args: EnvironmentResourceArgs) -> Result<()> {
         .map_err(crate::api_client::api_error)?
         .result;
     print_json_or(args.json, &response, || {
-        let provider = match &response.environment.source {
-            api::EnvironmentSourceView::Provisioned { provider_id, .. } => provider_id.as_str(),
-            api::EnvironmentSourceView::External { .. } => "external",
-        };
         println!(
             "{} {} {:?}",
-            response.environment.environment_id, provider, response.environment.status
+            response.environment.environment_id,
+            source_label(&response.environment.source),
+            response.environment.status
         );
     })
+}
+
+/// One-word origin of an environment for table output: the provider id, the
+/// registration key it was admitted by, or `external`.
+fn source_label(source: &api::EnvironmentSourceView) -> String {
+    match source {
+        api::EnvironmentSourceView::Provisioned { provider_id, .. } => provider_id.clone(),
+        api::EnvironmentSourceView::External { .. } => "external".to_owned(),
+        api::EnvironmentSourceView::Registered {
+            registration_key_id,
+            ..
+        } => format!("registered:{registration_key_id}"),
+    }
 }
 
 async fn activate(args: ActivateArgs) -> Result<()> {

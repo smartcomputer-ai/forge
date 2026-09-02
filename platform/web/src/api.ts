@@ -5,6 +5,8 @@ import type {
   EnvironmentCredentialSourceView,
   EnvironmentCredentialView,
   EnvironmentProviderBindingView,
+  EnvironmentRegistrationKeyCreateResponse,
+  EnvironmentRegistrationKeyView,
   EnvironmentTemplateView,
   EnvironmentView,
   ProfileEnvironment as ProfileEnvironmentView,
@@ -401,6 +403,8 @@ export type EnvironmentProviderBinding = EnvironmentProviderBindingView;
 export type EnvironmentTemplate = EnvironmentTemplateView;
 export type EnvironmentCredentialSource = EnvironmentCredentialSourceView;
 export type EnvironmentCredential = EnvironmentCredentialView;
+export type EnvironmentRegistrationKey = EnvironmentRegistrationKeyView;
+export type EnvironmentRegistrationKeyCreated = EnvironmentRegistrationKeyCreateResponse;
 
 /// Sub-agent lineage: who delegated the session, under which root,
 /// at what depth, from which pinned profile revision. Provenance only.

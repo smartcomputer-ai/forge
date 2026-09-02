@@ -1,8 +1,10 @@
 pub mod config;
 pub mod filesystem;
+pub mod identity;
 pub mod jobs;
 pub mod process;
 mod process_group;
+pub mod registration;
 pub mod rpc;
 pub mod server;
 
@@ -74,12 +76,14 @@ impl DaemonRuntime {
             config.cwd.clone(),
             !config.read_only_fs,
         );
-        let processes = ProcessManager::new(config.cwd.clone(), config.fs_root.clone());
+        let processes = ProcessManager::new(config.cwd.clone(), config.fs_root.clone())
+            .with_scrubbed_env(config.scrubbed_env.clone());
         let jobs = JobManager::new(
             config.cwd.clone(),
             config.fs_root.clone(),
             config.state_dir.clone(),
-        )?;
+        )?
+        .with_scrubbed_env(config.scrubbed_env.clone());
         Ok(Self {
             config: Arc::new(config),
             capabilities,
@@ -194,11 +198,13 @@ mod tests {
         let temp = tempfile::tempdir().expect("tempdir");
         let root = temp.path().canonicalize().expect("canonical root");
         let runtime = DaemonRuntime::new(DaemonConfig {
-            listen: "127.0.0.1:0".parse().expect("listen"),
+            listen: Some("127.0.0.1:0".parse().expect("listen")),
             cwd: root.clone(),
             fs_root: root.clone(),
             state_dir: root.join("state"),
             read_only_fs: false,
+            registration: None,
+            scrubbed_env: vec!["LIGHTSPEED_ENVD_REGISTRATION_KEY".to_owned()],
         })
         .expect("runtime");
         (temp, runtime)

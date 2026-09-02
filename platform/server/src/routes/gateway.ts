@@ -13,6 +13,7 @@ import {
   type EnvironmentCreateParams,
   type EnvironmentExternalCreateParams,
   type EnvironmentListParams,
+  type EnvironmentRegistrationKeyCreateParams,
   type McpServerInput,
   type McpServerAuthDiscoverParams,
   type McpServerToolsDiscoverParams,
@@ -139,6 +140,20 @@ const externalEnvironmentCreateSchema = z.object({
     .trim()
     .regex(/^wss?:\/\/[^\s]+$/, "endpoint must be a ws:// or wss:// URL"),
   displayName: z.string().trim().min(1).max(200).optional(),
+});
+
+/// Registration-key policy as the Environments page submits it. Identity
+/// mode is the key's policy; daemons never choose it.
+const registrationKeyCreateSchema = z.object({
+  displayName: z.string().trim().min(1).max(128),
+  identityMode: z.enum(["persistent", "ephemeral"]),
+  maxActiveEnvironments: z.number().int().min(1).optional(),
+  ephemeralDisconnectGraceMs: z.number().int().min(1).optional(),
+  expiresAtMs: z.number().int().min(0).optional(),
+});
+
+const registrationKeyRevokeSchema = z.object({
+  closeEnvironments: z.boolean().optional(),
 });
 
 /// Stable, id-safe request id for an external environment endpoint.
@@ -1430,8 +1445,65 @@ export function gatewayRoutes(ctx: AppContext) {
       if (originSessionId) {
         params.originSessionId = originSessionId;
       }
+      const registrationKeyId = c.req.query("registrationKeyId");
+      if (registrationKeyId) {
+        params.registrationKeyId = registrationKeyId;
+      }
       const response = await client.call("environments/list", params);
       return c.json(response.result.environments ?? []);
+    });
+  });
+
+  /// Registration keys admit outbound `lightspeed-envd` daemons as
+  /// environments; each key is the group of the environments it admitted.
+  app.get("/:id/environment-registration-keys", async (c) => {
+    const access = await universeForSession(ctx, c, c.req.param("id"), true);
+    if (!access) {
+      return c.json({ error: "not found" }, 404);
+    }
+    return withGateway(c, async () => {
+      const client = engineClientFor(ctx, access.universe);
+      const response = await client.call("environments/registration-keys/list", {});
+      return c.json(response.result.registrationKeys ?? []);
+    });
+  });
+
+  /// The plaintext secret is in the response exactly once.
+  app.post("/:id/environment-registration-keys", async (c) => {
+    const access = await universeForSession(ctx, c, c.req.param("id"), true);
+    if (!access) {
+      return c.json({ error: "not found" }, 404);
+    }
+    const body = await parseBody(c, registrationKeyCreateSchema);
+    if (!body.ok) {
+      return body.response;
+    }
+    return withGateway(c, async () => {
+      const client = engineClientFor(ctx, access.universe);
+      const response = await client.call(
+        "environments/registration-keys/create",
+        body.data as EnvironmentRegistrationKeyCreateParams,
+      );
+      return c.json(response.result, 201);
+    });
+  });
+
+  app.post("/:id/environment-registration-keys/:keyId/revoke", async (c) => {
+    const access = await universeForSession(ctx, c, c.req.param("id"), true);
+    if (!access) {
+      return c.json({ error: "not found" }, 404);
+    }
+    const body = await parseBody(c, registrationKeyRevokeSchema);
+    if (!body.ok) {
+      return body.response;
+    }
+    return withGateway(c, async () => {
+      const client = engineClientFor(ctx, access.universe);
+      const response = await client.call("environments/registration-keys/revoke", {
+        registrationKeyId: c.req.param("keyId"),
+        closeEnvironments: body.data.closeEnvironments ?? false,
+      });
+      return c.json(response.result);
     });
   });
 

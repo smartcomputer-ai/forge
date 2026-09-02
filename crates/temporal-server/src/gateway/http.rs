@@ -15,7 +15,10 @@ use axum::{
     response::{Html, IntoResponse, Response},
     routing::{get, post},
 };
-use environment_protocol::gateway::{PROVIDER_DATA_PATH_PREFIX, ROUTE_PATH_PREFIX};
+use environment_protocol::{
+    gateway::{PROVIDER_DATA_PATH_PREFIX, ROUTE_PATH_PREFIX},
+    registration::{CONNECT_PATH, DATA_PATH},
+};
 use futures_util::{SinkExt as _, StreamExt as _};
 use serde::Deserialize;
 use store_pg::{PgApiKeyStore, PgStore};
@@ -31,6 +34,7 @@ use crate::{
 
 use super::{
     GatewayAgentApi, GatewayOperatorApi, OAuthCallbackOutcome, connect_temporal, principal,
+    registration::{self, RegisteredConnections},
 };
 
 pub const DEFAULT_GATEWAY_BIND: &str = "127.0.0.1:18080";
@@ -83,13 +87,110 @@ enum UniverseResolution {
 
 pub struct GatewayState {
     resolution: UniverseResolution,
+    /// Live registered-daemon connections on this replica.
+    registrations: Arc<RegisteredConnections>,
+    /// Public base URL daemons are told to dial for data connections.
+    public_base_url: String,
+}
+
+/// Which route families one HTTP listener serves, derived from the
+/// process's roles: the `gateway` role owns the API surface, the
+/// `environment-gateway` role owns the environment data plane.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GatewayRoutes {
+    /// JSON-RPC, OAuth callbacks, and bot webhook ingest.
+    pub api: bool,
+    /// Worker environment routes plus the public daemon connect and data
+    /// routes.
+    pub environment: bool,
+}
+
+impl GatewayRoutes {
+    pub const ALL: Self = Self {
+        api: true,
+        environment: true,
+    };
 }
 
 impl GatewayState {
     /// Route every request to one existing service instance.
     pub fn for_api(api: Arc<GatewayAgentApi>) -> Self {
+        let public_base_url = api.public_base_url().to_owned();
         Self {
             resolution: UniverseResolution::FixedApi { api },
+            registrations: Arc::new(RegisteredConnections::new()),
+            public_base_url,
+        }
+    }
+
+    pub(super) fn registrations(&self) -> &Arc<RegisteredConnections> {
+        &self.registrations
+    }
+
+    /// Tell daemons to dial a different public base than the general one.
+    pub fn with_environment_public_url(mut self, url: Option<String>) -> Self {
+        if let Some(url) = url {
+            self.public_base_url = url;
+        }
+        self
+    }
+
+    /// Public data route for reverse-dialed daemon sockets.
+    pub(super) fn registration_data_url(&self) -> String {
+        registration::data_url(&self.public_base_url)
+    }
+
+    /// The universe a register request belongs to: the environment's
+    /// universe for a known daemon, the key's universe for a first
+    /// registration.
+    pub(super) async fn registration_universe(
+        &self,
+        params: &environment_protocol::registration::RegisterParams,
+    ) -> Result<Option<Uuid>, AgentApiError> {
+        let by_key = params
+            .registration_key
+            .as_ref()
+            .map(|secret| environments::registration_key_hash(secret.expose()));
+        match &self.resolution {
+            UniverseResolution::FixedApi { api } => {
+                let store = api.store();
+                let universe_id = store.config().universe_id;
+                let known = environments::EnvironmentStore::read_environment_by_daemon_public_key(
+                    store.as_ref(),
+                    &params.daemon_public_key,
+                )
+                .await
+                .map_err(|error| AgentApiError::internal(error.to_string()))?;
+                if known.is_some() {
+                    return Ok(Some(universe_id));
+                }
+                let Some(hash) = by_key else {
+                    return Ok(None);
+                };
+                let key = environments::EnvironmentRegistrationKeyStore::resolve_registration_key(
+                    store.as_ref(),
+                    &hash,
+                )
+                .await
+                .map_err(|error| AgentApiError::internal(error.to_string()))?;
+                Ok(key.map(|_| universe_id))
+            }
+            UniverseResolution::Multi { runtime, .. } => {
+                let pool = runtime.stores().pool();
+                if let Some(universe_id) =
+                    store_pg::find_registered_environment_universe(pool, &params.daemon_public_key)
+                        .await
+                        .map_err(|error| AgentApiError::internal(error.to_string()))?
+                {
+                    return Ok(Some(universe_id));
+                }
+                let Some(hash) = by_key else {
+                    return Ok(None);
+                };
+                store_pg::find_registration_key_universe(pool, &hash)
+                    .await
+                    .map_err(|error| AgentApiError::internal(error.to_string()))
+            }
         }
     }
 
@@ -104,10 +205,12 @@ impl GatewayState {
             resolution: UniverseResolution::Multi {
                 mode,
                 runtime,
-                public_base_url,
+                public_base_url: public_base_url.clone(),
                 api_keys,
                 operator,
             },
+            registrations: Arc::new(RegisteredConnections::new()),
+            public_base_url,
         }
     }
 
@@ -178,7 +281,7 @@ impl GatewayState {
         }
     }
 
-    async fn api_for_daemon(
+    pub(super) async fn api_for_daemon(
         &self,
         universe_id: Uuid,
     ) -> Result<Arc<GatewayAgentApi>, AgentApiError> {
@@ -381,7 +484,7 @@ pub async fn serve_gateway(config: GatewayServerConfig) -> anyhow::Result<()> {
     prewarm_single_universe(&mode, &runtime).await?;
     let reconciler = tokio::spawn(runtime.clone().run_environment_reconciler());
     let state = Arc::new(GatewayState::multi(mode, runtime, public_base_url));
-    let app = gateway_router(state, config.max_request_body_bytes);
+    let app = gateway_router(state, config.max_request_body_bytes, GatewayRoutes::ALL);
     let listener = tokio::net::TcpListener::bind(config.bind).await?;
     tracing::info!(target: "temporal_server", bind = %config.bind, "gateway listening");
     axum::serve(listener, app).await?;
@@ -444,7 +547,7 @@ pub async fn serve_gateway_with_client_store(
         }
     });
     let state = Arc::new(GatewayState::for_api(api));
-    let app = gateway_router(state, config.max_request_body_bytes);
+    let app = gateway_router(state, config.max_request_body_bytes, GatewayRoutes::ALL);
     let listener = tokio::net::TcpListener::bind(config.bind).await?;
     tracing::info!(target: "temporal_server", bind = %config.bind, "gateway listening");
     axum::serve(listener, app).await?;
@@ -460,20 +563,32 @@ pub fn public_base_url_or_default(config: &GatewayServerConfig) -> String {
         .unwrap_or_else(|| format!("http://{}", config.bind))
 }
 
-pub fn gateway_router(state: Arc<GatewayState>, max_request_body_bytes: usize) -> Router {
-    Router::new()
-        .route("/health", get(|| async { "ok" }))
-        .route("/rpc", post(rpc))
-        .route("/auth/callback", get(oauth_callback))
-        .route("/auth/client-metadata.json", get(cimd_document))
-        .route(
-            "/hooks/bots/:universe/:bot/:trigger/:token",
-            post(bot_webhook_ingest),
-        )
-        .route(
-            &format!("{ROUTE_PATH_PREFIX}/:universe/:environment/:incarnation"),
-            get(environment_route_upgrade),
-        )
+pub fn gateway_router(
+    state: Arc<GatewayState>,
+    max_request_body_bytes: usize,
+    routes: GatewayRoutes,
+) -> Router {
+    let mut router = Router::new().route("/health", get(|| async { "ok" }));
+    if routes.api {
+        router = router
+            .route("/rpc", post(rpc))
+            .route("/auth/callback", get(oauth_callback))
+            .route("/auth/client-metadata.json", get(cimd_document))
+            .route(
+                "/hooks/bots/:universe/:bot/:trigger/:token",
+                post(bot_webhook_ingest),
+            );
+    }
+    if routes.environment {
+        router = router
+            .route(
+                &format!("{ROUTE_PATH_PREFIX}/:universe/:environment/:incarnation"),
+                get(environment_route_upgrade),
+            )
+            .route(CONNECT_PATH, get(registration::connect_upgrade))
+            .route(DATA_PATH, get(registration::data_upgrade));
+    }
+    router
         .layer(DefaultBodyLimit::max(max_request_body_bytes))
         .with_state(state)
 }
@@ -669,6 +784,37 @@ async fn environment_route_upgrade(
                         target_id,
                         socket,
                         provider_socket,
+                    )
+                })
+                .into_response()
+        }
+        environments::EnvironmentSource::Registered { .. } => {
+            if matches!(
+                environment.status,
+                environments::EnvironmentStatus::Closing | environments::EnvironmentStatus::Closed
+            ) {
+                return StatusCode::CONFLICT.into_response();
+            }
+            let (daemon_socket, control_connection_id) = match registration::open_registered_route(
+                &state, &key,
+            )
+            .await
+            {
+                Ok(paired) => paired,
+                Err(status) => {
+                    tracing::warn!(target: "temporal_server", environment = %key.environment_id, %status, "registered environment data route unavailable");
+                    return status.into_response();
+                }
+            };
+            upgrade
+                .max_message_size(64 * 1024 * 1024)
+                .on_upgrade(move |socket| {
+                    registration::proxy_registered_route(
+                        state,
+                        key,
+                        control_connection_id,
+                        socket,
+                        daemon_socket,
                     )
                 })
                 .into_response()
@@ -971,11 +1117,14 @@ async fn rpc(
     }
 }
 
-/// Deliberate bulk transfers whose size the caller already chose; the byte
-/// budget guards accidentally unbounded documents, not blob bodies, which
-/// have no smaller page to retry with.
+/// Deliberate bounded bulk transfers. Blob reads have no smaller page to
+/// retry with, while MCP discovery is already constrained by the
+/// discoverer's typed 16 MiB decoded-inventory limit.
 fn response_budget_exempt(method: &str) -> bool {
-    method == api::METHOD_BLOBS_READ
+    matches!(
+        method,
+        api::METHOD_BLOBS_READ | api::METHOD_MCP_SERVERS_TOOLS_DISCOVER
+    )
 }
 
 fn enforce_response_budget(response: JsonRpcResponse) -> JsonRpcResponse {
@@ -1142,6 +1291,34 @@ mod tests {
         assert_eq!(
             response.headers().get(header::CACHE_CONTROL),
             Some(&HeaderValue::from_static("no-store"))
+        );
+    }
+
+    #[test]
+    fn only_deliberate_bulk_methods_are_response_budget_exempt() {
+        assert!(response_budget_exempt(api::METHOD_BLOBS_READ));
+        assert!(response_budget_exempt(
+            api::METHOD_MCP_SERVERS_TOOLS_DISCOVER
+        ));
+        assert!(!response_budget_exempt(api::METHOD_SESSION_READ));
+    }
+
+    #[test]
+    fn non_exempt_oversized_json_rpc_response_is_rejected() {
+        let response = JsonRpcResponse::success(
+            api::RequestId::Number(7),
+            serde_json::json!({"text": "x".repeat(2 * 1024 * 1024)}),
+        );
+        let bounded = enforce_response_budget(response);
+        assert!(bounded.result.is_none());
+        assert_eq!(
+            bounded
+                .error
+                .expect("response-too-large error")
+                .data
+                .expect("typed error data")
+                .kind,
+            AgentApiErrorKind::ResponseTooLarge
         );
     }
 

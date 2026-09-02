@@ -548,11 +548,9 @@ Every dimension remains bounded. Crossing an inventory-completeness bound still
 fails discovery without returning a partial inventory. Oversized titles and
 descriptions are the exception: they are untrusted, non-authoritative hints and
 are truncated on a UTF-8 boundary instead of taking down the entire server.
-The unpaginated management projection preserves every tool name but dynamically
-shares 512 KiB of optional title/description text across the inventory so a
-broad server remains below the gateway response budget. Native search keeps the
-larger bounded descriptions internally and returns only one result page at a
-time.
+The unpaginated management projection returns the retained discovery text
+unchanged. Native search keeps those bounded descriptions internally and
+returns only one byte-bounded result page at a time.
 
 ## Implementation Slices
 

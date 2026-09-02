@@ -124,16 +124,27 @@ pub struct ToolInvocationBatchRequest {
 pub struct EnvironmentPolicyRuntime {
     pub version: u32,
     pub allowed_provider_ids: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allowed_registration_key_ids: Option<Vec<String>>,
 }
 
 impl EnvironmentPolicyRuntime {
-    pub const VERSION: u32 = 1;
+    pub const VERSION: u32 = 2;
 
-    pub fn v1(allowed_provider_ids: Option<Vec<String>>) -> Self {
+    pub fn new(
+        allowed_provider_ids: Option<Vec<String>>,
+        allowed_registration_key_ids: Option<Vec<String>>,
+    ) -> Self {
         Self {
             version: Self::VERSION,
             allowed_provider_ids,
+            allowed_registration_key_ids,
         }
+    }
+
+    /// Lower the session's environments grant into the runtime policy.
+    pub fn from_feature(feature: &crate::EnvironmentsFeature) -> Self {
+        Self::new(feature.providers.clone(), feature.registration_keys.clone())
     }
 }
 
@@ -556,7 +567,7 @@ mod tests {
             promise_id_base: 1,
             workspace_links: Vec::new(),
             active_environment_id: Some(EnvironmentId::new("environment-a")),
-            environment_policy: Some(EnvironmentPolicyRuntime::v1(None)),
+            environment_policy: Some(EnvironmentPolicyRuntime::new(None, None)),
             subagents_policy: None,
             calls: call_ids
                 .iter()

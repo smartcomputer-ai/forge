@@ -20,8 +20,24 @@ The universe owns:
 
 The environment provider API and `environment-protocol` are the external extension
 seam. Provider implementations may run outside this repository. Lightspeed's
-internal `EnvironmentResolver` only centralizes lookup, provider filtering,
+internal `EnvironmentResolver` only centralizes lookup, access-policy filtering,
 liveness checks, and structured errors; it is not another plugin interface.
+
+An environment has one of three sources. *Provisioned* environments have a
+provider-owned machine lifecycle. *External* environments store a reachable
+`lightspeed-envd` endpoint that Lightspeed dials on demand. *Registered*
+environments are daemons that dialed the environment gateway outbound and
+were admitted by a universe-scoped registration key; the daemon's Ed25519
+public key is the identity, Lightspeed assigns the environment and
+incarnation ids, and one public key maps to at most one environment in the
+deployment, ever. The registration key is also the group of the
+environments it admitted, and its identity mode decides what happens while
+a daemon is away: persistent environments stay offline until closed,
+ephemeral ones close once the daemon has exceeded the key's disconnect
+grace. A registered daemon keeps one control connection; each worker route
+is served by a separate socket the daemon dials on request, paired by a
+one-time token and proxied unchanged, so the data protocol is identical
+across all three sources.
 
 Provider status and capabilities are live observations. They remain in shared
 storage so gateways and workers can coordinate across restarts, but they do not
@@ -181,11 +197,20 @@ operations live under universe `environments/credentials/*` APIs.
 Universe resource operations are:
 
 - `environments/create` (optionally with `idlePolicy`)
+- `environments/external/create`
 - `environments/read`
-- `environments/list`
+- `environments/list` (filters: provider, binding, status, origin session,
+  registration key)
 - `environments/close`
 - `environments/power/put`
 - `environments/idle-policy/put`
+- `environments/registration-keys/create|read|list|revoke`, which never
+  enter a model-facing catalog
+
+The session grant `features.environments` scopes what a session may list
+and activate with two independent allowlists, `providers` and
+`registrationKeys`; an absent list allows every environment of that source
+kind, and external environments pass only when neither list is set.
 
 Session selection operations are:
 
@@ -198,8 +223,14 @@ routes.
 
 ## Current implementation
 
-- PostgreSQL stores universe providers, environments, and environment
-  credentials; there is no `session_environment_bindings` table.
+- PostgreSQL stores universe providers, environments, registration keys, and
+  environment credentials; there is no `session_environment_bindings` table.
+  The daemon public key of a registered environment is a column on the
+  environment row with one unique index across the deployment.
+- The gateway records registered-daemon connects, heartbeats, and
+  disconnects as observations on the environment row; the lifecycle
+  reconciler derives stale-heartbeat repair and ephemeral cleanup from them
+  and holds the only durable lifecycle authority.
 - Deterministic core owns explicit active-environment state and events.
 - Gateways and model tools share the internal live resolver and provider-filter
   rules.
@@ -211,7 +242,12 @@ routes.
 
 ## Deferred work
 
-- finer-grained selection policy beyond provider filtering;
+- finer-grained selection policy beyond provider and registration-key
+  filtering, such as claiming any ready environment of a registration key
+  for one session;
+- registered environments served by more than one environment-gateway
+  replica (owner lease, direct worker dialing, and a relay for scattered
+  data dials);
 - automatic fallback or failover;
 - environment-local prompt, instruction, or skill extraction (which should
   explicitly snapshot selected content into CAS if introduced); and

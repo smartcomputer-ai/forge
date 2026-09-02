@@ -46,6 +46,8 @@ pub struct ProcessManager {
     cwd: PathBuf,
     fs_root: PathBuf,
     processes: Arc<Mutex<BTreeMap<String, Arc<ProcessEntry>>>>,
+    /// Daemon configuration variables no child may inherit.
+    scrubbed_env: Arc<Vec<String>>,
 }
 
 struct ProcessEntry {
@@ -85,7 +87,13 @@ impl ProcessManager {
             cwd: normalize_path(cwd),
             fs_root: normalize_path(fs_root),
             processes: Arc::new(Mutex::new(BTreeMap::new())),
+            scrubbed_env: Arc::new(Vec::new()),
         }
+    }
+
+    pub fn with_scrubbed_env(mut self, names: Vec<String>) -> Self {
+        self.scrubbed_env = Arc::new(names);
+        self
     }
 
     /// Processes started here that have not exited yet.
@@ -137,6 +145,9 @@ impl ProcessManager {
             .envs(params.env.iter())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        for name in self.scrubbed_env.iter() {
+            command.env_remove(name);
+        }
         for (name, value) in &params.secret_env {
             command.env(name, value.expose());
         }
@@ -251,6 +262,9 @@ impl ProcessManager {
         let mut command = CommandBuilder::new(&params.argv[0]);
         command.args(&params.argv[1..]);
         command.cwd(&cwd);
+        for name in self.scrubbed_env.iter() {
+            command.env_remove(name);
+        }
         for (name, value) in &params.env {
             command.env(name, value);
         }

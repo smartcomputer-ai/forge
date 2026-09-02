@@ -801,7 +801,7 @@ pub fn next_tool_batch_request(
             .config
             .as_ref()
             .and_then(|config| config.features.environments.as_ref())
-            .map(|feature| crate::EnvironmentPolicyRuntime::v1(feature.providers.clone())),
+            .map(crate::EnvironmentPolicyRuntime::from_feature),
         subagents_policy: state
             .lifecycle
             .config
@@ -2295,10 +2295,10 @@ mod tests {
         );
         assert_eq!(
             request.environment_policy,
-            Some(crate::EnvironmentPolicyRuntime::v1(Some(vec![
-                "provider-a".to_owned(),
-                "provider-b".to_owned(),
-            ])))
+            Some(crate::EnvironmentPolicyRuntime::new(
+                Some(vec!["provider-a".to_owned(), "provider-b".to_owned()]),
+                None,
+            ))
         );
         assert_eq!(request.subagents_policy, Some(test_subagents_feature()));
     }
