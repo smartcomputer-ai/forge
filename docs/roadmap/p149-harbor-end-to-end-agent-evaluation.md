@@ -13,6 +13,10 @@
 - The Harbor adapter, job configurations, and reporting tools live in a
   separate repository. This document records the Lightspeed-side contract,
   cross-repository implementation plan, and acceptance criteria.
+- Adapter repository scaffolded 2026-09-02 as `ls-benchmark`
+  (<https://github.com/smartcomputer-ai/ls-benchmark>), package
+  `lightspeed_harbor`, Harbor pinned at `0.22.0`. Progress is tracked in that
+  repository's `docs/next-steps.md`; nothing runs a trial yet.
 
 ## Goal
 
@@ -105,11 +109,12 @@ the current documentation at runtime.
 
 ## Repository Boundary
 
-Implement the integration in a dedicated repository, tentatively named
-`lightspeed-harbor`. The repository is independently installable and contains:
+Implement the integration in a dedicated repository, `ls-benchmark`, whose
+importable package keeps the adapter name `lightspeed_harbor`. The repository
+is independently installable and contains:
 
 ```text
-lightspeed-harbor/
+ls-benchmark/
 ├── README.md
 ├── pyproject.toml
 ├── uv.lock
@@ -142,7 +147,7 @@ The ownership split is:
 | Repository | Owns |
 |---|---|
 | Lightspeed | P148 registration/API contracts, `envd`, hosted session behavior, and released client/schema artifacts. |
-| `lightspeed-harbor` | Harbor adapter, dependency lock, benchmark configs, preflight, result conversion, reports, and operator instructions. |
+| `ls-benchmark` | Harbor adapter, dependency lock, benchmark configs, preflight, result conversion, reports, and operator instructions. |
 
 The adapter depends only on released Lightspeed interfaces and artifacts. It
 must not import Rust workspace internals, read the Lightspeed source tree, or
@@ -477,7 +482,7 @@ the `envd` artifact.
 The supported local invocation becomes:
 
 ```bash
-cd lightspeed-harbor
+cd ls-benchmark
 uv sync --frozen
 uv run python scripts/preflight.py --config configs/smoke.local.yaml
 uv run harbor run -c configs/smoke.local.yaml
