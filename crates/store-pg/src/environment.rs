@@ -14,8 +14,8 @@ use environments::{
     ListEnvironmentCredentials, ListEnvironmentProviders, ListEnvironments,
     ObserveProvisionedEnvironment, ObserveRegisteredEnvironment, PowerState,
     PutEnvironmentCredential, PutEnvironmentProvider, PutEnvironmentProviderBinding,
-    RegisteredIdentityMode, SessionId, SetEnvironmentIdlePolicy, SetEnvironmentIngress,
-    SetEnvironmentPower, apply_registered_observation,
+    RegisteredConnectionObservation, RegisteredIdentityMode, SessionId, SetEnvironmentIdlePolicy,
+    SetEnvironmentIngress, SetEnvironmentPower,
 };
 use sqlx::{Postgres, Row, Transaction};
 use uuid::Uuid;
@@ -745,16 +745,40 @@ impl EnvironmentStore for PgStore {
         if request.observed_at_ms < 0 {
             return invalid("observed_at_ms must be nonnegative");
         }
-        let mut record = self.read_environment(&request.environment_id).await?;
-        apply_registered_observation(&mut record, request.observation, request.observed_at_ms)?;
+        let current = self.read_environment(&request.environment_id).await?;
+        if !current.is_registered() {
+            return invalid("connection observations apply only to registered environments");
+        }
+        // One conditional statement rather than read-modify-write: a close
+        // that lands between a read and a write must never be overwritten
+        // by a late connect or disconnect observation.
+        let observation = match request.observation {
+            RegisteredConnectionObservation::Connected => "connected",
+            RegisteredConnectionObservation::Heartbeat => "heartbeat",
+            RegisteredConnectionObservation::Disconnected => "disconnected",
+        };
         sqlx::query(
-            "UPDATE environments SET status=$3, last_seen_at_ms=$4, updated_at_ms=$5 WHERE universe_id=$1 AND environment_id=$2",
+            r#"
+            UPDATE environments SET
+                status = CASE
+                    WHEN status IN ('closing', 'closed') THEN status
+                    WHEN $3 = 'connected' THEN 'ready'
+                    WHEN $3 = 'disconnected' THEN 'offline'
+                    ELSE status END,
+                last_seen_at_ms = CASE
+                    WHEN status IN ('closing', 'closed') THEN last_seen_at_ms
+                    WHEN $3 IN ('connected', 'heartbeat') THEN $4
+                    ELSE last_seen_at_ms END,
+                updated_at_ms = CASE
+                    WHEN status IN ('closing', 'closed') THEN updated_at_ms
+                    ELSE GREATEST(updated_at_ms, $4) END
+            WHERE universe_id = $1 AND environment_id = $2 AND source_kind = 'registered'
+            "#,
         )
         .bind(self.config.universe_id)
         .bind(request.environment_id.as_str())
-        .bind(environment_status_to_str(record.status))
-        .bind(record.last_seen_at_ms)
-        .bind(record.updated_at_ms)
+        .bind(observation)
+        .bind(request.observed_at_ms)
         .execute(&self.pool)
         .await
         .map_err(|error| sql_error("observe registered environment", error))?;

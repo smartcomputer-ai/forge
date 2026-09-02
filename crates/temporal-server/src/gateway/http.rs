@@ -15,7 +15,10 @@ use axum::{
     response::{Html, IntoResponse, Response},
     routing::{get, post},
 };
-use environment_protocol::gateway::{PROVIDER_DATA_PATH_PREFIX, ROUTE_PATH_PREFIX};
+use environment_protocol::{
+    gateway::{PROVIDER_DATA_PATH_PREFIX, ROUTE_PATH_PREFIX},
+    registration::{CONNECT_PATH, DATA_PATH},
+};
 use futures_util::{SinkExt as _, StreamExt as _};
 use serde::Deserialize;
 use store_pg::{PgApiKeyStore, PgStore};
@@ -31,6 +34,7 @@ use crate::{
 
 use super::{
     GatewayAgentApi, GatewayOperatorApi, OAuthCallbackOutcome, connect_temporal, principal,
+    registration::{self, RegisteredConnections},
 };
 
 pub const DEFAULT_GATEWAY_BIND: &str = "127.0.0.1:18080";
@@ -83,13 +87,83 @@ enum UniverseResolution {
 
 pub struct GatewayState {
     resolution: UniverseResolution,
+    /// Live registered-daemon connections on this replica.
+    registrations: Arc<RegisteredConnections>,
+    /// Public base URL daemons are told to dial for data connections.
+    public_base_url: String,
 }
 
 impl GatewayState {
     /// Route every request to one existing service instance.
     pub fn for_api(api: Arc<GatewayAgentApi>) -> Self {
+        let public_base_url = api.public_base_url().to_owned();
         Self {
             resolution: UniverseResolution::FixedApi { api },
+            registrations: Arc::new(RegisteredConnections::new()),
+            public_base_url,
+        }
+    }
+
+    pub(super) fn registrations(&self) -> &Arc<RegisteredConnections> {
+        &self.registrations
+    }
+
+    /// Public data route for reverse-dialed daemon sockets.
+    pub(super) fn registration_data_url(&self) -> String {
+        registration::data_url(&self.public_base_url)
+    }
+
+    /// The universe a register request belongs to: the environment's
+    /// universe for a known daemon, the key's universe for a first
+    /// registration.
+    pub(super) async fn registration_universe(
+        &self,
+        params: &environment_protocol::registration::RegisterParams,
+    ) -> Result<Option<Uuid>, AgentApiError> {
+        let by_key = params
+            .registration_key
+            .as_ref()
+            .map(|secret| environments::registration_key_hash(secret.expose()));
+        match &self.resolution {
+            UniverseResolution::FixedApi { api } => {
+                let store = api.store();
+                let universe_id = store.config().universe_id;
+                let known = environments::EnvironmentStore::read_environment_by_daemon_public_key(
+                    store.as_ref(),
+                    &params.daemon_public_key,
+                )
+                .await
+                .map_err(|error| AgentApiError::internal(error.to_string()))?;
+                if known.is_some() {
+                    return Ok(Some(universe_id));
+                }
+                let Some(hash) = by_key else {
+                    return Ok(None);
+                };
+                let key = environments::EnvironmentRegistrationKeyStore::resolve_registration_key(
+                    store.as_ref(),
+                    &hash,
+                )
+                .await
+                .map_err(|error| AgentApiError::internal(error.to_string()))?;
+                Ok(key.map(|_| universe_id))
+            }
+            UniverseResolution::Multi { runtime, .. } => {
+                let pool = runtime.stores().pool();
+                if let Some(universe_id) =
+                    store_pg::find_registered_environment_universe(pool, &params.daemon_public_key)
+                        .await
+                        .map_err(|error| AgentApiError::internal(error.to_string()))?
+                {
+                    return Ok(Some(universe_id));
+                }
+                let Some(hash) = by_key else {
+                    return Ok(None);
+                };
+                store_pg::find_registration_key_universe(pool, &hash)
+                    .await
+                    .map_err(|error| AgentApiError::internal(error.to_string()))
+            }
         }
     }
 
@@ -104,10 +178,12 @@ impl GatewayState {
             resolution: UniverseResolution::Multi {
                 mode,
                 runtime,
-                public_base_url,
+                public_base_url: public_base_url.clone(),
                 api_keys,
                 operator,
             },
+            registrations: Arc::new(RegisteredConnections::new()),
+            public_base_url,
         }
     }
 
@@ -178,7 +254,7 @@ impl GatewayState {
         }
     }
 
-    async fn api_for_daemon(
+    pub(super) async fn api_for_daemon(
         &self,
         universe_id: Uuid,
     ) -> Result<Arc<GatewayAgentApi>, AgentApiError> {
@@ -474,6 +550,8 @@ pub fn gateway_router(state: Arc<GatewayState>, max_request_body_bytes: usize) -
             &format!("{ROUTE_PATH_PREFIX}/:universe/:environment/:incarnation"),
             get(environment_route_upgrade),
         )
+        .route(CONNECT_PATH, get(registration::connect_upgrade))
+        .route(DATA_PATH, get(registration::data_upgrade))
         .layer(DefaultBodyLimit::max(max_request_body_bytes))
         .with_state(state)
 }
@@ -674,11 +752,35 @@ async fn environment_route_upgrade(
                 .into_response()
         }
         environments::EnvironmentSource::Registered { .. } => {
-            // Served by a reverse-dialed data socket once the outbound
-            // registration transport lands; until then a registered
-            // environment has no route.
-            tracing::warn!(target: "temporal_server", environment = %key.environment_id, "registered environment has no data route yet");
-            StatusCode::SERVICE_UNAVAILABLE.into_response()
+            if matches!(
+                environment.status,
+                environments::EnvironmentStatus::Closing | environments::EnvironmentStatus::Closed
+            ) {
+                return StatusCode::CONFLICT.into_response();
+            }
+            let (daemon_socket, control_connection_id) = match registration::open_registered_route(
+                &state, &key,
+            )
+            .await
+            {
+                Ok(paired) => paired,
+                Err(status) => {
+                    tracing::warn!(target: "temporal_server", environment = %key.environment_id, %status, "registered environment data route unavailable");
+                    return status.into_response();
+                }
+            };
+            upgrade
+                .max_message_size(64 * 1024 * 1024)
+                .on_upgrade(move |socket| {
+                    registration::proxy_registered_route(
+                        state,
+                        key,
+                        control_connection_id,
+                        socket,
+                        daemon_socket,
+                    )
+                })
+                .into_response()
         }
     }
 }

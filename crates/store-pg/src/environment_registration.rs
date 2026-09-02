@@ -51,7 +51,11 @@ impl EnvironmentRegistrationKeyStore for PgStore {
             .bind(&record.key_prefix)
             .bind(&request.secret_hash)
             .bind(record.identity_mode.as_str())
-            .bind(record.max_active_environments.map(i64::from))
+            .bind(
+                record
+                    .max_active_environments
+                    .map(|value| i32::try_from(value).unwrap_or(i32::MAX)),
+            )
             .bind(
                 record
                     .ephemeral_disconnect_grace_ms
@@ -230,7 +234,7 @@ fn key_from_row(row: &PgRow) -> Result<EnvironmentRegistrationKeyRecord, Environ
     let identity_mode: String = row
         .try_get("identity_mode")
         .map_err(|error| sql_error("decode identity mode", error))?;
-    let max_active: Option<i64> = row
+    let max_active: Option<i32> = row
         .try_get("max_active_environments")
         .map_err(|error| sql_error("decode max active", error))?;
     let grace: Option<i64> = row

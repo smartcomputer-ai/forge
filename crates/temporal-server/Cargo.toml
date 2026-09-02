@@ -62,7 +62,9 @@ url = "2"
 [dev-dependencies]
 test-support = { path = "../test-support" }
 dotenvy = "0.15"
+environment-daemon = { path = "../environment-daemon" }
 futures-util = "0.3"
+tempfile = "3"
 
 [[bin]]
 name = "lightspeed-server"

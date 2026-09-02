@@ -1125,6 +1125,7 @@ checksum = "70e796c081cee67dc755e1a36a0a172b897fab85fc3f6bc48307991f64e4eca9"
 dependencies = [
  "curve25519-dalek",
  "ed25519",
+ "rand_core 0.6.4",
  "serde",
  "sha2",
  "subtle",
@@ -1236,6 +1237,7 @@ dependencies = [
  "api",
  "clap",
  "dotenvy",
+ "ed25519-dalek",
  "engine",
  "environment-client",
  "environment-protocol",
@@ -1246,8 +1248,11 @@ dependencies = [
  "ignore",
  "libc",
  "portable-pty",
+ "rand 0.8.6",
  "release-info",
  "reqwest 0.13.4",
+ "rustls",
+ "rustls-pki-types",
  "serde",
  "serde_json",
  "tempfile",
@@ -1255,6 +1260,7 @@ dependencies = [
  "tokio",
  "tokio-tungstenite 0.26.2",
  "tools",
+ "webpki-roots 1.0.6",
 ]
 
 [[package]]
@@ -4702,6 +4708,7 @@ dependencies = [
  "ed25519-dalek",
  "engine",
  "environment-client",
+ "environment-daemon",
  "environment-protocol",
  "environments",
  "futures",

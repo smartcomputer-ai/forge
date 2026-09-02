@@ -815,6 +815,6 @@ pub(super) fn allocate_environment_id() -> EnvironmentId {
     EnvironmentId::new(format!("environment_{}", uuid::Uuid::new_v4().simple()))
 }
 
-fn allocate_incarnation_id() -> EnvironmentIncarnationId {
+pub(super) fn allocate_incarnation_id() -> EnvironmentIncarnationId {
     EnvironmentIncarnationId::new(format!("incarnation_{}", uuid::Uuid::new_v4().simple()))
 }

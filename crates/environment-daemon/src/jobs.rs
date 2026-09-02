@@ -35,6 +35,8 @@ pub struct JobManager {
     jobs_root: PathBuf,
     state: Arc<Mutex<JobManagerState>>,
     notify: Arc<Notify>,
+    /// Daemon configuration variables no job may inherit.
+    scrubbed_env: Arc<Vec<String>>,
 }
 
 #[derive(Default)]
@@ -148,7 +150,13 @@ impl JobManager {
             jobs_root,
             state: Arc::new(Mutex::new(state)),
             notify: Arc::new(Notify::new()),
+            scrubbed_env: Arc::new(Vec::new()),
         })
+    }
+
+    pub fn with_scrubbed_env(mut self, names: Vec<String>) -> Self {
+        self.scrubbed_env = Arc::new(names);
+        self
     }
 
     /// Jobs currently executing (running or cancelling).
@@ -670,6 +678,9 @@ impl JobManager {
                     format!("job env collides with secret env: {name}"),
                 ));
             }
+        }
+        for name in self.scrubbed_env.iter() {
+            command.env_remove(name);
         }
         command
             .args(&record.argv[1..])

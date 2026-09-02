@@ -3,6 +3,7 @@
 pub mod http;
 pub mod operator;
 pub mod principal;
+pub mod registration;
 pub(crate) mod service;
 
 pub use crate::config::{default_model_from_env, pg_store_from_env};

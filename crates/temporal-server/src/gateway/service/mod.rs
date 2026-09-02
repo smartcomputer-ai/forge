@@ -4885,6 +4885,16 @@ impl GatewayAgentApi {
         }
     }
 }
+/// Server-side id allocation for registered environments admitted on the
+/// gateway's connect route.
+pub(crate) fn allocate_environment_id_public() -> ::environments::EnvironmentId {
+    environment_lifecycle::allocate_environment_id()
+}
+
+pub(crate) fn allocate_incarnation_id_public() -> ::environments::EnvironmentIncarnationId {
+    environment_lifecycle::allocate_incarnation_id()
+}
+
 #[cfg(test)]
 mod tests;
 
