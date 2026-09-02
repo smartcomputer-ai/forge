@@ -27,6 +27,10 @@ import { Separator } from "@/components/ui/separator";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { MarkdownContent } from "@/components/session/markdown-content";
 import {
+  ExpandableContent,
+  type FullTextLoader,
+} from "@/components/session/expandable-content";
+import {
   isFailedToolCall,
   isTerminalToolStatus,
   toolTarget,
@@ -72,7 +76,13 @@ export function ReasoningTrace({ text }: { text: string }) {
   );
 }
 
-export function ToolGroupTrace({ group }: { group: TranscriptToolGroup }) {
+export function ToolGroupTrace({
+  group,
+  loadFullText,
+}: {
+  group: TranscriptToolGroup;
+  loadFullText?: FullTextLoader;
+}) {
   const active = !isTerminalToolStatus(group.status);
   const failedCalls = group.calls.filter(isFailedToolCall).length;
   const [open, setOpen] = useState(false);
@@ -114,7 +124,7 @@ export function ToolGroupTrace({ group }: { group: TranscriptToolGroup }) {
           <Separator />
           <div className="min-w-0 divide-y">
             {group.calls.map((call) => (
-              <ToolCallDetails key={call.callId} call={call} />
+              <ToolCallDetails key={call.callId} call={call} loadFullText={loadFullText} />
             ))}
           </div>
         </CollapsibleContent>
@@ -140,7 +150,13 @@ function ToolActivity({ call }: { call: TranscriptToolCall }) {
   );
 }
 
-function ToolCallDetails({ call }: { call: TranscriptToolCall }) {
+function ToolCallDetails({
+  call,
+  loadFullText,
+}: {
+  call: TranscriptToolCall;
+  loadFullText?: FullTextLoader;
+}) {
   const input = call.argumentsJson ? prettyJson(call.argumentsJson) : null;
   const output = call.error || call.output || null;
   const effects = call.effects?.length ? JSON.stringify(call.effects, null, 2) : null;
@@ -181,7 +197,14 @@ function ToolCallDetails({ call }: { call: TranscriptToolCall }) {
           )}
           {output && (
             <TabsContent value="output" className="min-w-0 max-w-full">
-              <DetailBlock value={output} tone={failed ? "warning" : "default"} />
+              <ExpandableContent
+                text={output}
+                truncated={call.outputTruncated}
+                contentRef={call.outputContentRef}
+                loadFullText={loadFullText}
+              >
+                {(text) => <DetailBlock value={text} tone={failed ? "warning" : "default"} />}
+              </ExpandableContent>
             </TabsContent>
           )}
           {effects && (

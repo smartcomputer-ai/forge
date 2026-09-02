@@ -1117,11 +1117,14 @@ async fn rpc(
     }
 }
 
-/// Deliberate bulk transfers whose size the caller already chose; the byte
-/// budget guards accidentally unbounded documents, not blob bodies, which
-/// have no smaller page to retry with.
+/// Deliberate bounded bulk transfers. Blob reads have no smaller page to
+/// retry with, while MCP discovery is already constrained by the
+/// discoverer's typed 16 MiB decoded-inventory limit.
 fn response_budget_exempt(method: &str) -> bool {
-    method == api::METHOD_BLOBS_READ
+    matches!(
+        method,
+        api::METHOD_BLOBS_READ | api::METHOD_MCP_SERVERS_TOOLS_DISCOVER
+    )
 }
 
 fn enforce_response_budget(response: JsonRpcResponse) -> JsonRpcResponse {
@@ -1288,6 +1291,34 @@ mod tests {
         assert_eq!(
             response.headers().get(header::CACHE_CONTROL),
             Some(&HeaderValue::from_static("no-store"))
+        );
+    }
+
+    #[test]
+    fn only_deliberate_bulk_methods_are_response_budget_exempt() {
+        assert!(response_budget_exempt(api::METHOD_BLOBS_READ));
+        assert!(response_budget_exempt(
+            api::METHOD_MCP_SERVERS_TOOLS_DISCOVER
+        ));
+        assert!(!response_budget_exempt(api::METHOD_SESSION_READ));
+    }
+
+    #[test]
+    fn non_exempt_oversized_json_rpc_response_is_rejected() {
+        let response = JsonRpcResponse::success(
+            api::RequestId::Number(7),
+            serde_json::json!({"text": "x".repeat(2 * 1024 * 1024)}),
+        );
+        let bounded = enforce_response_budget(response);
+        assert!(bounded.result.is_none());
+        assert_eq!(
+            bounded
+                .error
+                .expect("response-too-large error")
+                .data
+                .expect("typed error data")
+                .kind,
+            AgentApiErrorKind::ResponseTooLarge
         );
     }
 

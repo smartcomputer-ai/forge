@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type FormEvent } from "react";
 import {
   type InfiniteData,
   useInfiniteQuery,
@@ -10,6 +10,7 @@ import { NavLink, useNavigate, useParams } from "react-router-dom";
 import { Archive, ArrowLeft, Check, Copy, ListFilter, LoaderCircle, Plus, ShieldCheck, SlidersHorizontal, Trash2 } from "lucide-react";
 import {
   api,
+  type BlobContent,
   type Environment,
   type InlineProfile,
   type ProfileDocument,
@@ -779,6 +780,18 @@ export function SessionDetail({
   } | null>(null);
 
   const entries = tail.transcript.entries;
+  const loadFullText = useCallback(
+    async (contentRef: string) => {
+      const blob = await api<BlobContent>(
+        "GET",
+        `/api/v1/universes/${universeId}/blobs/${encodeURIComponent(contentRef)}`,
+      );
+      const binary = atob(blob.bytesBase64);
+      const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+      return new TextDecoder().decode(bytes);
+    },
+    [universeId],
+  );
   const activeRun = tail.transcript.activeRun;
   const queuedRuns = tail.transcript.queuedRuns;
   const runRevision = tail.transcript.runRevision;
@@ -1399,7 +1412,7 @@ export function SessionDetail({
                   key={entry.key}
                   messageId={entry.key}
                 >
-                  <TranscriptEntryView entry={entry} />
+                  <TranscriptEntryView entry={entry} loadFullText={loadFullText} />
                 </MessageScrollerItem>
               ))}
               {pendingInTranscript.map((message) => (

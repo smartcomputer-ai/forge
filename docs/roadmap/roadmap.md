@@ -1,6 +1,12 @@
 # Lightspeed Roadmap
 
 ## Work
+- [ ] [P150](p150-scalable-mcp-discovery-and-tool-search.md) — scalable MCP
+  discovery and tool search: exempt management discovery from the gateway
+  response budget instead of truncating descriptions, expand truncated
+  transcript entries from CAS in the UI, and reshape `mcp_find_tools` into one
+  8 KiB-windowed hit shape with 64 KiB byte-paged results and a `names` mode
+  for full definitions.
 - [ ] [P149](p149-harbor-end-to-end-agent-evaluation.md) — Harbor-driven
   end-to-end agent evaluation, implemented in a separate adapter repository:
   a version-pinned external `BaseAgent` uploads and starts the canonical
@@ -403,6 +409,10 @@ Superseded by [P134](p134-subagents.md); the entries below are history.
 - [ ] Design capability based model for agents
 
 ## MCP
+- [ ] [P150](p150-scalable-mcp-discovery-and-tool-search.md) — return complete
+  MCP inventories to management views, expand transcript previews through CAS,
+  and give model search one 8 KiB hit shape, 64 KiB pages, and full
+  definitions by name
 - [x] [P110](p110-universe-owned-mcp-auth.md) — make authentication part of
   each universe-scoped MCP server configuration, remove grant selection and
   grant references from sessions, and resolve the server's current credential

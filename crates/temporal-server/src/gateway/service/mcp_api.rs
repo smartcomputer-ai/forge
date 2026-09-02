@@ -239,13 +239,19 @@ impl GatewayAgentApi {
                 self.store.as_ref(),
                 "mcp_find_tools",
                 format!(
-                    "Browse or search live MCP tools by partial or fuzzy name/description terms. Available servers: {index}"
+                    "Browse, search, or load full definitions for live MCP tools. Browse with no query or names; search with query (tool names, descriptions, and argument names are indexed); load full definitions with server plus up to five names. Browse and search are byte-paged and may truncate oversized hits; use server plus names when a hit asks for its full definition. Available servers: {index}"
                 ),
                 serde_json::json!({
                     "type": "object",
                     "properties": {
                         "server": {"type": "string"},
                         "query": {"type": "string"},
+                        "names": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "minItems": 1,
+                            "maxItems": 5
+                        },
                         "cursor": {"type": "integer", "minimum": 0}
                     },
                     "additionalProperties": false
@@ -571,5 +577,22 @@ mod tests {
             panic!("MCP search meta-tool must be a function");
         };
         assert_eq!(function.strict, Some(false));
+    }
+
+    #[test]
+    fn discovery_projection_preserves_discoverer_retained_text() {
+        let retained = "d".repeat(mcp::McpToolDiscoveryLimits::default().max_text_bytes);
+        let response = mcp_tool_discovery_success(vec![mcp::DiscoveredMcpTool {
+            name: "long_description".to_owned(),
+            title: Some(retained.clone()),
+            description: Some(retained.clone()),
+            input_schema: serde_json::json!({"type": "object"}),
+            annotations: None,
+        }]);
+        let api::McpServerToolsDiscoverResponse::Success { tools } = response else {
+            panic!("discovery projection must succeed");
+        };
+        assert_eq!(tools[0].title.as_deref(), Some(retained.as_str()));
+        assert_eq!(tools[0].description.as_deref(), Some(retained.as_str()));
     }
 }

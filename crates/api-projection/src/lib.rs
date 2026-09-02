@@ -2321,13 +2321,25 @@ fn tool_call_display(tool_name: &str, arguments: &str) -> Option<ToolCallDisplay
         },
         "mcp_find_tools" => ToolCallDisplayView {
             group: ToolCallDisplayGroup::Explore,
-            verb: "Search MCP tools".to_owned(),
+            verb: json
+                .as_ref()
+                .and_then(|json| json.get("names"))
+                .and_then(Value::as_array)
+                .map_or_else(
+                    || "Search MCP tools".to_owned(),
+                    |_| "Load MCP tool definitions".to_owned(),
+                ),
             target: json
                 .as_ref()
                 .and_then(|json| first_string(json, &["server"])),
-            detail: json
-                .as_ref()
-                .and_then(|json| first_string(json, &["query"])),
+            detail: json.as_ref().and_then(|json| {
+                json.get("names")
+                    .and_then(Value::as_array)
+                    .map(|names| names.iter().filter_map(json_text).collect::<Vec<_>>())
+                    .filter(|names| !names.is_empty())
+                    .map(|names| names.join(", "))
+                    .or_else(|| first_string(json, &["query"]))
+            }),
         },
         "mcp_call" => ToolCallDisplayView {
             group: ToolCallDisplayGroup::Other,
@@ -2517,6 +2529,21 @@ mod tests {
         assert_eq!(display.verb, "lightspeed_models_list");
         assert_eq!(display.target.as_deref(), Some("configurator"));
         assert_ne!(display.verb, "mcp_call");
+    }
+
+    #[test]
+    fn native_mcp_detail_display_names_the_requested_tools() {
+        let display = tool_call_display(
+            "mcp_find_tools",
+            r#"{"server":"configurator","names":["models_list","sessions_read"]}"#,
+        )
+        .expect("display");
+        assert_eq!(display.verb, "Load MCP tool definitions");
+        assert_eq!(display.target.as_deref(), Some("configurator"));
+        assert_eq!(
+            display.detail.as_deref(),
+            Some("models_list, sessions_read")
+        );
     }
 
     #[test]
