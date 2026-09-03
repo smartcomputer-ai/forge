@@ -62,6 +62,7 @@ impl GatewayAgentApi {
             None => {
                 let result = vfs::commit_snapshot_manifest(
                     self.store.as_ref(),
+                    Some(self.store.as_ref()),
                     vfs::VfsSnapshotManifest::empty(),
                 )
                 .await
@@ -194,6 +195,7 @@ impl GatewayAgentApi {
 
 pub(super) async fn commit_vfs_snapshot(
     store: &dyn BlobStore,
+    blob_graph: Option<&dyn engine::storage::BlobGraphStore>,
     params: VfsSnapshotCommitParams,
 ) -> Result<VfsSnapshotCommitResponse, AgentApiError> {
     let manifest: vfs::VfsSnapshotManifest =
@@ -205,7 +207,7 @@ pub(super) async fn commit_vfs_snapshot(
         .map_err(|error| AgentApiError::invalid_request(error.to_string()))?;
     validate_vfs_manifest_blob_refs(store, &manifest).await?;
     let totals = manifest.totals.clone();
-    let result = vfs::commit_snapshot_manifest(store, manifest)
+    let result = vfs::commit_snapshot_manifest(store, blob_graph, manifest)
         .await
         .map_err(map_vfs_commit_error)?;
     Ok(VfsSnapshotCommitResponse {

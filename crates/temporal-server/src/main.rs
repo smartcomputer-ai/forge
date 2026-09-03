@@ -3,8 +3,8 @@ use std::{env, net::SocketAddr, sync::Arc, time::Duration};
 use clap::{Args, Parser, Subcommand};
 use temporal_server::{
     config::{
-        DeploymentStores, TaskQueues, environment_public_url_from_env, gateway_auth_mode_from_env,
-        postgres_pool_from_env, task_queues_from_env,
+        DeploymentStores, TaskQueues, cas_sweep_grace_from_env, environment_public_url_from_env,
+        gateway_auth_mode_from_env, postgres_pool_from_env, task_queues_from_env,
     },
     gateway::{
         DEFAULT_GATEWAY_BIND, DEFAULT_MAX_REQUEST_BODY_BYTES, DEFAULT_TEMPORAL_NAMESPACE,
@@ -43,6 +43,15 @@ enum Command {
         about = "Print the current and required PostgreSQL schema revisions"
     )]
     SchemaVersion,
+    #[command(
+        name = "cas-sweep",
+        about = "Run one blob-collection pass over every universe and print its statistics"
+    )]
+    CasSweep {
+        /// Report what a pass would delete without deleting anything.
+        #[arg(long)]
+        dry_run: bool,
+    },
     #[command(subcommand, about = "Manage universes (tenants) of this deployment")]
     Universe(UniverseCommand),
     #[command(
@@ -173,6 +182,7 @@ async fn main() -> anyhow::Result<()> {
     match cli.command {
         Some(Command::Migrate) => run_migrate().await,
         Some(Command::SchemaVersion) => run_schema_version().await,
+        Some(Command::CasSweep { dry_run }) => run_cas_sweep(dry_run).await,
         Some(Command::Universe(command)) => run_universe_command(command).await,
         Some(Command::ApiKey(command)) => run_api_key_command(command).await,
         None => run_roles(cli.run).await,
@@ -204,6 +214,28 @@ async fn run_schema_version() -> anyhow::Result<()> {
             status.required_revision
         )
     }
+}
+
+async fn run_cas_sweep(dry_run: bool) -> anyhow::Result<()> {
+    let Some(grace) = cas_sweep_grace_from_env()? else {
+        anyhow::bail!(
+            "blob collection is disabled: LIGHTSPEED_CAS_SWEEP_GRACE_MS is 0; set a positive grace to sweep"
+        );
+    };
+    let stores = DeploymentStores::from_env().await?;
+    let sweeper = worker::CasBlobSweeper::new(stores, grace);
+    let stats = sweeper.run_once(dry_run).await?;
+    println!("dry_run: {dry_run}");
+    println!("grace_ms: {}", grace.as_millis());
+    println!("universes_scanned: {}", stats.universes_scanned);
+    println!("candidates: {}", stats.candidates);
+    println!("rows_deleted: {}", stats.rows_deleted);
+    println!("bytes_freed: {}", stats.bytes_freed);
+    println!("objects_deleted: {}", stats.objects_deleted);
+    println!("object_errors: {}", stats.object_errors);
+    println!("holder_conflicts: {}", stats.holder_conflicts);
+    println!("errors: {}", stats.errors);
+    Ok(())
 }
 
 async fn run_universe_command(command: UniverseCommand) -> anyhow::Result<()> {
@@ -384,8 +416,17 @@ async fn run_roles(args: RunArgs) -> anyhow::Result<()> {
             worker::PromiseReaper::new(client.clone(), reaper_stores.clone()).run_forever(),
         ));
         background.push(tokio::spawn(
-            worker::SessionRetentionReaper::new(reaper_stores).run_forever(),
+            worker::SessionRetentionReaper::new(reaper_stores.clone()).run_forever(),
         ));
+        match cas_sweep_grace_from_env()? {
+            Some(grace) => background.push(tokio::spawn(
+                worker::CasBlobSweeper::new(reaper_stores, grace).run_forever(),
+            )),
+            None => tracing::info!(
+                target: "temporal_server",
+                "cas blob sweeper disabled by LIGHTSPEED_CAS_SWEEP_GRACE_MS=0"
+            ),
+        }
     }
     if roles.has(Role::Bots) {
         let activities = BotWorkerActivities::with_runtime(universes.clone());

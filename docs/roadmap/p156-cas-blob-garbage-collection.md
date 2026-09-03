@@ -2,6 +2,8 @@
 
 **Status**
 
+- Implemented 2026-09-03, all four slices, in schema revision 15. See
+  "Implementation Notes" at the end for what differed from the proposal.
 - Proposed 2026-09-03 after reviewing what session deletion
   ([P154](p154-session-retention.md)) leaves behind. Retention now removes
   rows, events, and checkpoints, but every blob a deleted session wrote stays
@@ -423,3 +425,60 @@ The five writers above, each with its byte-scan equivalence test.
 
 Reaper loop, statistics, `cas-sweep --dry-run`, MinIO live test, variables
 documentation.
+
+## Implementation Notes
+
+Recorded after implementation; the sections above are the proposal.
+
+- **`cas_session_roots` is gone.** Derived roots made the table a
+  materialization of the event rows, so migration 15 drops it and instead
+  adds a stored generated column `session_events.blob_refs` (the jsonpath
+  walk over the entry for exact `sha256:` strings) with a GIN
+  `jsonb_path_ops` index. The sweep's first predicate is "no event of this
+  universe contains the ref". Nothing is registered at append; the append
+  only verifies that every embedded ref names a stored blob and fails with
+  the typed error otherwise. Backfill is the column filling itself, and the
+  rows cascade with the session. The `RESTRICT` guard the table's foreign key
+  gave is covered by the grace, exactly as for refs held in workflow state.
+
+- **Fingerprints looked like refs.** The dev database held 52 event refs
+  whose blob did not exist, all in `turn.planned` events: the engine's LLM
+  request and compaction fingerprints were formatted `sha256:<hex>` without
+  ever being blobs, and the skill catalog and prompt report fingerprints did
+  the same inside their documents. Under derived roots every planned turn
+  would have failed to append. The engine fingerprints now carry
+  `llm:sha256:` and `compaction:sha256:` prefixes (the workflow-tool
+  fingerprints already used `wtx:`/`wti:`/`wtr:`), and the catalog and report
+  fingerprints store the bare hex next to their `algorithm` field. The
+  migration's backfill skips such strings and reports their count.
+- **Clone lineage foreign key.** The acceptance case "a config-only clone
+  keeps its blobs after its source is deleted" could not run: the composite
+  `sessions.source_session_id` foreign key used a plain `SET NULL`, which
+  nulled `universe_id` too and made deleting any session with a surviving
+  clone fail. Fresh databases carried the constraint twice (auto-named from
+  the `CREATE TABLE` and by name from the follow-up block). Migration 15
+  drops both and re-adds one with `ON DELETE SET NULL (source_session_id)`,
+  which needs PostgreSQL 15.
+- **Edges cover every embedded ref, not only documents.** The five writers
+  record an edge for each ref their bytes embed, including the snapshot
+  manifests and workspace heads a catalog or report was read from. A reader
+  following any ref in a live document finds a live blob; the cost is that a
+  report keeps its source manifests alive while the report is rooted.
+- **Debug dumps stay inspectable.** `LlmGenerationExecution` carries
+  `debug_dumps: Option<LlmDebugDumps>`; the redaction unit tests and the
+  provider live tests build their adapters with dumps enabled so the exact
+  provider exchange remains checkable.
+- **Sweeper pass logic is unit-tested.** The pass runs against a small
+  `CasSweepStore` trait implemented by `PgStore` and, in tests, by a double
+  over the in-memory blob store (which now tracks touch times, deletes, and
+  records edges). Liveness itself stays a Postgres query, exercised by the
+  `store-pg` live suite against Postgres and MinIO.
+- **Universe purge clears the object prefix.** After the row cascade the
+  operator delete lists `universes/<id>/cas/` in the object store and removes
+  whatever the catalog no longer knew about.
+- **Candidate selection scans live blobs too.** A pass walks a universe's
+  blobs in `touched_at_ms` order and applies the liveness anti-joins until it
+  has 1024 dead ones, so a universe whose old blobs are mostly live pays
+  roughly one index probe per holder table per blob every pass. Fine at the
+  current scale; if it ever shows up, a per-universe sweep watermark or a
+  materialized dead set bounds it without changing the model.

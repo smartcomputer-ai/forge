@@ -222,9 +222,7 @@ async fn openai_responses_live_selects_and_activates_the_matching_skill() {
         .await
         .expect("create session");
 
-    let snapshot = create_inline_snapshot(
-        blobs.as_ref(),
-        CreateInlineSnapshotRequest::new(vec![
+    let snapshot = create_inline_snapshot(blobs.as_ref(), None, CreateInlineSnapshotRequest::new(vec![
             InlineFile::new(
                 "matrix-migration/SKILL.md",
                 format!(

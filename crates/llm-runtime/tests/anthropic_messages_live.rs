@@ -241,7 +241,8 @@ async fn anthropic_messages_live_adapter_generates_result() {
     let adapter = AnthropicMessagesLlmAdapter::new(
         retrying_anthropic_messages_client(live_client()),
         blobs.clone(),
-    );
+    )
+    .with_debug_dumps(true);
     let request = generation_request(
         1,
         intent_request("live-anthropic-messages", vec![user_entry(1, input_ref)]),
@@ -292,7 +293,7 @@ async fn anthropic_messages_live_adapter_generates_result() {
     );
 
     let provider_request = blobs
-        .read_text(&execution.provider_request_ref)
+        .read_text(&dumps(&execution).provider_request_ref)
         .await
         .expect("provider request blob");
     assert!(
@@ -300,7 +301,7 @@ async fn anthropic_messages_live_adapter_generates_result() {
         "expected provider request JSON, got {provider_request}"
     );
     let raw_response = blobs
-        .read_text(&execution.raw_response_ref)
+        .read_text(&dumps(&execution).raw_response_ref)
         .await
         .expect("raw response blob");
     assert!(
@@ -335,7 +336,8 @@ async fn anthropic_messages_live_adapter_describes_image_input() {
     let adapter = AnthropicMessagesLlmAdapter::new(
         retrying_anthropic_messages_client(live_client()),
         blobs.clone(),
-    );
+    )
+    .with_debug_dumps(true);
     let request = generation_request(
         1,
         intent_request(
@@ -428,7 +430,8 @@ async fn anthropic_messages_live_adapter_reads_pdf_document_input() {
     let adapter = AnthropicMessagesLlmAdapter::new(
         retrying_anthropic_messages_client(live_client()),
         blobs.clone(),
-    );
+    )
+    .with_debug_dumps(true);
     let request = generation_request(
         1,
         intent_request(
@@ -489,7 +492,8 @@ async fn anthropic_messages_live_adapter_runs_tool_round_trip() {
     let adapter = AnthropicMessagesLlmAdapter::new(
         retrying_anthropic_messages_client(live_client()),
         blobs.clone(),
-    );
+    )
+    .with_debug_dumps(true);
 
     let mut request = intent_request(
         "live-anthropic-messages-tool",
@@ -605,7 +609,8 @@ async fn anthropic_messages_live_adapter_preserves_thinking_blocks() {
     let adapter = AnthropicMessagesLlmAdapter::new(
         retrying_anthropic_messages_client(live_client()),
         blobs.clone(),
-    );
+    )
+    .with_debug_dumps(true);
 
     let mut request = intent_request(
         "live-anthropic-messages-thinking",
@@ -620,7 +625,8 @@ async fn anthropic_messages_live_adapter_preserves_thinking_blocks() {
         .expect("generate with thinking");
 
     assert_eq!(execution.result.status, LlmGenerationStatus::Succeeded);
-    let provider_request = provider_request_json(&blobs, &execution.provider_request_ref).await;
+    let provider_request =
+        provider_request_json(&blobs, &dumps(&execution).provider_request_ref).await;
     assert_eq!(
         provider_request["thinking"],
         json!({ "type": "adaptive", "display": "summarized" }),
@@ -725,7 +731,8 @@ async fn anthropic_messages_live_adapter_thinks_across_tool_round_trip() {
     let adapter = AnthropicMessagesLlmAdapter::new(
         retrying_anthropic_messages_client(live_client()),
         blobs.clone(),
-    );
+    )
+    .with_debug_dumps(true);
 
     let mut request = intent_request(
         "live-anthropic-messages-thinking-tool",
@@ -746,7 +753,8 @@ async fn anthropic_messages_live_adapter_thinks_across_tool_round_trip() {
 
     assert_eq!(execution.result.status, LlmGenerationStatus::Succeeded);
     assert_eq!(execution.result.facts.finish, LlmFinish::ToolCalls);
-    let provider_request = provider_request_json(&blobs, &execution.provider_request_ref).await;
+    let provider_request =
+        provider_request_json(&blobs, &dumps(&execution).provider_request_ref).await;
     assert_eq!(
         provider_request["output_config"],
         json!({ "effort": "xhigh" })
@@ -869,7 +877,8 @@ async fn anthropic_messages_live_adapter_default_output_cap_is_accepted() {
     let adapter = AnthropicMessagesLlmAdapter::new(
         retrying_anthropic_messages_client(live_client()),
         blobs.clone(),
-    );
+    )
+    .with_debug_dumps(true);
     let mut request = intent_request(
         "live-anthropic-messages-default-cap",
         vec![user_entry(1, input_ref)],
@@ -883,7 +892,8 @@ async fn anthropic_messages_live_adapter_default_output_cap_is_accepted() {
 
     assert_eq!(execution.result.status, LlmGenerationStatus::Succeeded);
     assert_eq!(execution.result.facts.finish, LlmFinish::Stop);
-    let provider_request = provider_request_json(&blobs, &execution.provider_request_ref).await;
+    let provider_request =
+        provider_request_json(&blobs, &dumps(&execution).provider_request_ref).await;
     assert_eq!(
         provider_request["max_tokens"],
         json!(32_768),
@@ -921,7 +931,8 @@ async fn anthropic_messages_live_adapter_fails_the_turn_on_truncation_but_keeps_
     let adapter = AnthropicMessagesLlmAdapter::new(
         retrying_anthropic_messages_client(live_client()),
         blobs.clone(),
-    );
+    )
+    .with_debug_dumps(true);
     let mut request = intent_request(
         "live-anthropic-messages-truncation",
         vec![user_entry(1, input_ref)],
@@ -934,7 +945,8 @@ async fn anthropic_messages_live_adapter_fails_the_turn_on_truncation_but_keeps_
         .await
         .expect("a truncated response is a response, not a transport error");
 
-    let provider_request = provider_request_json(&blobs, &execution.provider_request_ref).await;
+    let provider_request =
+        provider_request_json(&blobs, &dumps(&execution).provider_request_ref).await;
     assert_eq!(provider_request["max_tokens"], json!(48));
     assert_eq!(provider_request["thinking"], json!({ "type": "disabled" }));
     assert_eq!(
@@ -1012,7 +1024,8 @@ async fn anthropic_messages_live_adapter_fails_the_turn_on_refusal() {
     let adapter = AnthropicMessagesLlmAdapter::new(
         retrying_anthropic_messages_client(live_client()),
         blobs.clone(),
-    );
+    )
+    .with_debug_dumps(true);
     let request = intent_request(
         "live-anthropic-messages-refusal",
         vec![user_entry(1, notes_ref), user_entry(2, ask_ref)],
@@ -1063,7 +1076,8 @@ async fn anthropic_messages_live_adapter_summarizes_context_compaction() {
     let adapter = AnthropicMessagesLlmAdapter::new(
         retrying_anthropic_messages_client(live_client()),
         blobs.clone(),
-    );
+    )
+    .with_debug_dumps(true);
     let request = ContextCompactionRequest {
         session_id: SessionId::new("session-live-anthropic-compaction"),
         request: ContextCompactionTask {
@@ -1107,4 +1121,13 @@ async fn anthropic_messages_live_adapter_summarizes_context_compaction() {
         summary.to_uppercase().contains("ZEPHYR"),
         "expected the summary to retain the codename, got {summary:?}"
     );
+}
+
+/// Live adapters run with debug dumps enabled so the tests can inspect the
+/// exact provider exchange.
+fn dumps(execution: &llm_runtime::LlmGenerationExecution) -> &llm_runtime::LlmDebugDumps {
+    execution
+        .debug_dumps
+        .as_ref()
+        .expect("live adapters are built with debug dumps enabled")
 }

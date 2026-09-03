@@ -8,6 +8,7 @@ mod auth;
 mod blob;
 mod blob_cache;
 mod bots;
+mod cas_sweep;
 mod channels;
 mod environment;
 mod environment_registration;
@@ -347,6 +348,7 @@ impl PgStore {
 
 pub use api_keys::PgApiKeyStore;
 pub use blob_cache::BlobCache;
+pub use cas_sweep::{CasObjectDeletion, CasSweepCandidate, CasSweepError};
 pub use channels::list_channel_accounts_all;
 pub use environment_registration::{
     find_registered_environment_universe, find_registration_key_universe,
@@ -354,6 +356,7 @@ pub use environment_registration::{
 pub use migrations::{
     MIGRATIONS, REQUIRED_SCHEMA_REVISION, SchemaStatus, schema_status, verify_schema,
 };
+pub use object::{delete_objects_under_prefix, universe_cas_object_prefix};
 pub use operator::{
     UniverseStats, create_universe, delete_universe, list_universe_object_keys,
     list_universe_session_ids, list_universe_stats, read_universe_stats,

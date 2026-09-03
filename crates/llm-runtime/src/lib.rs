@@ -41,7 +41,7 @@ pub use provider_keys::{
     ProviderKeyError, ResolvedEndpoint, ResolvedModelProvider, ResolvedProviderAuth,
     StaticModelProviders, StaticProviderKeys,
 };
-pub use result::{LlmGenerationExecution, failed_generation_result};
+pub use result::{LlmDebugDumps, LlmGenerationExecution, failed_generation_result};
 pub use secrets::{
     EnvSecretResolver, REDACTED_SECRET_PLACEHOLDER, ResolvedSecretValue, SECRET_NAMESPACE_ENV,
     SECRET_NAMESPACE_MCP_SERVER, SecretResolveError, SecretResolver, StaticSecretResolver,

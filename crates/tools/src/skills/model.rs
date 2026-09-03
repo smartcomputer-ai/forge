@@ -60,10 +60,13 @@ pub struct SkillCatalogSourceFingerprint {
 }
 
 impl SkillCatalogSourceFingerprint {
+    /// `digest` is the content hash of the canonical inputs. Only its hex is
+    /// stored: the fingerprint names no blob, and a `sha256:`-shaped string
+    /// would read as a blob ref to the collector.
     pub fn sha256(digest: BlobRef, inputs: Vec<SkillCatalogSourceInput>) -> Self {
         Self {
             algorithm: "sha256".to_owned(),
-            digest: digest.to_string(),
+            digest: crate::prompts::model::digest_hex(&digest),
             inputs,
         }
     }

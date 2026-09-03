@@ -331,6 +331,7 @@ mod tests {
         let workspace_store = Arc::new(TestWorkspaceStore::default());
         let snapshot = create_inline_snapshot(
             blobs.as_ref(),
+            None,
             CreateInlineSnapshotRequest::new(vec![
                 InlineFile::new(
                     ".lightspeed/prompts/instructions.md",
@@ -372,6 +373,7 @@ mod tests {
         assert_eq!(inputs.len(), 1);
         let build = build_prompt_instructions(
             blobs.as_ref(),
+            None,
             &inputs,
             crate::prompts::PromptAssemblyLimits::default(),
         )

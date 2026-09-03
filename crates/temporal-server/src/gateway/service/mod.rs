@@ -4229,7 +4229,8 @@ impl AgentApiService for GatewayAgentApi {
         &self,
         params: VfsSnapshotCommitParams,
     ) -> Result<AgentApiOutcome<VfsSnapshotCommitResponse>, AgentApiError> {
-        let response = commit_vfs_snapshot(self.store.as_ref(), params).await?;
+        let response =
+            commit_vfs_snapshot(self.store.as_ref(), Some(self.store.as_ref()), params).await?;
         let snapshot_ref = parse_blob_ref(&response.snapshot_ref)?;
         self.record_vfs_snapshot(
             snapshot_ref,

@@ -2155,6 +2155,7 @@ pub fn map_session_store_error(error: SessionStoreError) -> AgentApiError {
         SessionStoreError::ExpectedHeadMismatch { .. } => {
             AgentApiError::conflict(error.to_string())
         }
+        SessionStoreError::MissingBlobs { .. } => AgentApiError::invalid_request(error.to_string()),
         SessionStoreError::Store { message } => AgentApiError::internal(message),
     }
 }

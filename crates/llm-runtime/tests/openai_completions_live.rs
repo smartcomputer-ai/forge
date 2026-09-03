@@ -92,6 +92,7 @@ fn live_adapter(blobs: Arc<InMemoryBlobStore>) -> OpenAiCompletionsLlmAdapter {
         retrying_openai_completions_client(openai_completions_live_client()),
         blobs,
     )
+    .with_debug_dumps(true)
 }
 
 fn deepseek_generation_request(entries: Vec<ContextEntry>) -> LlmGenerationRequest {
@@ -112,6 +113,7 @@ fn deepseek_adapter(blobs: Arc<InMemoryBlobStore>) -> OpenAiCompletionsLlmAdapte
         retrying_openai_completions_client(deepseek_completions_live_client()),
         blobs,
     )
+    .with_debug_dumps(true)
 }
 
 async fn assistant_text(
@@ -167,7 +169,7 @@ async fn openai_completions_runtime_live_fast_mode_reports_effective_service_tie
         .expect("Fast mode completion");
     let provider_request: serde_json::Value = serde_json::from_str(
         &blobs
-            .read_text(&execution.provider_request_ref)
+            .read_text(&dumps(&execution).provider_request_ref)
             .await
             .expect("provider request"),
     )
@@ -176,7 +178,7 @@ async fn openai_completions_runtime_live_fast_mode_reports_effective_service_tie
 
     let raw_response: serde_json::Value = serde_json::from_str(
         &blobs
-            .read_text(&execution.raw_response_ref)
+            .read_text(&dumps(&execution).raw_response_ref)
             .await
             .expect("raw response"),
     )
@@ -695,7 +697,7 @@ async fn deepseek_completions_runtime_live_v4_dialect_reasoning_and_usage() {
 
     assert!(assistant_text(&blobs, &execution).await.contains("703"));
     let provider_request =
-        llm_runtime::blob_io::read_json(blobs.as_ref(), &execution.provider_request_ref)
+        llm_runtime::blob_io::read_json(blobs.as_ref(), &dumps(&execution).provider_request_ref)
             .await
             .expect("provider request");
     assert_eq!(provider_request["messages"][0]["role"], "system");
@@ -883,4 +885,13 @@ async fn deepseek_completions_runtime_live_uses_phase2_endpoint_override() {
             .await
             .expect("DeepSeek generation through endpoint override");
     assert!(assistant_text(&blobs, &execution).await.contains("117"));
+}
+
+/// Live adapters run with debug dumps enabled so the tests can inspect the
+/// exact provider exchange.
+fn dumps(execution: &llm_runtime::LlmGenerationExecution) -> &llm_runtime::LlmDebugDumps {
+    execution
+        .debug_dumps
+        .as_ref()
+        .expect("live adapters are built with debug dumps enabled")
 }

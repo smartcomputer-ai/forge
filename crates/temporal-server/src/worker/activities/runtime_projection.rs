@@ -57,10 +57,15 @@ pub(super) async fn refresh_runtime_projection(
     let mut commands = Vec::new();
     if request.vfs_catalog_enabled {
         let catalog = vfs_catalog_from_workspace_links(&links).map_err(activity_error)?;
-        if let Some(command) = prepare_vfs_catalog_publication(deps.blobs.as_ref(), &state, catalog)
-            .await
-            .map_err(activity_error)?
-            .command
+        if let Some(command) = prepare_vfs_catalog_publication(
+            deps.blobs.as_ref(),
+            deps.blob_graph.as_deref(),
+            &state,
+            catalog,
+        )
+        .await
+        .map_err(activity_error)?
+        .command
         {
             commands.push(command);
         }
@@ -113,6 +118,7 @@ pub(super) async fn refresh_runtime_projection(
             .map_err(activity_error)?;
         prepare_prompt_instructions_publication_with_warnings(
             deps.blobs.as_ref(),
+            deps.blob_graph.as_deref(),
             &inputs,
             PromptAssemblyLimits::default(),
             resolved.warnings().to_vec(),
@@ -180,6 +186,7 @@ pub(super) async fn refresh_runtime_projection(
 
     let publication = prepare_skill_catalog_publication_with_warnings(
         deps.blobs.as_ref(),
+        deps.blob_graph.as_deref(),
         &state,
         &inputs,
         resolved.warnings().to_vec(),

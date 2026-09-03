@@ -4611,6 +4611,7 @@ dependencies = [
  "engine",
  "environment-protocol",
  "environments",
+ "futures-util",
  "mcp",
  "moka",
  "object_store",

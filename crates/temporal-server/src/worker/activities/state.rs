@@ -54,6 +54,8 @@ pub struct LlmActivityDeps {
 pub struct ToolActivityDeps {
     pub(super) tools: Arc<dyn CoreAgentTools>,
     pub(super) blobs: Arc<dyn BlobStore>,
+    /// Records output-to-asset edges for native MCP results.
+    pub(super) blob_graph: Option<Arc<dyn BlobGraphStore>>,
     /// The hosted runtime behind `tools` when it is the real `SessionTools`:
     /// grants the per-call not-ready outcome and the environment readiness
     /// wait. Absent for injected fake runtimes, which never report a
@@ -65,6 +67,8 @@ pub struct ToolActivityDeps {
 #[derive(Clone)]
 pub struct RuntimeProjectionActivityDeps {
     pub(super) blobs: Arc<dyn BlobStore>,
+    /// Records catalog-, report-, and projection-to-child edges.
+    pub(super) blob_graph: Option<Arc<dyn BlobGraphStore>>,
     pub(super) workspace_store: Arc<dyn VfsWorkspaceStore>,
     /// Profile registry for the sub-agent catalog; absent in minimal test
     /// states, where the catalog lists ids without descriptions.
@@ -138,6 +142,7 @@ impl ActivityState {
             tools: ToolActivityDeps {
                 tools,
                 blobs: blobs.clone(),
+                blob_graph: None,
                 hosted: None,
                 native_mcp: None,
             },
@@ -159,6 +164,7 @@ impl ActivityState {
     ) -> Self {
         self.runtime_projection = Some(RuntimeProjectionActivityDeps {
             blobs: self.storage.blobs.clone(),
+            blob_graph: self.storage.blob_graph.clone(),
             workspace_store,
             profiles: None,
         });
@@ -213,10 +219,12 @@ impl ActivityState {
             EnvironmentCredentialResolver::from_pg_store(store.clone());
         let workspace_store: Arc<dyn VfsWorkspaceStore> = store.clone();
         let profile_store: Arc<dyn ::profiles::ProfileStore> = store.clone();
-        let mut state = Self::new(sessions, blobs, llm, tools)
+        let mut state = Self::new(sessions, blobs, llm, tools);
+        state.storage.blob_graph = Some(blob_graph.clone());
+        state.tools.blob_graph = Some(blob_graph.clone());
+        let mut state = state
             .with_runtime_projection_deps(workspace_store)
             .with_profile_store(profile_store);
-        state.storage.blob_graph = Some(blob_graph.clone());
         state.environment_jobs = Some(EnvironmentJobActivityDeps {
             blobs: environment_job_blobs,
             blob_graph: Some(blob_graph),
@@ -368,6 +376,7 @@ impl ActivityState {
             clients.openai.clone(),
             clients.openai_completions.clone(),
             clients.anthropic.clone(),
+            crate::config::llm_debug_dumps_from_env()?,
         );
         let temporal_client_for_workflow_tools = temporal_client.clone();
         let hosted = Arc::new(
@@ -491,6 +500,7 @@ fn default_llm_runtime(
         oai_completions::Config::from_env_allow_missing_key(),
     )?);
     let anthropic = Arc::new(am::Client::new(am::Config::from_env_allow_missing_key())?);
+    let debug_dumps = crate::config::llm_debug_dumps_from_env()?;
     Ok(llm_runtime_with_clients(
         blobs,
         secrets,
@@ -499,9 +509,11 @@ fn default_llm_runtime(
         openai,
         openai_completions,
         anthropic,
+        debug_dumps,
     ))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn llm_runtime_with_clients(
     blobs: Arc<dyn BlobStore>,
     secrets: Option<Arc<dyn SecretResolver>>,
@@ -510,10 +522,12 @@ fn llm_runtime_with_clients(
     openai: Arc<oai::Client>,
     openai_completions: Arc<oai_completions::Client>,
     anthropic: Arc<am::Client>,
+    debug_dumps: bool,
 ) -> Arc<dyn CoreAgentLlm> {
     let mut registry = LlmAdapterRegistry::new();
 
-    let mut adapter = OpenAiResponsesLlmAdapter::new(openai, blobs.clone());
+    let mut adapter =
+        OpenAiResponsesLlmAdapter::new(openai, blobs.clone()).with_debug_dumps(debug_dumps);
     if let Some(secrets) = &secrets {
         adapter = adapter.with_secret_resolver(secrets.clone());
     }
@@ -527,7 +541,8 @@ fn llm_runtime_with_clients(
     registry.insert_generation_adapter(ProviderApiKind::OpenAiResponses, adapter.clone());
     registry.insert_compaction_adapter(ProviderApiKind::OpenAiResponses, adapter);
 
-    let mut adapter = OpenAiCompletionsLlmAdapter::new(openai_completions, blobs.clone());
+    let mut adapter = OpenAiCompletionsLlmAdapter::new(openai_completions, blobs.clone())
+        .with_debug_dumps(debug_dumps);
     if let Some(provider_keys) = &provider_keys {
         adapter = adapter.with_provider_key_resolver(provider_keys.clone());
     }
@@ -538,7 +553,8 @@ fn llm_runtime_with_clients(
     registry.insert_generation_adapter(ProviderApiKind::OpenAiCompletions, adapter.clone());
     registry.insert_compaction_adapter(ProviderApiKind::OpenAiCompletions, adapter);
 
-    let mut adapter = AnthropicMessagesLlmAdapter::new(anthropic, blobs);
+    let mut adapter =
+        AnthropicMessagesLlmAdapter::new(anthropic, blobs).with_debug_dumps(debug_dumps);
     if let Some(secrets) = &secrets {
         adapter = adapter.with_secret_resolver(secrets.clone());
     }

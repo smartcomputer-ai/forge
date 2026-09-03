@@ -28,7 +28,10 @@ pub use activities::{
 pub use bots::BotWorkerActivities;
 pub use channels::ChannelWorkerActivities;
 pub use fake::{FAKE_TRANSIENT_RETRY_AFTER, FakeLlm, FakeRuntimeCounters, FakeTools};
-pub use reaper::{PromiseReaper, ReaperStats, SessionRetentionReaper, SessionRetentionReaperStats};
+pub use reaper::{
+    CasBlobSweeper, CasSweepStats, PromiseReaper, ReaperStats, SessionRetentionReaper,
+    SessionRetentionReaperStats,
+};
 pub use secrets::{BrokerSecretResolver, StoredModelProviderResolver, StoredProviderKeyResolver};
 pub use session_tools::{SessionTools, ToolCallExecution};
 pub use temporal_workflow::{

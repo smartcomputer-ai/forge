@@ -1,9 +1,11 @@
 //! Runtime-owned environment and VFS context projection snapshots.
 
+use std::collections::BTreeSet;
+
 use engine::{
     BlobRef, ContextEntryInput, ContextEntryKey, ContextEntryKind, CoreAgentCommand,
     CoreAgentState, VFS_CATALOG_CONTEXT_KEY, WorkspaceLinkAccess, WorkspaceLinkTarget,
-    storage::{BlobStore, BlobStoreError},
+    storage::{BlobGraphStore, BlobStore, BlobStoreError, record_contains_edges},
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -93,17 +95,34 @@ pub enum EnvironmentProjectionError {
 
 pub async fn prepare_vfs_catalog_publication(
     blobs: &dyn BlobStore,
+    blob_graph: Option<&dyn BlobGraphStore>,
     state: &CoreAgentState,
     catalog: VfsCatalog,
 ) -> Result<EnvironmentProjectionPublication<VfsCatalog>, EnvironmentProjectionError> {
     prepare_projection_publication(
         blobs,
+        blob_graph,
         state,
         catalog,
         VFS_CATALOG_CONTEXT_KEY,
         vfs_catalog_context_input,
+        vfs_catalog_blob_refs,
     )
     .await
+}
+
+/// Every snapshot manifest a catalog routes to. The catalog write records one
+/// `contains` edge per ref so linked snapshots stay reachable while the
+/// catalog is.
+pub fn vfs_catalog_blob_refs(catalog: &VfsCatalog) -> BTreeSet<BlobRef> {
+    catalog
+        .routes
+        .iter()
+        .filter_map(|route| match &route.source {
+            FsRouteSource::VfsSnapshot { snapshot_ref } => Some(snapshot_ref.clone()),
+            FsRouteSource::VfsWorkspace { .. } => None,
+        })
+        .collect()
 }
 
 pub fn vfs_catalog_from_workspace_links(
@@ -128,16 +147,19 @@ pub fn current_vfs_catalog_ref(state: &CoreAgentState) -> Option<BlobRef> {
 
 async fn prepare_projection_publication<T>(
     blobs: &dyn BlobStore,
+    blob_graph: Option<&dyn BlobGraphStore>,
     state: &CoreAgentState,
     snapshot: T,
     key: &'static str,
     context_input: fn(BlobRef) -> ContextEntryInput,
+    embedded_refs: fn(&T) -> BTreeSet<BlobRef>,
 ) -> Result<EnvironmentProjectionPublication<T>, EnvironmentProjectionError>
 where
     T: Clone + PartialEq + Serialize,
 {
     let snapshot_bytes = encode_json(&snapshot)?;
     let snapshot_ref = blobs.put_bytes(snapshot_bytes.clone()).await?;
+    record_contains_edges(blob_graph, &snapshot_ref, embedded_refs(&snapshot)).await?;
     let command = if current_key_ref(state, key).as_ref() == Some(&snapshot_ref) {
         None
     } else {
@@ -293,7 +315,7 @@ mod tests {
         let catalog = VfsCatalog::new(0, Vec::new());
         let state = CoreAgentState::new();
 
-        let first = prepare_vfs_catalog_publication(&blobs, &state, catalog.clone())
+        let first = prepare_vfs_catalog_publication(&blobs, None, &state, catalog.clone())
             .await
             .expect("first publication");
         assert!(first.command.is_some());
@@ -315,10 +337,60 @@ mod tests {
             supersedes: None,
         }];
 
-        let second = prepare_vfs_catalog_publication(&blobs, &state, catalog)
+        let second = prepare_vfs_catalog_publication(&blobs, None, &state, catalog)
             .await
             .expect("second publication");
         assert!(second.command.is_none());
+    }
+
+    /// The recorded edge set must equal every ref the projection embeds:
+    /// the snapshot manifests its routes point at.
+    #[tokio::test(flavor = "current_thread")]
+    async fn projection_writes_record_an_edge_for_every_embedded_ref() {
+        let blobs = InMemoryBlobStore::new();
+        let snapshot_ref = engine::storage::BlobStore::put_bytes(&blobs, b"snapshot".to_vec())
+            .await
+            .expect("put snapshot");
+        let catalog = VfsCatalog::new(
+            7,
+            vec![
+                FsRoute {
+                    path: FsPath::new("/docs").expect("path"),
+                    source_path: None,
+                    access: FsRouteAccess::ReadOnly,
+                    source: FsRouteSource::VfsSnapshot {
+                        snapshot_ref: snapshot_ref.clone(),
+                    },
+                    availability: FsRouteAvailability::Available,
+                },
+                FsRoute {
+                    path: FsPath::new("/workspace").expect("path"),
+                    source_path: None,
+                    access: FsRouteAccess::ReadWrite,
+                    source: FsRouteSource::VfsWorkspace {
+                        workspace_id: "workspace_1".to_owned(),
+                    },
+                    availability: FsRouteAvailability::Available,
+                },
+            ],
+        );
+        let publication =
+            prepare_vfs_catalog_publication(&blobs, Some(&blobs), &CoreAgentState::new(), catalog)
+                .await
+                .expect("publication");
+
+        let embedded = engine::storage::collect_blob_refs(
+            &serde_json::from_slice(&publication.snapshot_bytes).expect("catalog json"),
+        );
+        let recorded: BTreeSet<BlobRef> = blobs
+            .edges()
+            .into_iter()
+            .inspect(|edge| assert_eq!(edge.parent, publication.snapshot_ref))
+            .map(|edge| edge.child)
+            .collect();
+        assert_eq!(recorded, embedded);
+        assert_eq!(recorded, vfs_catalog_blob_refs(&publication.snapshot));
+        assert_eq!(embedded, BTreeSet::from([snapshot_ref]));
     }
 
     #[test]

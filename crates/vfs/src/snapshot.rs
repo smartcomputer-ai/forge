@@ -1,4 +1,7 @@
-use engine::{BlobRef, storage::BlobStore};
+use engine::{
+    BlobRef,
+    storage::{BlobGraphStore, BlobStore, record_contains_edges},
+};
 use std::collections::BTreeSet;
 
 use crate::{
@@ -119,8 +122,12 @@ pub struct VfsDirectoryListingEntry {
     pub size_bytes: Option<u64>,
 }
 
+/// Write every file and then the manifest. When a graph store is given, the
+/// manifest records a `contains` edge to each file blob so the files stay
+/// reachable exactly as long as the manifest is.
 pub async fn create_inline_snapshot(
     blobs: &(impl BlobStore + ?Sized),
+    blob_graph: Option<&dyn BlobGraphStore>,
     request: CreateInlineSnapshotRequest,
 ) -> Result<CreateVfsSnapshotResult, VfsError> {
     validate_inline_files(&request.files, request.limits)?;
@@ -155,10 +162,39 @@ pub async fn create_inline_snapshot(
 
     let manifest_bytes = encode_snapshot_manifest(&manifest)?;
     let snapshot_ref = blobs.put_bytes(manifest_bytes).await?;
+    record_manifest_edges(blob_graph, &snapshot_ref, &manifest).await?;
     Ok(CreateVfsSnapshotResult {
         snapshot_ref,
         manifest,
     })
+}
+
+/// Every file blob a manifest names, in path order without duplicates. This
+/// is the set of edges a manifest write records.
+pub fn manifest_blob_refs(manifest: &VfsSnapshotManifest) -> BTreeSet<BlobRef> {
+    fn walk(directory: &VfsDirectory, refs: &mut BTreeSet<BlobRef>) {
+        for entry in directory.entries.values() {
+            match entry {
+                VfsEntry::File(file) => {
+                    refs.insert(file.blob_ref.clone());
+                }
+                VfsEntry::Directory(child) => walk(child, refs),
+            }
+        }
+    }
+    let mut refs = BTreeSet::new();
+    walk(&manifest.root, &mut refs);
+    refs
+}
+
+async fn record_manifest_edges(
+    blob_graph: Option<&dyn BlobGraphStore>,
+    snapshot_ref: &BlobRef,
+    manifest: &VfsSnapshotManifest,
+) -> Result<(), VfsError> {
+    record_contains_edges(blob_graph, snapshot_ref, manifest_blob_refs(manifest))
+        .await
+        .map_err(VfsError::from)
 }
 
 pub async fn read_snapshot_manifest(
@@ -171,10 +207,12 @@ pub async fn read_snapshot_manifest(
 
 pub async fn commit_snapshot_manifest(
     blobs: &(impl BlobStore + ?Sized),
+    blob_graph: Option<&dyn BlobGraphStore>,
     manifest: VfsSnapshotManifest,
 ) -> Result<CreateVfsSnapshotResult, VfsError> {
     let manifest_bytes = encode_snapshot_manifest(&manifest)?;
     let snapshot_ref = blobs.put_bytes(manifest_bytes).await?;
+    record_manifest_edges(blob_graph, &snapshot_ref, &manifest).await?;
     Ok(CreateVfsSnapshotResult {
         snapshot_ref,
         manifest,
@@ -757,7 +795,7 @@ mod tests {
                 .executable(true),
         ]);
 
-        let result = create_inline_snapshot(&blobs, request).await.unwrap();
+        let result = create_inline_snapshot(&blobs, None, request).await.unwrap();
         assert_eq!(result.manifest.schema_version, VFS_SNAPSHOT_SCHEMA_VERSION);
         assert_eq!(
             result.manifest.totals,
@@ -793,11 +831,64 @@ mod tests {
         assert!(build.executable);
     }
 
+    /// The one place bytes are scanned for refs: the recorded edge set must
+    /// equal every ref the manifest embeds, so a reader following any ref in
+    /// the manifest finds a blob the collector kept alive.
+    #[tokio::test(flavor = "current_thread")]
+    async fn manifest_writes_record_an_edge_for_every_embedded_ref() {
+        let blobs = InMemoryBlobStore::new();
+        let request = CreateInlineSnapshotRequest::new(vec![
+            InlineFile::new("README.md", b"# hello\n".to_vec()).unwrap(),
+            InlineFile::new("src/lib.rs", b"pub fn ok() {}\n".to_vec()).unwrap(),
+            // Identical content: one blob, one edge.
+            InlineFile::new("src/copy.rs", b"pub fn ok() {}\n".to_vec()).unwrap(),
+        ]);
+        let result = create_inline_snapshot(&blobs, Some(&blobs), request)
+            .await
+            .unwrap();
+        let embedded =
+            engine::storage::collect_blob_refs(&serde_json::to_value(&result.manifest).unwrap());
+        let recorded = recorded_children(&blobs, &result.snapshot_ref);
+        assert_eq!(recorded, embedded);
+        assert_eq!(recorded.len(), 2);
+        assert_eq!(manifest_blob_refs(&result.manifest), embedded);
+
+        let mut manifest = result.manifest.clone();
+        write_manifest_file(
+            &blobs,
+            &mut manifest,
+            &VfsPath::parse("notes.txt").unwrap(),
+            b"notes".to_vec(),
+            None,
+            false,
+        )
+        .await
+        .unwrap();
+        let committed = commit_snapshot_manifest(&blobs, Some(&blobs), manifest.clone())
+            .await
+            .unwrap();
+        let embedded =
+            engine::storage::collect_blob_refs(&serde_json::to_value(&manifest).unwrap());
+        assert_eq!(recorded_children(&blobs, &committed.snapshot_ref), embedded);
+        assert_eq!(embedded.len(), 3);
+    }
+
+    fn recorded_children(blobs: &InMemoryBlobStore, parent: &BlobRef) -> BTreeSet<BlobRef> {
+        blobs
+            .edges()
+            .into_iter()
+            .filter(|edge| &edge.parent == parent)
+            .inspect(|edge| assert_eq!(edge.edge_kind, "contains"))
+            .map(|edge| edge.child)
+            .collect()
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn snapshot_read_helpers_resolve_paths() {
         let blobs = InMemoryBlobStore::new();
         let result = create_inline_snapshot(
             &blobs,
+            None,
             CreateInlineSnapshotRequest::new(vec![
                 InlineFile::new("README.md", b"hello\n".to_vec()).unwrap(),
                 InlineFile::new("src/lib.rs", b"pub fn f() {}\n".to_vec())
@@ -855,6 +946,7 @@ mod tests {
         let blobs = InMemoryBlobStore::new();
         let result = create_inline_snapshot(
             &blobs,
+            None,
             CreateInlineSnapshotRequest::new(vec![
                 InlineFile::new("README.md", b"hello\n".to_vec()).unwrap(),
                 InlineFile::new("src/lib.rs", b"pub fn f() {}\n".to_vec()).unwrap(),
@@ -913,7 +1005,7 @@ mod tests {
         .unwrap();
         assert_eq!(manifest.totals, VfsTotals { files: 1, bytes: 7 });
 
-        let committed = commit_snapshot_manifest(&blobs, manifest.clone())
+        let committed = commit_snapshot_manifest(&blobs, None, manifest.clone())
             .await
             .unwrap();
         assert_eq!(committed.manifest, manifest);
@@ -962,6 +1054,7 @@ mod tests {
         let blobs = InMemoryBlobStore::new();
         let result = create_inline_snapshot(
             &blobs,
+            None,
             CreateInlineSnapshotRequest::new(vec![
                 InlineFile::new("README.md", b"hello\n".to_vec()).unwrap(),
                 InlineFile::new("src/lib.rs", b"pub fn f() {}\n".to_vec()).unwrap(),
@@ -1028,9 +1121,10 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn inline_snapshot_allows_empty_tree() {
         let blobs = InMemoryBlobStore::new();
-        let result = create_inline_snapshot(&blobs, CreateInlineSnapshotRequest::new(Vec::new()))
-            .await
-            .unwrap();
+        let result =
+            create_inline_snapshot(&blobs, None, CreateInlineSnapshotRequest::new(Vec::new()))
+                .await
+                .unwrap();
 
         assert_eq!(result.manifest, VfsSnapshotManifest::empty());
         assert!(blobs.has_blob(&result.snapshot_ref).await.unwrap());
@@ -1044,7 +1138,9 @@ mod tests {
             InlineFile::new("/a.txt", b"two".to_vec()).unwrap(),
         ]);
 
-        let error = create_inline_snapshot(&blobs, request).await.unwrap_err();
+        let error = create_inline_snapshot(&blobs, None, request)
+            .await
+            .unwrap_err();
         assert!(matches!(error, VfsError::DuplicatePath { .. }));
         assert!(!blobs.has_blob(&BlobRef::from_bytes(b"one")).await.unwrap());
         assert!(!blobs.has_blob(&BlobRef::from_bytes(b"two")).await.unwrap());
@@ -1058,7 +1154,9 @@ mod tests {
             InlineFile::new("src/lib.rs", b"nested".to_vec()).unwrap(),
         ]);
 
-        let error = create_inline_snapshot(&blobs, request).await.unwrap_err();
+        let error = create_inline_snapshot(&blobs, None, request)
+            .await
+            .unwrap_err();
         assert!(matches!(
             error,
             VfsError::PathConflict {
@@ -1084,7 +1182,9 @@ mod tests {
         ])
         .with_limits(VfsSnapshotLimits::new(10, 5, 10, 10));
 
-        let error = create_inline_snapshot(&blobs, request).await.unwrap_err();
+        let error = create_inline_snapshot(&blobs, None, request)
+            .await
+            .unwrap_err();
         assert!(matches!(
             error,
             VfsError::LimitExceeded {
@@ -1103,7 +1203,7 @@ mod tests {
         let root_request =
             CreateInlineSnapshotRequest::new(vec![InlineFile::new("/", b"root".to_vec()).unwrap()]);
         assert!(matches!(
-            create_inline_snapshot(&blobs, root_request)
+            create_inline_snapshot(&blobs, None, root_request)
                 .await
                 .unwrap_err(),
             VfsError::RootFile
@@ -1114,7 +1214,7 @@ mod tests {
         ])
         .with_limits(VfsSnapshotLimits::new(10, 100, 100, 2));
         assert!(matches!(
-            create_inline_snapshot(&blobs, deep_request)
+            create_inline_snapshot(&blobs, None, deep_request)
                 .await
                 .unwrap_err(),
             VfsError::LimitExceeded { limit: "depth", .. }

@@ -29,7 +29,6 @@ const LIGHTSPEED_TABLES: &[&str] = &[
     "bots",
     "cas_blob_edges",
     "cas_blobs",
-    "cas_session_roots",
     "channel_accounts",
     "channel_pairings",
     "environment_credentials",
@@ -125,9 +124,14 @@ pub const MIGRATIONS: &[EmbeddedMigration] = &[
         name: "session_retention",
         sql: include_str!("../migrations/014_session_retention.sql"),
     },
+    EmbeddedMigration {
+        version: 15,
+        name: "cas_blob_gc",
+        sql: include_str!("../migrations/015_cas_blob_gc.sql"),
+    },
 ];
 
-pub const REQUIRED_SCHEMA_REVISION: i64 = 14;
+pub const REQUIRED_SCHEMA_REVISION: i64 = 15;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SchemaStatus {

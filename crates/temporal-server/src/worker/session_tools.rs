@@ -1173,7 +1173,8 @@ impl SessionTools {
                 self.workspace_store.clone(),
                 links.clone(),
             )
-            .map_err(io_error)?;
+            .map_err(io_error)?
+            .with_blob_graph(self.blob_graph.clone());
             let cwd = linked_vfs_cwd(fs.links())?;
             Some(FsToolContext::new(Arc::new(fs), self.blobs.clone()).with_cwd(cwd))
         };
@@ -2925,6 +2926,7 @@ mod tests {
         let session_id = SessionId::new("session_1");
         let snapshot = create_inline_snapshot(
             blobs.as_ref(),
+            None,
             CreateInlineSnapshotRequest::new(vec![
                 InlineFile::new("README.md", b"hello\n".to_vec()).expect("inline file"),
             ]),

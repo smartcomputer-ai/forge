@@ -136,6 +136,17 @@ pub(super) async fn invoke_call(
                         .map_err(|error| engine::CoreAgentIoError::Failed {
                             message: format!("store native MCP result: {error}"),
                         })?;
+                    // The output embeds the asset refs it was just given;
+                    // the edges keep the assets alive as long as the output.
+                    engine::storage::record_contains_edges(
+                        deps.blob_graph.as_deref(),
+                        &output_ref,
+                        asset_refs.iter().cloned(),
+                    )
+                    .await
+                    .map_err(|error| engine::CoreAgentIoError::Failed {
+                        message: format!("record native MCP asset edges: {error}"),
+                    })?;
                     let visible = visible.into_bytes();
                     let output_bytes = visible.len() as u64;
                     let visible_ref = deps.blobs.put_bytes(visible).await.map_err(|error| {

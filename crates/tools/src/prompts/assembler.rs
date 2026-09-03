@@ -1,8 +1,11 @@
-use std::{cmp::Ordering, collections::BTreeMap};
+use std::{
+    cmp::Ordering,
+    collections::{BTreeMap, BTreeSet},
+};
 
 use engine::{
     BlobRef, ContextEntry, ContextEntryInput, ContextEntryKey, ContextEntryKind, CoreAgentState,
-    storage::{BlobStore, BlobStoreError},
+    storage::{BlobGraphStore, BlobStore, BlobStoreError, record_contains_edges},
 };
 use serde::Serialize;
 use thiserror::Error;
@@ -64,6 +67,7 @@ pub enum PromptInstructionsError {
 
 pub struct PromptInstructionsBuilder<'a> {
     blobs: &'a dyn BlobStore,
+    blob_graph: Option<&'a dyn BlobGraphStore>,
     roots: Vec<PromptRootInput<'a>>,
     limits: PromptAssemblyLimits,
 }
@@ -72,9 +76,15 @@ impl<'a> PromptInstructionsBuilder<'a> {
     pub fn new(blobs: &'a dyn BlobStore) -> Self {
         Self {
             blobs,
+            blob_graph: None,
             roots: Vec::new(),
             limits: PromptAssemblyLimits::default(),
         }
+    }
+
+    pub fn with_blob_graph(mut self, blob_graph: Option<&'a dyn BlobGraphStore>) -> Self {
+        self.blob_graph = blob_graph;
+        self
     }
 
     pub fn with_root(mut self, root: PromptRootInput<'a>) -> Self {
@@ -88,20 +98,59 @@ impl<'a> PromptInstructionsBuilder<'a> {
     }
 
     pub async fn build(self) -> Result<PromptInstructionsBuild, PromptInstructionsError> {
-        build_prompt_instructions(self.blobs, &self.roots, self.limits).await
+        build_prompt_instructions(self.blobs, self.blob_graph, &self.roots, self.limits).await
     }
 }
 
 pub async fn build_prompt_instructions(
     blobs: &dyn BlobStore,
+    blob_graph: Option<&dyn BlobGraphStore>,
     roots: &[PromptRootInput<'_>],
     limits: PromptAssemblyLimits,
 ) -> Result<PromptInstructionsBuild, PromptInstructionsError> {
-    build_prompt_instructions_with_warnings(blobs, roots, limits, Vec::new()).await
+    build_prompt_instructions_with_warnings(blobs, blob_graph, roots, limits, Vec::new()).await
+}
+
+/// Every blob a report document names: each source's content (published or
+/// not; the bytes are VFS file blobs that already exist) and the snapshot
+/// manifests and workspace heads the sources were read from. The report
+/// write records one `contains` edge per ref.
+pub fn prompt_report_blob_refs(report: &PromptInstructionsReport) -> BTreeSet<BlobRef> {
+    let mut refs = BTreeSet::new();
+    for input in &report.source_fingerprint.inputs {
+        match input {
+            PromptSourceFingerprintInput::SnapshotRoot { snapshot_ref, .. } => {
+                refs.insert(snapshot_ref.clone());
+            }
+            PromptSourceFingerprintInput::WorkspaceRoot {
+                workspace_head_ref, ..
+            } => {
+                refs.insert(workspace_head_ref.clone());
+            }
+        }
+    }
+    for source in &report.sources {
+        refs.insert(source.content_ref.clone());
+        match &source.source {
+            PromptSourceLocation::LinkedSnapshot {
+                source_snapshot_ref,
+                ..
+            } => {
+                refs.insert(source_snapshot_ref.clone());
+            }
+            PromptSourceLocation::LinkedWorkspace {
+                workspace_head_ref, ..
+            } => {
+                refs.insert(workspace_head_ref.clone());
+            }
+        }
+    }
+    refs
 }
 
 pub async fn build_prompt_instructions_with_warnings(
     blobs: &dyn BlobStore,
+    blob_graph: Option<&dyn BlobGraphStore>,
     roots: &[PromptRootInput<'_>],
     limits: PromptAssemblyLimits,
     mut warnings: Vec<PromptWarning>,
@@ -134,6 +183,7 @@ pub async fn build_prompt_instructions_with_warnings(
     );
     let report_bytes = encode_json(&report)?;
     let report_ref = blobs.put_bytes(report_bytes.clone()).await?;
+    record_contains_edges(blob_graph, &report_ref, prompt_report_blob_refs(&report)).await?;
     let entries = selected
         .published
         .into_iter()
@@ -163,19 +213,29 @@ pub async fn build_prompt_instructions_with_warnings(
 
 pub async fn prepare_prompt_instructions_publication(
     blobs: &dyn BlobStore,
+    blob_graph: Option<&dyn BlobGraphStore>,
     roots: &[PromptRootInput<'_>],
     limits: PromptAssemblyLimits,
 ) -> Result<PromptInstructionsPublication, PromptInstructionsError> {
-    prepare_prompt_instructions_publication_with_warnings(blobs, roots, limits, Vec::new()).await
+    prepare_prompt_instructions_publication_with_warnings(
+        blobs,
+        blob_graph,
+        roots,
+        limits,
+        Vec::new(),
+    )
+    .await
 }
 
 pub async fn prepare_prompt_instructions_publication_with_warnings(
     blobs: &dyn BlobStore,
+    blob_graph: Option<&dyn BlobGraphStore>,
     roots: &[PromptRootInput<'_>],
     limits: PromptAssemblyLimits,
     warnings: Vec<PromptWarning>,
 ) -> Result<PromptInstructionsPublication, PromptInstructionsError> {
-    let build = build_prompt_instructions_with_warnings(blobs, roots, limits, warnings).await?;
+    let build =
+        build_prompt_instructions_with_warnings(blobs, blob_graph, roots, limits, warnings).await?;
     let desired = prompt_instruction_inputs_for_entries(&build.entries);
 
     Ok(PromptInstructionsPublication { build, desired })
@@ -857,6 +917,7 @@ mod tests {
         let blobs = Arc::new(InMemoryBlobStore::new());
         let build = build_prompt_instructions(
             blobs.as_ref(),
+            None,
             &[root_input(&fs, "/workspace/.lightspeed/prompts", "project")],
             PromptAssemblyLimits::default(),
         )
@@ -892,6 +953,68 @@ mod tests {
         );
     }
 
+    /// The recorded edge set must equal every ref the report document
+    /// embeds: each source's content (published or truncated) and the
+    /// snapshot manifests the sources were read from.
+    #[tokio::test]
+    async fn report_writes_record_an_edge_for_every_embedded_ref() {
+        let fs = prompt_fs(&[
+            (
+                "/workspace/.lightspeed/prompts/instructions.md",
+                "Base rules\n",
+            ),
+            (
+                "/workspace/.lightspeed/prompts/instructions.d/010-long.md",
+                "This source is too long to publish\n",
+            ),
+        ])
+        .await;
+        let blobs = Arc::new(InMemoryBlobStore::new());
+        // In production the sources are VFS files whose blobs, and whose
+        // snapshot manifest, already exist in the store.
+        for content in ["Base rules\n", "This source is too long to publish\n"] {
+            blobs
+                .put_bytes(content.as_bytes().to_vec())
+                .await
+                .expect("put source");
+        }
+        let snapshot_ref = blobs
+            .put_bytes(b"snapshot-1".to_vec())
+            .await
+            .expect("put snapshot");
+        let build = build_prompt_instructions(
+            blobs.as_ref(),
+            Some(blobs.as_ref()),
+            &[root_input(&fs, "/workspace/.lightspeed/prompts", "project")],
+            PromptAssemblyLimits {
+                max_source_chars: 20,
+                max_total_chars: 100,
+            },
+        )
+        .await
+        .expect("build prompt");
+        assert_eq!(build.entries.len(), 1, "the long source is truncated");
+        assert_eq!(build.report.sources.len(), 2);
+
+        let embedded = engine::storage::collect_blob_refs(
+            &serde_json::from_slice(&build.report_bytes).expect("report json"),
+        );
+        let recorded: BTreeSet<BlobRef> = blobs
+            .edges()
+            .into_iter()
+            .inspect(|edge| assert_eq!(edge.parent, build.report_ref))
+            .map(|edge| edge.child)
+            .collect();
+        assert_eq!(recorded, embedded);
+        assert_eq!(recorded, prompt_report_blob_refs(&build.report));
+        assert!(embedded.contains(&snapshot_ref));
+        assert_eq!(embedded.len(), 3, "two sources and the snapshot manifest");
+        assert!(
+            BlobRef::parse(&build.report.source_fingerprint.digest).is_err(),
+            "fingerprints must not look like blob refs"
+        );
+    }
+
     #[tokio::test]
     async fn empty_prompt_roots_build_report_without_instruction_entries() {
         let fs = prompt_fs(&[]).await;
@@ -905,6 +1028,7 @@ mod tests {
 
         let build = build_prompt_instructions(
             &blobs,
+            None,
             &[root_input(&fs, "/workspace/.lightspeed/prompts", "project")],
             PromptAssemblyLimits::default(),
         )
@@ -922,6 +1046,7 @@ mod tests {
 
         let build = build_prompt_instructions(
             &blobs,
+            None,
             &[root_input(&fs, "/workspace/.lightspeed/prompts", "project")],
             PromptAssemblyLimits {
                 max_source_chars: 3,
@@ -946,6 +1071,7 @@ mod tests {
         let blobs = InMemoryBlobStore::new();
         let publication = prepare_prompt_instructions_publication(
             &blobs,
+            None,
             &[root_input(&fs, "/workspace/.lightspeed/prompts", "project")],
             PromptAssemblyLimits::default(),
         )
@@ -971,6 +1097,7 @@ mod tests {
 
         let clear = prepare_prompt_instructions_publication(
             &blobs,
+            None,
             &[root_input(
                 &empty_fs,
                 "/workspace/.lightspeed/prompts",

@@ -77,6 +77,8 @@ flowchart TD
 ```
 Lightspeed solves this by offloading all data that is not directly needed by the workflow logic to a content addressed storage (CAS) system. The structures that are passed between workflow and activities are extremely thin, keeping workflow state and log size small and efficient. So, instead of passing, say, the entire user input message to the LLM activity, we first store it in the CAS and then only pass a reference to the blob, and vice versa with model outputs.
 
+Blobs are immutable and shared within a universe, so nothing deletes them directly. Instead the store derives reachability from rows it already maintains: every session event row exposes the refs its entry embeds as a generated column, foreign keys protect checkpoints and VFS snapshots, bot events name their documents, and writers of nested formats (a VFS manifest and its files, a tool output and its attached assets, a catalog and its documents) record parent-to-child edges. A blob nothing reaches is collected by a background sweeper once it has gone untouched for a grace period; every put of existing content refreshes that touch, which closes the race between content-addressed deduplication and deletion without any coordination. Deleting a session therefore frees exactly the blobs only it used, on the next sweep, and debug material nothing ever referenced disappears on its own. Fingerprints that are hashes but not blobs carry a distinguishing prefix so they never read as refs.
+
 ## Hosting inside a Workflow Runtime (e.g. Temporal)
 With the above pieces in place, running an agent inside a workflow runtime becomes feasible and pleasant. We just have to put it all together.
 

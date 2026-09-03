@@ -14,6 +14,7 @@ engine = { path = "../engine" }
 moka = { version = "0.12", features = ["sync"] }
 environments = { path = "../environments" }
 environment-protocol = { path = "../environment-protocol" }
+futures-util = "0.3"
 async-trait = "0.1"
 mcp = { path = "../mcp" }
 object_store = { version = "0.13.1", features = ["aws"] }

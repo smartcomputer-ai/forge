@@ -1,4 +1,4 @@
-use std::{env, sync::Arc};
+use std::{env, sync::Arc, time::Duration};
 
 use engine::{ModelSelection, ProviderApiKind};
 use object_store::ObjectStore;
@@ -108,6 +108,37 @@ pub fn blob_cache_from_env() -> anyhow::Result<Option<Arc<BlobCache>>> {
         bytes,
         BLOB_CACHE_MAX_ENTRY_BYTES,
     ))))
+}
+
+/// `LIGHTSPEED_LLM_DEBUG_DUMPS`: store every generation's raw provider
+/// request and response as unrooted debug blobs. Off unless set to `true`.
+pub fn llm_debug_dumps_from_env() -> anyhow::Result<bool> {
+    match optional_env("LIGHTSPEED_LLM_DEBUG_DUMPS") {
+        None => Ok(false),
+        Some(value) => value.parse::<bool>().map_err(|error| {
+            anyhow::anyhow!(
+                "invalid LIGHTSPEED_LLM_DEBUG_DUMPS={value:?}: {error}; expected true or false"
+            )
+        }),
+    }
+}
+
+/// Default minimum age since a blob's last put before a sweep may collect
+/// it. Long enough to cover the longest activity, sub-agent, or environment
+/// job that holds a ref before appending it, and a human uploading through
+/// the blob API before starting a run.
+pub const CAS_SWEEP_DEFAULT_GRACE: Duration = Duration::from_secs(7 * 24 * 60 * 60);
+
+/// Blob-collection grace from `LIGHTSPEED_CAS_SWEEP_GRACE_MS`; `None` when
+/// the variable is `0`, which disables the sweeper.
+pub fn cas_sweep_grace_from_env() -> anyhow::Result<Option<Duration>> {
+    let grace_ms = match optional_env("LIGHTSPEED_CAS_SWEEP_GRACE_MS") {
+        Some(value) => value
+            .parse::<u64>()
+            .map_err(|error| anyhow::anyhow!("invalid LIGHTSPEED_CAS_SWEEP_GRACE_MS: {error}"))?,
+        None => return Ok(Some(CAS_SWEEP_DEFAULT_GRACE)),
+    };
+    Ok((grace_ms > 0).then(|| Duration::from_millis(grace_ms)))
 }
 
 /// Resolve the Temporal task queue for this deployment: an explicit
@@ -229,6 +260,12 @@ impl DeploymentStores {
 
     pub fn object_store(&self) -> Option<&Arc<dyn ObjectStore>> {
         self.object_store.as_ref()
+    }
+
+    /// Key prefix every object of this deployment lives under; empty when
+    /// the bucket is used bare.
+    pub fn object_prefix(&self) -> &str {
+        self.object_prefix.as_deref().unwrap_or("")
     }
 
     /// Build the universe-bound store. Does not create the universe row;

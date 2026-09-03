@@ -1,7 +1,8 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use async_trait::async_trait;
 use engine::{
+    BlobRef,
     session::{EventSeq, SessionId, SessionPosition, StoredSessionEntry, UncommittedStoredEvent},
     storage::{
         AdvanceSessionCheckpoint, AppendSessionEvents, AppendSessionEventsResult,
@@ -9,8 +10,8 @@ use engine::{
         DeleteClosedSessionsResult, ListSessions, ReadSessionEventRange, ReadSessionEvents,
         SessionCheckpoint, SessionLifecycleStatus, SessionListCursor, SessionListPage,
         SessionOrigin, SessionOriginCounts, SessionPage, SessionRecord, SessionStore,
-        SessionStoreError, apply_lifecycle_projection, check_origin_limits, largest_safe_fork_seq,
-        lifecycle_at_fork, validate_fork_point,
+        SessionStoreError, apply_lifecycle_projection, check_origin_limits, collect_blob_refs,
+        largest_safe_fork_seq, lifecycle_at_fork, validate_fork_point,
     },
 };
 use sqlx::{Postgres, Row, Transaction};
@@ -87,6 +88,7 @@ impl PgStore {
 
         let mut head = actual_head;
         let mut committed = Vec::with_capacity(request.events.len());
+        let mut embedded = EmbeddedBlobRefs::default();
         for event in request.events {
             let next_seq = EventSeq::new(
                 head.as_ref()
@@ -103,6 +105,7 @@ impl PgStore {
                 serde_json::to_value(&entry).map_err(|error| SessionStoreError::Store {
                     message: format!("serialize session entry: {error}"),
                 })?;
+            embedded.observe(&entry_json);
             sqlx::query(
                 r#"
                 INSERT INTO session_events (universe_id, session_id, entry_json)
@@ -119,6 +122,9 @@ impl PgStore {
             head = Some(position);
             committed.push(entry);
         }
+        embedded
+            .verify_stored(&mut tx, self.config.universe_id, &request.session_id)
+            .await?;
 
         if let Some(last) = committed.last() {
             record.updated_at_ms = last.observed_at_ms;
@@ -1606,6 +1612,7 @@ async fn append_events_in_tx(
     events: Vec<UncommittedStoredEvent>,
 ) -> Result<(SessionRecord, Vec<StoredSessionEntry>), SessionStoreError> {
     let mut committed = Vec::with_capacity(events.len());
+    let mut embedded = EmbeddedBlobRefs::default();
     for event in events {
         let next_seq = EventSeq::new(
             record
@@ -1624,6 +1631,7 @@ async fn append_events_in_tx(
             serde_json::to_value(&entry).map_err(|error| SessionStoreError::Store {
                 message: format!("serialize session entry: {error}"),
             })?;
+        embedded.observe(&entry_json);
         sqlx::query(
             r#"
             INSERT INTO session_events (universe_id, session_id, entry_json)
@@ -1641,6 +1649,9 @@ async fn append_events_in_tx(
         apply_lifecycle_projection(&mut record, &entry);
         committed.push(entry);
     }
+    embedded
+        .verify_stored(tx, universe_id, &record.session_id)
+        .await?;
 
     if let Some(last) = committed.last() {
         sqlx::query(
@@ -1674,4 +1685,65 @@ async fn append_events_in_tx(
     }
 
     Ok((record, committed))
+}
+
+/// Blob refs embedded in the entries of one append. The event rows themselves
+/// keep these blobs alive: the store exposes every ref an entry embeds as a
+/// generated column, so nothing has to be registered. What the append must
+/// guarantee is that each ref names a blob the catalog holds, because a
+/// dangling ref would otherwise only fail later, at read time.
+#[derive(Default)]
+struct EmbeddedBlobRefs {
+    refs: BTreeSet<BlobRef>,
+}
+
+impl EmbeddedBlobRefs {
+    fn observe(&mut self, entry_json: &serde_json::Value) {
+        self.refs.extend(collect_blob_refs(entry_json));
+    }
+
+    async fn verify_stored(
+        self,
+        tx: &mut Transaction<'_, Postgres>,
+        universe_id: Uuid,
+        session_id: &SessionId,
+    ) -> Result<(), SessionStoreError> {
+        if self.refs.is_empty() {
+            return Ok(());
+        }
+        let candidates = self
+            .refs
+            .iter()
+            .map(|blob_ref| blob_ref.as_str().to_owned())
+            .collect::<Vec<_>>();
+        let missing: Vec<String> = sqlx::query_scalar(
+            r#"
+            SELECT r.blob_ref
+            FROM unnest($2::text[]) AS r(blob_ref)
+            WHERE NOT EXISTS (
+                SELECT 1 FROM cas_blobs AS b
+                WHERE b.universe_id = $1 AND b.blob_ref = r.blob_ref
+            )
+            ORDER BY r.blob_ref
+            "#,
+        )
+        .bind(universe_id)
+        .bind(&candidates)
+        .fetch_all(&mut **tx)
+        .await
+        .map_err(|error| session_sql_error("verify event blob refs", error))?;
+        if missing.is_empty() {
+            return Ok(());
+        }
+        Err(SessionStoreError::MissingBlobs {
+            session_id: session_id.clone(),
+            blob_refs: missing
+                .into_iter()
+                .map(BlobRef::parse)
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|error| SessionStoreError::Store {
+                    message: format!("decode missing blob ref: {error}"),
+                })?,
+        })
+    }
 }

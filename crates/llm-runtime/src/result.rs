@@ -1,12 +1,75 @@
 use engine::{
-    BlobRef, LlmFinish, LlmGenerationFacts, LlmGenerationResult, LlmGenerationStatus, RunId, TurnId,
+    BlobRef, LlmFinish, LlmGenerationFacts, LlmGenerationRequest, LlmGenerationResult,
+    LlmGenerationStatus, RunId, TurnId, storage::BlobStore,
 };
+use serde::Serialize;
+
+use crate::{blob_io::put_json, error::LlmAdapterResult};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LlmGenerationExecution {
     pub result: LlmGenerationResult,
+    /// The raw provider request and response, stored only when the adapter
+    /// runs with debug dumps enabled. Nothing durable references them, so
+    /// they live exactly one collection grace period.
+    pub debug_dumps: Option<LlmDebugDumps>,
+}
+
+/// Refs of one generation's raw provider exchange. The request is the
+/// redacted form: resolved credentials never reach the store.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LlmDebugDumps {
     pub provider_request_ref: BlobRef,
     pub raw_response_ref: BlobRef,
+}
+
+/// Capture the outgoing request for a debug dump before it is consumed by
+/// the transport. Costs nothing when dumps are off.
+pub(crate) fn debug_dump_request<T>(
+    enabled: bool,
+    request: &T,
+) -> LlmAdapterResult<Option<serde_json::Value>>
+where
+    T: Serialize + ?Sized,
+{
+    if !enabled {
+        return Ok(None);
+    }
+    serde_json::to_value(request).map(Some).map_err(|error| {
+        crate::error::LlmAdapterError::InvalidProviderRequest {
+            message: format!("failed to encode provider request dump: {error}"),
+        }
+    })
+}
+
+/// Store the captured request and the raw response as unrooted blobs and log
+/// their refs against the session, run, and turn they belong to.
+pub(crate) async fn store_debug_dumps(
+    blobs: &dyn BlobStore,
+    request_dump: Option<serde_json::Value>,
+    raw_response: &serde_json::Value,
+    generation: &LlmGenerationRequest,
+    provider: &'static str,
+) -> LlmAdapterResult<Option<LlmDebugDumps>> {
+    let Some(request_dump) = request_dump else {
+        return Ok(None);
+    };
+    let provider_request_ref = put_json(blobs, &request_dump).await?;
+    let raw_response_ref = put_json(blobs, raw_response).await?;
+    tracing::debug!(
+        target: "llm_runtime",
+        provider,
+        session_id = %generation.session_id,
+        run_id = %generation.run_id,
+        turn_id = %generation.turn_id,
+        %provider_request_ref,
+        %raw_response_ref,
+        "stored LLM debug dumps"
+    );
+    Ok(Some(LlmDebugDumps {
+        provider_request_ref,
+        raw_response_ref,
+    }))
 }
 
 pub fn failed_generation_result(run_id: RunId, turn_id: TurnId) -> LlmGenerationResult {

@@ -27,7 +27,10 @@ use crate::{
     },
     params::{openai_completions_params, validate_openai_reasoning_effort},
     provider_keys::{ModelProviderResolver, NoStoredModelProviders, resolve_model_provider},
-    result::{LlmGenerationExecution, partial_output_entries, truncation_failure_text},
+    result::{
+        LlmGenerationExecution, debug_dump_request, partial_output_entries, store_debug_dumps,
+        truncation_failure_text,
+    },
 };
 
 pub const OPENAI_COMPLETIONS_MESSAGE_PROVIDER_KIND: &str = "openai.completions.message";
@@ -104,6 +107,10 @@ impl OpenAiCompletionsApi for oai_c::Client {
 pub struct OpenAiCompletionsLlmAdapter {
     client: Arc<dyn OpenAiCompletionsApi>,
     blobs: Arc<dyn BlobStore>,
+    /// Store the raw provider request and response of every generation as
+    /// unrooted debug blobs. Off by default: each request carries the whole
+    /// context, so the dumps grow quadratically with turn count.
+    debug_dumps: bool,
     provider_keys: Arc<dyn ModelProviderResolver>,
     inventory: Arc<dyn McpInventoryResolver>,
 }
@@ -113,9 +120,16 @@ impl OpenAiCompletionsLlmAdapter {
         Self {
             client,
             blobs,
+            debug_dumps: false,
             provider_keys: Arc::new(NoStoredModelProviders),
             inventory: Arc::new(UnconfiguredMcpInventoryResolver),
         }
+    }
+
+    /// Enable or disable storing raw provider request/response dumps.
+    pub fn with_debug_dumps(mut self, enabled: bool) -> Self {
+        self.debug_dumps = enabled;
+        self
     }
 
     pub fn with_provider_key_resolver(
@@ -171,7 +185,7 @@ impl LlmGenerationAdapter for OpenAiCompletionsLlmAdapter {
             Some(crate::prompt_cache::prompt_cache_key(&request.session_id));
         let provider =
             resolve_model_provider(self.provider_keys.as_ref(), &request.request.model).await?;
-        let provider_request_ref = put_json(self.blobs.as_ref(), &provider_request).await?;
+        let request_dump = debug_dump_request(self.debug_dumps, &provider_request)?;
         let response = self
             .client
             .create(
@@ -184,12 +198,18 @@ impl LlmGenerationAdapter for OpenAiCompletionsLlmAdapter {
             )
             .await?;
         reject_failure_finish(&response)?;
-        let raw_response_ref = put_json(self.blobs.as_ref(), &response.raw_json).await?;
         let result = result_from_response(self.blobs.as_ref(), &request, &response).await?;
+        let debug_dumps = store_debug_dumps(
+            self.blobs.as_ref(),
+            request_dump,
+            &response.raw_json,
+            &request,
+            "openai_completions",
+        )
+        .await?;
         Ok(LlmGenerationExecution {
             result,
-            provider_request_ref,
-            raw_response_ref,
+            debug_dumps,
         })
     }
 }
@@ -211,7 +231,6 @@ impl LlmCompactionAdapter for OpenAiCompletionsLlmAdapter {
         let provider_request = self.materialize_compact_request(&request.request).await?;
         let provider =
             resolve_model_provider(self.provider_keys.as_ref(), &request.request.model).await?;
-        let _provider_request_ref = put_json(self.blobs.as_ref(), &provider_request).await?;
         let response = self
             .client
             .create(
@@ -224,7 +243,6 @@ impl LlmCompactionAdapter for OpenAiCompletionsLlmAdapter {
             )
             .await?;
         reject_failure_finish(&response)?;
-        let _raw_response_ref = put_json(self.blobs.as_ref(), &response.raw_json).await?;
         result_from_compact_response(self.blobs.as_ref(), &request, &response).await
     }
 }

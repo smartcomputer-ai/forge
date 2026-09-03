@@ -9,7 +9,7 @@ use std::{
 use async_trait::async_trait;
 use engine::{
     BlobRef, ToolEffect,
-    storage::{BlobStore, BlobStoreError},
+    storage::{BlobGraphStore, BlobStore, BlobStoreError},
 };
 
 use crate::fs::{
@@ -61,6 +61,9 @@ impl VfsSnapshotFileSystem {
 #[derive(Clone)]
 pub struct VfsWorkspaceFileSystem {
     blobs: Arc<dyn BlobStore>,
+    /// Records manifest-to-file edges on every head commit; absent for
+    /// stores without a reachability catalog.
+    blob_graph: Option<Arc<dyn BlobGraphStore>>,
     workspace_store: Arc<dyn ::vfs::VfsWorkspaceStore>,
     workspace_id: ::vfs::VfsWorkspaceId,
     effects: ToolEffectLog,
@@ -74,20 +77,28 @@ impl VfsWorkspaceFileSystem {
     ) -> Self {
         Self {
             blobs,
+            blob_graph: None,
             workspace_store,
             workspace_id,
             effects: ToolEffectLog::default(),
         }
     }
 
+    pub fn with_blob_graph(mut self, blob_graph: Option<Arc<dyn BlobGraphStore>>) -> Self {
+        self.blob_graph = blob_graph;
+        self
+    }
+
     fn with_effect_log(
         blobs: Arc<dyn BlobStore>,
+        blob_graph: Option<Arc<dyn BlobGraphStore>>,
         workspace_store: Arc<dyn ::vfs::VfsWorkspaceStore>,
         workspace_id: ::vfs::VfsWorkspaceId,
         effects: ToolEffectLog,
     ) -> Self {
         Self {
             blobs,
+            blob_graph,
             workspace_store,
             workspace_id,
             effects,
@@ -116,9 +127,13 @@ impl VfsWorkspaceFileSystem {
         current: ::vfs::VfsWorkspaceRecord,
         manifest: ::vfs::VfsSnapshotManifest,
     ) -> FsResult<()> {
-        let result = ::vfs::commit_snapshot_manifest(self.blobs.as_ref(), manifest)
-            .await
-            .map_err(|error| map_vfs_error(error, &FsPath::root()))?;
+        let result = ::vfs::commit_snapshot_manifest(
+            self.blobs.as_ref(),
+            self.blob_graph.as_deref(),
+            manifest,
+        )
+        .await
+        .map_err(|error| map_vfs_error(error, &FsPath::root()))?;
         let updated = self
             .workspace_store
             .compare_and_set_head(::vfs::CompareAndSetVfsWorkspaceHead {
@@ -160,6 +175,7 @@ impl VfsWorkspaceFileSystem {
 #[derive(Clone)]
 pub struct LinkedVfsFileSystem {
     blobs: Arc<dyn BlobStore>,
+    blob_graph: Option<Arc<dyn BlobGraphStore>>,
     workspace_store: Arc<dyn ::vfs::VfsWorkspaceStore>,
     links: Arc<Vec<::vfs::ResolvedWorkspaceLink>>,
     effects: ToolEffectLog,
@@ -211,10 +227,18 @@ impl LinkedVfsFileSystem {
         });
         Ok(Self {
             blobs,
+            blob_graph: None,
             workspace_store,
             links: Arc::new(links),
             effects: ToolEffectLog::default(),
         })
+    }
+
+    /// Record manifest-to-file edges on workspace commits made through this
+    /// filesystem.
+    pub fn with_blob_graph(mut self, blob_graph: Option<Arc<dyn BlobGraphStore>>) -> Self {
+        self.blob_graph = blob_graph;
+        self
     }
 
     pub fn links(&self) -> &[::vfs::ResolvedWorkspaceLink] {
@@ -249,6 +273,7 @@ impl LinkedVfsFileSystem {
             ::vfs::ResolvedWorkspaceLinkTarget::AvailableWorkspace { workspace } => {
                 Ok(Box::new(VfsWorkspaceFileSystem::with_effect_log(
                     self.blobs.clone(),
+                    self.blob_graph.clone(),
                     self.workspace_store.clone(),
                     workspace.workspace_id.clone(),
                     self.effects.clone(),
@@ -277,6 +302,7 @@ impl LinkedVfsFileSystem {
             ::vfs::ResolvedWorkspaceLinkTarget::AvailableWorkspace { workspace } => {
                 Ok(VfsWorkspaceFileSystem::with_effect_log(
                     self.blobs.clone(),
+                    self.blob_graph.clone(),
                     self.workspace_store.clone(),
                     workspace.workspace_id.clone(),
                     self.effects.clone(),
@@ -1018,6 +1044,7 @@ mod tests {
         let blobs = Arc::new(InMemoryBlobStore::new());
         let result = ::vfs::create_inline_snapshot(
             blobs.as_ref(),
+            None,
             ::vfs::CreateInlineSnapshotRequest::new(vec![
                 ::vfs::InlineFile::new("README.md", b"hello\n".to_vec()).unwrap(),
                 ::vfs::InlineFile::new("src/lib.rs", b"pub fn f() {}\n".to_vec()).unwrap(),
@@ -1041,6 +1068,7 @@ mod tests {
         let blobs = Arc::new(InMemoryBlobStore::new());
         let snapshot = ::vfs::create_inline_snapshot(
             blobs.as_ref(),
+            None,
             ::vfs::CreateInlineSnapshotRequest::new(files),
         )
         .await
@@ -1065,7 +1093,7 @@ mod tests {
         blobs: &InMemoryBlobStore,
         files: Vec<::vfs::InlineFile>,
     ) -> ::vfs::CreateVfsSnapshotResult {
-        ::vfs::create_inline_snapshot(blobs, ::vfs::CreateInlineSnapshotRequest::new(files))
+        ::vfs::create_inline_snapshot(blobs, None, ::vfs::CreateInlineSnapshotRequest::new(files))
             .await
             .expect("create snapshot")
     }

@@ -375,6 +375,15 @@ pub enum SessionStoreError {
     #[error("lifecycle-managed session cannot be cloned or forked: {session_id}")]
     ManagedSessionCannotBranch { session_id: SessionId },
 
+    /// An appended entry references blobs the store does not hold. The
+    /// store derives collection roots from every ref an entry embeds, so a
+    /// dangling ref fails the append instead of failing a later read.
+    #[error("session {session_id} event references missing blobs: {}", blob_refs.iter().map(|blob_ref| blob_ref.as_str()).collect::<Vec<_>>().join(", "))]
+    MissingBlobs {
+        session_id: SessionId,
+        blob_refs: Vec<BlobRef>,
+    },
+
     #[error("session store failure: {message}")]
     Store { message: String },
 }

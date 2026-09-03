@@ -81,6 +81,7 @@ impl GatewayAgentApi {
             .map_err(|error| AgentApiError::internal(error.to_string()))?;
         let publication = tools::environment::projection::prepare_vfs_catalog_publication(
             self.store.as_ref(),
+            Some(self.store.as_ref()),
             state,
             catalog,
         )

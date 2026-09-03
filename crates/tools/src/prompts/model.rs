@@ -48,13 +48,25 @@ pub struct PromptSourceFingerprint {
 }
 
 impl PromptSourceFingerprint {
+    /// `digest` is the content hash of the canonical inputs. Only its hex is
+    /// stored: the fingerprint names no blob, and a `sha256:`-shaped string
+    /// would read as a blob ref to the collector.
     pub fn sha256(digest: BlobRef, inputs: Vec<PromptSourceFingerprintInput>) -> Self {
         Self {
             algorithm: "sha256".to_owned(),
-            digest: digest.to_string(),
+            digest: digest_hex(&digest),
             inputs,
         }
     }
+}
+
+/// The bare hex of a content hash, for fingerprint fields that name no blob.
+pub fn digest_hex(digest: &BlobRef) -> String {
+    digest
+        .as_str()
+        .strip_prefix("sha256:")
+        .unwrap_or(digest.as_str())
+        .to_owned()
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

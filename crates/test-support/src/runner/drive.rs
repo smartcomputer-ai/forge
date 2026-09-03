@@ -142,6 +142,7 @@ impl SessionRunner {
         let desired_source = if specs.is_empty() {
             let publication = prepare_prompt_instructions_publication(
                 self.stores.blobs.as_ref(),
+                None,
                 &[],
                 PromptAssemblyLimits::default(),
             )
@@ -174,6 +175,7 @@ impl SessionRunner {
                 })?;
             let publication = prepare_prompt_instructions_publication_with_warnings(
                 self.stores.blobs.as_ref(),
+                None,
                 &inputs,
                 PromptAssemblyLimits::default(),
                 resolved.warnings().to_vec(),
@@ -320,7 +322,7 @@ impl SessionRunner {
             }
         })?;
         let publication =
-            prepare_vfs_catalog_publication(self.stores.blobs.as_ref(), state, catalog)
+            prepare_vfs_catalog_publication(self.stores.blobs.as_ref(), None, state, catalog)
                 .await
                 .map_err(|error| RunnerError::InvalidRequest {
                     message: format!("prepare VFS catalog publication: {error}"),
@@ -406,6 +408,7 @@ impl SessionRunner {
 
         let publication = prepare_skill_catalog_publication_with_warnings(
             self.stores.blobs.as_ref(),
+            None,
             state,
             &inputs,
             resolved.warnings().to_vec(),
@@ -1384,6 +1387,7 @@ mod tests {
             .expect("create session");
         let snapshot = create_inline_snapshot(
             blobs.as_ref(),
+            None,
             CreateInlineSnapshotRequest::new(vec![
                 InlineFile::new("README.md", b"hello\n".to_vec()).unwrap(),
             ]),
@@ -1539,9 +1543,7 @@ mod tests {
             })
             .await
             .expect("create session");
-        let snapshot = create_inline_snapshot(
-            blobs.as_ref(),
-            CreateInlineSnapshotRequest::new(vec![
+        let snapshot = create_inline_snapshot(blobs.as_ref(), None, CreateInlineSnapshotRequest::new(vec![
                 InlineFile::new(
                     "deploy-review/SKILL.md",
                     b"---\nname: deploy-review\ndescription: Use when reviewing deploys.\n---\n\nBody\n"
@@ -1631,6 +1633,7 @@ mod tests {
             .expect("create session");
         let initial_snapshot = create_inline_snapshot(
             blobs.as_ref(),
+            None,
             CreateInlineSnapshotRequest::new(vec![
                 InlineFile::new(
                     ".lightspeed/prompts/instructions.md",
@@ -1739,6 +1742,7 @@ mod tests {
 
         let updated_snapshot = create_inline_snapshot(
             blobs.as_ref(),
+            None,
             CreateInlineSnapshotRequest::new(vec![
                 InlineFile::new(
                     ".lightspeed/prompts/instructions.d/020-focus.md",
@@ -1804,10 +1808,13 @@ mod tests {
             assert_prompts_precede_user_message(&requests[1]);
         }
 
-        let empty_snapshot =
-            create_inline_snapshot(blobs.as_ref(), CreateInlineSnapshotRequest::new(Vec::new()))
-                .await
-                .expect("create empty prompt snapshot");
+        let empty_snapshot = create_inline_snapshot(
+            blobs.as_ref(),
+            None,
+            CreateInlineSnapshotRequest::new(Vec::new()),
+        )
+        .await
+        .expect("create empty prompt snapshot");
         let workspace = vfs
             .read_workspace(&workspace_id)
             .await
@@ -1892,9 +1899,7 @@ mod tests {
             })
             .await
             .expect("create session");
-        let snapshot = create_inline_snapshot(
-            blob_store.as_ref(),
-            CreateInlineSnapshotRequest::new(vec![
+        let snapshot = create_inline_snapshot(blob_store.as_ref(), None, CreateInlineSnapshotRequest::new(vec![
                 InlineFile::new(
                     "deploy-review/SKILL.md",
                     b"---\nname: deploy-review\ndescription: Use when reviewing deploys.\n---\n\nBody\n"
@@ -2013,9 +2018,7 @@ mod tests {
             })
             .await
             .expect("create session");
-        let original_snapshot = create_inline_snapshot(
-            blob_store.as_ref(),
-            CreateInlineSnapshotRequest::new(vec![
+        let original_snapshot = create_inline_snapshot(blob_store.as_ref(), None, CreateInlineSnapshotRequest::new(vec![
                 InlineFile::new(
                     "deploy-review/SKILL.md",
                     b"---\nname: deploy-review\ndescription: Use when reviewing deploys.\n---\n\nOriginal body\n"
@@ -2107,9 +2110,7 @@ mod tests {
         let loaded_skill = read_file_result(blobs.as_ref(), &output_ref).await;
         assert!(loaded_skill.text.contains("Original body"));
 
-        let updated_snapshot = create_inline_snapshot(
-            blob_store.as_ref(),
-            CreateInlineSnapshotRequest::new(vec![
+        let updated_snapshot = create_inline_snapshot(blob_store.as_ref(), None, CreateInlineSnapshotRequest::new(vec![
                 InlineFile::new(
                     "deploy-review/SKILL.md",
                     b"---\nname: deploy-review\ndescription: Use when reviewing deploys.\n---\n\nUpdated body\n"

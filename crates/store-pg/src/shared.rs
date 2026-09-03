@@ -51,18 +51,12 @@ pub(crate) fn event_seq_to_i64(seq: EventSeq) -> Result<i64, SessionStoreError> 
     u64_to_i64(seq.as_u64(), "event sequence")
 }
 
-pub(crate) fn optional_event_seq_to_i64(
-    seq: Option<EventSeq>,
-) -> Result<Option<i64>, BlobStoreError> {
-    seq.map(|seq| {
-        i64::try_from(seq.as_u64()).map_err(|_| BlobStoreError::Store {
-            message: format!(
-                "event sequence is too large for Postgres bigint: {}",
-                seq.as_u64()
-            ),
-        })
-    })
-    .transpose()
+/// Wall-clock Unix milliseconds for catalog timestamps, clamped to bigint.
+pub(crate) fn unix_now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| i64::try_from(elapsed.as_millis()).unwrap_or(i64::MAX))
+        .unwrap_or(0)
 }
 
 pub(crate) fn session_position_from_i64(
