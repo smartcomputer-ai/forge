@@ -173,7 +173,7 @@ Two more decisions make this practical inside a workflow engine:
 The full design walk-through is in [docs/design.md](docs/design.md).
 
 <p align="center">
-  <img src="docs/images/readme-design-overview.png" alt="Lightspeed architecture: clients reach a session workflow holding the deterministic core inside Temporal; thin effect intents and result refs cross to activities that talk to LLM providers and borrowed compute; both sides share a session log and CAS" width="750">
+  <img src="docs/images/readme-design-overview.svg" alt="Lightspeed architecture: clients reach a session workflow holding the deterministic core inside Temporal; thin effect intents and result refs cross to activities that talk to LLM providers and borrowed compute; both sides share a session log and CAS" width="750">
 </p>
 
 ## Development checks
