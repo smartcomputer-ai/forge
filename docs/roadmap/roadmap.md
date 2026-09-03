@@ -5,14 +5,13 @@
   a per-universe, per-provider result cache with a 10 to 30 second TTL and
   a shorter negative TTL, so an evaluation job starting a dozen trials at
   once issues one upstream catalog request instead of twelve.
-- [ ] [P154](p154-session-retention.md) — session retention: a nullable
-  universe default `closedSessionRetentionMs`, a per-session `keep` flag,
-  `closedAtMs` and derived `expiresAtMs` on views, and a worker-role reaper
-  pass that deletes expired closed sessions through the `session/delete`
-  path. Settles the vocabulary (TTL from creation, idle policy from
-  activity, retention from close) and records that the bot routed-session
-  "TTL" runs from creation instead of idle, with the fix and a rename to
-  `closeAfterMs`.
+- [ ] [P154](p154-session-retention.md) — session-tree retention: an opt-in
+  `deleteAfterCloseMs` on the retention root, inherited ownership for history
+  forks and delegated children but not config-only clones, effective retention
+  views, explicit manual cascade, and an always-cascading worker-role reaper.
+  Unset means keep until manual deletion; descendants never have competing
+  policies. Also settles the clock vocabulary and fixes and renames the bot
+  routed-session idle timer.
 - [x] [P153](p153-session-metadata.md) — session metadata (implemented
   2026-09-03): the bounded
   string map registered environments already carry, set at `session/start`

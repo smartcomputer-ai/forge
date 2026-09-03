@@ -5,88 +5,152 @@
 - Proposed 2026-09-03, split out of [P153](p153-session-metadata.md) so
   metadata and lifecycle stay separate items. Motivated by the same Harbor
   evaluation ([P149](p149-harbor-end-to-end-agent-evaluation.md)): every
-  session ever closed in a universe stays until someone deletes it by hand.
+  session ever closed stays until someone deletes it by hand.
 - Also records a defect found while settling the vocabulary: the bot
-  routed-session "TTL" is documented as an idle timer but runs from
-  creation (see "Related defect").
+  routed-session "TTL" is documented as an idle timer but runs from creation
+  (see "Related defect").
 
 ## Vocabulary
 
-Three clocks are easy to conflate, and the codebase already uses two of
-them:
+Three clocks are easy to conflate, and the codebase already uses two of them:
 
-- **TTL** counts from creation: a cache entry or a DNS record lives this
-  long and then expires, whatever happened in between. The one correct TTL
-  in this repository is the `models/list` cache
+- **TTL** counts from creation: a cache entry or a DNS record lives this long
+  and then expires, whatever happened in between. The one correct TTL in this
+  repository is the `models/list` cache
   ([P155](p155-models-list-cache.md)).
-- **Idle policy** counts from the last activity and turns *open* into
-  *closed* (or paused, suspended, stopped). Environments have it as
-  `idlePolicy.closeAfterMs` and siblings. Bots have it for their routed
-  sessions as `routedSessionTtlMs` and the trigger's `sessionTtlMs`, which
-  is the wrong name for it.
-- **Retention** counts from close and turns *closed* into *gone*: how long
-  a finished record is kept before deletion. Temporal's namespace retention
-  has exactly these semantics, and sessions are workflow-backed.
+- **Idle policy** counts from the last activity and turns *open* into *closed*
+  (or paused, suspended, stopped). Environments have it as
+  `idlePolicy.closeAfterMs` and siblings. Bots have it for routed sessions as
+  `routedSessionTtlMs` and the trigger's `sessionTtlMs`, which is the wrong
+  name for it.
+- **Retention** counts from close and turns *closed* into *gone*: how long a
+  finished record is kept before deletion. Temporal's namespace retention has
+  exactly these semantics, and sessions are workflow-backed.
 
 This item is retention. It never closes an open session, and it does not
-introduce a universe-wide idle policy for sessions (see "Non-Goals").
+introduce a universe-wide policy. Automatic deletion is an explicit choice on
+a session tree; an unset policy means the tree is kept until an operator
+deletes it manually.
 
 ## Goal
 
-A closed session that nobody asked to keep is deleted automatically after a
-universe-wide retention period, through the same path as `session/delete`,
-so its rows, events, and checkpoint go with it and its owned environments
-are closed; a session anyone wants to keep is kept with one flag; and the
-UI shows when a closed session will be collected.
+A root session can opt its whole owned session tree into automatic deletion a
+fixed time after the root closes. History forks and delegated sub-agent
+children belong to that tree; config-only clones do not. Descendants do not
+carry competing policies or clocks. A root without a policy, and therefore its
+tree, is kept by default.
+
+Automatic deletion and explicitly cascading manual deletion remove a selected
+session subtree through one shared lifecycle path, so rows, events, and
+checkpoints go together and every deleted session's owned environments are
+closed. Ordinary manual deletion remains a conservative one-session operation.
+The UI identifies the retention root and shows the tree's deletion deadline.
 
 ## Problem
 
-Nothing deletes sessions. `session/delete` takes one closed session, so
-every evaluation, bot, and interactive session accumulates until an
-operator loops over them. Temporal forgets the workflow history after its
-namespace retention, but the session row, its event log, and its checkpoint
-stay forever.
+Nothing deletes sessions automatically. `session/delete` currently removes
+one closed session. It refuses to delete a history source while a fork still
+reads inherited events from it, but it neither deletes nor is blocked by
+delegated sub-agent children. Evaluations, bots, and other callers that create
+disposable session trees must discover and delete the leaves in the right
+order themselves.
+
+Copying a duration onto every descendant does not solve that cleanly. Each
+session would acquire a different close-relative deadline, users could change
+one copy independently, and a retained child could indefinitely prevent its
+fork source from being deleted. The lifecycle unit is the owned tree, so the
+tree needs one policy and one deadline.
+
+A universe-wide default is also too broad. Different trees in the same
+universe can have different owners and purposes, and permanent retention is
+the safer default. The caller creating a disposable root already knows that
+intent and should record it on that root.
 
 ## Decision
 
-1. **A universe has a default retention for closed sessions:**
-   `closedSessionRetentionMs`, nullable. Null, the default, keeps closed
-   sessions forever; when set it must be greater than zero. There is no
-   zero-as-forever sentinel.
-2. **A session can be kept.** A `keep` flag, false by default, set with
-   `session/retention/put {sessionId, keep}`. A kept session is never
-   collected. Clearing the flag puts it back under the universe default.
-3. **Close time is recorded.** `closedAtMs` is stamped in the same write
-   that records `closedAtSeq`, from the closing event's observation time.
-   Forks inherit it the way they inherit the closing sequence. Existing
-   closed rows are backfilled from `updatedAtMs`.
-4. **Expiry is derived, not stored.** `expiresAtMs = closedAtMs +
-   closedSessionRetentionMs` when the session is closed, not kept, and the
-   universe has a default; otherwise absent. Changing the universe default
-   therefore applies to sessions that are already closed at the next pass.
-   That is intended: "delete closed sessions after 30 days" means all of
-   them.
-5. **A reaper pass collects them.** It runs on the worker role beside the
-   promise reaper, which already pages every session of every universe on
-   a fixed interval. Per universe it reads the default, pages closed,
-   unkept sessions whose expiry has passed, oldest first, in bounded
-   batches, and deletes each through the same function `session/delete`
-   uses, never the store directly, so owned environments are closed exactly
-   as for a manual delete. It is idempotent and restart-safe because it
-   derives everything from rows. It logs one structured event per batch
-   with the universe, the counts, and the ids it skipped.
-6. **Some closed sessions cannot be deleted yet.** The store refuses to
-   delete a session a fork still reads from. The reaper skips those, logs
-   them, and moves on; they are collected once the fork is gone.
-7. **The bot timer is renamed to what it measures.** `routedSessionTtlMs`
+1. **Retention has one owner.** Every session records an immutable
+   `retentionRootSessionId`. A fresh session owns itself. A history fork
+   inherits its source's root. A delegated session with `origin` inherits its
+   parent's root. A config-only clone starts a new retention tree and owns
+   itself because its event history is independent.
+2. **Automatic deletion is configured only on the root.** A retention root
+   has nullable `deleteAfterCloseMs`. Null, the default, means no automatic
+   deletion. A positive value means delete the tree that many milliseconds
+   after the root closes. Descendants do not store an independent policy.
+   There is no separate `keep` flag, zero-as-forever sentinel, or universe
+   default.
+3. **The policy is available at creation and remains editable.**
+   `session/start` and `session/managed/start` accept
+   `deleteAfterCloseMs`. `session/retention/put {sessionId,
+   deleteAfterCloseMs}` replaces it later. The mutation accepts only a
+   retention root; targeting a descendant is rejected with its root id rather
+   than silently changing an ancestor. Null clears the policy and keeps the
+   tree.
+4. **Close time is recorded per session.** `closedAtMs` is stamped in the same
+   write that records `closedAtSeq`, from the closing event's observation
+   time. Forks inherit it when their inherited prefix includes the close
+   event. Existing closed rows are backfilled from `updatedAtMs`. Reopening
+   clears it and the next close stamps a new close time.
+5. **The tree deadline comes only from the root.** For a closed retention root
+   with a policy, `deleteAtMs = root.closedAtMs + deleteAfterCloseMs`;
+   otherwise it is absent. Descendant close times do not create deadlines.
+   Setting or changing the policy on an already-closed root uses the original
+   close time. A deadline already in the past makes the tree eligible for the
+   next reaper pass; clearing or extending the policy before deletion wins.
+6. **Manual deletion is conservative unless cascade is explicit.**
+   `session/delete {sessionId}` deletes only that closed session and therefore
+   requires it to be a leaf of the retention tree.
+   `session/delete {sessionId, cascade: true}` expands the target through
+   history-fork edges and `origin.parentSessionId` edges, requires every member
+   of that subtree to be closed, and deletes descendants before the target.
+   Config-only clones are excluded in both modes and survive with their content
+   source link cleared. The default call rejects any target with a surviving
+   history fork or `origin` child. It does not orphan children, even when they
+   are storage-independent, because that would break the retention-tree
+   ownership invariant.
+7. **Automatic collection operates on whole retention trees.** A worker-role
+   reaper visits each universe, pages due root sessions in deadline order, and
+   invokes the same path as `session/delete` with cascade enabled. Timed
+   deletion therefore always applies to the whole tree. If any tree member is
+   open, the pass skips the root instead of force-closing active work.
+   Eligibility and tree membership are rechecked under the deletion transaction
+   so policy changes and new children cannot race into partial deletion.
+8. **The bot timer is renamed to what it measures.** `routedSessionTtlMs`
    becomes `routedSessionCloseAfterMs` and the trigger's `sessionTtlMs`
-   becomes `sessionCloseAfterMs`, matching the environment idle policy, and
-   the clock is refreshed on every routed event (see "Related defect").
-   Greenfield rename with regenerated clients, no compatibility.
+   becomes `sessionCloseAfterMs`, matching the environment idle policy. Its
+   clock is refreshed on every routed event (see "Related defect"). Greenfield
+   rename with regenerated clients, no compatibility.
+
+## Retention Tree
+
+Retention ownership follows the relationship that makes a session part of the
+same body of work:
+
+| Session creation | Retention root | Deleted with parent/source |
+| --- | --- | --- |
+| Fresh session | itself | not applicable |
+| History fork (`sourceSeq` set) | source's retention root | yes |
+| Delegated child (`origin` set) | parent's retention root | yes |
+| Config-only clone (`sourceSeq` absent) | itself | no |
+
+The stored root id makes the effective policy unambiguous even when history
+forks and delegation are nested. Creation must resolve the root from the
+parent/source row in the same transaction. A session may not name conflicting
+retention parents.
+
+The existing `origin` document remains immutable provenance, but its parent
+edge additionally defines retention containment. Clone/fork
+`sourceSessionId` remains content lineage: only `sourceSeq` being present
+makes that edge retention containment. A clone is the escape hatch for work
+that must survive deletion of the source; a history fork cannot outlive the
+events it reads by reference.
 
 ## Design
 
 ### Schema
+
+The session row gains the close projection, immutable tree root, and root-only
+policy/deadline:
 
 ```sql
 ALTER TABLE sessions ADD COLUMN IF NOT EXISTS closed_at_ms bigint;
@@ -96,32 +160,48 @@ ALTER TABLE sessions DROP CONSTRAINT IF EXISTS sessions_closed_at_pair;
 ALTER TABLE sessions ADD CONSTRAINT sessions_closed_at_pair
     CHECK ((closed_at_ms IS NULL) = (closed_at_seq IS NULL));
 
-ALTER TABLE sessions
-    ADD COLUMN IF NOT EXISTS keep boolean NOT NULL DEFAULT false;
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS retention_root_session_id text;
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS delete_after_close_ms bigint;
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS delete_at_ms bigint;
 
--- The reaper's scan: closed, unkept, oldest close first.
-CREATE INDEX IF NOT EXISTS sessions_retention_idx
-    ON sessions (universe_id, closed_at_ms)
-    WHERE lifecycle_status = 'closed' AND NOT keep;
+ALTER TABLE sessions ADD CONSTRAINT sessions_delete_after_close_positive
+    CHECK (delete_after_close_ms IS NULL OR delete_after_close_ms > 0);
+ALTER TABLE sessions ADD CONSTRAINT sessions_retention_policy_on_root
+    CHECK (
+        retention_root_session_id = session_id
+        OR (delete_after_close_ms IS NULL AND delete_at_ms IS NULL)
+    );
 
-ALTER TABLE universes
-    ADD COLUMN IF NOT EXISTS closed_session_retention_ms bigint;
-ALTER TABLE universes DROP CONSTRAINT IF EXISTS universes_retention_positive;
-ALTER TABLE universes ADD CONSTRAINT universes_retention_positive
-    CHECK (closed_session_retention_ms IS NULL
-           OR closed_session_retention_ms > 0);
+CREATE INDEX IF NOT EXISTS sessions_retention_root_idx
+    ON sessions (universe_id, retention_root_session_id, session_id);
+CREATE INDEX IF NOT EXISTS sessions_retention_due_idx
+    ON sessions (universe_id, delete_at_ms, session_id)
+    WHERE lifecycle_status = 'closed' AND delete_at_ms IS NOT NULL;
 ```
 
-The reaper's per-universe query is the index, verbatim:
+The migration backfills `retention_root_session_id` by walking history-fork
+and `origin.parentSessionId` ancestry. Fresh sessions and clones resolve to
+themselves. It then makes the column non-null. Existing rows leave
+`delete_after_close_ms` and `delete_at_ms` null, so introducing the feature
+never schedules existing data for deletion.
+
+`delete_at_ms` is a materialized derivative, not an independently writable
+policy. The store computes it with checked arithmetic whenever a root's close
+time or policy changes, and keeps it null otherwise. Materializing the root
+deadline gives the reaper a direct ordered index. Descendant API views obtain
+the effective policy and deadline by joining their stored root id.
+
+The reaper query reads only roots with a due deadline:
 
 ```sql
 SELECT session_id
 FROM sessions
 WHERE universe_id = $1
+  AND retention_root_session_id = session_id
   AND lifecycle_status = 'closed'
-  AND NOT keep
-  AND closed_at_ms <= $2   -- now minus the universe default
-ORDER BY closed_at_ms
+  AND delete_at_ms IS NOT NULL
+  AND delete_at_ms <= $2
+ORDER BY delete_at_ms, session_id
 LIMIT $3
 ```
 
@@ -129,96 +209,177 @@ Bump `REQUIRED_SCHEMA_REVISION` and `LIGHTSPEED_SCHEMA_REVISION` together.
 
 ### Records and stores
 
-- `SessionRecord.closed_at_ms` and `SessionRecord.keep`; the close path
-  stamps `closed_at_ms` wherever it stamps `closed_at_seq`, including the
-  fork derivation.
-- `set_session_keep`, mirroring `set_session_display_name`: record only,
-  no log, no `updatedAtMs`.
-- `list_sessions_due_for_deletion(cutoff_ms, limit)`: the query above.
-- The universe row gains the default; `list_universes` returns it and a
-  put writes it.
+- `SessionRecord.closed_at_ms`, `retention_root_session_id`, and the root-only
+  `delete_after_close_ms` and `delete_at_ms`.
+- Fresh and clone creation set the new session id as the retention root.
+  History-fork and delegated-child creation lock their source/parent and copy
+  its root id. Creation also locks the retention root so it cannot commit a
+  new tree member concurrently with deletion.
+- The close and reopen paths maintain `closed_at_ms`; when the affected row is
+  a retention root they also derive or clear `delete_at_ms` in the same write.
+- `set_session_retention` locks the root, rejects a descendant target, replaces
+  the nullable duration without touching the event log or `updatedAtMs`, and
+  recomputes `delete_at_ms` atomically.
+- `list_retention_roots_due_for_deletion(now_ms, limit)` uses the
+  universe-scoped query above.
+- `delete_closed_sessions(session_id, cascade, due_at_or_before)` returns the
+  target record and all deleted session ids. Cascade mode locks the target's
+  retention root, expands both containment edge kinds recursively, locks every
+  member, checks that all are closed, optionally rechecks the root deadline,
+  and deletes the subtree in one transaction. Non-cascade mode locks and
+  deletes only a leaf target after verifying that it has no history-fork or
+  `origin` descendants. The in-memory store implements the same ordering and
+  checks.
+- Config-only clone edges are not traversed. Their `source_session_id` is
+  cleared by the existing `ON DELETE SET NULL` behavior when the source row is
+  deleted.
 
 ### API
 
-- `session/retention/put`: `SessionRetentionPutParams {sessionId, keep}`
-  returning `{session: SessionSummaryView}`, like `session/rename`.
-- `SessionSummaryView` and `SessionView` gain `closedAtMs` (absent while
-  open), `keep`, and `expiresAtMs` (absent when open, kept, or the universe
-  has no default).
-- `operator/universes/put`: a full-document put in the style of
-  `bots/put`, `{universe: {universeId, slug, closedSessionRetentionMs}}`,
-  creating or replacing. `OperatorUniverseView` gains
-  `closedSessionRetentionMs`. Universe rows are operator-owned today and
-  nothing else configures a universe; if universes ever get self-service
-  settings the field moves with them.
-- Bot rename per Decision 7 in `BotInput`, `BotView`, and the trigger
-  documents, plus the `bot_trigger_put` tool argument.
+- `SessionStartParams.deleteAfterCloseMs` and
+  `ManagedSessionStartParams.deleteAfterCloseMs`: optional root-creation
+  settings; absent or null means no automatic deletion.
+- `session/retention/put`: `SessionRetentionPutParams {sessionId,
+  deleteAfterCloseMs}` returning `{session: SessionSummaryView}`, like
+  `session/rename`. The field is nullable and required in this full-document
+  put: a number enables or changes deletion and null disables it. A descendant
+  target returns a typed error containing `retentionRootSessionId`.
+- `SessionSummaryView` and `SessionView` gain `closedAtMs` and a
+  `retention: SessionRetentionView` projection:
+
+  ```text
+  SessionRetentionView = {
+    rootSessionId,
+    deleteAfterCloseMs?,
+    deleteAtMs?
+  }
+  ```
+
+  The projection is effective for the viewed session: descendants name the
+  same root and see the same optional policy and deadline. `deleteAtMs` is
+  absent while the root is open or automatic deletion is disabled.
+- `session/delete` gains optional `SessionDeleteParams.cascade`, false by
+  default. False requests one-session deletion; true requests deletion of the
+  target's full fork/origin subtree. The response retains the deleted target
+  summary and adds `deletedSessionCount`; it does not return an unbounded id
+  list.
+- There is no universe retention field, operator API, descendant override, or
+  implicit cascade.
+
+### Shared deletion path
+
+- Store deletion and closing owned environments move out of the gateway
+  method into a lifecycle function shared by manual deletion and the reaper.
+- The function closes owned `closeWithSession` environments for every deleted
+  session, not just the requested target. This is best effort after the store
+  transaction; the environment reconciler also treats a missing origin
+  session as closed and converges any missed work.
+- A non-cascading manual call has no deadline precondition and requires only
+  its target to be closed, but also requires it to have no history-fork or
+  `origin` descendants. A cascading manual call requires every selected
+  descendant to be closed. Either mode fails atomically without removing rows.
+- A reaper call always enables cascade and supplies the scanned root and
+  deadline. It fails atomically if the policy was cleared or extended, the
+  root reopened, a tree member is open, or membership changed before the
+  transaction acquired its locks.
+- Deletion logs the requested target, retention root, number of sessions
+  deleted, and whether the caller was manual or retention. It does not emit an
+  unbounded list at normal log levels.
 
 ### Reaper
 
-- Lives beside the promise reaper in the worker role and shares its
-  interval convention (documented in `docs/variables.md`). Per pass and
-  universe it collects at most one batch (256, the promise reaper's page);
-  the rest waits for the next pass, so a universe with ten thousand expired
-  sessions drains steadily instead of in one transaction storm.
-- The delete step, store delete followed by closing owned environments,
-  moves out of the gateway service into a function both the service and the
-  reaper call. If closing owned environments turns out to need adapters
-  only the gateway holds, the pass moves to the role that has them rather
-  than dispatching across roles.
-- Skips are `SessionNotClosed` (raced with a reopen, impossible today but
-  cheap to tolerate) and the fork-child refusal; both are logged with the
-  session id and never fail the batch.
+- Lives beside the promise reaper in the worker role and shares its interval
+  convention documented in `docs/variables.md`.
+- Each pass collects at most one batch of 256 roots per universe, the promise
+  reaper's page size. The rest waits for the next pass, so a large backlog
+  drains steadily instead of producing one transaction storm.
+- An open descendant, concurrent policy/lifecycle change, or membership race
+  skips that root and never fails the batch. Structured pass statistics count
+  scanned roots, deleted roots, deleted sessions, open-tree skips, conflicts,
+  and errors.
+- A skipped due root remains indexed and is retried on the next pass. Subagent
+  executions normally close their child sessions on every terminal path, so a
+  healthy tree converges without the reaper force-closing anything.
 
 ### CLI and UI
 
-- CLI: `session keep <id>` and `session keep --off <id>`;
-  `operator universes put` for the default.
-- Session page: "Collected in 3 days" from `expiresAtMs` and a Keep toggle.
-  Sessions list: the same hint on closed rows. Admin universes page: the
-  retention field.
+- CLI: set or clear `deleteAfterCloseMs` on a retention root. Accept a human
+  duration for convenience, but send milliseconds on the wire. A descendant
+  error prints the root id to edit instead.
+- Session page: an automatic-deletion control on roots, with "Keep until
+  manually deleted" as the default. Descendants show "Retained with <root>"
+  and link to the root rather than presenting an editable control.
+- Session page and sessions list: "Deletes in 3 days" from the effective
+  `retention.deleteAtMs`. When the root is still open, show "Deletes 3 days
+  after root closes". A past deadline blocked by an open descendant shows
+  "Deletion pending" rather than a negative duration.
+- Manual deletion defaults to the selected session only. The UI offers an
+  explicit "also delete forks and delegated children" option with a bounded
+  descendant count. For any non-leaf target, it explains that cascade is
+  required; children cannot be orphaned. Config-only clones are never included.
+- There is no admin-universe retention setting.
 
 ## Related defect: the bot routed-session clock
 
-`routedSessionTtlMs` is documented as "close routed sessions idle longer
-than this"; the controller computes expiry as `lastActiveAtMs + ttl` and
-skips busy sessions. But `lastActiveAtMs` is stamped only when the routed
-session is created and refreshed only when a close attempt fails. When a
-later event lands on a known routed session, `ensure_routed_session` in
-`crates/temporal-workflow/src/workflows/bots/controller/lanes.rs` updates
-the session's TTL and leaves the clock alone. So a per-key session that
-keeps receiving events still closes at creation plus TTL the first time it
-is idle, and the extra-session cap, which evicts by the same stamp, removes
-the oldest-created session rather than the least recently used.
+`routedSessionTtlMs` is documented as "close routed sessions idle longer than
+this"; the controller computes expiry as `lastActiveAtMs + ttl` and skips busy
+sessions. But `lastActiveAtMs` is stamped only when the routed session is
+created and refreshed only when a close attempt fails. When a later event
+lands on a known routed session, `ensure_routed_session` in
+`crates/temporal-workflow/src/workflows/bots/controller/lanes.rs` updates the
+session's TTL and leaves the clock alone. So a per-key session that keeps
+receiving events still closes at creation plus TTL the first time it is idle,
+and the extra-session cap, which evicts by the same stamp, removes the
+oldest-created session rather than the least recently used.
 
-Fix: touch the clock in the known-session branch, and preferably also when
-the session stops being busy, so "idle" means idle since the last run
-rather than since the last event. The rename in Decision 7 rides along so
-the name says what the clock measures. This ships independently of the
-reaper and can go first.
+Fix: touch the clock in the known-session branch, and preferably also when the
+session stops being busy, so "idle" means idle since the last run rather than
+since the last event. The rename in Decision 8 rides along so the name says
+what the clock measures. This ships independently of the reaper and can go
+first.
 
 ## Acceptance
 
-- Under a one-hour universe default, a session closed more than an hour ago
-  is gone after one pass, an open session older than that is untouched, a
-  kept session survives, a closed session with a live fork is skipped and
-  logged, and a second pass is a no-op.
-- Deleting through the reaper closes the session's owned environments
-  exactly as `session/delete` does.
-- Under a null default nothing is deleted; setting a default afterwards
-  collects already-closed sessions at the next pass.
-- `expiresAtMs` equals `closedAtMs` plus the default, and is absent when
-  the session is open, kept, or the universe has no default.
+- A fresh session and a config-only clone each identify themselves as their
+  retention root. A nested history fork and delegated sub-agent child identify
+  the original owning root.
+- A root with `deleteAfterCloseMs = 3_600_000` is due after its close time is
+  more than an hour old. Its descendants expose the same effective
+  `deleteAtMs`; their own close times do not move it.
+- A tree whose root has no deletion policy survives every reaper pass. Existing
+  trees have no policy after migration.
+- An open root is never deleted. A closed due root with any open descendant is
+  skipped without deleting any member; after the descendant closes, the next
+  pass deletes the whole tree.
+- Setting a policy on an already-closed root derives the deadline from its
+  original close time. Clearing or extending it before the conditional delete
+  prevents collection.
+- Setting retention through a descendant is rejected with the actual root id;
+  there is never more than one applicable policy.
+- Automatic deletion of a root behaves as cascade enabled: it deletes nested
+  history forks and `origin` children leaf-first and closes every deleted
+  session's owned environments.
+- Manual deletion without cascade removes only the target. It rejects a
+  target with any surviving history-fork or `origin` descendant, whether or
+  not the target is the retention root.
+- Manual deletion with cascade removes the target's fork and `origin` subtree,
+  but not its ancestors, siblings, or config-only clones.
+- Config-only clones survive deletion of their source and retain their own
+  independent retention policy. Their source link is cleared.
+- A concurrent child creation, reopen, or retention change cannot cause a
+  partial tree deletion. A repeated successful reaper pass is a no-op.
 - A routed per-key bot session that receives a second event halfway through
   its window survives past the original deadline; cap eviction picks the
   least recently active session.
 
 ## Non-Goals
 
-- Closing open sessions on any clock. A universe-wide session idle policy
-  (a universe default plus a per-session override measured from
-  `updatedAtMs`, closing after N idle) would be a separate item and could
+- A universe-wide session-retention default.
+- Independent retention policies on history forks or delegated children.
+- Closing open sessions on a retention clock. A universe-wide session idle
+  policy measured from `updatedAtMs` would be a separate item and could
   subsume the bot timer.
+- Treating config-only clones as owned descendants.
 - Retention rules keyed on metadata.
 - Archival or export before deletion.
 - Deleting CAS blobs; they are content-addressed and shared.
@@ -228,20 +389,32 @@ reaper and can go first.
 Reviewed and rejected; do not re-propose:
 
 - "TTL" as the name for any of this.
-- A per-session retention period. The universe default and `keep` cover
-  every acceptance case; a universe that mixes lifetimes is two universes.
+- A universe-wide `closedSessionRetentionMs` plus a per-session `keep` flag.
+- A separate `keep` flag. Null root `deleteAfterCloseMs` already means keep
+  until manual deletion.
+- Copying `deleteAfterCloseMs` onto forks and delegated children. That creates
+  competing close-relative deadlines and makes source cleanup depend on which
+  copy wins.
+- Allowing a descendant retention mutation to silently modify its root.
+- Implicit cascade for manual deletion. Destructive tree expansion must be
+  requested explicitly; timed retention is the explicit tree-level opt-in.
+- An `orphanChildren` or equivalent deletion flag. Retention containment is an
+  ownership invariant; independent work should start as a config-only clone
+  with its own retention root. Detaching an existing descendant would require
+  a separate explicit materialization operation, not a delete option.
+- Cascading deletion into config-only clones. Their log is independent and the
+  clone is the explicit way to detach work from the source tree.
 - Rules `[{filter, ttlMs}]` keyed on metadata with first-match-wins.
-- A `universe_settings` table and `settings/retention/put|read`; the
-  universe row and `operator/universes/put` carry the one field.
+- A `universe_settings` table and `settings/retention/put|read`.
 - Zero as "forever".
 - Running the pass in the environment-registration reconciler; it is
   environment-specific and lives on the gateway.
 
 ## Implementation Slices
 
-### Slice 1 — `closedAtMs`, `keep`, views, `session/retention/put`, backfill
+### Slice 1 — Retention-root projection, backfill, and tree deletion
 
-### Slice 2 — Universe default: column, `operator/universes/put`, view
+### Slice 2 — Close time, root policy, effective views, and retention API
 
 ### Slice 3 — Reaper pass and its live test
 
