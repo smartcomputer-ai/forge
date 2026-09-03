@@ -381,7 +381,10 @@ async fn run_roles(args: RunArgs) -> anyhow::Result<()> {
             )?,
         ));
         background.push(tokio::spawn(
-            worker::PromiseReaper::new(client.clone(), reaper_stores).run_forever(),
+            worker::PromiseReaper::new(client.clone(), reaper_stores.clone()).run_forever(),
+        ));
+        background.push(tokio::spawn(
+            worker::SessionRetentionReaper::new(reaper_stores).run_forever(),
         ));
     }
     if roles.has(Role::Bots) {

@@ -35,6 +35,7 @@ pub(super) async fn initialize(
                 session_id: args.session_id.clone(),
                 display_name: args.display_name.clone(),
                 metadata: args.metadata.clone(),
+                delete_after_close_ms: args.delete_after_close_ms,
                 observed_at_ms,
             },
             activity_options(),

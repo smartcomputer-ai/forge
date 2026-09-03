@@ -646,7 +646,7 @@ mod tests {
             brief: Some("watch the queue".to_owned()),
             runs_per_day: None,
             breaker: None,
-            routed_session_ttl_ms: None,
+            routed_session_close_after_ms: None,
             self_config: false,
             emit: false,
             enabled: true,
@@ -660,7 +660,7 @@ mod tests {
             route: None,
             coalesce: None,
             deliver: None,
-            session_ttl_ms: None,
+            session_close_after_ms: None,
             enabled: true,
         }
     }

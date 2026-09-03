@@ -17,7 +17,7 @@ use api::{
 };
 use bots::{
     BotError, BotEventStore, BotRecord, BotRefusalCode, BotTriggerRecord, BotTriggerStore,
-    EventReceiver, RoutedSession, RoutedSessionTtl,
+    EventReceiver, RoutedSession, RoutedSessionClosePolicy,
     ids::{MAX_BOT_HOPS, bot_emit_event_id, bot_keyed_session_id},
     tools::{
         BOT_BRIEF_PUT_TOOL_ID, BOT_EMIT_TOOL_ID, BOT_EVENT_LIST_TOOL_ID, BOT_EVENT_READ_TOOL_ID,
@@ -699,7 +699,7 @@ async fn emit(
         input.session = emit.session_key.map(|key| RoutedSession {
             session_id: bot_keyed_session_id(&bot.bot_id, &key),
             label: key,
-            ttl: RoutedSessionTtl::Inherit,
+            close_policy: RoutedSessionClosePolicy::Inherit,
         });
         let stored = api.store_bot_event(bot, input).await?;
         return Ok(json!({ "seq": stored.record.seq }));
@@ -756,7 +756,7 @@ mod tests {
                 brief: None,
                 runs_per_day: None,
                 breaker: None,
-                routed_session_ttl_ms: None,
+                routed_session_close_after_ms: None,
                 self_config,
                 emit,
                 enabled: true,

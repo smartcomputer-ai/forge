@@ -835,11 +835,15 @@ async fn registered_admission_is_keyed_by_daemon_identity() {
     assert_eq!(back.status, EnvironmentStatus::Ready);
     assert_eq!(back.last_seen_at_ms, Some(4_000));
     assert_eq!(
-        back.metadata.get(ENVD_VERSION_METADATA_KEY).map(String::as_str),
+        back.metadata
+            .get(ENVD_VERSION_METADATA_KEY)
+            .map(String::as_str),
         Some("0.2.0")
     );
     assert_eq!(
-        back.metadata.get(ENVD_GIT_SHA_METADATA_KEY).map(String::as_str),
+        back.metadata
+            .get(ENVD_GIT_SHA_METADATA_KEY)
+            .map(String::as_str),
         Some("bbbb")
     );
     assert_eq!(
@@ -1098,4 +1102,49 @@ async fn registered_environments_group_by_key_and_access_policy_scopes_them() {
     assert!(!neither.allows(&provisioned));
     assert!(!neither.allows(&a));
     assert!(!neither.allows(&external));
+}
+
+/// The gateway stamps reserved entries on top of whatever a daemon sent, so
+/// a daemon using its whole allowance must still be admitted; the allowance
+/// itself stays enforced on the caller's keys.
+#[tokio::test(flavor = "current_thread")]
+async fn reserved_metadata_sits_on_top_of_the_caller_allowance() {
+    use environment_protocol::registration::MAX_METADATA_ENTRIES;
+
+    let (_universe_id, store) = store().await;
+    minted_key(
+        &store,
+        "rk-meta",
+        registration_policy(RegisteredIdentityMode::Persistent),
+    )
+    .await;
+    let reserved = RegisteredDaemonBuild {
+        version: Some("0.1.0".to_owned()),
+        git_sha: Some("a".repeat(40)),
+        protocol_version: 2,
+    }
+    .metadata();
+
+    let mut full = register("rk-meta", "env-meta", &daemon_key(0x31), 1_000);
+    full.metadata = (0..MAX_METADATA_ENTRIES)
+        .map(|index| (format!("caller.key{index}"), "v".to_owned()))
+        .collect();
+    full.metadata.extend(reserved.clone());
+    let created = store
+        .create_registered_environment(full)
+        .await
+        .expect("full caller allowance plus reserved entries");
+    assert_eq!(
+        created.metadata.len(),
+        MAX_METADATA_ENTRIES + reserved.len()
+    );
+
+    let mut over = register("rk-meta", "env-over", &daemon_key(0x32), 1_000);
+    over.metadata = (0..=MAX_METADATA_ENTRIES)
+        .map(|index| (format!("caller.key{index}"), "v".to_owned()))
+        .collect();
+    assert!(matches!(
+        store.create_registered_environment(over).await,
+        Err(EnvironmentRegistryError::InvalidInput { .. })
+    ));
 }

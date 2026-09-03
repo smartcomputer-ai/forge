@@ -22,6 +22,7 @@ import {
   type SessionConfig,
 } from "@/components/session/session-config-editor";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import {
   Select,
   SelectContent,
@@ -122,10 +123,13 @@ function LiveSessionSetup({
   const [originalActiveEnvironmentId, setOriginalActiveEnvironmentId] = useState<string | null>(null);
   const [metadataRows, setMetadataRows] = useState<MetadataRow[]>([]);
   const [originalMetadata, setOriginalMetadata] = useState<Record<string, string>>({});
+  const [retentionDaysDraft, setRetentionDaysDraft] = useState("");
+  const [originalRetentionDays, setOriginalRetentionDays] = useState("");
   const [configError, setConfigError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const configBase = useRef({ revision: 0, config: undefined as SessionConfig | undefined });
   const metadataKey = JSON.stringify(session?.metadata ?? {});
+  const retentionKey = JSON.stringify(session?.retention ?? {});
 
   useEffect(() => {
     if (!session) return;
@@ -133,6 +137,14 @@ function LiveSessionSetup({
     setMetadataRows(metadataToRows(metadata));
     setOriginalMetadata(metadata);
   }, [metadataKey]);
+
+  useEffect(() => {
+    if (!session) return;
+    const duration = session.retention.deleteAfterCloseMs;
+    const days = duration == null ? "" : String(duration / 86_400_000);
+    setRetentionDaysDraft(days);
+    setOriginalRetentionDays(days);
+  }, [retentionKey]);
 
   useEffect(() => {
     if (!session) return;
@@ -167,7 +179,13 @@ function LiveSessionSetup({
   const activeEnvironmentDirty = activeEnvironmentDraft !== originalActiveEnvironmentId;
   const metadataDraft = rowsToMetadata(metadataRows);
   const metadataDirty = !sameMetadata(metadataDraft, originalMetadata);
-  const dirty = configDirty || instructionsDirty || activeEnvironmentDirty || metadataDirty;
+  const retentionDirty = retentionDaysDraft.trim() !== originalRetentionDays;
+  const retentionDays = retentionDaysDraft.trim() ? Number(retentionDaysDraft) : null;
+  const retentionError = retentionDays !== null
+    && (!Number.isFinite(retentionDays) || retentionDays <= 0)
+      ? "Automatic deletion must be a positive number of days."
+      : null;
+  const dirty = configDirty || instructionsDirty || activeEnvironmentDirty || metadataDirty || retentionDirty;
   const pinnedApiKind = stringField(record(session?.config).model, "apiKind");
   const environmentError = activeEnvironmentSelectionError(
     configDraft,
@@ -240,6 +258,18 @@ function LiveSessionSetup({
           { metadata: metadataDraft },
         );
       }
+
+      if (retentionDirty) {
+        await api<SessionView>(
+          "PUT",
+          `/api/v1/universes/${universeId}/sessions/${sessionId}/retention`,
+          {
+            deleteAfterCloseMs: retentionDays === null
+              ? null
+              : Math.round(retentionDays * 86_400_000),
+          },
+        );
+      }
     },
     onSuccess: async () => {
       setError(null);
@@ -269,6 +299,41 @@ function LiveSessionSetup({
               </p>
             </div>
             <MetadataEditor rows={metadataRows} onChange={setMetadataRows} disabled={save.isPending} />
+          </section>
+          <section className="grid gap-3">
+            <div className="grid gap-0.5">
+              <h2 className="text-sm font-semibold">Automatic deletion</h2>
+              {session?.retention.rootSessionId === sessionId ? (
+                <p className="text-xs text-muted-foreground">
+                  Delete this session, its history forks, and delegated children after the root closes. Leave blank to keep the tree until manually deleted.
+                </p>
+              ) : (
+                <p className="text-xs text-muted-foreground">
+                  Retained with root session{" "}
+                  <a className="font-mono underline" href={`../${session?.retention.rootSessionId}`}>
+                    {session?.retention.rootSessionId}
+                  </a>. Change deletion from the root.
+                </p>
+              )}
+            </div>
+            {session?.retention.rootSessionId === sessionId && (
+              <div className="grid max-w-xs gap-1.5">
+                <label className="text-xs font-medium" htmlFor="session-retention-days">
+                  Delete after close (days)
+                </label>
+                <Input
+                  id="session-retention-days"
+                  type="number"
+                  min="0.000001"
+                  step="any"
+                  value={retentionDaysDraft}
+                  onChange={(event) => setRetentionDaysDraft(event.target.value)}
+                  placeholder="Keep until manually deleted"
+                  disabled={save.isPending}
+                />
+                {retentionError && <p className="text-xs text-destructive">{retentionError}</p>}
+              </div>
+            )}
           </section>
           <section className="grid gap-3">
             <div className="grid gap-0.5">
@@ -334,13 +399,14 @@ function LiveSessionSetup({
           </p>
         )}
         {environmentError && <p className="text-sm text-destructive">{environmentError}</p>}
+        {retentionError && <p className="text-sm text-destructive">{retentionError}</p>}
         {error && <p className="text-sm text-destructive">{error}</p>}
         <div className="flex justify-end">
           <Button
             disabled={
               !session
               || !dirty
-              || Boolean(configError || environmentError)
+              || Boolean(configError || environmentError || retentionError)
               || runActive
               || save.isPending
             }

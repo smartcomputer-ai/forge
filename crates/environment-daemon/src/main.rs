@@ -1,12 +1,30 @@
 use clap::Parser as _;
-use environment_daemon::{DaemonRuntime, config::DaemonArgs, server};
+use environment_daemon::{
+    DaemonRuntime,
+    config::{DaemonArgs, DaemonCommand},
+    server, upgrade,
+};
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> anyhow::Result<()> {
     let _ = dotenvy::dotenv();
     let args = DaemonArgs::parse();
     if args.print_build {
-        println!("{}", serde_json::to_string(&environment_daemon::build_info())?);
+        println!(
+            "{}",
+            serde_json::to_string(&environment_daemon::build_info())?
+        );
+        return Ok(());
+    }
+    if args.command == Some(DaemonCommand::Upgrade) {
+        let installed = upgrade::install(args.upgrade_request()?).await?;
+        println!(
+            "installed lightspeed-envd {} ({}, protocol {}) at {}",
+            installed.version,
+            installed.git_sha,
+            installed.protocol_version,
+            installed.path.display()
+        );
         return Ok(());
     }
     let config = args.into_config()?;

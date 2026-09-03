@@ -7,6 +7,7 @@ mod process_group;
 pub mod registration;
 pub mod rpc;
 pub mod server;
+pub mod upgrade;
 
 use std::{
     sync::{

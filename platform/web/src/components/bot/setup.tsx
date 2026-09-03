@@ -663,22 +663,22 @@ function GuardrailsSection({
   const [runsPerDay, setRunsPerDay] = useState(bot.runsPerDay?.toString() ?? "");
   const [breakerFires, setBreakerFires] = useState(bot.breaker?.fires.toString() ?? "");
   const [breakerWindow, setBreakerWindow] = useState(bot.breaker ? String(Math.round(bot.breaker.windowMs / 60_000)) : "");
-  const [ttlDays, setTtlDays] = useState(bot.routedSessionTtlMs ? String(Math.round(bot.routedSessionTtlMs / 86_400_000)) : "");
+  const [closeAfterDays, setCloseAfterDays] = useState(bot.routedSessionCloseAfterMs ? String(Math.round(bot.routedSessionCloseAfterMs / 86_400_000)) : "");
   const [selfConfig, setSelfConfig] = useState(bot.selfConfig ?? false);
   useEffect(() => {
     setRunsPerDay(bot.runsPerDay?.toString() ?? "");
     setBreakerFires(bot.breaker?.fires.toString() ?? "");
     setBreakerWindow(bot.breaker ? String(Math.round(bot.breaker.windowMs / 60_000)) : "");
-    setTtlDays(bot.routedSessionTtlMs ? String(Math.round(bot.routedSessionTtlMs / 86_400_000)) : "");
+    setCloseAfterDays(bot.routedSessionCloseAfterMs ? String(Math.round(bot.routedSessionCloseAfterMs / 86_400_000)) : "");
     setSelfConfig(bot.selfConfig ?? false);
-  }, [bot.runsPerDay, bot.breaker, bot.routedSessionTtlMs, bot.selfConfig]);
+  }, [bot.runsPerDay, bot.breaker, bot.routedSessionCloseAfterMs, bot.selfConfig]);
 
   const fields = () => ({
     runsPerDay: runsPerDay.trim() ? Number(runsPerDay) : null,
     breaker: breakerFires.trim()
       ? { fires: Number(breakerFires), windowMs: Math.round(Number(breakerWindow.trim() || "10") * 60_000) }
       : null,
-    routedSessionTtlMs: ttlDays.trim() ? Math.round(Number(ttlDays) * 86_400_000) : null,
+    routedSessionCloseAfterMs: closeAfterDays.trim() ? Math.round(Number(closeAfterDays) * 86_400_000) : null,
     selfConfig,
   });
   const botDirty =
@@ -686,10 +686,10 @@ function GuardrailsSection({
     JSON.stringify({
       runsPerDay: bot.runsPerDay ?? null,
       breaker: bot.breaker ?? null,
-      routedSessionTtlMs: bot.routedSessionTtlMs ?? null,
+      routedSessionCloseAfterMs: bot.routedSessionCloseAfterMs ?? null,
       selfConfig: bot.selfConfig ?? false,
     });
-  const problem = ttlDays.trim() && !(Number(ttlDays) >= 1) ? "Thread retention is at least one day." : null;
+  const problem = closeAfterDays.trim() && !(Number(closeAfterDays) >= 1) ? "Idle close must be at least one day." : null;
 
   const save = useBotPut(universeId, bot);
   const closed = bot.closedAtMs != null;
@@ -721,13 +721,13 @@ function GuardrailsSection({
           </FieldDescription>
         </Field>
         <Field>
-          <FieldLabel htmlFor="bot-ttl-days">Thread retention (days)</FieldLabel>
+          <FieldLabel htmlFor="bot-close-days">Close inactive threads after (days)</FieldLabel>
           <Input
-            id="bot-ttl-days"
+            id="bot-close-days"
             type="number"
             min={1}
-            value={ttlDays}
-            onChange={(event) => setTtlDays(event.target.value)}
+            value={closeAfterDays}
+            onChange={(event) => setCloseAfterDays(event.target.value)}
             placeholder="Keep forever"
             disabled={readOnly}
           />

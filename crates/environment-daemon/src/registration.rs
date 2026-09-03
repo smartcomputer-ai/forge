@@ -8,6 +8,7 @@
 
 use std::{
     path::Path,
+    process::Command,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -32,10 +33,12 @@ use tokio_tungstenite::{
 
 use crate::{
     DaemonRuntime,
-    config::RegistrationConfig,
+    config::{REEXEC_REGISTRATION_KEY_ENV, RegistrationConfig},
     identity::DaemonIdentity,
     server::{run_data_connection, tracing_line},
 };
+
+const AUTO_UPGRADE_ATTEMPTED_ENV: &str = "LIGHTSPEED_ENVD_AUTO_UPGRADE_ATTEMPTED";
 
 /// How long the daemon waits for the gateway's challenge and verdict.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(20);
@@ -120,12 +123,7 @@ async fn control_session(
             nonce,
         }) => {
             if protocol_version != CURRENT_PROTOCOL_VERSION {
-                bail!(TerminalRejection {
-                    code: RegistrationRejectionCode::UnsupportedProtocol,
-                    message: format!(
-                        "gateway speaks protocol {protocol_version}; this daemon speaks {CURRENT_PROTOCOL_VERSION}"
-                    ),
-                });
+                return Err(protocol_mismatch_error(registration, protocol_version).await);
             }
             decode_hex(&nonce).ok_or_else(|| anyhow!("gateway challenge nonce is not hex"))?
         }
@@ -212,6 +210,113 @@ async fn control_session(
             Message::Binary(_) | Message::Pong(_) | Message::Frame(_) => {}
         }
     }
+}
+
+async fn protocol_mismatch_error(
+    registration: &RegistrationConfig,
+    gateway_protocol: u32,
+) -> anyhow::Error {
+    let base = format!(
+        "gateway speaks protocol {gateway_protocol}; this daemon speaks {CURRENT_PROTOCOL_VERSION}; discovery document: {}",
+        registration.discovery_url
+    );
+    let Some(restart) = &registration.auto_upgrade else {
+        return TerminalRejection {
+            code: RegistrationRejectionCode::UnsupportedProtocol,
+            message: format!(
+                "{base}; run `lightspeed-envd upgrade` or set LIGHTSPEED_ENVD_AUTO_UPGRADE=1"
+            ),
+        }
+        .into();
+    };
+    if std::env::var_os(AUTO_UPGRADE_ATTEMPTED_ENV).is_some() {
+        return TerminalRejection {
+            code: RegistrationRejectionCode::UnsupportedProtocol,
+            message: format!(
+                "{base}; automatic upgrade was already attempted by this process lineage"
+            ),
+        }
+        .into();
+    }
+
+    tracing_line(&format!(
+        "{base}; automatic upgrade enabled, installing the gateway's envd build"
+    ));
+    let request = crate::upgrade::UpgradeRequest {
+        discovery_url: registration.discovery_url.clone(),
+        ca_file: registration.ca_file.clone(),
+        install_path: restart.executable.clone(),
+        target: release_info::TARGET.to_owned(),
+        expected_protocol: Some(gateway_protocol),
+    };
+    let installed = match crate::upgrade::install(request).await {
+        Ok(installed) => installed,
+        Err(error) => {
+            return TerminalRejection {
+                code: RegistrationRejectionCode::UnsupportedProtocol,
+                message: format!("{base}; automatic upgrade failed: {error:#}"),
+            }
+            .into();
+        }
+    };
+    tracing_line(&format!(
+        "installed lightspeed-envd {} ({}, protocol {}); re-executing {}",
+        installed.version,
+        installed.git_sha,
+        installed.protocol_version,
+        restart.executable.display()
+    ));
+    let error = exec_replacement(
+        &restart.executable,
+        &restart.arg0,
+        &restart.args,
+        registration.registration_key.as_ref(),
+    );
+    TerminalRejection {
+        code: RegistrationRejectionCode::UnsupportedProtocol,
+        message: format!("{base}; installed the replacement but could not re-execute it: {error}"),
+    }
+    .into()
+}
+
+#[cfg(unix)]
+fn exec_replacement(
+    executable: &Path,
+    arg0: &std::ffi::OsStr,
+    args: &[std::ffi::OsString],
+    registration_key: Option<&SecretString>,
+) -> std::io::Error {
+    use std::os::unix::process::CommandExt as _;
+
+    let mut command = Command::new(executable);
+    command
+        .arg0(arg0)
+        .args(args)
+        .env(AUTO_UPGRADE_ATTEMPTED_ENV, "1");
+    // Configuration parsing deliberately removes key variables from the
+    // current process. Hand the already-held value across exactly this exec
+    // so a first-seen daemon can still register even if its key file was
+    // removed; the replacement consumes and scrubs this internal variable.
+    if let Some(registration_key) = registration_key {
+        command
+            .env(REEXEC_REGISTRATION_KEY_ENV, registration_key.expose())
+            .env_remove("LIGHTSPEED_ENVD_REGISTRATION_KEY")
+            .env_remove("LIGHTSPEED_ENVD_REGISTRATION_KEY_FILE");
+    }
+    command.exec()
+}
+
+#[cfg(not(unix))]
+fn exec_replacement(
+    _executable: &Path,
+    _arg0: &std::ffi::OsStr,
+    _args: &[std::ffi::OsString],
+    _registration_key: Option<&SecretString>,
+) -> std::io::Error {
+    std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "envd automatic upgrade is supported only on Unix",
+    )
 }
 
 /// A gateway that answers the WebSocket upgrade with an HTTP status is
@@ -402,6 +507,30 @@ mod tests {
                 _
             ))
         ));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn protocol_mismatch_without_auto_upgrade_names_discovery_and_command() {
+        let registration = RegistrationConfig {
+            gateway_url: "wss://gateway.example/environment-gateway/connect".to_owned(),
+            registration_key: None,
+            display_name: None,
+            metadata: Default::default(),
+            receipt_path: None,
+            ca_file: None,
+            discovery_url: "https://gateway.example/.well-known/lightspeed-envd".to_owned(),
+            auto_upgrade: None,
+        };
+        let error = protocol_mismatch_error(&registration, CURRENT_PROTOCOL_VERSION + 1).await;
+        let rejection = error
+            .downcast_ref::<TerminalRejection>()
+            .expect("terminal rejection");
+        assert_eq!(
+            rejection.code,
+            RegistrationRejectionCode::UnsupportedProtocol
+        );
+        assert!(rejection.message.contains(&registration.discovery_url));
+        assert!(rejection.message.contains("lightspeed-envd upgrade"));
     }
 
     /// A self-signed EC certificate, valid 2026-2036, used only as PEM input.

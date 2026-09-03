@@ -651,6 +651,11 @@ function SessionListItem({
           {relativeTime(session.updatedAtMs)}
         </span>
       </span>
+      {session.retention.deleteAfterCloseMs != null && (
+        <span className="text-xs text-muted-foreground">
+          {sessionRetentionLabel(session)}
+        </span>
+      )}
     </>
   );
   const rowClass = cn(
@@ -1088,6 +1093,7 @@ export function SessionDetail({
   const [closeOpen, setCloseOpen] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [deleteOpen, setDeleteOpen] = useState(false);
+  const [deleteCascade, setDeleteCascade] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [decidingApproval, setDecidingApproval] = useState<{
     approvalId: string;
@@ -1508,7 +1514,7 @@ export function SessionDetail({
     mutationFn: () =>
       api<SessionSummary>(
         "DELETE",
-        `/api/v1/universes/${universeId}/sessions/${sessionId}`,
+        `/api/v1/universes/${universeId}/sessions/${sessionId}${deleteCascade ? "?cascade=true" : ""}`,
       ),
     onSuccess: async () => {
       setDeleteOpen(false);
@@ -1554,6 +1560,14 @@ export function SessionDetail({
         {closed && (
           <span className="rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">
             Closed
+          </span>
+        )}
+        {session.data?.retention.deleteAfterCloseMs != null && (
+          <span className="rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">
+            {sessionRetentionLabel({
+              lifecycleStatus: closed ? "closed" : "open",
+              retention: session.data.retention,
+            })}
           </span>
         )}
         {managed && (
@@ -1639,7 +1653,10 @@ export function SessionDetail({
               open={deleteOpen}
               onOpenChange={(open) => {
                 setDeleteOpen(open);
-                if (open) setDeleteError(null);
+                if (open) {
+                  setDeleteError(null);
+                  setDeleteCascade(false);
+                }
               }}
             >
               <AlertDialogTrigger
@@ -1659,10 +1676,23 @@ export function SessionDetail({
                   <AlertDialogTitle>Delete this session permanently?</AlertDialogTitle>
                   <AlertDialogDescription>
                     This removes the session and its retained history. It cannot be undone.
-                    Sessions with forks that still inherit their history must be deleted
-                    leaf-first.
+                    A session with history forks or delegated children cannot be deleted
+                    unless cascade is enabled.
                   </AlertDialogDescription>
                 </AlertDialogHeader>
+                <label className="flex items-start gap-2 rounded-lg border p-3 text-sm">
+                  <Checkbox
+                    checked={deleteCascade}
+                    onCheckedChange={(checked) => setDeleteCascade(checked === true)}
+                    disabled={deleteSession.isPending}
+                  />
+                  <span>
+                    <span className="block font-medium">Also delete forks and delegated children</span>
+                    <span className="block text-xs text-muted-foreground">
+                      Every descendant must already be closed. Config-only clones are not included.
+                    </span>
+                  </span>
+                </label>
                 {deleteError && <p className="text-sm text-destructive">{deleteError}</p>}
                 <AlertDialogFooter>
                   <AlertDialogCancel disabled={deleteSession.isPending}>Cancel</AlertDialogCancel>
@@ -1982,4 +2012,22 @@ function relativeTime(ms: number): string {
   if (delta < 3_600_000) return `${Math.floor(delta / 60_000)}m`;
   if (delta < 86_400_000) return `${Math.floor(delta / 3_600_000)}h`;
   return `${Math.floor(delta / 86_400_000)}d`;
+}
+
+function sessionRetentionLabel(
+  session: Pick<SessionSummary, "lifecycleStatus" | "retention">,
+): string {
+  const duration = session.retention.deleteAfterCloseMs;
+  if (duration == null) return "Kept until manually deleted";
+  const deadline = session.retention.deleteAtMs;
+  if (deadline == null) return `Deletes ${formatDuration(duration)} after root closes`;
+  const remaining = deadline - Date.now();
+  if (remaining <= 0) return "Deletion pending";
+  return `Deletes in ${formatDuration(remaining)}`;
+}
+
+function formatDuration(ms: number): string {
+  if (ms < 3_600_000) return `${Math.max(1, Math.ceil(ms / 60_000))} minutes`;
+  if (ms < 86_400_000) return `${Math.ceil(ms / 3_600_000)} hours`;
+  return `${Math.ceil(ms / 86_400_000)} days`;
 }

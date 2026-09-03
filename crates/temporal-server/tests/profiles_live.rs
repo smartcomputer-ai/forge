@@ -143,6 +143,7 @@ async fn run_profile_provision_live_client(
             session_id: Some(format!("{}_rejected", session_id.as_str())),
             display_name: None,
             config: None,
+            delete_after_close_ms: None,
             profile: Some(ProfileSource::Inline {
                 profile: Box::new(api::InlineAgentProfile {
                     display_name: None,
@@ -185,6 +186,7 @@ async fn run_profile_provision_live_client(
             session_id: Some(session_id),
             display_name: None,
             config: None,
+            delete_after_close_ms: None,
             profile: Some(ProfileSource::Named {
                 profile_id: profile_id.clone(),
             }),
@@ -311,6 +313,7 @@ async fn run_profile_provision_live_client(
         session_id: Some(retained_session.clone()),
         display_name: None,
         config: None,
+        delete_after_close_ms: None,
         profile: Some(ProfileSource::Inline {
             profile: Box::new(api::InlineAgentProfile {
                 display_name: None,
@@ -494,6 +497,7 @@ async fn run_profiles_live_client(
             model: Some(model_to_api(&model)),
             ..SessionConfig::default()
         }),
+        delete_after_close_ms: None,
         profile: Some(ProfileSource::Named {
             profile_id: profile_id.clone(),
         }),

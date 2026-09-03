@@ -27,6 +27,8 @@ enum SessionCommand {
     List(ListArgs),
     /// Replace a session's metadata map.
     Metadata(MetadataCommandArgs),
+    /// Set or clear automatic deletion for a retention root.
+    Retention(RetentionArgs),
     /// Close one session by id, or every open session matching a filter.
     Close(CloseArgs),
     /// Delete one closed session by id, or every closed session matching a
@@ -81,6 +83,10 @@ struct StartArgs {
     profile: Option<String>,
     #[command(flatten)]
     metadata: MetadataPairs,
+    /// Delete this retention tree after the root closes (for example 30m,
+    /// 24h, or 7d).
+    #[arg(long = "delete-after", value_parser = parse_duration_ms)]
+    delete_after_close_ms: Option<u64>,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -122,6 +128,19 @@ struct MetadataPutArgs {
 }
 
 #[derive(Args, Debug, Clone)]
+struct RetentionArgs {
+    #[command(flatten)]
+    common: CommonArgs,
+    session_id: String,
+    /// Delete the tree this long after its root closes (for example 24h).
+    #[arg(long = "delete-after", value_parser = parse_duration_ms, conflicts_with = "off")]
+    delete_after_close_ms: Option<u64>,
+    /// Disable automatic deletion.
+    #[arg(long, required_unless_present = "delete_after_close_ms")]
+    off: bool,
+}
+
+#[derive(Args, Debug, Clone)]
 struct CloseArgs {
     #[command(flatten)]
     common: CommonArgs,
@@ -144,6 +163,9 @@ struct DeleteArgs {
     session_id: Option<String>,
     #[command(flatten)]
     metadata: MetadataPairs,
+    /// Also delete history forks and delegated child sessions.
+    #[arg(long)]
+    cascade: bool,
 }
 
 pub(crate) async fn handle(args: SessionArgs) -> Result<()> {
@@ -153,6 +175,7 @@ pub(crate) async fn handle(args: SessionArgs) -> Result<()> {
         SessionCommand::Metadata(args) => match args.command {
             MetadataCommand::Put(args) => put_metadata(args).await,
         },
+        SessionCommand::Retention(args) => put_retention(args).await,
         SessionCommand::Close(args) => close(args).await,
         SessionCommand::Delete(args) => delete(args).await,
     }
@@ -174,6 +197,7 @@ async fn start(args: StartArgs) -> Result<()> {
             metadata: args.metadata.map(),
             config: None,
             profile,
+            delete_after_close_ms: args.delete_after_close_ms,
         })
         .await
         .map_err(api_error)?
@@ -207,6 +231,24 @@ async fn put_metadata(args: MetadataPutArgs) -> Result<()> {
         .put_session_metadata(api::SessionMetadataPutParams {
             session_id: args.session_id,
             metadata: args.metadata.map(),
+        })
+        .await
+        .map_err(api_error)?
+        .result;
+    print_json_or(args.common.json, &response, || {
+        println!("{}", session_line(&response.session));
+    })
+}
+
+async fn put_retention(args: RetentionArgs) -> Result<()> {
+    let response = HttpAgentApi::new(args.common.api_url)
+        .put_session_retention(api::SessionRetentionPutParams {
+            session_id: args.session_id,
+            delete_after_close_ms: if args.off {
+                None
+            } else {
+                args.delete_after_close_ms
+            },
         })
         .await
         .map_err(api_error)?
@@ -262,6 +304,7 @@ async fn delete(args: DeleteArgs) -> Result<()> {
         match client
             .delete_session(api::SessionDeleteParams {
                 session_id: session_id.clone(),
+                cascade: args.cascade,
             })
             .await
         {
@@ -273,6 +316,35 @@ async fn delete(args: DeleteArgs) -> Result<()> {
         }
     }
     report(args.common.json, "deleted", &done, targets.skipped, failed)
+}
+
+fn parse_duration_ms(raw: &str) -> Result<u64, String> {
+    let split = raw
+        .find(|character: char| !character.is_ascii_digit())
+        .unwrap_or(raw.len());
+    let (amount, unit) = raw.split_at(split);
+    let amount = amount
+        .parse::<u64>()
+        .map_err(|_| format!("expected a positive duration, got {raw:?}"))?;
+    if amount == 0 {
+        return Err("duration must be positive".to_owned());
+    }
+    let multiplier = match unit {
+        "ms" | "" => 1,
+        "s" => 1_000,
+        "m" => 60_000,
+        "h" => 3_600_000,
+        "d" => 86_400_000,
+        "w" => 604_800_000,
+        _ => {
+            return Err(format!(
+                "unsupported duration unit in {raw:?}; use ms, s, m, h, d, or w"
+            ));
+        }
+    };
+    amount
+        .checked_mul(multiplier)
+        .ok_or_else(|| format!("duration is too large: {raw:?}"))
 }
 
 struct Selection {
@@ -449,6 +521,12 @@ mod tests {
             display_name: None,
             metadata: BTreeMap::new(),
             lifecycle_status: api::SessionLifecycleStatus::Open,
+            closed_at_ms: None,
+            retention: api::SessionRetentionView {
+                root_session_id: "s1".to_owned(),
+                delete_after_close_ms: None,
+                delete_at_ms: None,
+            },
             managed: false,
             origin: None,
             created_at_ms: 0,
@@ -461,5 +539,15 @@ mod tests {
         session.display_name = Some("Task".to_owned());
         session.lifecycle_status = api::SessionLifecycleStatus::Closed;
         assert_eq!(session_line(&session), "s1 closed Task job=nightly");
+    }
+
+    #[test]
+    fn delete_after_duration_parser_accepts_human_units() {
+        assert_eq!(parse_duration_ms("1500"), Ok(1_500));
+        assert_eq!(parse_duration_ms("30m"), Ok(1_800_000));
+        assert_eq!(parse_duration_ms("24h"), Ok(86_400_000));
+        assert_eq!(parse_duration_ms("7d"), Ok(604_800_000));
+        assert!(parse_duration_ms("0").is_err());
+        assert!(parse_duration_ms("1month").is_err());
     }
 }

@@ -57,6 +57,7 @@ async fn pg_live_sessions_are_isolated_by_universe() {
         session_id: session_id.clone(),
         display_name: None,
         origin: None,
+        delete_after_close_ms: None,
         created_at_ms: 1,
     })
     .await
@@ -89,6 +90,7 @@ async fn pg_live_sessions_are_isolated_by_universe() {
             session_id: session_id.clone(),
             display_name: None,
             origin: None,
+            delete_after_close_ms: None,
             created_at_ms: 20,
         })
         .await
@@ -115,6 +117,7 @@ async fn pg_live_session_ranges_are_fenced_and_checkpoint_pointers_only_advance(
             session_id: session_id.clone(),
             display_name: None,
             origin: None,
+            delete_after_close_ms: None,
             created_at_ms: 1,
         })
         .await
@@ -235,6 +238,7 @@ async fn pg_live_session_list_pages_newest_first_and_rename_persists() {
             session_id: SessionId::new("other-universe"),
             display_name: None,
             origin: None,
+            delete_after_close_ms: None,
             created_at_ms: 999,
         })
         .await
@@ -247,6 +251,7 @@ async fn pg_live_session_list_pages_newest_first_and_rename_persists() {
                 session_id: SessionId::new(name),
                 display_name: Some(format!("Session {name}")),
                 origin: None,
+                delete_after_close_ms: None,
                 created_at_ms,
             })
             .await
@@ -343,6 +348,7 @@ async fn pg_live_clone_copies_resources_and_links_sessions() {
                 session_id: session_id.clone(),
                 display_name: None,
                 origin: None,
+                delete_after_close_ms: None,
                 created_at_ms: 1,
             })
             .await
@@ -429,6 +435,7 @@ async fn pg_live_clone_copies_resources_and_links_sessions() {
             session_id: SessionId::new("child-1"),
             display_name: Some("reviewer: first".to_owned()),
             origin: Some(origin("inv-1", 1)),
+            delete_after_close_ms: None,
             created_at_ms: 40,
         })
         .await
@@ -467,6 +474,7 @@ async fn pg_live_clone_copies_resources_and_links_sessions() {
             session_id: SessionId::new("child-2"),
             display_name: None,
             origin: Some(origin("inv-2", 1)),
+            delete_after_close_ms: None,
             created_at_ms: 41,
         })
         .await
@@ -485,6 +493,7 @@ async fn pg_live_clone_copies_resources_and_links_sessions() {
             session_id: SessionId::new("child-3"),
             display_name: None,
             origin: Some(origin("inv-3", 2)),
+            delete_after_close_ms: None,
             created_at_ms: 42,
         })
         .await
@@ -509,6 +518,7 @@ async fn pg_live_fork_stitches_reads_and_clamps_parent_tail() {
             session_id: root.clone(),
             display_name: None,
             origin: None,
+            delete_after_close_ms: None,
             created_at_ms: 1,
         })
         .await
@@ -654,6 +664,7 @@ async fn pg_live_operator_universe_lifecycle_stats_and_purge() {
             session_id: session_id.clone(),
             display_name: None,
             origin: None,
+            delete_after_close_ms: None,
             created_at_ms: 5,
         })
         .await
@@ -804,6 +815,7 @@ async fn pg_live_records_session_roots_and_blob_edges() {
             session_id: session_id.clone(),
             display_name: None,
             origin: None,
+            delete_after_close_ms: None,
             created_at_ms: 1,
         })
         .await
@@ -1435,6 +1447,7 @@ async fn pg_live_universe_environments_are_independent_of_sessions() {
             session_id: session_id.clone(),
             display_name: None,
             origin: None,
+            delete_after_close_ms: None,
             created_at_ms: 35,
         })
         .await
@@ -2265,6 +2278,7 @@ async fn pg_live_session_metadata_filters_by_containment_and_put_replaces() {
                 display_name: None,
                 metadata,
                 origin: None,
+                delete_after_close_ms: None,
                 created_at_ms,
             })
             .await

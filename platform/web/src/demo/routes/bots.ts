@@ -776,7 +776,7 @@ function normalizeDeliver(value: unknown): { whenBusy: WhenBusy } | null {
   throw new BotConfigError("validation failed", 400);
 }
 
-function normalizeSessionTtl(value: unknown): number | null {
+function normalizeSessionCloseAfter(value: unknown): number | null {
   if (value === null || value === undefined) return null;
   if (typeof value !== "number" || !Number.isInteger(value) || value < 0) {
     throw new BotConfigError("validation failed", 400);
@@ -827,7 +827,7 @@ function normalizeTrigger(
     route: kind === "chat" ? chatRoute(body.route) : routed ? normalizeRoute(body.route) : null,
     coalesce: routed ? normalizeCoalesce(body.coalesce) : null,
     deliver: routed ? normalizeDeliver(body.deliver) : null,
-    sessionTtlMs: routed ? (normalizeSessionTtl(body.sessionTtlMs) ?? (kind === "chat" ? 0 : null)) : null,
+    sessionCloseAfterMs: routed ? (normalizeSessionCloseAfter(body.sessionCloseAfterMs) ?? (kind === "chat" ? 0 : null)) : null,
     enabled,
     disabledReason: enabled ? null : ("operator" as const),
     disabledAtMs: enabled ? null : Date.now(),
@@ -957,7 +957,7 @@ function botFromInput(body: Record<string, unknown>, existing: BotView | undefin
     brief: optionalString(body.brief),
     runsPerDay: optionalNumber(body.runsPerDay),
     breaker: typeof fires === "number" && typeof windowMs === "number" ? { fires, windowMs } : null,
-    routedSessionTtlMs: optionalNumber(body.routedSessionTtlMs),
+    routedSessionCloseAfterMs: optionalNumber(body.routedSessionCloseAfterMs),
     selfConfig: body.selfConfig === true,
     emit: body.emit === true,
     enabled: body.enabled !== false,

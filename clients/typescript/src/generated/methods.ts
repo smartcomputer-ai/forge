@@ -13,6 +13,7 @@ export const METHODS = [
   "session/config/put",
   "session/rename",
   "session/metadata/put",
+  "session/retention/put",
   "session/close",
   "session/delete",
   "session/events/read",
@@ -177,6 +178,11 @@ export const METHOD_INFO = {
     summary: "Replace session metadata",
     description: "Replaces the complete descriptive key/value map (bounded like session/start); an omitted or empty map clears it. Record-only: the event log and updatedAtMs are untouched.",
   },
+  "session/retention/put": {
+    scope: "universe",
+    summary: "Replace session retention",
+    description: "Sets the positive close-relative automatic-deletion duration on a retention root, or clears it with null. Forks and delegated children inherit the root policy and cannot override it.",
+  },
   "session/close": {
     scope: "universe",
     summary: "Close a session",
@@ -184,8 +190,8 @@ export const METHOD_INFO = {
   },
   "session/delete": {
     scope: "universe",
-    summary: "Delete a closed session",
-    description: "Permanently removes session storage after the session has been closed; close active/open sessions first.",
+    summary: "Delete closed sessions",
+    description: "Permanently removes a closed retention-tree leaf, or its closed history-fork and delegated-child subtree when cascade is true. Config-only clones are never included.",
   },
   "session/events/read": {
     scope: "universe",
@@ -385,7 +391,7 @@ export const METHOD_INFO = {
   "models/list": {
     scope: "universe",
     summary: "Discover available models",
-    description: "Queries supported providers directly on every call and returns best-effort selectable routes. One provider failure does not discard successful results from others.",
+    description: "Queries supported providers directly, with a brief process-local burst cache, and returns best-effort selectable routes. One provider failure does not discard successful results from others.",
   },
   "profiles/create": {
     scope: "universe",
@@ -870,6 +876,15 @@ export interface MethodMap {
     result: Api.AgentApiOutcomeOfSessionMetadataPutResponse;
   };
   /**
+   * Replace session retention
+   *
+   * Sets the positive close-relative automatic-deletion duration on a retention root, or clears it with null. Forks and delegated children inherit the root policy and cannot override it.
+   */
+  "session/retention/put": {
+    params: Api.SessionRetentionPutParams;
+    result: Api.AgentApiOutcomeOfSessionRetentionPutResponse;
+  };
+  /**
    * Close a session
    *
    * Closes an idle session and detaches its environment bindings. Force mode cancels active work, drops queued runs, and can recover a session whose workflow is unavailable.
@@ -879,9 +894,9 @@ export interface MethodMap {
     result: Api.AgentApiOutcomeOfSessionCloseResponse;
   };
   /**
-   * Delete a closed session
+   * Delete closed sessions
    *
-   * Permanently removes session storage after the session has been closed; close active/open sessions first.
+   * Permanently removes a closed retention-tree leaf, or its closed history-fork and delegated-child subtree when cascade is true. Config-only clones are never included.
    */
   "session/delete": {
     params: Api.SessionDeleteParams;
@@ -1241,7 +1256,7 @@ export interface MethodMap {
   /**
    * Discover available models
    *
-   * Queries supported providers directly on every call and returns best-effort selectable routes. One provider failure does not discard successful results from others.
+   * Queries supported providers directly, with a brief process-local burst cache, and returns best-effort selectable routes. One provider failure does not discard successful results from others.
    */
   "models/list": {
     params: Api.ModelListParams;
@@ -2033,6 +2048,14 @@ export const rpc = {
     return client.call("session/metadata/put", params);
   },
   /**
+   * Replace session retention
+   *
+   * Sets the positive close-relative automatic-deletion duration on a retention root, or clears it with null. Forks and delegated children inherit the root policy and cannot override it.
+   */
+  sessionRetentionPut(client: RpcCaller, params: Api.SessionRetentionPutParams): Promise<Api.AgentApiOutcomeOfSessionRetentionPutResponse> {
+    return client.call("session/retention/put", params);
+  },
+  /**
    * Close a session
    *
    * Closes an idle session and detaches its environment bindings. Force mode cancels active work, drops queued runs, and can recover a session whose workflow is unavailable.
@@ -2041,9 +2064,9 @@ export const rpc = {
     return client.call("session/close", params);
   },
   /**
-   * Delete a closed session
+   * Delete closed sessions
    *
-   * Permanently removes session storage after the session has been closed; close active/open sessions first.
+   * Permanently removes a closed retention-tree leaf, or its closed history-fork and delegated-child subtree when cascade is true. Config-only clones are never included.
    */
   sessionDelete(client: RpcCaller, params: Api.SessionDeleteParams): Promise<Api.AgentApiOutcomeOfSessionDeleteResponse> {
     return client.call("session/delete", params);
@@ -2363,7 +2386,7 @@ export const rpc = {
   /**
    * Discover available models
    *
-   * Queries supported providers directly on every call and returns best-effort selectable routes. One provider failure does not discard successful results from others.
+   * Queries supported providers directly, with a brief process-local burst cache, and returns best-effort selectable routes. One provider failure does not discard successful results from others.
    */
   modelsList(client: RpcCaller, params: Api.ModelListParams): Promise<Api.AgentApiOutcomeOfModelListResponse> {
     return client.call("models/list", params);

@@ -37,7 +37,7 @@ They do not configure the TypeScript Platform server.
 | --- | --- | --- |
 | `LIGHTSPEED_POSTGRES_URL` | **Required**; falls back to `LIGHTSPEED_TEST_POSTGRES_URL` | PostgreSQL connection URL used by the runtime, migration commands, and schema diagnostics. Production must use this name. |
 | `LIGHTSPEED_PG_UNIVERSE_ID` | **Required in `single` auth mode** | UUID of the sole universe in a single-tenant deployment. Not used to auto-create universes in multi-tenant modes. |
-| `LIGHTSPEED_ROLES` | `gateway,environment-gateway,sessions,bots,channels` | Roles this process runs, a comma-separated subset of `gateway` (JSON-RPC, OAuth callbacks, webhook hooks), `environment-gateway` (worker environment routes, the public daemon registration routes, the lifecycle reconciler, and the power reaper), `sessions`, `bots`, `channels` (also `--roles`). Each worker role polls its own task queue with that subsystem's workflows, activities, and background loops. Run exactly one `environment-gateway` process per deployment. |
+| `LIGHTSPEED_ROLES` | `gateway,environment-gateway,sessions,bots,channels` | Roles this process runs, a comma-separated subset of `gateway` (JSON-RPC, OAuth callbacks, webhook hooks), `environment-gateway` (worker environment routes, the public daemon registration routes, the lifecycle reconciler, and the power reaper), `sessions` (session workflows plus the promise-repair and session-retention reapers, each every five minutes), `bots`, `channels` (also `--roles`). Each worker role polls its own task queue with that subsystem's workflows, activities, and background loops. Run exactly one `environment-gateway` process per deployment. |
 | `LIGHTSPEED_ENVIRONMENT_PUBLIC_URL` | Unset | Base URL outbound daemons are told to dial for data connections when it differs from `LIGHTSPEED_PUBLIC_BASE_URL`, for example a dedicated hostname in front of the environment gateway. |
 | `LIGHTSPEED_WORKER_TASK_TYPES` | `all` | What the worker roles poll: `all`, `workflows`, or `activities` (also `--task-types`). |
 | `LIGHTSPEED_TASK_QUEUE` | `lightspeed-sessions` | Sessions task queue shared by the gateway and the `sessions` role. Deployments sharing a Temporal namespace must use distinct queues. |
@@ -173,6 +173,8 @@ from the environment of each process and job the daemon starts.
 | --- | --- | --- |
 | `LIGHTSPEED_ENVD_LISTEN` | `127.0.0.1:19091` unless a gateway URL is set | WebSocket listener address for the passive transport. Set it explicitly to listen while also registering outbound. |
 | `LIGHTSPEED_ENVD_GATEWAY_URL` | Unset | Public connect route to dial, `wss://<host>/environment-gateway/connect`. Plain `ws://` is accepted only toward loopback. |
+| `LIGHTSPEED_ENVD_DISCOVERY_URL` | `https://<gateway-host>/.well-known/lightspeed-envd` | Override the deployment discovery document used by `lightspeed-envd upgrade` and automatic protocol-mismatch upgrades. Must use HTTPS, except that HTTP is accepted toward loopback for development. |
+| `LIGHTSPEED_ENVD_AUTO_UPGRADE` | `false` | Opt a registered outbound daemon into installing and re-executing the build in the deployment discovery document when the gateway challenges it with a different protocol number. Accepts boolean values including `1`/`0`; automatic upgrade is attempted once per process lineage. |
 | `LIGHTSPEED_ENVD_REGISTRATION_KEY` | Unset | Registration key admitting a first-seen daemon identity. Read once and dropped from the process environment; on Linux the initial environment stays readable through `/proc`, so use the file form for untrusted workloads. |
 | `LIGHTSPEED_ENVD_REGISTRATION_KEY_FILE` | Unset | File holding the registration key; mutually exclusive with the direct form. Delete the file once the receipt appears. |
 | `LIGHTSPEED_ENVD_REGISTRATION_NAME` | Unset | Display-name hint recorded on the environment at first registration. |
@@ -189,6 +191,22 @@ the registration key's policy, minted with
 page. A closed environment's daemon identity is spent; the daemon exits with
 a non-zero status on any terminal rejection and never generates a new
 identity on its own.
+
+Run `lightspeed-envd upgrade` to install the build currently named by the
+deployment. It uses `LIGHTSPEED_ENVD_DISCOVERY_URL` when set, otherwise derives
+the well-known HTTPS URL from `LIGHTSPEED_ENVD_GATEWAY_URL`. The daemon streams
+the target-specific archive with a size limit, verifies its SHA-256 checksum,
+runs the candidate's `--print-build`, and checks its version, commit, target,
+and protocol before atomically replacing the current executable. The command
+prints manual installation commands instead when the executable directory is
+not writable. `LIGHTSPEED_ENVD_CA_FILE` supplies additional trust roots to both
+gateway WebSockets and upgrade downloads.
+
+Automatic upgrade applies only to registered outbound daemons and only to a
+protocol mismatch—not ordinary commit drift. After replacement it re-executes
+the original executable path with the same arguments, preserving the working
+directory, process ID, state directory, and daemon identity. A lineage marker
+prevents a stale discovery document from causing an upgrade loop.
 
 `./dev.sh full` and `./dev.sh runtime` also start one daemon on the developer
 machine (opt out with `./dev.sh --no-envd` or `LIGHTSPEED_DEV_ENVD=off`):

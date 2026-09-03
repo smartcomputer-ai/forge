@@ -31,6 +31,19 @@ pub struct SessionRecord {
     /// replaying inherited history.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub closed_at_seq: Option<EventSeq>,
+    /// Observation time of the terminal lifecycle event. Cleared on reopen.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub closed_at_ms: Option<u64>,
+    /// Immutable owner of this session's retention tree. Fresh sessions and
+    /// config-only clones own themselves; forks and delegated children inherit
+    /// their source/parent root.
+    pub retention_root_session_id: SessionId,
+    /// Root-only automatic-deletion policy. Descendants always store `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delete_after_close_ms: Option<u64>,
+    /// Materialized root-only deadline derived from close time and policy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delete_at_ms: Option<u64>,
     /// Cheap catalog/list projection of immutable lifecycle ownership. This
     /// is true only when a managed-session declaration names a lifecycle
     /// controller; workflow-tool-only declarations remain ordinary sessions.
@@ -158,6 +171,10 @@ pub struct CreateSession {
     /// must hold, atomically with the insert.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin: Option<SessionOrigin>,
+    /// Root-only automatic deletion after close. Delegated children must omit
+    /// this because they inherit their parent's retention root.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delete_after_close_ms: Option<u64>,
     pub created_at_ms: u64,
 }
 
@@ -178,6 +195,22 @@ pub struct CreateForkedSession {
     /// inherited prefix; the child then appends from seq 1.
     pub source_seq: EventSeq,
     pub created_at_ms: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeleteClosedSessions {
+    pub session_id: SessionId,
+    pub cascade: bool,
+    /// Present only for retention-reaper deletion. The root must still have a
+    /// materialized deadline at or before this observation time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub due_at_or_before_ms: Option<u64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeleteClosedSessionsResult {
+    pub target: SessionRecord,
+    pub deleted_session_ids: Vec<SessionId>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -297,6 +330,9 @@ pub enum SessionStoreError {
     #[error("invalid page limit: {limit}")]
     InvalidLimit { limit: usize },
 
+    #[error("invalid session retention: {message}")]
+    InvalidRetention { message: String },
+
     #[error("invalid fork point for {session_id} at seq {source_seq}: {message}")]
     InvalidForkPoint {
         session_id: SessionId,
@@ -318,8 +354,23 @@ pub enum SessionStoreError {
         lifecycle_status: SessionLifecycleStatus,
     },
 
-    #[error("session has fork children and still backs their inherited history: {session_id}")]
-    SessionHasForkChildren { session_id: SessionId },
+    #[error("session has retention children; retry with cascade: {session_id}")]
+    SessionHasChildren { session_id: SessionId },
+
+    #[error("session retention is owned by {retention_root_session_id}, not {session_id}")]
+    SessionRetentionOwnedBy {
+        session_id: SessionId,
+        retention_root_session_id: SessionId,
+    },
+
+    #[error("session retention deadline is no longer due: {session_id}")]
+    SessionRetentionNotDue { session_id: SessionId },
+
+    #[error("session tree contains an open session: {session_id} ({lifecycle_status:?})")]
+    SessionTreeNotClosed {
+        session_id: SessionId,
+        lifecycle_status: SessionLifecycleStatus,
+    },
 
     #[error("lifecycle-managed session cannot be cloned or forked: {session_id}")]
     ManagedSessionCannotBranch { session_id: SessionId },
@@ -382,18 +433,60 @@ pub trait SessionStore: Send + Sync {
         })
     }
 
+    /// Replace the root-owned automatic-deletion duration. Descendant targets
+    /// are rejected rather than mutating their root implicitly.
+    async fn set_session_retention(
+        &self,
+        session_id: &SessionId,
+        delete_after_close_ms: Option<u64>,
+    ) -> Result<SessionRecord, SessionStoreError> {
+        let _ = delete_after_close_ms;
+        Err(SessionStoreError::Store {
+            message: format!(
+                "set_session_retention is not supported by this session store for {session_id}"
+            ),
+        })
+    }
+
+    /// List due retention roots in deadline order.
+    async fn list_retention_roots_due_for_deletion(
+        &self,
+        now_ms: u64,
+        limit: usize,
+    ) -> Result<Vec<SessionRecord>, SessionStoreError> {
+        let _ = (now_ms, limit);
+        Err(SessionStoreError::Store {
+            message: "list_retention_roots_due_for_deletion is not supported by this session store"
+                .to_owned(),
+        })
+    }
+
     /// Delete a logically closed session. Implementations must perform the
     /// lifecycle check and delete atomically and reject sessions whose event
     /// history is still inherited by a fork child.
+    async fn delete_closed_sessions(
+        &self,
+        request: DeleteClosedSessions,
+    ) -> Result<DeleteClosedSessionsResult, SessionStoreError> {
+        Err(SessionStoreError::Store {
+            message: format!(
+                "delete_closed_sessions is not supported by this session store for {}",
+                request.session_id
+            ),
+        })
+    }
+
     async fn delete_closed_session(
         &self,
         session_id: &SessionId,
     ) -> Result<SessionRecord, SessionStoreError> {
-        Err(SessionStoreError::Store {
-            message: format!(
-                "delete_closed_session is not supported by this session store for {session_id}"
-            ),
+        self.delete_closed_sessions(DeleteClosedSessions {
+            session_id: session_id.clone(),
+            cascade: false,
+            due_at_or_before_ms: None,
         })
+        .await
+        .map(|result| result.target)
     }
 
     async fn create_cloned_session(
@@ -517,7 +610,18 @@ impl SessionStore for InMemorySessionStore {
                 session_id: request.session_id,
             });
         }
+        if request.delete_after_close_ms == Some(0) {
+            return Err(SessionStoreError::InvalidRetention {
+                message: "deleteAfterCloseMs must be positive".to_owned(),
+            });
+        }
         if let Some(origin) = &request.origin {
+            if request.delete_after_close_ms.is_some() {
+                return Err(SessionStoreError::SessionRetentionOwnedBy {
+                    session_id: request.session_id,
+                    retention_root_session_id: origin.root_session_id.clone(),
+                });
+            }
             for session_id in [&origin.parent_session_id, &origin.root_session_id] {
                 if !inner.records.contains_key(session_id) {
                     return Err(SessionStoreError::SessionNotFound {
@@ -530,12 +634,24 @@ impl SessionStore for InMemorySessionStore {
                 in_memory_origin_counts(&inner, &origin.root_session_id),
             )?;
         }
+        let retention_root_session_id = request
+            .origin
+            .as_ref()
+            .and_then(|origin| inner.records.get(&origin.parent_session_id))
+            .map_or_else(
+                || request.session_id.clone(),
+                |parent| parent.retention_root_session_id.clone(),
+            );
         let record = SessionRecord {
-            session_id: request.session_id,
+            session_id: request.session_id.clone(),
             display_name: request.display_name,
             metadata: request.metadata,
             lifecycle_status: SessionLifecycleStatus::New,
             closed_at_seq: None,
+            closed_at_ms: None,
+            retention_root_session_id,
+            delete_after_close_ms: request.delete_after_close_ms,
+            delete_at_ms: None,
             managed: false,
             head: None,
             source_session_id: None,
@@ -654,42 +770,140 @@ impl SessionStore for InMemorySessionStore {
         Ok(record.clone())
     }
 
-    async fn delete_closed_session(
+    async fn set_session_retention(
         &self,
         session_id: &SessionId,
+        delete_after_close_ms: Option<u64>,
     ) -> Result<SessionRecord, SessionStoreError> {
+        if delete_after_close_ms == Some(0) {
+            return Err(SessionStoreError::InvalidRetention {
+                message: "deleteAfterCloseMs must be positive".to_owned(),
+            });
+        }
         let mut inner = self.inner.write().map_err(|_| SessionStoreError::Store {
             message: "session store write lock poisoned".into(),
         })?;
-        let record = inner.records.get(session_id).cloned().ok_or_else(|| {
+        let record = inner.records.get_mut(session_id).ok_or_else(|| {
             SessionStoreError::SessionNotFound {
                 session_id: session_id.clone(),
             }
         })?;
+        if record.retention_root_session_id != *session_id {
+            return Err(SessionStoreError::SessionRetentionOwnedBy {
+                session_id: session_id.clone(),
+                retention_root_session_id: record.retention_root_session_id.clone(),
+            });
+        }
+        record.delete_after_close_ms = delete_after_close_ms;
+        refresh_delete_at(record);
+        Ok(record.clone())
+    }
+
+    async fn list_retention_roots_due_for_deletion(
+        &self,
+        now_ms: u64,
+        limit: usize,
+    ) -> Result<Vec<SessionRecord>, SessionStoreError> {
+        if limit == 0 {
+            return Err(SessionStoreError::InvalidLimit { limit });
+        }
+        let inner = self.inner.read().map_err(|_| SessionStoreError::Store {
+            message: "session store read lock poisoned".into(),
+        })?;
+        let mut due = inner
+            .records
+            .values()
+            .filter(|record| {
+                record.retention_root_session_id == record.session_id
+                    && record.lifecycle_status == SessionLifecycleStatus::Closed
+                    && record
+                        .delete_at_ms
+                        .is_some_and(|deadline| deadline <= now_ms)
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        due.sort_by(|left, right| {
+            left.delete_at_ms
+                .cmp(&right.delete_at_ms)
+                .then_with(|| left.session_id.cmp(&right.session_id))
+        });
+        due.truncate(limit);
+        Ok(due)
+    }
+
+    async fn delete_closed_sessions(
+        &self,
+        request: DeleteClosedSessions,
+    ) -> Result<DeleteClosedSessionsResult, SessionStoreError> {
+        let mut inner = self.inner.write().map_err(|_| SessionStoreError::Store {
+            message: "session store write lock poisoned".into(),
+        })?;
+        let record = inner
+            .records
+            .get(&request.session_id)
+            .cloned()
+            .ok_or_else(|| SessionStoreError::SessionNotFound {
+                session_id: request.session_id.clone(),
+            })?;
         if record.lifecycle_status != SessionLifecycleStatus::Closed {
             return Err(SessionStoreError::SessionNotClosed {
-                session_id: session_id.clone(),
+                session_id: request.session_id,
                 lifecycle_status: record.lifecycle_status,
             });
         }
-        if inner.records.values().any(|candidate| {
-            candidate.source_session_id.as_ref() == Some(session_id)
-                && candidate.source_seq.is_some()
-        }) {
-            return Err(SessionStoreError::SessionHasForkChildren {
-                session_id: session_id.clone(),
+        if let Some(now_ms) = request.due_at_or_before_ms
+            && (record.retention_root_session_id != record.session_id
+                || !record
+                    .delete_at_ms
+                    .is_some_and(|deadline| deadline <= now_ms))
+        {
+            return Err(SessionStoreError::SessionRetentionNotDue {
+                session_id: record.session_id,
             });
         }
 
-        inner.records.remove(session_id);
-        inner.entries.remove(session_id);
-        inner.checkpoints.remove(session_id);
+        let descendants = in_memory_retention_descendants(&inner, &request.session_id);
+        if !request.cascade && !descendants.is_empty() {
+            return Err(SessionStoreError::SessionHasChildren {
+                session_id: request.session_id,
+            });
+        }
+        let mut deleted_session_ids = if request.cascade {
+            descendants
+        } else {
+            Vec::new()
+        };
+        deleted_session_ids.push(record.session_id.clone());
+        for session_id in &deleted_session_ids {
+            let candidate = inner
+                .records
+                .get(session_id)
+                .expect("retention descendant exists");
+            if candidate.lifecycle_status != SessionLifecycleStatus::Closed {
+                return Err(SessionStoreError::SessionTreeNotClosed {
+                    session_id: session_id.clone(),
+                    lifecycle_status: candidate.lifecycle_status,
+                });
+            }
+        }
+        for session_id in &deleted_session_ids {
+            inner.records.remove(session_id);
+            inner.entries.remove(session_id);
+            inner.checkpoints.remove(session_id);
+        }
         for candidate in inner.records.values_mut() {
-            if candidate.source_session_id.as_ref() == Some(session_id) {
+            if candidate
+                .source_session_id
+                .as_ref()
+                .is_some_and(|source| deleted_session_ids.contains(source))
+            {
                 candidate.source_session_id = None;
             }
         }
-        Ok(record)
+        Ok(DeleteClosedSessionsResult {
+            target: record,
+            deleted_session_ids,
+        })
     }
 
     async fn create_cloned_session(
@@ -718,10 +932,14 @@ impl SessionStore for InMemorySessionStore {
 
         let mut record = SessionRecord {
             metadata: Default::default(),
-            session_id: request.session_id,
+            session_id: request.session_id.clone(),
             display_name: None,
             lifecycle_status: SessionLifecycleStatus::New,
             closed_at_seq: None,
+            closed_at_ms: None,
+            retention_root_session_id: request.session_id.clone(),
+            delete_after_close_ms: None,
+            delete_at_ms: None,
             managed: false,
             head: None,
             source_session_id: Some(request.source_session_id),
@@ -767,6 +985,7 @@ impl SessionStore for InMemorySessionStore {
             .get(&request.source_session_id)
             .expect("validated source session");
         let (lifecycle_status, closed_at_seq) = lifecycle_at_fork(source, request.source_seq);
+        let closed_at_ms = closed_at_seq.and(source.closed_at_ms);
         let head = position_from_nonzero_seq(request.source_seq);
         let record = SessionRecord {
             metadata: Default::default(),
@@ -774,6 +993,10 @@ impl SessionStore for InMemorySessionStore {
             display_name: None,
             lifecycle_status,
             closed_at_seq,
+            closed_at_ms,
+            retention_root_session_id: source.retention_root_session_id.clone(),
+            delete_after_close_ms: None,
+            delete_at_ms: None,
             managed: false,
             head,
             source_session_id: Some(request.source_session_id),
@@ -1109,10 +1332,14 @@ pub fn apply_lifecycle_projection(record: &mut SessionRecord, entry: &StoredSess
         CORE_AGENT_LIFECYCLE_OPENED_EVENT_KIND => {
             record.lifecycle_status = SessionLifecycleStatus::Open;
             record.closed_at_seq = None;
+            record.closed_at_ms = None;
+            refresh_delete_at(record);
         }
         CORE_AGENT_LIFECYCLE_CLOSED_EVENT_KIND => {
             record.lifecycle_status = SessionLifecycleStatus::Closed;
             record.closed_at_seq = Some(entry.position.seq);
+            record.closed_at_ms = Some(entry.observed_at_ms);
+            refresh_delete_at(record);
         }
         "lightspeed.core.workflow_tool_config.managed_bindings_admitted" => {
             if matches!(
@@ -1129,6 +1356,49 @@ pub fn apply_lifecycle_projection(record: &mut SessionRecord, entry: &StoredSess
         }
         _ => {}
     }
+}
+
+fn refresh_delete_at(record: &mut SessionRecord) {
+    record.delete_at_ms = if record.retention_root_session_id == record.session_id {
+        record
+            .closed_at_ms
+            .zip(record.delete_after_close_ms)
+            .map(|(closed_at_ms, duration_ms)| closed_at_ms.saturating_add(duration_ms))
+    } else {
+        None
+    };
+}
+
+fn in_memory_retention_descendants(
+    inner: &InMemorySessionStoreInner,
+    session_id: &SessionId,
+) -> Vec<SessionId> {
+    let mut descendants = Vec::new();
+    let mut pending = vec![session_id.clone()];
+    while let Some(parent) = pending.pop() {
+        let children = inner
+            .records
+            .values()
+            .filter(|candidate| {
+                candidate
+                    .origin
+                    .as_ref()
+                    .is_some_and(|origin| origin.parent_session_id == parent)
+                    || (candidate.source_seq.is_some()
+                        && candidate.source_session_id.as_ref() == Some(&parent))
+            })
+            .map(|candidate| candidate.session_id.clone())
+            .collect::<Vec<_>>();
+        for child in children {
+            if !descendants.contains(&child) {
+                pending.push(child.clone());
+                descendants.push(child);
+            }
+        }
+    }
+    // Children appear before parents when removed in reverse discovery order.
+    descendants.reverse();
+    descendants
 }
 
 pub fn lifecycle_at_fork(
@@ -1300,6 +1570,7 @@ mod tests {
                 session_id: session_id.clone(),
                 display_name: None,
                 origin: None,
+                delete_after_close_ms: None,
                 created_at_ms: 1,
             })
             .await
@@ -1332,6 +1603,7 @@ mod tests {
                 session_id: session_id.clone(),
                 display_name: None,
                 origin: None,
+                delete_after_close_ms: None,
                 created_at_ms: 1,
             })
             .await
@@ -1382,6 +1654,7 @@ mod tests {
                     session_id: SessionId::new(name),
                     display_name: Some(format!("Session {name}")),
                     origin: None,
+                    delete_after_close_ms: None,
                     created_at_ms,
                 })
                 .await
@@ -1476,6 +1749,7 @@ mod tests {
                 session_id: SessionId::new(session_id),
                 display_name: None,
                 origin: Some(origin),
+                delete_after_close_ms: None,
                 created_at_ms: 1,
             })
             .await
@@ -1501,6 +1775,7 @@ mod tests {
                 session_id: SessionId::new("root"),
                 display_name: None,
                 origin: None,
+                delete_after_close_ms: None,
                 created_at_ms: 1,
             })
             .await
@@ -1589,6 +1864,7 @@ mod tests {
                 session_id: SessionId::new("root"),
                 display_name: None,
                 origin: None,
+                delete_after_close_ms: None,
                 created_at_ms: 1,
             })
             .await
@@ -1627,6 +1903,7 @@ mod tests {
                 session_id: SessionId::new("root"),
                 display_name: None,
                 origin: None,
+                delete_after_close_ms: None,
                 created_at_ms: 1,
             })
             .await
@@ -1669,6 +1946,7 @@ mod tests {
                     session_id: SessionId::new(root),
                     display_name: None,
                     origin: None,
+                    delete_after_close_ms: None,
                     created_at_ms: 1,
                 })
                 .await
@@ -1760,6 +2038,7 @@ mod tests {
                 display_name: None,
                 metadata: job.clone(),
                 origin: None,
+                delete_after_close_ms: None,
                 created_at_ms: 10,
             })
             .await
@@ -1770,6 +2049,7 @@ mod tests {
                 display_name: None,
                 metadata: BTreeMap::from([("source".to_owned(), "bot".to_owned())]),
                 origin: None,
+                delete_after_close_ms: None,
                 created_at_ms: 20,
             })
             .await
@@ -1852,6 +2132,7 @@ mod tests {
                 session_id: session_id.clone(),
                 display_name: None,
                 origin: None,
+                delete_after_close_ms: None,
                 created_at_ms: 1,
             })
             .await
@@ -1888,6 +2169,7 @@ mod tests {
                 session_id: parent.clone(),
                 display_name: None,
                 origin: None,
+                delete_after_close_ms: None,
                 created_at_ms: 1,
             })
             .await
@@ -1962,7 +2244,7 @@ mod tests {
 
         assert!(matches!(
             store.delete_closed_session(&parent).await,
-            Err(SessionStoreError::SessionHasForkChildren { .. })
+            Err(SessionStoreError::SessionHasChildren { .. })
         ));
         store
             .delete_closed_session(&after_close)
@@ -1994,6 +2276,135 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn retention_roots_own_forks_and_delegated_children_but_not_clones() {
+        let store = InMemorySessionStore::new();
+        let root = SessionId::new("retention-root");
+        store
+            .create_session(CreateSession {
+                metadata: Default::default(),
+                session_id: root.clone(),
+                display_name: None,
+                origin: None,
+                delete_after_close_ms: Some(100),
+                created_at_ms: 1,
+            })
+            .await
+            .expect("create retained root");
+        store
+            .append(AppendSessionEvents {
+                session_id: root.clone(),
+                expected_head: None,
+                events: vec![lifecycle_opened_event(10), lifecycle_closed_event(20)],
+            })
+            .await
+            .expect("close root");
+
+        let fork = store
+            .create_forked_session(CreateForkedSession {
+                source_session_id: root.clone(),
+                session_id: SessionId::new("retention-fork"),
+                source_seq: EventSeq::new(2),
+                created_at_ms: 30,
+            })
+            .await
+            .expect("fork root");
+        assert_eq!(fork.retention_root_session_id, root);
+        assert_eq!(fork.closed_at_ms, Some(20));
+        assert_eq!(fork.delete_after_close_ms, None);
+
+        let child = create_delegated(
+            &store,
+            "retention-child",
+            subagent_origin(
+                "retention-root",
+                "retention-root",
+                1,
+                SubagentLimits::default(),
+            ),
+        )
+        .await
+        .expect("create delegated child");
+        assert_eq!(child.retention_root_session_id, root);
+        assert!(matches!(
+            store
+                .set_session_retention(&child.session_id, Some(50))
+                .await,
+            Err(SessionStoreError::SessionRetentionOwnedBy {
+                retention_root_session_id,
+                ..
+            }) if retention_root_session_id == root
+        ));
+
+        let clone = store
+            .create_cloned_session(CreateClonedSession {
+                source_session_id: root.clone(),
+                session_id: SessionId::new("retention-clone"),
+                created_at_ms: 40,
+                opening_events: vec![lifecycle_opened_event(40), lifecycle_closed_event(41)],
+            })
+            .await
+            .expect("clone root");
+        assert_eq!(clone.retention_root_session_id, clone.session_id);
+        assert_eq!(clone.delete_after_close_ms, None);
+
+        assert!(
+            store
+                .list_retention_roots_due_for_deletion(119, 10)
+                .await
+                .expect("list before deadline")
+                .is_empty()
+        );
+        assert_eq!(
+            store
+                .list_retention_roots_due_for_deletion(120, 10)
+                .await
+                .expect("list at deadline")
+                .into_iter()
+                .map(|record| record.session_id)
+                .collect::<Vec<_>>(),
+            vec![root.clone()]
+        );
+        assert!(matches!(
+            store.delete_closed_session(&root).await,
+            Err(SessionStoreError::SessionHasChildren { .. })
+        ));
+        assert!(matches!(
+            store
+                .delete_closed_sessions(DeleteClosedSessions {
+                    session_id: root.clone(),
+                    cascade: true,
+                    due_at_or_before_ms: Some(120),
+                })
+                .await,
+            Err(SessionStoreError::SessionTreeNotClosed { .. })
+        ));
+
+        close_session(&store, "retention-child").await;
+        let deleted = store
+            .delete_closed_sessions(DeleteClosedSessions {
+                session_id: root.clone(),
+                cascade: true,
+                due_at_or_before_ms: Some(120),
+            })
+            .await
+            .expect("delete retention tree");
+        assert_eq!(deleted.deleted_session_ids.len(), 3);
+        assert!(
+            store
+                .load_session(&root)
+                .await
+                .expect("load root")
+                .is_none()
+        );
+        let surviving_clone = store
+            .load_session(&clone.session_id)
+            .await
+            .expect("load clone")
+            .expect("clone survives");
+        assert_eq!(surviving_clone.source_session_id, None);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn management_projection_rejects_clones_and_forks() {
         let store = InMemorySessionStore::new();
         let parent = SessionId::new("managed-parent");
@@ -2003,6 +2414,7 @@ mod tests {
                 session_id: parent.clone(),
                 display_name: None,
                 origin: None,
+                delete_after_close_ms: None,
                 created_at_ms: 1,
             })
             .await
@@ -2067,6 +2479,7 @@ mod tests {
                 session_id: tool_only.clone(),
                 display_name: None,
                 origin: None,
+                delete_after_close_ms: None,
                 created_at_ms: 30,
             })
             .await
@@ -2108,6 +2521,7 @@ mod tests {
                 session_id: session_id.clone(),
                 display_name: None,
                 origin: None,
+                delete_after_close_ms: None,
                 created_at_ms: 1,
             })
             .await
@@ -2150,6 +2564,7 @@ mod tests {
                 session_id: session_id.clone(),
                 display_name: None,
                 origin: None,
+                delete_after_close_ms: None,
                 created_at_ms: 1,
             })
             .await
@@ -2161,6 +2576,7 @@ mod tests {
                 session_id: session_id.clone(),
                 display_name: None,
                 origin: None,
+                delete_after_close_ms: None,
                 created_at_ms: 2,
             })
             .await
@@ -2206,6 +2622,7 @@ mod tests {
                 session_id: source_id.clone(),
                 display_name: None,
                 origin: None,
+                delete_after_close_ms: None,
                 created_at_ms: 1,
             })
             .await
@@ -2259,6 +2676,7 @@ mod tests {
                 session_id: root.clone(),
                 display_name: None,
                 origin: None,
+                delete_after_close_ms: None,
                 created_at_ms: 1,
             })
             .await
@@ -2364,6 +2782,7 @@ mod tests {
                 session_id: session_id.clone(),
                 display_name: None,
                 origin: None,
+                delete_after_close_ms: None,
                 created_at_ms: 1,
             })
             .await

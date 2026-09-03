@@ -2043,6 +2043,23 @@
         ],
         "type": "object"
       },
+      "AgentApiOutcomeOfSessionRetentionPutResponse": {
+        "properties": {
+          "notifications": {
+            "items": {
+              "$ref": "#/components/schemas/AgentNotification"
+            },
+            "type": "array"
+          },
+          "result": {
+            "$ref": "#/components/schemas/SessionRetentionPutResponse"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "type": "object"
+      },
       "AgentApiOutcomeOfSessionStartResponse": {
         "properties": {
           "notifications": {
@@ -4805,8 +4822,8 @@
           "profileId": {
             "$ref": "#/components/schemas/ProfileId"
           },
-          "routedSessionTtlMs": {
-            "description": "Close routed (`perKey` / `perEvent`) sessions idle longer than this;\nabsent keeps them open. A trigger's `sessionTtlMs` overrides it.",
+          "routedSessionCloseAfterMs": {
+            "description": "Close routed (`perKey` / `perEvent`) sessions idle longer than this;\nabsent keeps them open. A trigger's `sessionCloseAfterMs` overrides it.",
             "format": "uint64",
             "minimum": 0,
             "type": [
@@ -4931,8 +4948,8 @@
             "minimum": 0,
             "type": "integer"
           },
-          "routedSessionTtlMs": {
-            "description": "Close routed (`perKey` / `perEvent`) sessions idle longer than this;\nabsent keeps them open. A trigger's `sessionTtlMs` overrides it.",
+          "routedSessionCloseAfterMs": {
+            "description": "Close routed (`perKey` / `perEvent`) sessions idle longer than this;\nabsent keeps them open. A trigger's `sessionCloseAfterMs` overrides it.",
             "format": "uint64",
             "minimum": 0,
             "type": [
@@ -5536,8 +5553,8 @@
               }
             ]
           },
-          "sessionTtlMs": {
-            "description": "Retention of the sessions this trigger routes to: absent inherits the\nbot's `routedSessionTtlMs`, `0` keeps them open indefinitely (the\nchat default).",
+          "sessionCloseAfterMs": {
+            "description": "Idle-close policy for sessions this trigger routes to: absent inherits the\nbot's `routedSessionCloseAfterMs`, `0` keeps them open indefinitely (the\nchat default).",
             "format": "uint64",
             "minimum": 0,
             "type": [
@@ -5985,8 +6002,8 @@
               }
             ]
           },
-          "sessionTtlMs": {
-            "description": "Retention of the sessions this trigger routes to: absent inherits the\nbot's `routedSessionTtlMs`, `0` keeps them open indefinitely (the\nchat default).",
+          "sessionCloseAfterMs": {
+            "description": "Idle-close policy for sessions this trigger routes to: absent inherits the\nbot's `routedSessionCloseAfterMs`, `0` keeps them open indefinitely (the\nchat default).",
             "format": "uint64",
             "minimum": 0,
             "type": [
@@ -6091,8 +6108,8 @@
             "minimum": 0,
             "type": "integer"
           },
-          "routedSessionTtlMs": {
-            "description": "Close routed (`perKey` / `perEvent`) sessions idle longer than this;\nabsent keeps them open. A trigger's `sessionTtlMs` overrides it.",
+          "routedSessionCloseAfterMs": {
+            "description": "Close routed (`perKey` / `perEvent`) sessions idle longer than this;\nabsent keeps them open. A trigger's `sessionCloseAfterMs` overrides it.",
             "format": "uint64",
             "minimum": 0,
             "type": [
@@ -9768,6 +9785,15 @@
               }
             ]
           },
+          "deleteAfterCloseMs": {
+            "description": "Root-owned automatic deletion measured from close. Absent keeps the\nsession tree until manual deletion.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
           "displayName": {
             "type": [
               "string",
@@ -10603,7 +10629,7 @@
         "type": "object"
       },
       "ModelListParams": {
-        "description": "Direct provider model discovery. Each invocation asks the supported\nprovider APIs again; clients refresh by calling this method.",
+        "description": "Direct provider model discovery. Results may be served from a brief\nprocess-local cache; clients refresh by calling this method.",
         "properties": {
           "selectableOnly": {
             "description": "Apply Lightspeed's small, conservative selectable-model policy. It\nremoves OpenAI model-id families that are clearly not text-generation\nroutes (embeddings, moderation, image/video, speech, and realtime).\nIt is an ID policy, not a provider capability claim.",
@@ -13053,6 +13079,10 @@
       },
       "SessionDeleteParams": {
         "properties": {
+          "cascade": {
+            "description": "Delete history forks and delegated descendants too. False requires the\ntarget to be a closed retention-tree leaf.",
+            "type": "boolean"
+          },
           "sessionId": {
             "type": "string"
           }
@@ -13064,12 +13094,18 @@
       },
       "SessionDeleteResponse": {
         "properties": {
+          "deletedSessionCount": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
           "session": {
             "$ref": "#/components/schemas/SessionSummaryView"
           }
         },
         "required": [
-          "session"
+          "session",
+          "deletedSessionCount"
         ],
         "type": "object"
       },
@@ -15195,6 +15231,67 @@
         ],
         "type": "object"
       },
+      "SessionRetentionPutParams": {
+        "additionalProperties": false,
+        "properties": {
+          "deleteAfterCloseMs": {
+            "description": "Positive duration enables automatic tree deletion; null disables it.",
+            "format": "uint64",
+            "minimum": 1,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "sessionId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "sessionId",
+          "deleteAfterCloseMs"
+        ],
+        "type": "object"
+      },
+      "SessionRetentionPutResponse": {
+        "properties": {
+          "session": {
+            "$ref": "#/components/schemas/SessionSummaryView"
+          }
+        },
+        "required": [
+          "session"
+        ],
+        "type": "object"
+      },
+      "SessionRetentionView": {
+        "description": "Effective tree-owned retention for a session. Forks and delegated children\nname their owning root and project that root's policy and deadline.",
+        "properties": {
+          "deleteAfterCloseMs": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "deleteAtMs": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "rootSessionId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "rootSessionId"
+        ],
+        "type": "object"
+      },
       "SessionStartParams": {
         "additionalProperties": false,
         "properties": {
@@ -15206,6 +15303,15 @@
               {
                 "type": "null"
               }
+            ]
+          },
+          "deleteAfterCloseMs": {
+            "description": "Root-owned automatic deletion measured from close. Absent keeps the\nsession tree until manual deletion.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
             ]
           },
           "displayName": {
@@ -15263,6 +15369,14 @@
       },
       "SessionSummaryView": {
         "properties": {
+          "closedAtMs": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
           "createdAtMs": {
             "format": "uint64",
             "minimum": 0,
@@ -15302,6 +15416,9 @@
             ],
             "description": "Sub-agent lineage; absent for root sessions."
           },
+          "retention": {
+            "$ref": "#/components/schemas/SessionRetentionView"
+          },
           "updatedAtMs": {
             "format": "uint64",
             "minimum": 0,
@@ -15311,6 +15428,7 @@
         "required": [
           "id",
           "lifecycleStatus",
+          "retention",
           "managed",
           "createdAtMs",
           "updatedAtMs"
@@ -15350,6 +15468,14 @@
               "revision": 0,
               "tools": []
             }
+          },
+          "closedAtMs": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "config": {
             "anyOf": [
@@ -15414,6 +15540,9 @@
             ],
             "description": "Sub-agent lineage; absent for root sessions."
           },
+          "retention": {
+            "$ref": "#/components/schemas/SessionRetentionView"
+          },
           "runs": {
             "default": [],
             "items": {
@@ -15433,6 +15562,7 @@
         "required": [
           "id",
           "status",
+          "retention",
           "managed",
           "configRevision",
           "createdAtMs",
@@ -17340,6 +17470,27 @@
       "summary": "Replace session metadata"
     },
     {
+      "description": "Sets the positive close-relative automatic-deletion duration on a retention root, or clears it with null. Forks and delegated children inherit the root policy and cannot override it.",
+      "name": "session/retention/put",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "params",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/SessionRetentionPutParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/AgentApiOutcomeOfSessionRetentionPutResponse"
+        }
+      },
+      "summary": "Replace session retention"
+    },
+    {
       "description": "Closes an idle session and detaches its environment bindings. Force mode cancels active work, drops queued runs, and can recover a session whose workflow is unavailable.",
       "name": "session/close",
       "paramStructure": "by-name",
@@ -17361,7 +17512,7 @@
       "summary": "Close a session"
     },
     {
-      "description": "Permanently removes session storage after the session has been closed; close active/open sessions first.",
+      "description": "Permanently removes a closed retention-tree leaf, or its closed history-fork and delegated-child subtree when cascade is true. Config-only clones are never included.",
       "name": "session/delete",
       "paramStructure": "by-name",
       "params": [
@@ -17379,7 +17530,7 @@
           "$ref": "#/components/schemas/AgentApiOutcomeOfSessionDeleteResponse"
         }
       },
-      "summary": "Delete a closed session"
+      "summary": "Delete closed sessions"
     },
     {
       "description": "Reads events after a cursor and optionally long-polls when caught up. Continue from nextCursor/headCursor and inspect complete/gap rather than assuming an uninterrupted page.",
@@ -18201,7 +18352,7 @@
       "summary": "Revoke an environment registration key"
     },
     {
-      "description": "Queries supported providers directly on every call and returns best-effort selectable routes. One provider failure does not discard successful results from others.",
+      "description": "Queries supported providers directly, with a brief process-local burst cache, and returns best-effort selectable routes. One provider failure does not discard successful results from others.",
       "name": "models/list",
       "paramStructure": "by-name",
       "params": [

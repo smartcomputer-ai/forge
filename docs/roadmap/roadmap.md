@@ -1,11 +1,12 @@
 # Lightspeed Roadmap
 
 ## Work
-- [ ] [P155](p155-models-list-cache.md) — `models/list` discovery cache:
-  a per-universe, per-provider result cache with a 10 to 30 second TTL and
-  a shorter negative TTL, so an evaluation job starting a dozen trials at
-  once issues one upstream catalog request instead of twelve.
-- [ ] [P154](p154-session-retention.md) — session-tree retention: an opt-in
+- [x] [P155](p155-models-list-cache.md) — `models/list` discovery cache
+  (implemented 2026-09-03): a process-local, per-universe and per-provider
+  single-flight cache with a 10-second success TTL, 2-second failure TTL, and
+  generation-safe invalidation when credentials or endpoint configuration are
+  replaced.
+- [x] [P154](p154-session-retention.md) — session-tree retention: an opt-in
   `deleteAfterCloseMs` on the retention root, inherited ownership for history
   forks and delegated children but not config-only clones, effective retention
   views, explicit manual cascade, and an always-cascading worker-role reaper.
@@ -26,7 +27,9 @@
   release binary panics on its first TLS connection), publish static musl
   builds so any sandbox image can run it, a discovery document beside each
   bundle and at `/.well-known/lightspeed-envd` on the gateway, and
-  `initialize` reporting the build's git sha and matching envd.
+  `initialize` reporting the build's git sha and matching envd. Manual and
+  opt-in automatic self-upgrade are implemented; deployment-side serving and
+  its protocol-change notice remain open in ls.bot.
 - [ ] [P151](p151-exec-leftover-processes.md) — leftover processes survive a
   normal `exec_command` exit (timeouts, termination, and durable jobs keep
   sweeping), leftover output is drained instead of abandoned, the tool

@@ -256,7 +256,7 @@ in flight), so no Temporal query per row.
 | --- | --- |
 | `idle` / `session_busy`, `delivering_event` / `budget_exhausted` / `degraded` / `initializing` | Idle / Working / Out of budget / Needs attention / Starting |
 | main session / keyed & per-event sessions | Main / Threads |
-| `runsPerDay` / `breaker` / `routedSessionTtlMs` | Daily run limit / Flood protection / Thread retention |
+| `runsPerDay` / `breaker` / `routedSessionCloseAfterMs` | Daily run limit / Flood protection / Thread retention |
 | `selfConfig` / `emit` / inbox trigger | Can change its own brief and triggers / Can message other bots / Accepts messages from other bots |
 | Settings › Setups | Templates (frees "Setup" for the bot tab) |
 

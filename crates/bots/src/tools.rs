@@ -240,7 +240,7 @@ fn trigger_put_input_schema() -> Value {
                 "items": { "type": "string" },
                 "description": "Chat kind: provider handles allowed to issue control commands (/activation, /status); omit to deny them to everyone"
             },
-            "sessionTtlMs": {
+            "sessionCloseAfterMs": {
                 "type": ["integer", "null"],
                 "description": "Close this trigger's routed sessions after this idle time; 0 keeps them open (chat default); omit to inherit the bot's setting"
             }
@@ -612,7 +612,7 @@ pub fn parse_event_resolve_args(value: &Value) -> Result<EventResolveArgs, Strin
 /// The flat `bot_trigger_put` arguments as a create-or-update request. The
 /// spec is always complete (the flat shape describes the whole spec);
 /// `filter`, `route`, `coalesce`, and `deliver` are always replaced by a
-/// model put (`Some(None)` clears), while `session_ttl_ms` and `enabled`
+/// model put (`Some(None)` clears), while `session_close_after_ms` and `enabled`
 /// are left alone when omitted. Schedule triggers carry none of the generic
 /// fields.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -624,7 +624,7 @@ pub struct TriggerPutRequest {
     pub route: Option<Option<BotTriggerRoute>>,
     pub coalesce: Option<Option<BotCoalescePolicy>>,
     pub deliver: Option<Option<BotDeliverPolicy>>,
-    pub session_ttl_ms: Option<Option<u64>>,
+    pub session_close_after_ms: Option<Option<u64>>,
     pub enabled: Option<bool>,
 }
 
@@ -644,9 +644,9 @@ impl TriggerPutRequest {
                 coalesce: self.coalesce.flatten(),
                 deliver: self.deliver.flatten(),
                 // Conversations keep their session: 0 = never close.
-                session_ttl_ms: match (self.session_ttl_ms.flatten(), self.kind) {
+                session_close_after_ms: match (self.session_close_after_ms.flatten(), self.kind) {
                     (None, BotTriggerKind::Chat) => Some(0),
-                    (ttl, _) => ttl,
+                    (close_after, _) => close_after,
                 },
                 enabled: self.enabled.unwrap_or(true),
             });
@@ -672,8 +672,8 @@ impl TriggerPutRequest {
         if let Some(deliver) = self.deliver {
             document.deliver = deliver;
         }
-        if let Some(session_ttl_ms) = self.session_ttl_ms {
-            document.session_ttl_ms = session_ttl_ms;
+        if let Some(session_close_after_ms) = self.session_close_after_ms {
+            document.session_close_after_ms = session_close_after_ms;
         }
         if let Some(enabled) = self.enabled {
             document.enabled = enabled;
@@ -752,7 +752,7 @@ pub fn parse_trigger_put_args(value: &Value) -> Result<TriggerPutRequest, String
         route: common.route,
         coalesce: common.coalesce,
         deliver: common.deliver,
-        session_ttl_ms: common.session_ttl_ms,
+        session_close_after_ms: common.session_close_after_ms,
         enabled,
     })
 }
@@ -947,7 +947,7 @@ fn parse_chat_spec(args: &serde_json::Map<String, Value>) -> Result<BotTriggerSp
     })
 }
 
-/// Filter/route/coalesce/deliver/retention fields shared by every kind but
+/// Filter/route/coalesce/deliver/idle-close fields shared by every kind but
 /// schedule.
 #[derive(Default)]
 struct CommonFields {
@@ -955,7 +955,7 @@ struct CommonFields {
     route: Option<Option<BotTriggerRoute>>,
     coalesce: Option<Option<BotCoalescePolicy>>,
     deliver: Option<Option<BotDeliverPolicy>>,
-    session_ttl_ms: Option<Option<u64>>,
+    session_close_after_ms: Option<Option<u64>>,
 }
 
 fn parse_common_fields(args: &serde_json::Map<String, Value>) -> Result<CommonFields, String> {
@@ -1002,7 +1002,7 @@ fn parse_common_fields(args: &serde_json::Map<String, Value>) -> Result<CommonFi
         route: Some(route),
         coalesce: Some(coalesce),
         deliver: Some(deliver),
-        session_ttl_ms: nullable_u64(args, "sessionTtlMs")?.map(Some),
+        session_close_after_ms: nullable_u64(args, "sessionCloseAfterMs")?.map(Some),
     })
 }
 
@@ -1425,14 +1425,14 @@ mod tests {
                 when_busy: BotWhenBusy::Steer,
             }))
         );
-        assert_eq!(request.session_ttl_ms, None);
+        assert_eq!(request.session_close_after_ms, None);
         assert_eq!(request.enabled, None);
 
         let document = request.apply_to(None).unwrap();
         assert!(document.enabled);
         assert_eq!(document.route, Some(BotTriggerRoute::PerKey { key: None }));
         assert_eq!(document.coalesce.map(|policy| policy.max_count), Some(50));
-        assert_eq!(document.session_ttl_ms, None);
+        assert_eq!(document.session_close_after_ms, None);
         assert!(crate::validate::validate_trigger_document(&document, 0).is_ok());
     }
 
@@ -1721,7 +1721,7 @@ mod tests {
             "pairing": false,
             "allowedHandles": ["6071843755"],
             "controllerHandles": ["6071843755", "42"],
-            "sessionTtlMs": 3_600_000
+            "sessionCloseAfterMs": 3_600_000
         }))
         .unwrap();
         assert_eq!(
@@ -1743,9 +1743,9 @@ mod tests {
                 priority: 100,
             }
         );
-        assert_eq!(chat.session_ttl_ms, Some(Some(3_600_000)));
+        assert_eq!(chat.session_close_after_ms, Some(Some(3_600_000)));
         let created = chat.apply_to(None).unwrap();
-        assert_eq!(created.session_ttl_ms, Some(3_600_000));
+        assert_eq!(created.session_close_after_ms, Some(3_600_000));
         assert!(crate::validate::validate_trigger_document(&created, 0).is_ok());
 
         let minimal = parse_trigger_put_args(
@@ -1765,7 +1765,10 @@ mod tests {
             }
         ));
         // Conversations keep their session by default.
-        assert_eq!(minimal.apply_to(None).unwrap().session_ttl_ms, Some(0));
+        assert_eq!(
+            minimal.apply_to(None).unwrap().session_close_after_ms,
+            Some(0)
+        );
         assert!(
             parse_trigger_put_args(&json!({ "name": "tg", "kind": "chat" }))
                 .unwrap_err()
@@ -1796,7 +1799,7 @@ mod tests {
             route: Some(BotTriggerRoute::PerEvent),
             coalesce: None,
             deliver: None,
-            session_ttl_ms: Some(0),
+            session_close_after_ms: Some(0),
             enabled: false,
         };
         let request = parse_trigger_put_args(
@@ -1823,8 +1826,8 @@ mod tests {
         // A model put replaces filter/route/coalesce/deliver (absent clears)…
         assert_eq!(updated.filter, None);
         assert_eq!(updated.route, None);
-        // …and keeps retention and the enabled flag when omitted.
-        assert_eq!(updated.session_ttl_ms, Some(0));
+        // …and keeps the idle-close policy and the enabled flag when omitted.
+        assert_eq!(updated.session_close_after_ms, Some(0));
         assert!(!updated.enabled);
         let enabled = parse_trigger_put_args(
             &json!({ "name": "tg", "kind": "chat", "channelAccount": "tg-main", "enabled": true }),

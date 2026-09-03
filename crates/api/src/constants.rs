@@ -22,6 +22,7 @@ pub const METHOD_SESSION_LIST: &str = "session/list";
 pub const METHOD_SESSION_CONFIG_PUT: &str = "session/config/put";
 pub const METHOD_SESSION_RENAME: &str = "session/rename";
 pub const METHOD_SESSION_METADATA_PUT: &str = "session/metadata/put";
+pub const METHOD_SESSION_RETENTION_PUT: &str = "session/retention/put";
 pub const METHOD_SESSION_CLOSE: &str = "session/close";
 pub const METHOD_SESSION_DELETE: &str = "session/delete";
 

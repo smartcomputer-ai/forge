@@ -229,6 +229,7 @@ async fn run_control_api(
         display_name: None,
         config: Some(config),
         profile: None,
+        delete_after_close_ms: None,
     })
     .await?;
     Ok(api)
@@ -729,6 +730,7 @@ async fn run_parallel_tool_batch_live_client(
             ..SessionConfig::default()
         }),
         profile: None,
+        delete_after_close_ms: None,
     })
     .await?;
 
@@ -844,6 +846,7 @@ async fn run_transient_llm_retry_live_client(
         display_name: None,
         config: None,
         profile: None,
+        delete_after_close_ms: None,
     })
     .await?;
 
@@ -922,6 +925,7 @@ async fn run_llm_retry_exhaustion_live_client(
         display_name: None,
         config: None,
         profile: None,
+        delete_after_close_ms: None,
     })
     .await?;
 
@@ -1037,6 +1041,7 @@ async fn run_unbounded_hosted_run_live_client(
             ..SessionConfig::default()
         }),
         profile: None,
+        delete_after_close_ms: None,
     })
     .await?;
     let initial_temporal_run_id = live_workflow_handle(&client, &session_id)?

@@ -100,6 +100,7 @@ async fn run_audio_preprocess_live_client(
             ..SessionConfig::default()
         }),
         profile: None,
+        delete_after_close_ms: None,
     })
     .await?;
 
@@ -195,6 +196,7 @@ async fn run_transcodable_audio_preprocess_live_client(
             ..SessionConfig::default()
         }),
         profile: None,
+        delete_after_close_ms: None,
     })
     .await?;
 

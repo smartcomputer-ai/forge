@@ -241,6 +241,7 @@ impl ChatSessionDriver {
                 display_name: None,
                 config: Some(session_start_config(&options.draft_settings)),
                 profile: options.profile.clone(),
+                delete_after_close_ms: None,
             })
             .await
             .map_err(api_error)?;
@@ -1099,6 +1100,7 @@ impl ChatSessionDriver {
                 display_name: None,
                 config: Some(session_start_config(&self.settings)),
                 profile: None,
+                delete_after_close_ms: None,
             })
             .await
             .map_err(api_error)?;

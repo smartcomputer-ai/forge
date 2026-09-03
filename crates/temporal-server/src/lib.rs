@@ -13,6 +13,7 @@ pub mod environment_gateway;
 pub(crate) mod environment_resolver;
 pub mod gateway;
 pub mod roles;
+pub(crate) mod session_deletion;
 pub mod subagents;
 pub(crate) mod transcript;
 pub mod universe;

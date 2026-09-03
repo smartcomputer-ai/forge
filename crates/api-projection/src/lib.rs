@@ -14,7 +14,7 @@ use api::{
     ModelConfig, PendingApprovalView, PrincipalKind, PrincipalRefView, ProviderContextDisplayView,
     ProviderNativeToolExecutionView, RunAcceptedSourceView, RunFailureKindView,
     RunStatus as ApiRunStatus, RunSummarySourceView, RunSummaryView, RunView, RunViewSource,
-    SessionEventKindView, SessionEventView, SessionManagementView,
+    SessionEventKindView, SessionEventView, SessionManagementView, SessionRetentionView,
     SessionStatus as ApiSessionStatus, SessionView, TokenEstimateQualityView, TokenEstimateView,
     ToolBatchView, ToolCallDisplayGroup, ToolCallDisplayView, ToolCallEventView, ToolCallView,
     ToolEffectView, ToolItemStatus, ToolKindView, ToolParallelismView, ToolView,
@@ -48,6 +48,7 @@ pub struct ProjectSession<'a> {
     pub session_id: &'a SessionId,
     pub state: &'a CoreAgentState,
     pub record: &'a SessionRecord,
+    pub retention: &'a SessionRetentionView,
     pub run_limit: usize,
     pub run_cursor: Option<RunId>,
 }
@@ -108,6 +109,8 @@ impl<'a> CoreAgentProjector<'a> {
             display_name: params.record.display_name.clone(),
             metadata: params.record.metadata.clone(),
             status: session_status(params.state),
+            closed_at_ms: params.record.closed_at_ms,
+            retention: params.retention.clone(),
             managed: params.record.managed,
             config_revision: params.state.lifecycle.config_revision,
             config,
@@ -2130,6 +2133,9 @@ pub fn map_session_store_error(error: SessionStoreError) -> AgentApiError {
         SessionStoreError::InvalidLimit { limit } => {
             AgentApiError::invalid_request(format!("invalid page limit: {limit}"))
         }
+        SessionStoreError::InvalidRetention { .. } => {
+            AgentApiError::invalid_request(error.to_string())
+        }
         SessionStoreError::InvalidForkPoint { .. } => {
             AgentApiError::invalid_request(error.to_string())
         }
@@ -2138,8 +2144,13 @@ pub fn map_session_store_error(error: SessionStoreError) -> AgentApiError {
         SessionStoreError::ManagedSessionCannotBranch { .. } => {
             AgentApiError::rejected(error.to_string())
         }
-        SessionStoreError::SessionHasForkChildren { .. } => {
+        SessionStoreError::SessionHasChildren { .. }
+        | SessionStoreError::SessionRetentionOwnedBy { .. }
+        | SessionStoreError::SessionRetentionNotDue { .. } => {
             AgentApiError::conflict(error.to_string())
+        }
+        SessionStoreError::SessionTreeNotClosed { .. } => {
+            AgentApiError::rejected(error.to_string())
         }
         SessionStoreError::ExpectedHeadMismatch { .. } => {
             AgentApiError::conflict(error.to_string())
@@ -2748,6 +2759,10 @@ mod tests {
             display_name: None,
             lifecycle_status: engine::storage::SessionLifecycleStatus::New,
             closed_at_seq: None,
+            closed_at_ms: None,
+            retention_root_session_id: session_id.clone(),
+            delete_after_close_ms: None,
+            delete_at_ms: None,
             managed: true,
             head: None,
             source_session_id: None,
@@ -2756,12 +2771,18 @@ mod tests {
             created_at_ms: 1,
             updated_at_ms: 2,
         };
+        let retention = SessionRetentionView {
+            root_session_id: session_id.as_str().to_owned(),
+            delete_after_close_ms: None,
+            delete_at_ms: None,
+        };
 
         let session = projector
             .project_session(ProjectSession {
                 session_id: &session_id,
                 state: &state,
                 record: &record,
+                retention: &retention,
                 run_limit: 20,
                 run_cursor: None,
             })

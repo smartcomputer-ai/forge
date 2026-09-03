@@ -117,9 +117,12 @@ Clients — the CLI, workflow integrations, editors, and future frontends — co
 Collection reads do not fan out to Temporal workflows. `session/list` reads a
 materialized `new` / `open` / `closed` lifecycle projection maintained in the
 session-store transaction that appends lifecycle events; the event log remains
-authoritative. `session/delete` only removes closed sessions and rejects a
-session while a fork still inherits its history, so fork trees are deleted
-leaf-first.
+authoritative. Retention is opt-in per session tree: fresh sessions and
+config-only clones own a nullable close-relative deletion policy, while
+history forks and delegated children inherit that root. `session/delete`
+removes only a closed leaf by default; explicit cascade and timed retention
+atomically remove a fully closed fork/origin subtree. Config-only clones are
+never included.
 
 Agent profiles live on this boundary too: a profile is a reusable setup document for session config, instructions, workspace links, and environment selection. Session config itself is a sparse, capability-oriented document: core sections (model, generation, limits, context) plus feature grants (vfs, web, subagents, timers, environments, mcp) where an absent feature is simply not granted — the default session is a model that can process runs and nothing else. `features.vfs.tools` grants dedicated `vfs_*` operations over linked snapshots/workspaces. `features.environments` grants ordinary file/process operations over the selected live environment; model-driven selection and advanced jobs remain separate, default-off sub-grants. The two filesystems are never fused or synchronized. Config is replaced whole via `session/config/put` guarded by an expected revision (no field-level patch vocabulary), and the session's toolset — including remote MCP tools declared under `features.mcp` — is derived from that document rather than managed imperatively. MCP server ids select universe-configured connections whose current auth grants resolve only at provider-send time; sessions and profiles select only the id, never a grant or per-session tool/approval policy. Management discovery uses the official Rust MCP SDK over current Streamable HTTP, reads the current inventory directly from the MCP server, and does not persist it. Universe environments remain live provider-backed resources; deterministic session state records only the active environment id. The hosted runtime resolves and applies profiles outside the deterministic core.
 

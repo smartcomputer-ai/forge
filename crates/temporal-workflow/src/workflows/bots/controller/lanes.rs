@@ -4,7 +4,7 @@
 //! records failures on the controller instead of failing the workflow.
 
 use api::{BotEventOutcome, BotRecentDeliverySnapshot, BotSessionKind, LlmUsageView};
-use bots::{BotDeliveryPhase, RoutedSession, RoutedSessionTtl, ids};
+use bots::{BotDeliveryPhase, RoutedSession, ids};
 use engine::{BlobRef, EmissionEnvelope, PromiseResolution, REPLY_COMPLETION_KEY};
 use futures::{FutureExt, pin_mut, select};
 
@@ -296,16 +296,9 @@ async fn ensure_routed_session(
 ) -> Option<String> {
     let mut session_id = resolved_id.to_owned();
     for attempt in 0..2 {
-        let known = ctx.state_mut(|state| match state.extra_session_mut(&session_id) {
-            Some(known) => {
-                // A later event may carry a retention change for the key.
-                if session.ttl != RoutedSessionTtl::Inherit {
-                    known.ttl = session.ttl;
-                }
-                true
-            }
-            None => false,
-        });
+        let observed_at_ms = now_ms(ctx);
+        let known = ctx
+            .state_mut(|state| state.observe_routed_session(&session_id, session, observed_at_ms));
         if known {
             return Some(session_id);
         }
@@ -337,7 +330,7 @@ async fn ensure_routed_session(
                         label: session.label.clone(),
                         kind,
                         last_active_at_ms: Some(now),
-                        ttl: session.ttl,
+                        close_policy: session.close_policy,
                         carried_tool_ids,
                     });
                 });
@@ -369,7 +362,7 @@ async fn ensure_routed_session(
 }
 
 /// A session evicted from the tracked set would otherwise escape the
-/// retention sweep and teardown: close the idlest free one (non-force) as
+/// idle-close sweep and teardown: close the idlest free one (non-force) as
 /// it leaves. A session that will not close stays tracked for the next
 /// sweep.
 async fn enforce_extra_session_cap(ctx: &Ctx, keep: &str) {

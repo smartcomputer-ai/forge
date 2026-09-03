@@ -262,6 +262,7 @@ impl SubagentService {
                 // catches its descendants; later puts do not propagate.
                 metadata: parent.metadata.clone(),
                 origin: Some(origin.clone()),
+                delete_after_close_ms: None,
                 created_at_ms: now_ms,
             })
             .await
@@ -694,6 +695,7 @@ mod tests {
                 session_id: SessionId::new("parent"),
                 display_name: None,
                 origin: None,
+                delete_after_close_ms: None,
                 created_at_ms: 1,
             })
             .await
@@ -1014,6 +1016,7 @@ mod tests {
                 session_id: SessionId::new("root"),
                 display_name: None,
                 origin: None,
+                delete_after_close_ms: None,
                 created_at_ms: 1,
             })
             .await
@@ -1034,6 +1037,7 @@ mod tests {
                     profile_revision: 1,
                     limits: parent_limits,
                 }),
+                delete_after_close_ms: None,
                 created_at_ms: 2,
             })
             .await

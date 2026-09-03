@@ -214,6 +214,30 @@ describe("demo router", () => {
     expect(view.runs.find((run) => run.id === runId)?.status).toBe("completed");
   }, 30_000);
 
+  it("sets and clears session-tree retention through the web routes", async () => {
+    const { call } = await boot();
+    const [universe] = (await call("GET", "/api/v1/universes")).json as Universe[];
+    const created = await call("POST", `/api/v1/universes/${universe!.id}/sessions`, {
+      displayName: "retained",
+      deleteAfterCloseMs: 86_400_000,
+      profile: { kind: "inline", profile: {} },
+    });
+    expect(created.status).toBe(200);
+    const session = created.json as { id: string; retention: { rootSessionId: string; deleteAfterCloseMs: number } };
+    expect(session.retention).toMatchObject({
+      rootSessionId: session.id,
+      deleteAfterCloseMs: 86_400_000,
+    });
+
+    const cleared = await call(
+      "PUT",
+      `/api/v1/universes/${universe!.id}/sessions/${session.id}/retention`,
+      { deleteAfterCloseMs: null },
+    );
+    expect(cleared.status).toBe(200);
+    expect((cleared.json as { retention: { deleteAfterCloseMs: null } }).retention.deleteAfterCloseMs).toBeNull();
+  });
+
   it("admits a manual bot event and resolves its outcome", async () => {
     const { call } = await boot();
     const [universe] = (await call("GET", "/api/v1/universes")).json as Universe[];

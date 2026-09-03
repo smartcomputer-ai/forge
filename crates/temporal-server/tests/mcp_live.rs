@@ -442,6 +442,7 @@ async fn run_matrix_client(
             ..SessionConfig::default()
         }),
         profile: None,
+        delete_after_close_ms: None,
     })
     .await?;
     let started = api
@@ -1238,6 +1239,7 @@ async fn run_approval_live_client(
             ..SessionConfig::default()
         }),
         profile: None,
+        delete_after_close_ms: None,
     })
     .await?;
 
@@ -1409,6 +1411,7 @@ async fn run_native_mcp_live_client(
             ..SessionConfig::default()
         }),
         profile: None,
+        delete_after_close_ms: None,
     })
     .await?;
     let started = api
@@ -1552,6 +1555,7 @@ async fn run_mcp_live_client(
             ..SessionConfig::default()
         }),
         profile: None,
+        delete_after_close_ms: None,
     })
     .await?;
 

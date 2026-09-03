@@ -454,6 +454,7 @@ pub async fn ensure_session(
             profile: Some(ProfileSource::Inline {
                 profile: Box::new(resolved.clone()),
             }),
+            delete_after_close_ms: None,
             workflow_tools: ManagedSessionWorkflowToolsInput {
                 version: MANAGED_TOOLS_VERSION,
                 lifecycle_controller: Some(controller),
@@ -837,6 +838,12 @@ mod tests {
             config: None,
             created_at_ms: 0,
             updated_at_ms: 0,
+            closed_at_ms: None,
+            retention: api::SessionRetentionView {
+                root_session_id: "bot:v1:triage".to_owned(),
+                delete_after_close_ms: None,
+                delete_at_ms: None,
+            },
             runs,
             active_run,
             active_context: Default::default(),

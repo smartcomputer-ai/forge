@@ -204,6 +204,14 @@ impl HttpAgentApi {
         self.request(api::METHOD_SESSION_METADATA_PUT, params).await
     }
 
+    pub(crate) async fn put_session_retention(
+        &self,
+        params: api::SessionRetentionPutParams,
+    ) -> Result<AgentApiOutcome<api::SessionRetentionPutResponse>, AgentApiError> {
+        self.request(api::METHOD_SESSION_RETENTION_PUT, params)
+            .await
+    }
+
     pub(crate) async fn close_session(
         &self,
         params: api::SessionCloseParams,

@@ -488,6 +488,7 @@ async fn run_environment_power_live_client(
             ..SessionConfig::default()
         }),
         profile: None,
+        delete_after_close_ms: None,
     })
     .await?;
     let started_view = read_session_view(&api, &session_id).await?;

@@ -2174,6 +2174,7 @@ mod tests {
                 session_id: session_id.clone(),
                 display_name: None,
                 origin: None,
+                delete_after_close_ms: None,
                 created_at_ms: 1,
             })
             .await
@@ -2377,6 +2378,7 @@ mod tests {
                 session_id: SessionId::new("unrelated-session-created-after-scheduling"),
                 display_name: None,
                 origin: None,
+                delete_after_close_ms: None,
                 created_at_ms: 10,
             })
             .await
@@ -3562,6 +3564,7 @@ mod tests {
                 session_id: parent.clone(),
                 display_name: None,
                 origin: None,
+                delete_after_close_ms: None,
                 created_at_ms: 1,
             })
             .await
@@ -3674,6 +3677,7 @@ mod tests {
                 session_id: parent.clone(),
                 display_name: None,
                 origin: None,
+                delete_after_close_ms: None,
                 created_at_ms: 1,
             })
             .await

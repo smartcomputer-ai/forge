@@ -334,10 +334,12 @@ api_methods! {
         ["Rename a session", "Sets the display name, or clears it when displayName is omitted."],
     METHOD_SESSION_METADATA_PUT => put_session_metadata(SessionMetadataPutParams) -> SessionMetadataPutResponse =>
         ["Replace session metadata", "Replaces the complete descriptive key/value map (bounded like session/start); an omitted or empty map clears it. Record-only: the event log and updatedAtMs are untouched."],
+    METHOD_SESSION_RETENTION_PUT => put_session_retention(SessionRetentionPutParams) -> SessionRetentionPutResponse =>
+        ["Replace session retention", "Sets the positive close-relative automatic-deletion duration on a retention root, or clears it with null. Forks and delegated children inherit the root policy and cannot override it."],
     METHOD_SESSION_CLOSE => close_session(SessionCloseParams) -> SessionCloseResponse =>
         ["Close a session", "Closes an idle session and detaches its environment bindings. Force mode cancels active work, drops queued runs, and can recover a session whose workflow is unavailable."],
     METHOD_SESSION_DELETE => delete_session(SessionDeleteParams) -> SessionDeleteResponse =>
-        ["Delete a closed session", "Permanently removes session storage after the session has been closed; close active/open sessions first."],
+        ["Delete closed sessions", "Permanently removes a closed retention-tree leaf, or its closed history-fork and delegated-child subtree when cascade is true. Config-only clones are never included."],
     METHOD_SESSION_EVENTS_READ => read_session_events(SessionEventsReadParams) -> SessionEventsReadResponse =>
         ["Read the session event stream", "Reads events after a cursor and optionally long-polls when caught up. Continue from nextCursor/headCursor and inspect complete/gap rather than assuming an uninterrupted page."],
     METHOD_SESSION_CONTEXT_APPEND => append_context(ContextAppendParams) -> ContextAppendResponse =>
@@ -417,7 +419,7 @@ api_methods! {
     METHOD_ENVIRONMENTS_REGISTRATION_KEYS_REVOKE => revoke_environment_registration_key(EnvironmentRegistrationKeyRevokeParams) -> EnvironmentRegistrationKeyRevokeResponse =>
         ["Revoke an environment registration key", "Stops the key from admitting new daemon identities; already registered daemons keep reconnecting. With closeEnvironments, also closes every non-closed environment the key admitted. Idempotent."],
     METHOD_MODELS_LIST => list_models(ModelListParams) -> ModelListResponse =>
-        ["Discover available models", "Queries supported providers directly on every call and returns best-effort selectable routes. One provider failure does not discard successful results from others."],
+        ["Discover available models", "Queries supported providers directly, with a brief process-local burst cache, and returns best-effort selectable routes. One provider failure does not discard successful results from others."],
     METHOD_PROFILES_CREATE => create_profile(ProfileCreateParams) -> ProfileCreateResponse =>
         ["Create an agent profile", "Creates a new universe-scoped reusable profile document; use profiles/put for create-or-replace revision semantics."],
     METHOD_PROFILES_READ => read_profile(ProfileReadParams) -> ProfileReadResponse =>

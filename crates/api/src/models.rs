@@ -1,7 +1,7 @@
 use super::*;
 
-/// Direct provider model discovery. Each invocation asks the supported
-/// provider APIs again; clients refresh by calling this method.
+/// Direct provider model discovery. Results may be served from a brief
+/// process-local cache; clients refresh by calling this method.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelListParams {

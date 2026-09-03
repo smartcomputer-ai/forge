@@ -152,6 +152,7 @@ async fn run_checkpoint_and_bounded_reads_live_client(
             ..SessionConfig::default()
         }),
         profile: None,
+        delete_after_close_ms: None,
     })
     .await?;
 
@@ -315,6 +316,7 @@ async fn run_checkpoint_and_bounded_reads_live_client(
     wait_for_session_status(&api, &session_id, SessionStatus::Closed).await?;
     api.delete_session(SessionDeleteParams {
         session_id: session_id.as_str().to_owned(),
+        cascade: false,
     })
     .await?;
     assert!(store.load_checkpoint(&session_id).await?.is_none());
@@ -348,6 +350,7 @@ async fn run_fake_live_client(
                 ..SessionConfig::default()
             }),
             profile: None,
+            delete_after_close_ms: None,
         })
         .await?;
     assert_eq!(started.result.session.id, session_id.as_str());
@@ -541,6 +544,7 @@ async fn run_fake_live_client(
             display_name: None,
             config: None,
             profile: None,
+            delete_after_close_ms: None,
         })
         .await?;
     assert_eq!(restarted.result.session.id, session_id.as_str());
@@ -608,6 +612,7 @@ async fn run_lifecycle_delete_live_client(
         display_name: Some("Lifecycle delete live test".to_owned()),
         config: None,
         profile: None,
+        delete_after_close_ms: None,
     })
     .await?;
 
@@ -623,6 +628,7 @@ async fn run_lifecycle_delete_live_client(
     let delete_open = api
         .delete_session(SessionDeleteParams {
             session_id: session_id.as_str().to_owned(),
+            cascade: false,
         })
         .await
         .expect_err("open session deletion must be rejected");
@@ -649,6 +655,7 @@ async fn run_lifecycle_delete_live_client(
     let deleted = api
         .delete_session(SessionDeleteParams {
             session_id: session_id.as_str().to_owned(),
+            cascade: false,
         })
         .await?;
     assert_eq!(
@@ -697,6 +704,7 @@ async fn run_continue_as_new_live_client(
             ..SessionConfig::default()
         }),
         profile: None,
+        delete_after_close_ms: None,
     })
     .await?;
 
@@ -822,6 +830,7 @@ async fn run_context_append_live_client(
             ..SessionConfig::default()
         }),
         profile: None,
+        delete_after_close_ms: None,
     })
     .await?;
 
@@ -1010,6 +1019,7 @@ async fn run_admission_failure_live_client(
             ..SessionConfig::default()
         }),
         profile: None,
+        delete_after_close_ms: None,
     })
     .await?;
 
@@ -1128,6 +1138,7 @@ async fn run_openai_live_client(
                 },
             }),
         }),
+        delete_after_close_ms: None,
     })
     .await?;
 
@@ -1205,6 +1216,7 @@ async fn run_openai_completions_live_client(
                 },
             }),
         }),
+        delete_after_close_ms: None,
     })
     .await?;
 
@@ -1298,6 +1310,7 @@ async fn run_session_metadata_live_client(
             metadata: job.clone(),
             config: None,
             profile: None,
+            delete_after_close_ms: None,
         })
         .await?;
     assert_eq!(started.result.session.id, session_id.as_str());
@@ -1365,6 +1378,7 @@ async fn run_session_metadata_live_client(
             metadata: BTreeMap::from([pair("lightspeed.owner", "x")]),
             config: None,
             profile: None,
+            delete_after_close_ms: None,
         })
         .await
         .expect_err("reserved prefix is rejected at start");

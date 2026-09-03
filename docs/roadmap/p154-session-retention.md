@@ -2,7 +2,7 @@
 
 **Status**
 
-- Proposed 2026-09-03, split out of [P153](p153-session-metadata.md) so
+- Implemented 2026-09-03. Split out of [P153](p153-session-metadata.md) so
   metadata and lifecycle stay separate items. Motivated by the same Harbor
   evaluation ([P149](p149-harbor-end-to-end-agent-evaluation.md)): every
   session ever closed stays until someone deletes it by hand.
@@ -20,9 +20,9 @@ Three clocks are easy to conflate, and the codebase already uses two of them:
   ([P155](p155-models-list-cache.md)).
 - **Idle policy** counts from the last activity and turns *open* into *closed*
   (or paused, suspended, stopped). Environments have it as
-  `idlePolicy.closeAfterMs` and siblings. Bots have it for routed sessions as
-  `routedSessionTtlMs` and the trigger's `sessionTtlMs`, which is the wrong
-  name for it.
+  `idlePolicy.closeAfterMs` and siblings. Bots historically called the same
+  concept `routedSessionTtlMs` and `sessionTtlMs`; this item gives those fields
+  accurate names.
 - **Retention** counts from close and turns *closed* into *gone*: how long a
   finished record is kept before deletion. Temporal's namespace retention has
   exactly these semantics, and sessions are workflow-backed.
@@ -321,14 +321,15 @@ Bump `REQUIRED_SCHEMA_REVISION` and `LIGHTSPEED_SCHEMA_REVISION` together.
 
 ## Related defect: the bot routed-session clock
 
-`routedSessionTtlMs` is documented as "close routed sessions idle longer than
-this"; the controller computes expiry as `lastActiveAtMs + ttl` and skips busy
+The former `routedSessionTtlMs` field was documented as "close routed sessions
+idle longer than this"; the controller computed expiry as
+`lastActiveAtMs + duration` and skipped busy
 sessions. But `lastActiveAtMs` is stamped only when the routed session is
 created and refreshed only when a close attempt fails. When a later event
 lands on a known routed session, `ensure_routed_session` in
 `crates/temporal-workflow/src/workflows/bots/controller/lanes.rs` updates the
-session's TTL and leaves the clock alone. So a per-key session that keeps
-receiving events still closes at creation plus TTL the first time it is idle,
+session's close policy and leaves the clock alone. So a per-key session that
+keeps receiving events still closes at creation plus the duration the first time it is idle,
 and the extra-session cap, which evicts by the same stamp, removes the
 oldest-created session rather than the least recently used.
 

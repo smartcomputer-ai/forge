@@ -18,8 +18,8 @@
   2. `perKey` (one bot session per conversation) is the starting point.
      `bot`-routed chats (a shared main session with reply tools) are a
      later slice.
-  3. Chat sessions do not expire — a per-trigger `sessionTtlMs` override
-     of the bot's `routedSessionTtlMs`, `null` for chat.
+  3. Chat sessions do not expire — a per-trigger `sessionCloseAfterMs` override
+     of the bot's `routedSessionCloseAfterMs`, `null` for chat.
   4. Inbound media stays at parity with Channels today (image, audio,
      document; up to 8 per message); the event carries the prepared CAS
      refs.
@@ -115,8 +115,8 @@ The generic trigger columns apply unchanged and are the whole point:
   `{ debounceMs: 400, maxWaitMs: 1500, maxCount: 8 }`.
 - `deliver.whenBusy` — `queue` by default; `steer` folds a new message into
   the running turn.
-- New, all kinds: `sessionTtlMs: number | null | undefined` — overrides
-  `bots.routedSessionTtlMs` for sessions this trigger routes to;
+- New, all kinds: `sessionCloseAfterMs: number | null | undefined` — overrides
+  `bots.routedSessionCloseAfterMs` for sessions this trigger routes to;
   `undefined` inherits, `null` never closes. Chat defaults to `null`.
 
 `channel_pairings.bindingId` becomes `triggerId`. Several `chat` triggers
@@ -285,7 +285,7 @@ the bot's profile, brief, and tools, plus that conversation's `message_*`.
 It appears in the bot page's session list and in the sessions page like any
 managed session (the Direct-input override applies).
 
-`sessionTtlMs` on the trigger (§1) keeps chat sessions open indefinitely by
+`sessionCloseAfterMs` on the trigger (§1) keeps chat sessions open indefinitely by
 default; the routed-session sweep consults the trigger of the event that
 opened the session. There are no `channel:v1:` sessions any more.
 
@@ -340,7 +340,7 @@ session's context unbounded today. Lands when someone wants silent rooms.
 
 1. **Records and admission.** `chat` trigger kind (schema, zod, trigger
    CRUD and `bot_trigger_put`, validation: `perKey`/`perEvent` only,
-   pairing-code mint), `sessionTtlMs` on all kinds, `channel_pairings` →
+   pairing-code mint), `sessionCloseAfterMs` on all kinds, `channel_pairings` →
    `triggerId`, delete `channel_bindings` and the bindings API. `BotEvent`
    / `bot_events` gain `media`, `tools`, and `notify`; `storeBotEvent`
    accepts archived `chat.sent` rows from the conversation workflow
@@ -371,11 +371,11 @@ session's context unbounded today. Lands when someone wants silent rooms.
 - **Records**: folded into the pre-release `0001_channels` / `0002_bots`
   baselines (platform schema revision 3): `channel_bindings` is omitted,
   `channel_pairings` is keyed by `trigger_id`, and
-  `bot_triggers.session_ttl_ms` (null inherits, 0
+  `bot_triggers.session_close_after_ms` (null inherits, 0
   never closes) and `bot_events.media` / `tools` / `notify`. The `chat`
   trigger kind lives in `platform/bots/src/config.ts` (`chatSpecInput`,
   `CHAT_COALESCE_DEFAULT`, `mintPairingCode`; route `bot` refused, coalesce
-  defaults to 400 ms / 1.5 s / 8, `sessionTtlMs` defaults to 0). The
+  defaults to 400 ms / 1.5 s / 8, `sessionCloseAfterMs` defaults to 0). The
   bindings API, CLI commands, and shared zod schemas are deleted; the
   server attaches `channelAccount` to chat trigger views.
 - **Bots**: `BotEvent.media` / `tools` / `notify` and

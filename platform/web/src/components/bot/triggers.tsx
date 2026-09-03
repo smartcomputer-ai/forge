@@ -114,7 +114,7 @@ export function triggerInputOf(trigger: BotTriggerView): BotTriggerInput {
     route: trigger.route ?? null,
     coalesce: trigger.coalesce ?? null,
     deliver: trigger.deliver ?? null,
-    sessionTtlMs: trigger.sessionTtlMs ?? null,
+    sessionCloseAfterMs: trigger.sessionCloseAfterMs ?? null,
   };
   switch (trigger.kind) {
     case "schedule":
@@ -375,10 +375,10 @@ function chatRouteLabel(route: BotTriggerRoute | null | undefined): string {
   return route?.policy === "perKey" && route.key ? `session per key: ${route.key}` : "session per conversation";
 }
 
-function sessionTtlLabel(ttlMs: number | null | undefined): string {
-  if (ttlMs == null) return "inherits the bot's retention";
-  if (ttlMs === 0) return "sessions kept forever";
-  return `idle sessions close after ${Math.round(ttlMs / 3_600_000)}h`;
+function sessionClosePolicyLabel(closeAfterMs: number | null | undefined): string {
+  if (closeAfterMs == null) return "inherits the bot's idle-close policy";
+  if (closeAfterMs === 0) return "sessions kept forever";
+  return `idle sessions close after ${Math.round(closeAfterMs / 3_600_000)}h`;
 }
 
 /** Unambiguous alphanumerics (no 0/O, 1/l/I), the same alphabet the server mints with. */
@@ -927,9 +927,9 @@ export interface DeliveryFormState {
   debounceSeconds: string;
   maxWaitSeconds: string;
   maxCount: string;
-  /** Routed-session retention: inherit the bot's setting, keep forever, or close after idle hours. */
-  ttlMode: "inherit" | "forever" | "hours";
-  ttlHours: string;
+  /** Routed-session idle close: inherit the bot's setting, keep forever, or close after idle hours. */
+  closeMode: "inherit" | "forever" | "hours";
+  closeHours: string;
 }
 
 export interface ChatFormState extends DeliveryFormState {
@@ -990,7 +990,7 @@ function ChatRowDetail({
         {trigger.matchScope !== "direct" &&
           ` · groups: ${trigger.activation?.group === "always" ? "every message" : "on mention"}`}
         {" → "}
-        {chatRouteLabel(trigger.route)} · {sessionTtlLabel(trigger.sessionTtlMs)}
+        {chatRouteLabel(trigger.route)} · {sessionClosePolicyLabel(trigger.sessionCloseAfterMs)}
         {trigger.coalesce &&
           ` · batches ≤${trigger.coalesce.maxCount} over ${trigger.coalesce.debounceMs / 1000}s`}
         {trigger.deliver && trigger.deliver.whenBusy !== "queue" && ` · busy: ${trigger.deliver.whenBusy}`}
@@ -1338,8 +1338,8 @@ export const defaultDeliveryForm: DeliveryFormState = {
   debounceSeconds: "",
   maxWaitSeconds: "",
   maxCount: "",
-  ttlMode: "inherit",
-  ttlHours: "",
+  closeMode: "inherit",
+  closeHours: "",
 };
 
 /// Chat defaults mirror the server's: a session per conversation kept
@@ -1350,7 +1350,7 @@ export const defaultChatForm: ChatFormState = {
   debounceSeconds: "0.4",
   maxWaitSeconds: "1.5",
   maxCount: "8",
-  ttlMode: "forever",
+  closeMode: "forever",
   channelAccountId: "",
   scope: "any",
   groupActivation: "mention",
@@ -1372,15 +1372,15 @@ function deliveryFormFromTrigger(trigger: BotTriggerView): DeliveryFormState {
     debounceSeconds: trigger.coalesce ? String(trigger.coalesce.debounceMs / 1000) : "",
     maxWaitSeconds: trigger.coalesce ? String(trigger.coalesce.maxWaitMs / 1000) : "",
     maxCount: trigger.coalesce ? String(trigger.coalesce.maxCount) : "",
-    ttlMode: trigger.sessionTtlMs == null ? "inherit" : trigger.sessionTtlMs === 0 ? "forever" : "hours",
-    ttlHours: trigger.sessionTtlMs ? String(Math.round(trigger.sessionTtlMs / 3_600_000)) : "",
+    closeMode: trigger.sessionCloseAfterMs == null ? "inherit" : trigger.sessionCloseAfterMs === 0 ? "forever" : "hours",
+    closeHours: trigger.sessionCloseAfterMs ? String(Math.round(trigger.sessionCloseAfterMs / 3_600_000)) : "",
   };
 }
 
-export function sessionTtlMs(form: Pick<DeliveryFormState, "ttlMode" | "ttlHours">): number | null {
-  if (form.ttlMode === "inherit") return null;
-  if (form.ttlMode === "forever") return 0;
-  return Math.round(Number(form.ttlHours) * 3_600_000);
+export function sessionCloseAfterMs(form: Pick<DeliveryFormState, "closeMode" | "closeHours">): number | null {
+  if (form.closeMode === "inherit") return null;
+  if (form.closeMode === "forever") return 0;
+  return Math.round(Number(form.closeHours) * 3_600_000);
 }
 
 export const defaultPollForm: PollFormState = {
@@ -1440,7 +1440,7 @@ export function deliveryPayload(form: DeliveryFormState) {
         }
       : null,
     deliver: form.whenBusy === "queue" ? null : { whenBusy: form.whenBusy },
-    sessionTtlMs: form.routePolicy === "bot" ? null : sessionTtlMs(form),
+    sessionCloseAfterMs: form.routePolicy === "bot" ? null : sessionCloseAfterMs(form),
   };
 }
 
@@ -1522,9 +1522,9 @@ export function deliveryFormProblem(form: DeliveryFormState): string | null {
       return "Max wait must be at least the debounce.";
     }
   }
-  if (form.routePolicy !== "bot" && form.ttlMode === "hours") {
-    const hours = Number(form.ttlHours);
-    if (!Number.isFinite(hours) || hours < 1) return "Session retention must be at least 1 hour.";
+  if (form.routePolicy !== "bot" && form.closeMode === "hours") {
+    const hours = Number(form.closeHours);
+    if (!Number.isFinite(hours) || hours < 1) return "Idle close must be at least 1 hour.";
   }
   return null;
 }
@@ -1650,7 +1650,7 @@ export function WebhookFields({
 }
 
 /**
- * Routing, filtering, coalescing, busy handling, and retention live behind
+ * Routing, filtering, coalescing, busy handling, and idle close live behind
  * one disclosure. Closed, it reads as a sentence, so the vocabulary is
  * learned before the fields are.
  */
@@ -1742,11 +1742,11 @@ function DeliveryFieldsBody<T extends DeliveryFormState>({
       {form.routePolicy !== "bot" && (
         <div className="grid grid-cols-2 gap-3">
           <Field>
-            <FieldLabel>Session retention</FieldLabel>
+            <FieldLabel>Idle close</FieldLabel>
             <Select
-              value={form.ttlMode}
+              value={form.closeMode}
               onValueChange={(value) =>
-                value && setForm({ ...form, ttlMode: value as DeliveryFormState["ttlMode"] })
+                value && setForm({ ...form, closeMode: value as DeliveryFormState["closeMode"] })
               }
             >
               <SelectTrigger>
@@ -1759,15 +1759,15 @@ function DeliveryFieldsBody<T extends DeliveryFormState>({
               </SelectContent>
             </Select>
           </Field>
-          {form.ttlMode === "hours" && (
+          {form.closeMode === "hours" && (
             <Field>
-              <FieldLabel htmlFor="trigger-ttl-hours">Idle hours</FieldLabel>
+              <FieldLabel htmlFor="trigger-close-hours">Idle hours</FieldLabel>
               <Input
-                id="trigger-ttl-hours"
+                id="trigger-close-hours"
                 type="number"
                 min={1}
-                value={form.ttlHours}
-                onChange={(event) => setForm({ ...form, ttlHours: event.target.value })}
+                value={form.closeHours}
+                onChange={(event) => setForm({ ...form, closeHours: event.target.value })}
                 placeholder="24"
               />
             </Field>
@@ -2381,7 +2381,7 @@ export function EditTriggerDialog({
   trigger: BotTriggerView;
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  /** Only routing, batching, busy handling, and retention: the rest of the trigger is edited elsewhere (the inbox's sender list). */
+  /** Only routing, batching, busy handling, and idle close: the rest of the trigger is edited elsewhere (the inbox's sender list). */
   deliveryOnly?: boolean;
 }) {
   const queryClient = useQueryClient();

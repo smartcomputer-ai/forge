@@ -23,6 +23,7 @@ async fn pg_live_lifecycle_projection_rejects_managed_branches() {
             session_id: parent.clone(),
             display_name: Some("Lifecycle parent".to_owned()),
             origin: None,
+            delete_after_close_ms: None,
             created_at_ms: 1,
         })
         .await
@@ -132,6 +133,7 @@ async fn pg_live_lifecycle_projection_rejects_managed_branches() {
             session_id: tool_only.clone(),
             display_name: None,
             origin: None,
+            delete_after_close_ms: None,
             created_at_ms: 30,
         })
         .await
@@ -199,6 +201,7 @@ async fn pg_live_delete_is_closed_only_and_preserves_fork_history() {
             session_id: parent.clone(),
             display_name: None,
             origin: None,
+            delete_after_close_ms: None,
             created_at_ms: 1,
         })
         .await
@@ -241,7 +244,7 @@ async fn pg_live_delete_is_closed_only_and_preserves_fork_history() {
 
     assert!(matches!(
         store.delete_closed_session(&parent).await,
-        Err(SessionStoreError::SessionHasForkChildren { .. })
+        Err(SessionStoreError::SessionHasChildren { .. })
     ));
     let deleted_child = store
         .delete_closed_session(&child)

@@ -81,6 +81,7 @@ const metadataSchema = z.record(z.string().min(1).max(64), z.string().min(1).max
 const sessionCreateSchema = z.object({
   displayName: z.string().trim().min(1).max(200).optional(),
   metadata: metadataSchema.optional(),
+  deleteAfterCloseMs: z.number().int().positive().nullable().optional(),
   profile: profileSourceSchema,
 });
 
@@ -108,6 +109,10 @@ const sessionConfigPutSchema = z.object({
 
 const sessionCloseSchema = z.object({
   force: z.boolean().optional(),
+});
+
+const sessionRetentionPutSchema = z.object({
+  deleteAfterCloseMs: z.number().int().positive().nullable(),
 });
 
 const sessionInstructionsPutSchema = z.object({
@@ -512,7 +517,8 @@ export function gatewayRoutes(ctx: AppContext) {
   });
 
   /// Deletion removes retained history and is accepted by Lightspeed only
-  /// after the session is closed (and has no inheriting forks).
+  /// after the selected sessions are closed. Non-cascade deletion requires a
+  /// leaf; cascade includes history forks and delegated children.
   app.delete("/:id/sessions/:sessionId", async (c) => {
     const access = await universeForSession(ctx, c, c.req.param("id"), true);
     if (!access) {
@@ -522,6 +528,7 @@ export function gatewayRoutes(ctx: AppContext) {
       const client = engineClientFor(ctx, access.universe);
       const response = await client.call("session/delete", {
         sessionId: c.req.param("sessionId"),
+        cascade: c.req.query("cascade") === "true",
       });
       return c.json(response.result.session);
     });
@@ -575,10 +582,37 @@ export function gatewayRoutes(ctx: AppContext) {
         ...(input.metadata && Object.keys(input.metadata).length > 0
           ? { metadata: input.metadata }
           : {}),
+        ...(input.deleteAfterCloseMs !== undefined
+          ? { deleteAfterCloseMs: input.deleteAfterCloseMs }
+          : {}),
         profile: input.profile as ProfileSource,
       });
       const current = await client.call("session/read", {
         sessionId: response.result.session.id,
+      });
+      return c.json(current.result.session);
+    });
+  });
+
+  /// Retention belongs to the root session. Null keeps the tree until an
+  /// operator deletes it; a positive duration schedules deletion after close.
+  app.put("/:id/sessions/:sessionId/retention", async (c) => {
+    const access = await universeForSession(ctx, c, c.req.param("id"), true);
+    if (!access) {
+      return c.json({ error: "not found" }, 404);
+    }
+    const body = await parseBody(c, sessionRetentionPutSchema);
+    if (!body.ok) {
+      return body.response;
+    }
+    return withGateway(c, async () => {
+      const client = engineClientFor(ctx, access.universe);
+      await client.call("session/retention/put", {
+        sessionId: c.req.param("sessionId"),
+        deleteAfterCloseMs: body.data.deleteAfterCloseMs,
+      });
+      const current = await client.call("session/read", {
+        sessionId: c.req.param("sessionId"),
       });
       return c.json(current.result.session);
     });

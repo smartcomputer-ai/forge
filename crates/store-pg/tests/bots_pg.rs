@@ -11,7 +11,7 @@ use api::{
 use bots::{
     BotError, BotEventCursor, BotEventOutcomeWrite, BotEventRateScope, BotEventRecord,
     BotEventStore, BotStore, BotTriggerSecrets, BotTriggerStore, BotTriggerWrite,
-    InsertBotEventOutcome, RoutedSession, RoutedSessionTtl,
+    InsertBotEventOutcome, RoutedSession, RoutedSessionClosePolicy,
 };
 use channels::{
     ChannelAccountStore, ChannelError, ChannelPairingFilter, ChannelPairingRecord,
@@ -51,7 +51,7 @@ fn bot_document(profile: &str) -> BotDocument {
         brief: None,
         runs_per_day: None,
         breaker: None,
-        routed_session_ttl_ms: None,
+        routed_session_close_after_ms: None,
         self_config: false,
         emit: false,
         enabled: true,
@@ -65,7 +65,7 @@ fn trigger_document(spec: BotTriggerSpec) -> BotTriggerDocument {
         route: None,
         coalesce: None,
         deliver: None,
-        session_ttl_ms: None,
+        session_close_after_ms: None,
         enabled: true,
     }
 }
@@ -138,7 +138,7 @@ fn event(
         session: Some(RoutedSession {
             session_id: format!("bot:v1:{bot_id}:main"),
             label: "main".to_owned(),
-            ttl: RoutedSessionTtl::Inherit,
+            close_policy: RoutedSessionClosePolicy::Inherit,
         }),
         sender_bot_id: sender_bot_id.map(BotId::new),
         hops: 1,

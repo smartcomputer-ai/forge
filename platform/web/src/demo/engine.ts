@@ -167,6 +167,7 @@ export interface NewSessionInit {
   activeEnvironmentId?: string | null;
   instructions?: string | null;
   createdAtMs?: number;
+  deleteAfterCloseMs?: number | null;
   responder?: DemoResponder;
 }
 
@@ -178,13 +179,24 @@ export function newSession(
   const at = init.createdAtMs ?? Date.now();
   const id = init.id ?? store.nextId("session");
   const config = init.config ?? { model: { ...DEFAULT_MODEL } };
+  const retentionRootSessionId = init.origin
+    ? universe.sessions.get(init.origin.parentSessionId)?.view.retention.rootSessionId ?? id
+    : id;
   const view: SessionView = {
     id,
     displayName: init.displayName ?? null,
     metadata: init.metadata ?? {},
     createdAtMs: at,
     updatedAtMs: at,
+    closedAtMs: null,
     status: "idle",
+    retention: {
+      rootSessionId: retentionRootSessionId,
+      deleteAfterCloseMs: retentionRootSessionId === id
+        ? init.deleteAfterCloseMs ?? null
+        : universe.sessions.get(retentionRootSessionId)?.view.retention.deleteAfterCloseMs ?? null,
+      deleteAtMs: null,
+    },
     managed: init.managed ?? false,
     activeEnvironmentId: init.activeEnvironmentId ?? null,
     config,
@@ -481,6 +493,11 @@ export function closeSession(session: SessionRecord, force: boolean, at = Date.n
   session.queue = [];
   if (active) finishRun(session, active, "cancelled", at);
   session.view.status = "closed";
+  session.view.closedAtMs = at;
+  if (session.view.retention.rootSessionId === session.view.id) {
+    const duration = session.view.retention.deleteAfterCloseMs;
+    session.view.retention.deleteAtMs = duration == null ? null : at + duration;
+  }
   pushEvent(session, { type: "sessionClosed" } as SessionEventKindView, {}, at);
   return true;
 }

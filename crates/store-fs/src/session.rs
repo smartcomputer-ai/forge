@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     io,
     path::{Path, PathBuf},
     sync::Arc,
@@ -8,9 +9,9 @@ use async_trait::async_trait;
 use engine::{
     session::{EventSeq, SessionId, SessionPosition, StoredSessionEntry},
     storage::{
-        AppendSessionEvents, AppendSessionEventsResult, CreateSession, ReadSessionEvents,
-        SessionLifecycleStatus, SessionPage, SessionRecord, SessionStore, SessionStoreError,
-        apply_lifecycle_projection,
+        AppendSessionEvents, AppendSessionEventsResult, CreateSession, DeleteClosedSessions,
+        DeleteClosedSessionsResult, ReadSessionEvents, SessionLifecycleStatus, SessionPage,
+        SessionRecord, SessionStore, SessionStoreError, apply_lifecycle_projection,
     },
 };
 use tokio::{fs, io::AsyncWriteExt, sync::Mutex};
@@ -117,6 +118,39 @@ impl FsSessionStore {
         }
         Ok(entries)
     }
+
+    async fn load_all_records_unlocked(
+        &self,
+    ) -> Result<BTreeMap<SessionId, SessionRecord>, SessionStoreError> {
+        let mut records = BTreeMap::new();
+        let mut entries = match fs::read_dir(self.sessions_root()).await {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(records),
+            Err(error) => {
+                return Err(session_io_error(
+                    "read sessions directory",
+                    &self.sessions_root(),
+                    error,
+                ));
+            }
+        };
+        while let Some(entry) = entries.next_entry().await.map_err(|error| {
+            session_io_error(
+                "read sessions directory entry",
+                &self.sessions_root(),
+                error,
+            )
+        })? {
+            let path = entry.path().join("session.json");
+            let Some(record) = read_session_record(&path).await? else {
+                continue;
+            };
+            let session_id = record.session_id.clone();
+            let events = self.read_entries_unlocked(&session_id).await?;
+            records.insert(session_id, reconcile_record(record, &events));
+        }
+        Ok(records)
+    }
 }
 
 #[async_trait]
@@ -126,6 +160,28 @@ impl SessionStore for FsSessionStore {
         request: CreateSession,
     ) -> Result<SessionRecord, SessionStoreError> {
         let _guard = self.lock.lock().await;
+        if request.delete_after_close_ms == Some(0) {
+            return Err(SessionStoreError::InvalidRetention {
+                message: "deleteAfterCloseMs must be positive".to_owned(),
+            });
+        }
+        let retention_root_session_id = if let Some(origin) = request.origin.as_ref() {
+            if request.delete_after_close_ms.is_some() {
+                return Err(SessionStoreError::SessionRetentionOwnedBy {
+                    session_id: request.session_id,
+                    retention_root_session_id: origin.root_session_id.clone(),
+                });
+            }
+            let parent = self
+                .load_reconciled_record(&origin.parent_session_id)
+                .await?
+                .ok_or_else(|| SessionStoreError::SessionNotFound {
+                    session_id: origin.parent_session_id.clone(),
+                })?;
+            parent.retention_root_session_id
+        } else {
+            request.session_id.clone()
+        };
         let sessions_root = self.sessions_root();
         fs::create_dir_all(&sessions_root).await.map_err(|error| {
             session_io_error("create sessions directory", &sessions_root, error)
@@ -154,11 +210,15 @@ impl SessionStore for FsSessionStore {
             metadata: request.metadata,
             lifecycle_status: SessionLifecycleStatus::New,
             closed_at_seq: None,
+            closed_at_ms: None,
+            retention_root_session_id,
+            delete_after_close_ms: request.delete_after_close_ms,
+            delete_at_ms: None,
             managed: false,
             head: None,
             source_session_id: None,
             source_seq: None,
-            origin: None,
+            origin: request.origin,
             created_at_ms: request.created_at_ms,
             updated_at_ms: request.created_at_ms,
         };
@@ -193,6 +253,147 @@ impl SessionStore for FsSessionStore {
     ) -> Result<Option<SessionRecord>, SessionStoreError> {
         let _guard = self.lock.lock().await;
         self.load_reconciled_record(session_id).await
+    }
+
+    async fn set_session_retention(
+        &self,
+        session_id: &SessionId,
+        delete_after_close_ms: Option<u64>,
+    ) -> Result<SessionRecord, SessionStoreError> {
+        if delete_after_close_ms == Some(0) {
+            return Err(SessionStoreError::InvalidRetention {
+                message: "deleteAfterCloseMs must be positive".to_owned(),
+            });
+        }
+        let _guard = self.lock.lock().await;
+        let Some(mut record) = self.load_reconciled_record(session_id).await? else {
+            return Err(SessionStoreError::SessionNotFound {
+                session_id: session_id.clone(),
+            });
+        };
+        if record.retention_root_session_id != *session_id {
+            return Err(SessionStoreError::SessionRetentionOwnedBy {
+                session_id: session_id.clone(),
+                retention_root_session_id: record.retention_root_session_id,
+            });
+        }
+        record.delete_after_close_ms = delete_after_close_ms;
+        record.delete_at_ms = record
+            .closed_at_ms
+            .zip(delete_after_close_ms)
+            .map(|(closed_at_ms, duration_ms)| closed_at_ms.saturating_add(duration_ms));
+        write_session_record(&self.record_path(session_id), &record).await?;
+        Ok(record)
+    }
+
+    async fn list_retention_roots_due_for_deletion(
+        &self,
+        now_ms: u64,
+        limit: usize,
+    ) -> Result<Vec<SessionRecord>, SessionStoreError> {
+        if limit == 0 {
+            return Err(SessionStoreError::InvalidLimit { limit });
+        }
+        let _guard = self.lock.lock().await;
+        let mut due = self
+            .load_all_records_unlocked()
+            .await?
+            .into_values()
+            .filter(|record| {
+                record.retention_root_session_id == record.session_id
+                    && record.lifecycle_status == SessionLifecycleStatus::Closed
+                    && record
+                        .delete_at_ms
+                        .is_some_and(|deadline| deadline <= now_ms)
+            })
+            .collect::<Vec<_>>();
+        due.sort_by(|left, right| {
+            left.delete_at_ms
+                .cmp(&right.delete_at_ms)
+                .then_with(|| left.session_id.cmp(&right.session_id))
+        });
+        due.truncate(limit);
+        Ok(due)
+    }
+
+    async fn delete_closed_sessions(
+        &self,
+        request: DeleteClosedSessions,
+    ) -> Result<DeleteClosedSessionsResult, SessionStoreError> {
+        let _guard = self.lock.lock().await;
+        let records = self.load_all_records_unlocked().await?;
+        let target = records.get(&request.session_id).cloned().ok_or_else(|| {
+            SessionStoreError::SessionNotFound {
+                session_id: request.session_id.clone(),
+            }
+        })?;
+        if let Some(now_ms) = request.due_at_or_before_ms
+            && (target.retention_root_session_id != target.session_id
+                || !target
+                    .delete_at_ms
+                    .is_some_and(|deadline| deadline <= now_ms))
+        {
+            return Err(SessionStoreError::SessionRetentionNotDue {
+                session_id: target.session_id,
+            });
+        }
+        let mut descendants = retention_descendants(&records, &request.session_id);
+        if !request.cascade && !descendants.is_empty() {
+            return Err(SessionStoreError::SessionHasChildren {
+                session_id: request.session_id,
+            });
+        }
+        if request.cascade {
+            descendants.push(target.session_id.clone());
+        } else {
+            descendants = vec![target.session_id.clone()];
+        }
+        for session_id in &descendants {
+            let record = records
+                .get(session_id)
+                .expect("retention descendant exists");
+            if record.lifecycle_status != SessionLifecycleStatus::Closed {
+                return Err(if *session_id == request.session_id {
+                    SessionStoreError::SessionNotClosed {
+                        session_id: session_id.clone(),
+                        lifecycle_status: record.lifecycle_status,
+                    }
+                } else {
+                    SessionStoreError::SessionTreeNotClosed {
+                        session_id: session_id.clone(),
+                        lifecycle_status: record.lifecycle_status,
+                    }
+                });
+            }
+        }
+        for session_id in &descendants {
+            fs::remove_dir_all(self.session_dir(session_id))
+                .await
+                .map_err(|error| {
+                    session_io_error(
+                        "delete session directory",
+                        &self.session_dir(session_id),
+                        error,
+                    )
+                })?;
+        }
+        for mut record in records.into_values() {
+            if descendants.contains(&record.session_id) {
+                continue;
+            }
+            if record
+                .source_session_id
+                .as_ref()
+                .is_some_and(|source| descendants.contains(source))
+            {
+                record.source_session_id = None;
+                write_session_record(&self.record_path(&record.session_id), &record).await?;
+            }
+        }
+        Ok(DeleteClosedSessionsResult {
+            target,
+            deleted_session_ids: descendants,
+        })
     }
 
     async fn append(
@@ -304,6 +505,8 @@ impl SessionStore for FsSessionStore {
 fn reconcile_record(mut record: SessionRecord, entries: &[StoredSessionEntry]) -> SessionRecord {
     record.lifecycle_status = SessionLifecycleStatus::New;
     record.closed_at_seq = None;
+    record.closed_at_ms = None;
+    record.delete_at_ms = None;
     record.managed = false;
     for entry in entries {
         apply_lifecycle_projection(&mut record, entry);
@@ -316,6 +519,36 @@ fn reconcile_record(mut record: SessionRecord, entries: &[StoredSessionEntry]) -
         record.updated_at_ms = record.created_at_ms;
     }
     record
+}
+
+fn retention_descendants(
+    records: &BTreeMap<SessionId, SessionRecord>,
+    session_id: &SessionId,
+) -> Vec<SessionId> {
+    let mut descendants = Vec::new();
+    let mut pending = vec![session_id.clone()];
+    while let Some(parent) = pending.pop() {
+        let children = records
+            .values()
+            .filter(|candidate| {
+                candidate
+                    .origin
+                    .as_ref()
+                    .is_some_and(|origin| origin.parent_session_id == parent)
+                    || (candidate.source_seq.is_some()
+                        && candidate.source_session_id.as_ref() == Some(&parent))
+            })
+            .map(|candidate| candidate.session_id.clone())
+            .collect::<Vec<_>>();
+        for child in children {
+            if !descendants.contains(&child) {
+                pending.push(child.clone());
+                descendants.push(child);
+            }
+        }
+    }
+    descendants.reverse();
+    descendants
 }
 
 async fn append_entries(
@@ -397,6 +630,64 @@ mod tests {
         }
     }
 
+    fn lifecycle_event(at_ms: u64, kind: &'static str) -> UncommittedStoredEvent {
+        UncommittedStoredEvent {
+            observed_at_ms: at_ms,
+            joins: StoredJoins::default(),
+            event: StoredEvent::new(kind, 1, serde_json::Value::Object(Default::default())),
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn fs_session_store_persists_retention_deadlines() {
+        let temp_dir = tempfile::tempdir().expect("temp dir");
+        let store = FsSessionStore::open(temp_dir.path())
+            .await
+            .expect("open store");
+        let session_id = SessionId::new("retained-session");
+        store
+            .create_session(CreateSession {
+                metadata: Default::default(),
+                session_id: session_id.clone(),
+                display_name: None,
+                origin: None,
+                delete_after_close_ms: Some(100),
+                created_at_ms: 1,
+            })
+            .await
+            .expect("create session");
+        store
+            .append(AppendSessionEvents {
+                session_id: session_id.clone(),
+                expected_head: None,
+                events: vec![
+                    lifecycle_event(10, engine::CORE_AGENT_LIFECYCLE_OPENED_EVENT_KIND),
+                    lifecycle_event(20, engine::CORE_AGENT_LIFECYCLE_CLOSED_EVENT_KIND),
+                ],
+            })
+            .await
+            .expect("close session");
+
+        let reopened = FsSessionStore::open(temp_dir.path())
+            .await
+            .expect("reopen store");
+        let record = reopened
+            .load_session(&session_id)
+            .await
+            .expect("load session")
+            .expect("session exists");
+        assert_eq!(record.closed_at_ms, Some(20));
+        assert_eq!(record.delete_at_ms, Some(120));
+        assert_eq!(
+            reopened
+                .list_retention_roots_due_for_deletion(120, 1)
+                .await
+                .expect("list due roots")
+                .len(),
+            1
+        );
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn fs_session_store_persists_session_log() {
         let temp_dir = tempfile::tempdir().expect("temp dir");
@@ -411,6 +702,7 @@ mod tests {
                 session_id: session_id.clone(),
                 display_name: None,
                 origin: None,
+                delete_after_close_ms: None,
                 created_at_ms: 1,
             })
             .await
@@ -465,6 +757,7 @@ mod tests {
                 session_id: session_id.clone(),
                 display_name: None,
                 origin: None,
+                delete_after_close_ms: None,
                 created_at_ms: 1,
             })
             .await
@@ -475,6 +768,7 @@ mod tests {
                 session_id: session_id.clone(),
                 display_name: None,
                 origin: None,
+                delete_after_close_ms: None,
                 created_at_ms: 2,
             })
             .await

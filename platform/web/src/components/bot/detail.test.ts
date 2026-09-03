@@ -41,6 +41,7 @@ const subagent = (
   managed: true,
   createdAtMs: 0,
   updatedAtMs,
+  retention: { rootSessionId: "bot:v1:triage" },
   origin: {
     kind: "subagent",
     parentSessionId,
@@ -103,12 +104,12 @@ describe("setup summaries", () => {
       guardrailsSummary({
         runsPerDay: 50,
         breaker: { fires: 20, windowMs: 600_000 },
-        routedSessionTtlMs: 7 * 86_400_000,
+        routedSessionCloseAfterMs: 7 * 86_400_000,
         selfConfig: true,
       }),
     ).toBe("50 runs a day · flood 20/10 min · threads close after 7d · can change own triggers");
     expect(
-      guardrailsSummary({ runsPerDay: null, breaker: null, routedSessionTtlMs: null, selfConfig: false }),
+      guardrailsSummary({ runsPerDay: null, breaker: null, routedSessionCloseAfterMs: null, selfConfig: false }),
     ).toBe("no daily limit · threads kept");
     expect(otherBotsSummary(true, ["release-shepherd"])).toBe("can send · receives from release-shepherd");
     expect(otherBotsSummary(false, "off")).toBe("cannot send · receives from nobody");

@@ -14,8 +14,8 @@ use engine::{
     CoreAgentAction, CoreAgentCommand, CoreAgentDrive, CoreAgentState, CoreAgentStatus, Promise,
     PromiseId, PromiseResolution, PromiseScope, PromiseSource, SessionId,
     storage::{
-        AppendSessionEvents, ListSessions, SessionListCursor, SessionRecord, SessionStore,
-        SessionStoreError,
+        AppendSessionEvents, DeleteClosedSessions, ListSessions, SessionListCursor, SessionRecord,
+        SessionStore, SessionStoreError,
     },
 };
 use temporal_workflow::{AgentAdmission, AgentSessionWorkflow, compose_workflow_id};
@@ -26,10 +26,134 @@ use temporalio_common::protos::temporal::api::enums::v1::WorkflowExecutionStatus
 use thiserror::Error;
 use uuid::Uuid;
 
-use crate::config::DeploymentStores;
+use crate::{
+    config::DeploymentStores,
+    session_deletion::{SessionDeletionCause, delete_session_subtree},
+};
 
 const DEFAULT_REAPER_INTERVAL: Duration = Duration::from_secs(5 * 60);
 const SESSION_PAGE_LIMIT: usize = 256;
+
+#[derive(Clone)]
+pub struct SessionRetentionReaper {
+    stores: DeploymentStores,
+    interval: Duration,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SessionRetentionReaperStats {
+    pub universes_scanned: usize,
+    pub due_roots_scanned: usize,
+    pub roots_deleted: usize,
+    pub sessions_deleted: usize,
+    pub open_tree_skips: usize,
+    pub conflicts: usize,
+    pub errors: usize,
+}
+
+impl SessionRetentionReaperStats {
+    fn reportable(&self) -> bool {
+        self.due_roots_scanned > 0 || self.errors > 0
+    }
+}
+
+impl SessionRetentionReaper {
+    pub fn new(stores: DeploymentStores) -> Self {
+        Self {
+            stores,
+            interval: DEFAULT_REAPER_INTERVAL,
+        }
+    }
+
+    pub async fn run_forever(self) {
+        loop {
+            match self.run_once().await {
+                Ok(stats) if stats.reportable() => tracing::info!(
+                    target: "temporal_server",
+                    universes_scanned = stats.universes_scanned,
+                    due_roots_scanned = stats.due_roots_scanned,
+                    roots_deleted = stats.roots_deleted,
+                    sessions_deleted = stats.sessions_deleted,
+                    open_tree_skips = stats.open_tree_skips,
+                    conflicts = stats.conflicts,
+                    errors = stats.errors,
+                    "session retention reaper pass complete"
+                ),
+                Ok(_) => {}
+                Err(error) => tracing::warn!(
+                    target: "temporal_server",
+                    %error,
+                    "session retention reaper pass failed"
+                ),
+            }
+            tokio::time::sleep(self.interval).await;
+        }
+    }
+
+    pub async fn run_once(&self) -> anyhow::Result<SessionRetentionReaperStats> {
+        let universes = store_pg::list_universes(self.stores.pool()).await?;
+        let mut stats = SessionRetentionReaperStats::default();
+        let now_ms = now_ms();
+        for (universe_id, _) in universes {
+            stats.universes_scanned += 1;
+            let store = self.stores.store_for(universe_id);
+            let due = match store
+                .list_retention_roots_due_for_deletion(now_ms, SESSION_PAGE_LIMIT)
+                .await
+            {
+                Ok(due) => due,
+                Err(error) => {
+                    stats.errors += 1;
+                    tracing::warn!(
+                        target: "temporal_server",
+                        %universe_id,
+                        %error,
+                        "could not list due session-retention roots"
+                    );
+                    continue;
+                }
+            };
+            stats.due_roots_scanned += due.len();
+            for root in due {
+                let result = delete_session_subtree(
+                    store.as_ref(),
+                    DeleteClosedSessions {
+                        session_id: root.session_id.clone(),
+                        cascade: true,
+                        due_at_or_before_ms: Some(now_ms),
+                    },
+                    SessionDeletionCause::Retention,
+                )
+                .await;
+                match result {
+                    Ok(deleted) => {
+                        stats.roots_deleted += 1;
+                        stats.sessions_deleted += deleted.deleted_session_ids.len();
+                    }
+                    Err(SessionStoreError::SessionTreeNotClosed { .. })
+                    | Err(SessionStoreError::SessionNotClosed { .. }) => {
+                        stats.open_tree_skips += 1;
+                    }
+                    Err(SessionStoreError::SessionRetentionNotDue { .. })
+                    | Err(SessionStoreError::SessionNotFound { .. }) => {
+                        stats.conflicts += 1;
+                    }
+                    Err(error) => {
+                        stats.errors += 1;
+                        tracing::warn!(
+                            target: "temporal_server",
+                            %universe_id,
+                            session_id = %root.session_id,
+                            %error,
+                            "could not delete due session-retention tree"
+                        );
+                    }
+                }
+            }
+        }
+        Ok(stats)
+    }
+}
 
 #[derive(Clone)]
 pub struct PromiseReaper {
@@ -730,10 +854,14 @@ mod tests {
                     LoadedSessionSnapshot {
                         record: SessionRecord {
                             metadata: Default::default(),
-                            session_id,
+                            session_id: session_id.clone(),
                             display_name: None,
                             lifecycle_status: engine::storage::SessionLifecycleStatus::New,
                             closed_at_seq: None,
+                            closed_at_ms: None,
+                            retention_root_session_id: session_id,
+                            delete_after_close_ms: None,
+                            delete_at_ms: None,
                             managed: false,
                             head: None,
                             source_session_id: None,

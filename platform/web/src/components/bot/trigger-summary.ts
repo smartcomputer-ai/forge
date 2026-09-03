@@ -90,13 +90,13 @@ export interface DeliveryShape {
   /** Seconds, as typed; empty means no coalescing. */
   debounceSeconds: string;
   maxWaitSeconds: string;
-  ttlMode: "inherit" | "forever" | "hours";
-  ttlHours: string;
+  closeMode: "inherit" | "forever" | "hours";
+  closeHours: string;
 }
 
 /**
  * The Advanced disclosure, closed: what routing, batching, busy handling,
- * and retention do, as one sentence. Reads the same for a form and a saved
+ * and idle close do, as one sentence. Reads the same for a form and a saved
  * trigger, so a person learns the vocabulary before opening the fields.
  */
 export function deliverySentence(shape: DeliveryShape, chat = false): string {
@@ -126,8 +126,8 @@ export function deliverySentence(shape: DeliveryShape, chat = false): string {
         : "queues when busy",
   );
   if (shape.routePolicy !== "bot") {
-    if (shape.ttlMode === "forever") parts.push("threads kept");
-    else if (shape.ttlMode === "hours" && shape.ttlHours.trim()) parts.push(`threads close after ${shape.ttlHours.trim()}h idle`);
+    if (shape.closeMode === "forever") parts.push("threads kept");
+    else if (shape.closeMode === "hours" && shape.closeHours.trim()) parts.push(`threads close after ${shape.closeHours.trim()}h idle`);
   }
   return parts.join(" · ");
 }
@@ -140,7 +140,7 @@ export function deliveryShapeOf(trigger: BotTriggerView): DeliveryShape {
     whenBusy: trigger.deliver?.whenBusy ?? "queue",
     debounceSeconds: trigger.coalesce ? String(trigger.coalesce.debounceMs / 1000) : "",
     maxWaitSeconds: trigger.coalesce ? String(trigger.coalesce.maxWaitMs / 1000) : "",
-    ttlMode: trigger.sessionTtlMs == null ? "inherit" : trigger.sessionTtlMs === 0 ? "forever" : "hours",
-    ttlHours: trigger.sessionTtlMs ? String(Math.round(trigger.sessionTtlMs / 3_600_000)) : "",
+    closeMode: trigger.sessionCloseAfterMs == null ? "inherit" : trigger.sessionCloseAfterMs === 0 ? "forever" : "hours",
+    closeHours: trigger.sessionCloseAfterMs ? String(Math.round(trigger.sessionCloseAfterMs / 3_600_000)) : "",
   };
 }

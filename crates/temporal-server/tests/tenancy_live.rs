@@ -74,6 +74,7 @@ async fn temporal_live_two_universes_share_one_worker_with_isolation() -> anyhow
                     display_name: None,
                     config: None,
                     profile: None,
+                    delete_after_close_ms: None,
                 })
                 .await?;
             assert_eq!(started.result.session.status, SessionStatus::Idle);

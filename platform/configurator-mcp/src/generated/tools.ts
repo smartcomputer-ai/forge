@@ -28,6 +28,15 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
             }
           ]
         },
+        "deleteAfterCloseMs": {
+          "description": "Root-owned automatic deletion measured from close. Absent keeps the\nsession tree until manual deletion.",
+          "format": "uint64",
+          "minimum": 0,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
         "displayName": {
           "type": [
             "string",
@@ -2115,6 +2124,39 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
     }
   },
   {
+    "name": "lightspeed_session_retention_put",
+    "method": "session/retention/put",
+    "summary": "Replace session retention",
+    "description": "Sets the positive close-relative automatic-deletion duration on a retention root, or clears it with null. Forks and delegated children inherit the root policy and cannot override it.",
+    "paramsType": "SessionRetentionPutParams",
+    "resultType": "AgentApiOutcome<SessionRetentionPutResponse>",
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "additionalProperties": {
+        "not": {}
+      },
+      "properties": {
+        "deleteAfterCloseMs": {
+          "description": "Positive duration enables automatic tree deletion; null disables it.",
+          "format": "uint64",
+          "minimum": 1,
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "sessionId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "sessionId",
+        "deleteAfterCloseMs"
+      ],
+      "type": "object"
+    }
+  },
+  {
     "name": "lightspeed_session_close",
     "method": "session/close",
     "summary": "Close a session",
@@ -2142,13 +2184,17 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
   {
     "name": "lightspeed_session_delete",
     "method": "session/delete",
-    "summary": "Delete a closed session",
-    "description": "Permanently removes session storage after the session has been closed; close active/open sessions first.",
+    "summary": "Delete closed sessions",
+    "description": "Permanently removes a closed retention-tree leaf, or its closed history-fork and delegated-child subtree when cascade is true. Config-only clones are never included.",
     "paramsType": "SessionDeleteParams",
     "resultType": "AgentApiOutcome<SessionDeleteResponse>",
     "inputSchema": {
       "$schema": "http://json-schema.org/draft-07/schema#",
       "properties": {
+        "cascade": {
+          "description": "Delete history forks and delegated descendants too. False requires the\ntarget to be a closed retention-tree leaf.",
+          "type": "boolean"
+        },
         "sessionId": {
           "type": "string"
         }
@@ -5047,12 +5093,12 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
     "name": "lightspeed_models_list",
     "method": "models/list",
     "summary": "Discover available models",
-    "description": "Queries supported providers directly on every call and returns best-effort selectable routes. One provider failure does not discard successful results from others.",
+    "description": "Queries supported providers directly, with a brief process-local burst cache, and returns best-effort selectable routes. One provider failure does not discard successful results from others.",
     "paramsType": "ModelListParams",
     "resultType": "AgentApiOutcome<ModelListResponse>",
     "inputSchema": {
       "$schema": "http://json-schema.org/draft-07/schema#",
-      "description": "Direct provider model discovery. Each invocation asks the supported\nprovider APIs again; clients refresh by calling this method.",
+      "description": "Direct provider model discovery. Results may be served from a brief\nprocess-local cache; clients refresh by calling this method.",
       "properties": {
         "selectableOnly": {
           "description": "Apply Lightspeed's small, conservative selectable-model policy. It\nremoves OpenAI model-id families that are clearly not text-generation\nroutes (embeddings, moderation, image/video, speech, and realtime).\nIt is an ID policy, not a provider capability claim.",
@@ -8830,8 +8876,8 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
             "profileId": {
               "$ref": "#/definitions/ProfileId"
             },
-            "routedSessionTtlMs": {
-              "description": "Close routed (`perKey` / `perEvent`) sessions idle longer than this;\nabsent keeps them open. A trigger's `sessionTtlMs` overrides it.",
+            "routedSessionCloseAfterMs": {
+              "description": "Close routed (`perKey` / `perEvent`) sessions idle longer than this;\nabsent keeps them open. A trigger's `sessionCloseAfterMs` overrides it.",
               "format": "uint64",
               "minimum": 0,
               "type": [
@@ -9100,8 +9146,8 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                 }
               ]
             },
-            "sessionTtlMs": {
-              "description": "Retention of the sessions this trigger routes to: absent inherits the\nbot's `routedSessionTtlMs`, `0` keeps them open indefinitely (the\nchat default).",
+            "sessionCloseAfterMs": {
+              "description": "Idle-close policy for sessions this trigger routes to: absent inherits the\nbot's `routedSessionCloseAfterMs`, `0` keeps them open indefinitely (the\nchat default).",
               "format": "uint64",
               "minimum": 0,
               "type": [
@@ -9625,8 +9671,8 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
             "profileId": {
               "$ref": "#/definitions/ProfileId"
             },
-            "routedSessionTtlMs": {
-              "description": "Close routed (`perKey` / `perEvent`) sessions idle longer than this;\nabsent keeps them open. A trigger's `sessionTtlMs` overrides it.",
+            "routedSessionCloseAfterMs": {
+              "description": "Close routed (`perKey` / `perEvent`) sessions idle longer than this;\nabsent keeps them open. A trigger's `sessionCloseAfterMs` overrides it.",
               "format": "uint64",
               "minimum": 0,
               "type": [
@@ -10117,8 +10163,8 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                 }
               ]
             },
-            "sessionTtlMs": {
-              "description": "Retention of the sessions this trigger routes to: absent inherits the\nbot's `routedSessionTtlMs`, `0` keeps them open indefinitely (the\nchat default).",
+            "sessionCloseAfterMs": {
+              "description": "Idle-close policy for sessions this trigger routes to: absent inherits the\nbot's `routedSessionCloseAfterMs`, `0` keeps them open indefinitely (the\nchat default).",
               "format": "uint64",
               "minimum": 0,
               "type": [

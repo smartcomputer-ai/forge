@@ -481,6 +481,7 @@ impl GatewayAgentApi {
             match self
                 .delete_session(SessionDeleteParams {
                     session_id: session_id.clone(),
+                    cascade: true,
                 })
                 .await
             {

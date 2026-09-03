@@ -19,7 +19,14 @@
   adapter's target map, build script, and exclusion list were updated in
   its own repository. Open in ls.bot: the well-known route with the archives
   beside it, and the protocol-number notice in its manifest validation.
-  Slice 4 is not started.
+  Slice 4 implemented 2026-09-03: `lightspeed-envd upgrade` resolves the
+  deployment document, streams and verifies the target archive, checks the
+  candidate's build facts, and atomically replaces the executable; registered
+  daemons can opt into the same operation on protocol mismatch and re-exec
+  once per process lineage. Focused coverage uses a local discovery/archive
+  server and verifies URL policy, installation, protocol pinning, CLI/config,
+  and the non-opted-in diagnostic. The cross-repository live protocol-bump
+  acceptance waits for the open ls.bot serving work.
 - Behavior of the daemon at runtime is [P151](p151-exec-leftover-processes.md);
   this item is about the binary: how it is built, what it links, how it is
   found, how a running deployment identifies itself, and how a long-lived

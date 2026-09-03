@@ -923,11 +923,11 @@ export type BotTriggerView = {
   revision: number;
   route?: BotTriggerRoute | null;
   /**
-   * Retention of the sessions this trigger routes to: absent inherits the
-   * bot's `routedSessionTtlMs`, `0` keeps them open indefinitely (the
+   * Idle-close policy for sessions this trigger routes to: absent inherits the
+   * bot's `routedSessionCloseAfterMs`, `0` keeps them open indefinitely (the
    * chat default).
    */
-  sessionTtlMs?: number | null;
+  sessionCloseAfterMs?: number | null;
   triggerId: BotTriggerId;
   updatedAtMs: number;
 } & BotTriggerView1;
@@ -1606,11 +1606,11 @@ export type BotTriggerInput = {
   pairingCode?: string | null;
   route?: BotTriggerRoute | null;
   /**
-   * Retention of the sessions this trigger routes to: absent inherits the
-   * bot's `routedSessionTtlMs`, `0` keeps them open indefinitely (the
+   * Idle-close policy for sessions this trigger routes to: absent inherits the
+   * bot's `routedSessionCloseAfterMs`, `0` keeps them open indefinitely (the
    * chat default).
    */
-  sessionTtlMs?: number | null;
+  sessionCloseAfterMs?: number | null;
   triggerId: BotTriggerId;
 } & BotTriggerInput1;
 export type BotTriggerInput1 =
@@ -1761,6 +1761,7 @@ export interface SessionView {
    */
   activeRun?: RunSummaryView | null;
   activeTools?: ActiveToolsView;
+  closedAtMs?: number | null;
   /**
    * The stored sparse config document, exactly as last put (model and
    * feature versions materialized at admission). Effective tool reality
@@ -1791,6 +1792,7 @@ export interface SessionView {
    * Sub-agent lineage; absent for root sessions.
    */
   origin?: SessionOriginView | null;
+  retention: SessionRetentionView;
   runs?: RunSummaryView[];
   status: SessionStatus;
   updatedAtMs: number;
@@ -2328,6 +2330,18 @@ export interface SubagentLimitsView {
   maxConcurrent: number;
   maxDepth: number;
   maxDescendants: number;
+}
+/**
+ * Effective tree-owned retention for a session. Forks and delegated children
+ * name their owning root and project that root's policy and deadline.
+ *
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "SessionRetentionView".
+ */
+export interface SessionRetentionView {
+  deleteAfterCloseMs?: number | null;
+  deleteAtMs?: number | null;
+  rootSessionId: string;
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
@@ -2963,9 +2977,9 @@ export interface BotView {
   revision: number;
   /**
    * Close routed (`perKey` / `perEvent`) sessions idle longer than this;
-   * absent keeps them open. A trigger's `sessionTtlMs` overrides it.
+   * absent keeps them open. A trigger's `sessionCloseAfterMs` overrides it.
    */
-  routedSessionTtlMs?: number | null;
+  routedSessionCloseAfterMs?: number | null;
   /**
    * Budget: runs started per UTC day (sub-agent descendants count);
    * absent means unlimited.
@@ -3413,9 +3427,9 @@ export interface BotListItem {
   revision: number;
   /**
    * Close routed (`perKey` / `perEvent`) sessions idle longer than this;
-   * absent keeps them open. A trigger's `sessionTtlMs` overrides it.
+   * absent keeps them open. A trigger's `sessionCloseAfterMs` overrides it.
    */
-  routedSessionTtlMs?: number | null;
+  routedSessionCloseAfterMs?: number | null;
   /**
    * Budget: runs started per UTC day (sub-agent descendants count);
    * absent means unlimited.
@@ -3588,6 +3602,7 @@ export interface BotSessionSnapshot {
  * via the `definition` "SessionSummaryView".
  */
 export interface SessionSummaryView {
+  closedAtMs?: number | null;
   createdAtMs: number;
   displayName?: string | null;
   id: string;
@@ -3607,6 +3622,7 @@ export interface SessionSummaryView {
    * Sub-agent lineage; absent for root sessions.
    */
   origin?: SessionOriginView | null;
+  retention: SessionRetentionView;
   updatedAtMs: number;
 }
 /**
@@ -5517,6 +5533,7 @@ export interface AgentApiOutcomeOfSessionDeleteResponse {
  * via the `definition` "SessionDeleteResponse".
  */
 export interface SessionDeleteResponse {
+  deletedSessionCount: number;
   session: SessionSummaryView;
 }
 /**
@@ -5645,6 +5662,21 @@ export interface AgentApiOutcomeOfSessionRenameResponse {
  * via the `definition` "SessionRenameResponse".
  */
 export interface SessionRenameResponse {
+  session: SessionSummaryView;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "AgentApiOutcomeOfSessionRetentionPutResponse".
+ */
+export interface AgentApiOutcomeOfSessionRetentionPutResponse {
+  notifications?: AgentNotification[];
+  result: SessionRetentionPutResponse;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "SessionRetentionPutResponse".
+ */
+export interface SessionRetentionPutResponse {
   session: SessionSummaryView;
 }
 /**
@@ -6172,9 +6204,9 @@ export interface BotInput {
   profileId: ProfileId;
   /**
    * Close routed (`perKey` / `perEvent`) sessions idle longer than this;
-   * absent keeps them open. A trigger's `sessionTtlMs` overrides it.
+   * absent keeps them open. A trigger's `sessionCloseAfterMs` overrides it.
    */
-  routedSessionTtlMs?: number | null;
+  routedSessionCloseAfterMs?: number | null;
   /**
    * Budget: runs started per UTC day (sub-agent descendants count);
    * absent means unlimited.
@@ -6852,6 +6884,11 @@ export interface JsonRpcError {
  */
 export interface ManagedSessionStartParams {
   config?: SessionConfig | null;
+  /**
+   * Root-owned automatic deletion measured from close. Absent keeps the
+   * session tree until manual deletion.
+   */
+  deleteAfterCloseMs?: number | null;
   displayName?: string | null;
   /**
    * Descriptive key/value metadata with the same bounds as
@@ -6946,8 +6983,8 @@ export interface McpServerToolsDiscoverParams {
   serverId: string;
 }
 /**
- * Direct provider model discovery. Each invocation asks the supported
- * provider APIs again; clients refresh by calling this method.
+ * Direct provider model discovery. Results may be served from a brief
+ * process-local cache; clients refresh by calling this method.
  *
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "ModelListParams".
@@ -7295,6 +7332,11 @@ export interface SessionConfigPutParams {
  * via the `definition` "SessionDeleteParams".
  */
 export interface SessionDeleteParams {
+  /**
+   * Delete history forks and delegated descendants too. False requires the
+   * target to be a closed retention-tree leaf.
+   */
+  cascade?: boolean;
   sessionId: string;
 }
 /**
@@ -7396,10 +7438,26 @@ export interface SessionRenameParams {
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "SessionRetentionPutParams".
+ */
+export interface SessionRetentionPutParams {
+  /**
+   * Positive duration enables automatic tree deletion; null disables it.
+   */
+  deleteAfterCloseMs: number | null;
+  sessionId: string;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "SessionStartParams".
  */
 export interface SessionStartParams {
   config?: SessionConfig | null;
+  /**
+   * Root-owned automatic deletion measured from close. Absent keeps the
+   * session tree until manual deletion.
+   */
+  deleteAfterCloseMs?: number | null;
   displayName?: string | null;
   /**
    * Descriptive key/value metadata, applied only when the session is

@@ -29,6 +29,7 @@ pub(super) async fn create_or_load_session(
             display_name: request.display_name.clone(),
             metadata: request.metadata.clone(),
             origin: None,
+            delete_after_close_ms: request.delete_after_close_ms,
             created_at_ms: request.observed_at_ms,
         })
         .await
@@ -544,6 +545,7 @@ mod tests {
                 session_id: session_id.clone(),
                 display_name: None,
                 origin: None,
+                delete_after_close_ms: None,
                 created_at_ms: 1,
             })
             .await
@@ -710,6 +712,7 @@ mod tests {
                 session_id: session_id.clone(),
                 display_name: None,
                 origin: None,
+                delete_after_close_ms: None,
                 created_at_ms: 1,
             })
             .await
@@ -778,6 +781,7 @@ mod tests {
                 metadata: Default::default(),
                 display_name: None,
                 session_id: session_id.clone(),
+                delete_after_close_ms: None,
                 observed_at_ms: 2,
             },
         )
@@ -819,6 +823,10 @@ mod tests {
                 display_name: None,
                 lifecycle_status: engine::storage::SessionLifecycleStatus::New,
                 closed_at_seq: None,
+                closed_at_ms: None,
+                retention_root_session_id: session_id.clone(),
+                delete_after_close_ms: None,
+                delete_at_ms: None,
                 managed: false,
                 head: None,
                 source_session_id: None,
