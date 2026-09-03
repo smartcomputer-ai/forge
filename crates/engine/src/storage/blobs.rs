@@ -840,7 +840,7 @@ mod tests {
             .await
             .expect("record edge");
         assert_eq!(store.edges().len(), 1);
-        assert_eq!(store.delete_blobs(&[old.clone()]), 1);
+        assert_eq!(store.delete_blobs(std::slice::from_ref(&old)), 1);
         assert!(store.edges().is_empty(), "a deleted parent drops its edges");
         assert!(matches!(
             store.read_bytes(&old).await,

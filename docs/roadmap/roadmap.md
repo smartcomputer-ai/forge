@@ -43,7 +43,7 @@
   bundle and at `/.well-known/lightspeed-envd` on the gateway, and
   `initialize` reporting the build's git sha and matching envd. Manual and
   opt-in automatic self-upgrade are implemented; deployment-side serving and
-  its protocol-change notice remain open in ls.bot.
+  its protocol-change notice remain open in the deployment repository.
 - [ ] [P151](p151-exec-leftover-processes.md) — leftover processes survive a
   normal `exec_command` exit (timeouts, termination, and durable jobs keep
   sweeping), leftover output is drained instead of abandoned, the tool

@@ -1270,7 +1270,7 @@ async fn pg_live_sweep_frees_only_unreachable_blobs_after_grace() {
         vec![child.clone()]
     );
     let deleted = store
-        .delete_dead_blobs(&[child.clone()], cutoff_ms, &pinned)
+        .delete_dead_blobs(std::slice::from_ref(&child), cutoff_ms, &pinned)
         .await
         .expect("delete child");
     assert_eq!(deleted.len(), 1);

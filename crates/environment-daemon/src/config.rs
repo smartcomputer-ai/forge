@@ -160,6 +160,23 @@ impl std::fmt::Debug for RegistrationConfig {
 }
 
 impl RegistrationConfig {
+    /// Registration that never replaces the running binary: no key, name,
+    /// metadata, receipt, or CA file until the caller sets them. The CLI
+    /// attaches the restart invocation for automatic upgrade itself, so it
+    /// stays crate-private.
+    pub fn new(gateway_url: String, discovery_url: String) -> Self {
+        Self {
+            gateway_url,
+            registration_key: None,
+            display_name: None,
+            metadata: BTreeMap::new(),
+            receipt_path: None,
+            ca_file: None,
+            discovery_url,
+            auto_upgrade: None,
+        }
+    }
+
     pub fn validate(&self) -> Result<()> {
         validate_gateway_url(&self.gateway_url)?;
         validate_registration_metadata(self.display_name.as_deref(), &self.metadata)

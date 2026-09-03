@@ -142,11 +142,12 @@ and live truth arrives as append-only tool results when the model searches.
 
 ## Model-Facing Names (`inject` exposure)
 
-The derived toolset entry for a server is already named `mcp_<server_id>`.
+The derived toolset entry for a server is already named `mcp_<server_label>`
+(the record's model-facing label, normalized).
 Native tools extend it:
 
 ```text
-mcp_<server_id>__<remote_tool_name>      e.g. mcp_github_read__search_issues
+mcp_<server_label>__<remote_tool_name>   e.g. mcp_github_read__search_issues
 ```
 
 - Names, never digests (P138). The remote name must match

@@ -770,13 +770,16 @@ fn daemon_config(
         fs_root: root.clone(),
         state_dir: root.join(".lightspeed-envd"),
         read_only_fs: false,
-        registration: Some(RegistrationConfig {
-            gateway_url: connect_url.to_owned(),
-            registration_key: key.map(SecretString::new),
-            display_name: Some("registration live daemon".to_owned()),
-            metadata,
-            receipt_path: receipt.map(Path::to_path_buf),
-            ca_file: None,
+        registration: Some({
+            let mut registration = RegistrationConfig::new(
+                connect_url.to_owned(),
+                environment_daemon::upgrade::resolve_discovery_url(Some(connect_url), None)?,
+            );
+            registration.registration_key = key.map(SecretString::new);
+            registration.display_name = Some("registration live daemon".to_owned());
+            registration.metadata = metadata;
+            registration.receipt_path = receipt.map(Path::to_path_buf);
+            registration
         }),
         scrubbed_env: Vec::new(),
     })

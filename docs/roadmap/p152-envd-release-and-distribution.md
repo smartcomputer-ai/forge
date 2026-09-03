@@ -17,7 +17,7 @@
   live registration suite, and a musl build in the pinned image that runs
   on `debian:bullseye`, `ubuntu:22.04`, and `alpine:3.20`. The Harbor
   adapter's target map, build script, and exclusion list were updated in
-  its own repository. Open in ls.bot: the well-known route with the archives
+  its own repository. Open in the deployment repository: the well-known route with the archives
   beside it, and the protocol-number notice in its manifest validation.
   Slice 4 implemented 2026-09-03: `lightspeed-envd upgrade` resolves the
   deployment document, streams and verifies the target archive, checks the
@@ -26,7 +26,7 @@
   once per process lineage. Focused coverage uses a local discovery/archive
   server and verifies URL policy, installation, protocol pinning, CLI/config,
   and the non-opted-in diagnostic. The cross-repository live protocol-bump
-  acceptance waits for the open ls.bot serving work.
+  acceptance waits for the open deployment-side serving work.
 - Behavior of the daemon at runtime is [P151](p151-exec-leftover-processes.md);
   this item is about the binary: how it is built, what it links, how it is
   found, how a running deployment identifies itself, and how a long-lived
@@ -99,7 +99,7 @@ change without an operator logging in.
    for envd; server, provider, and CLI keep their targets.
 3. Every release and `main` snapshot carries a small discovery document in
    the bundle. Serving it, and the archives it names, is the deployment's
-   job, not the gateway's: ls.bot publishes both at a well-known path
+   job, not the gateway's: the deployment publishes both at a well-known path
    through Caddy, next to the site and demo artifacts it already serves by
    digest. The gateway and the API do not know about the path.
 4. Compatibility is decided by the protocol number alone, exact match,
@@ -111,7 +111,7 @@ change without an operator logging in.
 5. A registered daemon can install the build its gateway names, on demand
    through `lightspeed-envd upgrade` and, when opted in, automatically on a
    protocol mismatch. Provider-managed VMs are not upgraded in place; they
-   follow ls.bot's rebuild-by-incarnation plan
+   follow the deployment's rebuild-by-incarnation plan
    (`docs/environment-daemon-upgrade-plan.md` in that repository).
 
 ## Design
@@ -193,13 +193,13 @@ change without an operator logging in.
   the binaries stay reproducible. Producing the document is the release
   pipeline's part (`scripts/release/create-manifest.mjs` alongside
   `release-manifest.json`); `validate-release-manifest` checks it.
-- Serving belongs to the deployment. In ls.bot, `install-deployment`
+- Serving belongs to the deployment. In the deployment repository, `install-deployment`
   copies the installed bundle's `envd.json` and envd archives under the
   versions directory, fills every `url` with the archive it serves itself,
   and Caddy serves the document at `GET /.well-known/lightspeed-envd` and
   the archives beside it, switched atomically with the release like
   `/demo/`. A served document therefore always has absolute URLs; only a
-  bundle read directly may carry `null`. That is an ls.bot change, tracked
+  bundle read directly may carry `null`. That is a deployment-repository change, tracked
   there; this item guarantees the document and the archives exist in every
   bundle.
 - `lightspeed-envd --print-build` prints its own
@@ -226,7 +226,7 @@ change without an operator logging in.
   `version` from `release_info::VERSION` instead of the crate version. The
   type is shared by the registration frame, the data `initialize`, and the
   provider controller handshake, so provider-managed VMs report their build
-  too, which the ls.bot rebuild plan wants recorded per incarnation.
+  too, which the deployment's rebuild plan wants recorded per incarnation.
 - The gateway writes `lightspeed.envd.version`, `lightspeed.envd.gitSha`,
   and `lightspeed.envd.protocolVersion` into the environment row on every
   admission, reconnects included, where it already stamps the new
@@ -243,7 +243,7 @@ Three daemon populations, three answers:
   per trial from the discovery document. Self-upgrade is meaningless.
 - **Provider-managed VMs** (hz02): inbound on the private bridge, no
   registration identity, and the unit's `ProtectSystem=strict` makes the
-  binary's directory read-only to the service. ls.bot's plan replaces the
+  binary's directory read-only to the service. The deployment's plan replaces the
   VM through a new incarnation from a new image; an in-place updater is at
   most an attended emergency tool there. This item adds nothing for them.
 - **Registered long-lived daemons** (a dev box, a customer machine, any VM
@@ -290,7 +290,7 @@ For the third population:
 - Every bundle carries a valid `envd.json` whose checksums match the
   archives and whose `protocolVersion` equals the bundled server's; the
   packaged binary's `--print-build` matches the document.
-- With the ls.bot side in place: from only `https://ls.bot`, a script
+- With the deployment side in place: from only `https://ls.bot`, a script
   fetches `/.well-known/lightspeed-envd`, downloads the matching archive
   without credentials, verifies its sha256, and the binary's
   `--print-build` reports the document's `gitSha` and the gateway's
@@ -314,7 +314,7 @@ For the third population:
   handshake are additive and in scope.
 - Runtime behavior of processes and jobs (P151).
 - Publishing server or provider binaries as static builds.
-- In-place upgrades of provider-managed VMs; that is ls.bot's rebuild plan.
+- In-place upgrades of provider-managed VMs; that is the deployment's rebuild plan.
 - Serving the discovery document from the dev stack or the gateway process.
 
 ## Implementation Slices
@@ -338,7 +338,7 @@ For the third population:
   `--print-build`, the `ServerInfo` and `ImplementationInfo` fields, row
   metadata on every admission, and the protocol-bump notice in manifest
   validation; regenerate the API contract. The well-known route and archive
-  serving are the deployment's slice in ls.bot (`install-deployment` plus a
+  serving are the deployment's slice in its repository (`install-deployment` plus a
   Caddy `handle`).
 
 ### Slice 4 — Self-upgrade

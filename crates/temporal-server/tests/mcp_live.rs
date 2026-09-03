@@ -1586,7 +1586,9 @@ async fn run_mcp_live_client(
         })
         .await?;
     let linked_view = read_session_view(&api, &session_id).await?;
-    let tool_id = format!("mcp_{server_id}");
+    // The toolset entry is named after the model-facing server label, not
+    // the record id: `crm` links as `mcp_crm`.
+    let tool_id = "mcp_crm".to_owned();
     assert!(
         linked_view
             .active_tools
