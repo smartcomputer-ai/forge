@@ -1527,9 +1527,26 @@ fn invalid_error(message: impl Into<String>) -> EnvironmentRegistryError {
 /// Stored records obey the registration handshake's bounds (entry count,
 /// key and value bytes, no control characters). The reserved-prefix check
 /// applies to caller input at the API boundary, not here: Lightspeed itself
-/// annotates records under that prefix.
+/// annotates records under that prefix, and those entries sit on top of a
+/// caller's full allowance rather than eating into it, so the entry count
+/// applies to the caller's keys alone.
 fn validate_metadata(value: &BTreeMap<String, String>) -> Result<(), EnvironmentRegistryError> {
-    environment_protocol::registration::validate_metadata_bounds(value).map_err(invalid_error)
+    use environment_protocol::registration::{
+        MAX_METADATA_ENTRIES, RESERVED_METADATA_PREFIX, validate_metadata_entry,
+    };
+    let caller_entries = value
+        .keys()
+        .filter(|key| !key.starts_with(RESERVED_METADATA_PREFIX))
+        .count();
+    if caller_entries > MAX_METADATA_ENTRIES {
+        return Err(invalid_error(format!(
+            "metadata has more than {MAX_METADATA_ENTRIES} caller entries"
+        )));
+    }
+    for (key, entry) in value {
+        validate_metadata_entry(key, entry).map_err(invalid_error)?;
+    }
+    Ok(())
 }
 
 fn validate_nonempty_optional(

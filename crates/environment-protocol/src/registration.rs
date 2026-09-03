@@ -192,20 +192,26 @@ pub fn validate_metadata_bounds(metadata: &BTreeMap<String, String>) -> Result<(
         ));
     }
     for (key, value) in metadata {
-        if key.is_empty() || key.len() > MAX_METADATA_KEY_BYTES || key.chars().any(char::is_control)
-        {
-            return Err(format!(
-                "metadata key {key:?} must be 1..={MAX_METADATA_KEY_BYTES} bytes without control characters"
-            ));
-        }
-        if value.is_empty()
-            || value.len() > MAX_METADATA_VALUE_BYTES
-            || value.chars().any(char::is_control)
-        {
-            return Err(format!(
-                "metadata value for {key:?} must be 1..={MAX_METADATA_VALUE_BYTES} bytes without control characters"
-            ));
-        }
+        validate_metadata_entry(key, value)?;
+    }
+    Ok(())
+}
+
+/// Key and value bytes and control characters for one entry, independent of
+/// how many entries a map may hold.
+pub fn validate_metadata_entry(key: &str, value: &str) -> Result<(), String> {
+    if key.is_empty() || key.len() > MAX_METADATA_KEY_BYTES || key.chars().any(char::is_control) {
+        return Err(format!(
+            "metadata key {key:?} must be 1..={MAX_METADATA_KEY_BYTES} bytes without control characters"
+        ));
+    }
+    if value.is_empty()
+        || value.len() > MAX_METADATA_VALUE_BYTES
+        || value.chars().any(char::is_control)
+    {
+        return Err(format!(
+            "metadata value for {key:?} must be 1..={MAX_METADATA_VALUE_BYTES} bytes without control characters"
+        ));
     }
     Ok(())
 }
