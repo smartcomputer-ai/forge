@@ -1,6 +1,34 @@
 # Lightspeed Roadmap
 
 ## Work
+- [ ] [P153](p153-session-labels.md) — session labels and retention: bounded
+  string labels set at start or later, `session/list` filtering, bulk close
+  and delete by filter, usage roll-up per label, chips plus filters in the
+  Platform sessions page, and a retention period after which closed
+  sessions are collected (universe default, per-label rules, pinning).
+  Motivated by evaluation jobs that create hundreds of sessions per
+  universe. Also notes a short TTL cache for `models/list`.
+- [ ] [P152](p152-envd-release-and-distribution.md) — envd release and
+  distribution: install the rustls provider at startup (the workspace
+  release binary panics on its first TLS connection), publish static musl
+  builds so any sandbox image can run it, a discovery document beside each
+  bundle and at `/.well-known/lightspeed-envd` on the gateway, and
+  `initialize` reporting the build's git sha and matching envd.
+- [ ] [P151](p151-exec-leftover-processes.md) — leftover processes survive a
+  normal `exec_command` exit (timeouts, termination, and durable jobs keep
+  sweeping), leftover output is drained instead of abandoned, the tool
+  reports what is still running, and the handle becomes usable: a
+  two-operation substrate (`run_process`, `continue_process` with optional
+  input or signal) with a daemon-owned read cursor, a window wait, and a
+  capped retained buffer, presented on three surfaces: Canonical as
+  Lightspeed's neutral shape, Codex-like (`exec_command`/`write_stdin`, the
+  OpenAI default, copied from Codex `728cb12fe5`), and Claude-Code-like
+  (`Bash`/`BashOutput`/`KillShell`, the Anthropic default, which today has
+  no handle path). Greenfield, no compatibility shims. The idle report
+  counts leftover groups without treating them as busy, and a server-only
+  slice exposes the engine's failure kind on `runFailed` plus output size
+  and truncation on `toolCallCompleted`. Motivated by seven Terminal-Bench
+  tasks in the first P149 run.
 - [ ] [P150](p150-scalable-mcp-discovery-and-tool-search.md) — scalable MCP
   discovery and tool search: exempt management discovery from the gateway
   response budget instead of truncating descriptions, expand truncated
