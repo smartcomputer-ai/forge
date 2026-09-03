@@ -4,6 +4,7 @@ mod chat;
 mod env_cli;
 mod mcp_cli;
 mod profile_cli;
+mod session_cli;
 mod skills_cli;
 mod vfs_cli;
 mod vfs_transfer;
@@ -38,6 +39,8 @@ enum Command {
     Env(env_cli::EnvArgs),
     /// Manage agent profiles.
     Profiles(profile_cli::ProfilesArgs),
+    /// Start, list, tag, close, and delete sessions.
+    Session(session_cli::SessionArgs),
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -52,6 +55,7 @@ async fn main() -> Result<()> {
         Command::Auth(args) => auth_cli::handle(args).await,
         Command::Env(args) => env_cli::handle(args).await,
         Command::Profiles(args) => profile_cli::handle(args).await,
+        Command::Session(args) => session_cli::handle(args).await,
     }
 }
 
@@ -341,6 +345,54 @@ mod tests {
             "environment_1",
         ])
         .expect("parse env activate");
+        assert!(matches!(cli.command, Command::Env(_)));
+    }
+
+    #[test]
+    fn session_list_parse_accepts_repeated_metadata() {
+        let cli = Cli::try_parse_from([
+            "lightspeed",
+            "session",
+            "list",
+            "--api-url",
+            "http://127.0.0.1:18080/rpc",
+            "--metadata",
+            "source=harbor",
+            "--metadata",
+            "job=nightly",
+        ])
+        .expect("parse session list");
+        assert!(matches!(cli.command, Command::Session(_)));
+    }
+
+    #[test]
+    fn session_close_parse_rejects_malformed_metadata() {
+        assert!(
+            Cli::try_parse_from([
+                "lightspeed",
+                "session",
+                "close",
+                "--api-url",
+                "http://127.0.0.1:18080/rpc",
+                "--metadata",
+                "novalue",
+            ])
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn env_list_parse_accepts_metadata_filter() {
+        let cli = Cli::try_parse_from([
+            "lightspeed",
+            "env",
+            "list",
+            "--api-url",
+            "http://127.0.0.1:18080/rpc",
+            "--metadata",
+            "harborContextId=abc",
+        ])
+        .expect("parse env list");
         assert!(matches!(cli.command, Command::Env(_)));
     }
 

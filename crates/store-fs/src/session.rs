@@ -151,6 +151,7 @@ impl SessionStore for FsSessionStore {
         let record = SessionRecord {
             session_id: request.session_id.clone(),
             display_name: request.display_name,
+            metadata: request.metadata,
             lifecycle_status: SessionLifecycleStatus::New,
             closed_at_seq: None,
             managed: false,
@@ -406,6 +407,7 @@ mod tests {
 
         store
             .create_session(CreateSession {
+                metadata: Default::default(),
                 session_id: session_id.clone(),
                 display_name: None,
                 origin: None,
@@ -459,6 +461,7 @@ mod tests {
 
         store
             .create_session(CreateSession {
+                metadata: Default::default(),
                 session_id: session_id.clone(),
                 display_name: None,
                 origin: None,
@@ -468,6 +471,7 @@ mod tests {
             .expect("create session");
         let duplicate = store
             .create_session(CreateSession {
+                metadata: Default::default(),
                 session_id: session_id.clone(),
                 display_name: None,
                 origin: None,

@@ -389,6 +389,7 @@ mod tests {
         let session_id = SessionId::new("checkpoint-test");
         sessions
             .create_session(CreateSession {
+                metadata: Default::default(),
                 session_id: session_id.clone(),
                 display_name: None,
                 origin: None,

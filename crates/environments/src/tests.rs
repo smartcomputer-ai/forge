@@ -389,6 +389,7 @@ async fn origin_session_is_recorded_listed_and_swept() {
 
     let by_session = store
         .list_environments(ListEnvironments {
+            metadata: Default::default(),
             origin_session_id: Some(SessionId::new("s-1")),
             ..ListEnvironments::default()
         })
@@ -396,6 +397,37 @@ async fn origin_session_is_recorded_listed_and_swept() {
         .expect("list");
     assert_eq!(by_session.len(), 1);
     assert_eq!(by_session[0].environment_id.as_str(), "env-s1");
+
+    // Metadata filters by containment: every listed pair must match.
+    let mut tagged = create("tagged", "env-tagged", "inc-tagged", 3);
+    tagged.metadata = BTreeMap::from([
+        ("source".to_owned(), "harbor".to_owned()),
+        ("job".to_owned(), "nightly".to_owned()),
+    ]);
+    store
+        .create_environment(tagged)
+        .await
+        .expect("create tagged");
+    let by_metadata = store
+        .list_environments(ListEnvironments {
+            metadata: BTreeMap::from([("job".to_owned(), "nightly".to_owned())]),
+            ..ListEnvironments::default()
+        })
+        .await
+        .expect("list by metadata");
+    assert_eq!(by_metadata.len(), 1);
+    assert_eq!(by_metadata[0].environment_id.as_str(), "env-tagged");
+    let mismatched = store
+        .list_environments(ListEnvironments {
+            metadata: BTreeMap::from([
+                ("job".to_owned(), "nightly".to_owned()),
+                ("trial".to_owned(), "1".to_owned()),
+            ]),
+            ..ListEnvironments::default()
+        })
+        .await
+        .expect("list by mismatched metadata");
+    assert!(mismatched.is_empty());
 
     let sweep = store
         .list_environments_closing_with_session()
@@ -1001,6 +1033,7 @@ async fn registered_environments_group_by_key_and_access_policy_scopes_them() {
 
     let by_key = store
         .list_environments(ListEnvironments {
+            metadata: Default::default(),
             registration_key_id: Some(EnvironmentRegistrationKeyId::new("rk-a")),
             ..ListEnvironments::default()
         })

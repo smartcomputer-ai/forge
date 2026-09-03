@@ -127,6 +127,24 @@
       "summary": "Rename a session"
     },
     {
+      "description": "Replaces the complete descriptive key/value map (bounded like session/start); an omitted or empty map clears it. Record-only: the event log and updatedAtMs are untouched.",
+      "method": "session/metadata/put",
+      "params": {
+        "schema": {
+          "$ref": "#/definitions/SessionMetadataPutParams"
+        },
+        "type": "SessionMetadataPutParams"
+      },
+      "result": {
+        "schema": {
+          "$ref": "#/definitions/AgentApiOutcomeOfSessionMetadataPutResponse"
+        },
+        "type": "AgentApiOutcome<SessionMetadataPutResponse>"
+      },
+      "scope": "universe",
+      "summary": "Replace session metadata"
+    },
+    {
       "description": "Closes an idle session and detaches its environment bindings. Force mode cancels active work, drops queued runs, and can recover a session whose workflow is unavailable.",
       "method": "session/close",
       "params": {

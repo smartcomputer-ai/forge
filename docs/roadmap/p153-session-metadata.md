@@ -14,6 +14,18 @@
   roll-up are dropped (see "Dropped"); retention is its own item,
   [P154](p154-session-retention.md); the `models/list` cache note moved to
   [P155](p155-models-list-cache.md).
+- Implemented 2026-09-03, all five slices: `metadata` on the session record
+  in every store with migration 013 (`metadata_json` plus GIN indexes on
+  sessions and environments), `session/metadata/put`, containment filters on
+  `session/list` and `environments/list`, one validator for caller metadata
+  (registration bounds plus the reserved prefix; stored records keep the
+  bounds only, since registration annotates `lightspeed.envd.version`),
+  sub-agent copy at spawn, bots stamping `source=bot` and `bot=<id>`, the
+  `lightspeed session` CLI group with looping close and delete, the Platform
+  filter bar, chips, selection, and settings-sheet editor, and the Harbor
+  adapter passing its correlation map to `session/start`. Unit suites plus
+  the Postgres and gateway live tests cover the round trip, containment,
+  put, and rejection cases.
 
 ## Goal
 

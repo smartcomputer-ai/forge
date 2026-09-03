@@ -332,6 +332,8 @@ api_methods! {
         ["Replace session configuration", "Replaces the complete sparse config while the session is idle. Use the current config revision for safe read-modify-write; omitted features are revoked and an identical document is a no-op."],
     METHOD_SESSION_RENAME => rename_session(SessionRenameParams) -> SessionRenameResponse =>
         ["Rename a session", "Sets the display name, or clears it when displayName is omitted."],
+    METHOD_SESSION_METADATA_PUT => put_session_metadata(SessionMetadataPutParams) -> SessionMetadataPutResponse =>
+        ["Replace session metadata", "Replaces the complete descriptive key/value map (bounded like session/start); an omitted or empty map clears it. Record-only: the event log and updatedAtMs are untouched."],
     METHOD_SESSION_CLOSE => close_session(SessionCloseParams) -> SessionCloseResponse =>
         ["Close a session", "Closes an idle session and detaches its environment bindings. Force mode cancels active work, drops queued runs, and can recover a session whose workflow is unavailable."],
     METHOD_SESSION_DELETE => delete_session(SessionDeleteParams) -> SessionDeleteResponse =>

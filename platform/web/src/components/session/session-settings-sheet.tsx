@@ -6,6 +6,13 @@ import {
   type SessionInstructionState,
   type SessionView,
 } from "@/api";
+import {
+  MetadataEditor,
+  metadataToRows,
+  rowsToMetadata,
+  sameMetadata,
+  type MetadataRow,
+} from "@/components/session/metadata-editor";
 import { SetupEditorSection } from "@/components/session/setup-editor-section";
 import {
   normalizeSessionConfig,
@@ -113,9 +120,19 @@ function LiveSessionSetup({
   const [originalInstructions, setOriginalInstructions] = useState<string | undefined>();
   const [activeEnvironmentDraft, setActiveEnvironmentDraft] = useState<string | null>(null);
   const [originalActiveEnvironmentId, setOriginalActiveEnvironmentId] = useState<string | null>(null);
+  const [metadataRows, setMetadataRows] = useState<MetadataRow[]>([]);
+  const [originalMetadata, setOriginalMetadata] = useState<Record<string, string>>({});
   const [configError, setConfigError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const configBase = useRef({ revision: 0, config: undefined as SessionConfig | undefined });
+  const metadataKey = JSON.stringify(session?.metadata ?? {});
+
+  useEffect(() => {
+    if (!session) return;
+    const metadata = session.metadata ?? {};
+    setMetadataRows(metadataToRows(metadata));
+    setOriginalMetadata(metadata);
+  }, [metadataKey]);
 
   useEffect(() => {
     if (!session) return;
@@ -148,7 +165,9 @@ function LiveSessionSetup({
     && originalInstructions !== undefined
     && instructionsDraft !== originalInstructions;
   const activeEnvironmentDirty = activeEnvironmentDraft !== originalActiveEnvironmentId;
-  const dirty = configDirty || instructionsDirty || activeEnvironmentDirty;
+  const metadataDraft = rowsToMetadata(metadataRows);
+  const metadataDirty = !sameMetadata(metadataDraft, originalMetadata);
+  const dirty = configDirty || instructionsDirty || activeEnvironmentDirty || metadataDirty;
   const pinnedApiKind = stringField(record(session?.config).model, "apiKind");
   const environmentError = activeEnvironmentSelectionError(
     configDraft,
@@ -213,6 +232,14 @@ function LiveSessionSetup({
         );
       }
 
+      if (metadataDirty) {
+        // A complete map: the put replaces, an empty map clears.
+        await api<SessionView>(
+          "PUT",
+          `/api/v1/universes/${universeId}/sessions/${sessionId}/metadata`,
+          { metadata: metadataDraft },
+        );
+      }
     },
     onSuccess: async () => {
       setError(null);
@@ -232,6 +259,17 @@ function LiveSessionSetup({
     <>
       <div className="min-h-0 overflow-y-auto p-6">
         <div className="grid gap-8">
+          <section className="grid gap-3">
+            <div className="grid gap-0.5">
+              <h2 className="text-sm font-semibold">Metadata</h2>
+              <p className="text-xs text-muted-foreground">
+                Descriptive key/value pairs for finding this session in the list; they never
+                affect how it runs. Keys up to 64 bytes, values up to 256, no{" "}
+                <code>lightspeed.</code> prefix.
+              </p>
+            </div>
+            <MetadataEditor rows={metadataRows} onChange={setMetadataRows} disabled={save.isPending} />
+          </section>
           <section className="grid gap-3">
             <div className="grid gap-0.5">
               <h2 className="text-sm font-semibold">Custom instructions</h2>

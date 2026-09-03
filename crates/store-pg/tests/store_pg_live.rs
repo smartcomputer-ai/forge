@@ -53,6 +53,7 @@ async fn pg_live_sessions_are_isolated_by_universe() {
     let session_id = SessionId::new("same-session");
 
     left.create_session(CreateSession {
+        metadata: Default::default(),
         session_id: session_id.clone(),
         display_name: None,
         origin: None,
@@ -84,6 +85,7 @@ async fn pg_live_sessions_are_isolated_by_universe() {
 
     right
         .create_session(CreateSession {
+            metadata: Default::default(),
             session_id: session_id.clone(),
             display_name: None,
             origin: None,
@@ -109,6 +111,7 @@ async fn pg_live_session_ranges_are_fenced_and_checkpoint_pointers_only_advance(
     let session_id = SessionId::new("checkpoint-session");
     store
         .create_session(CreateSession {
+            metadata: Default::default(),
             session_id: session_id.clone(),
             display_name: None,
             origin: None,
@@ -228,6 +231,7 @@ async fn pg_live_session_list_pages_newest_first_and_rename_persists() {
     let other = live_store("session-list-other", 64).await;
     other
         .create_session(CreateSession {
+            metadata: Default::default(),
             session_id: SessionId::new("other-universe"),
             display_name: None,
             origin: None,
@@ -239,6 +243,7 @@ async fn pg_live_session_list_pages_newest_first_and_rename_persists() {
     for (name, created_at_ms) in [("list-a", 10), ("list-b", 20), ("list-c", 30)] {
         store
             .create_session(CreateSession {
+                metadata: Default::default(),
                 session_id: SessionId::new(name),
                 display_name: Some(format!("Session {name}")),
                 origin: None,
@@ -259,6 +264,7 @@ async fn pg_live_session_list_pages_newest_first_and_rename_persists() {
 
     let first = store
         .list_sessions(ListSessions {
+            metadata: Default::default(),
             cursor: None,
             limit: 2,
             root_session_id: None,
@@ -282,6 +288,7 @@ async fn pg_live_session_list_pages_newest_first_and_rename_persists() {
 
     let second = store
         .list_sessions(ListSessions {
+            metadata: Default::default(),
             cursor: Some(cursor),
             limit: 2,
             root_session_id: None,
@@ -332,6 +339,7 @@ async fn pg_live_clone_copies_resources_and_links_sessions() {
     for session_id in [&source_id, &peer_id] {
         store
             .create_session(CreateSession {
+                metadata: Default::default(),
                 session_id: session_id.clone(),
                 display_name: None,
                 origin: None,
@@ -417,6 +425,7 @@ async fn pg_live_clone_copies_resources_and_links_sessions() {
     };
     let child = store
         .create_session(CreateSession {
+            metadata: Default::default(),
             session_id: SessionId::new("child-1"),
             display_name: Some("reviewer: first".to_owned()),
             origin: Some(origin("inv-1", 1)),
@@ -435,6 +444,7 @@ async fn pg_live_clone_copies_resources_and_links_sessions() {
     );
     let listed = store
         .list_sessions(ListSessions {
+            metadata: Default::default(),
             cursor: None,
             limit: 10,
             root_session_id: Some(peer_id.clone()),
@@ -453,6 +463,7 @@ async fn pg_live_clone_copies_resources_and_links_sessions() {
     // max_concurrent = 1: a second open child is refused.
     let refused = store
         .create_session(CreateSession {
+            metadata: Default::default(),
             session_id: SessionId::new("child-2"),
             display_name: None,
             origin: Some(origin("inv-2", 1)),
@@ -470,6 +481,7 @@ async fn pg_live_clone_copies_resources_and_links_sessions() {
     // max_depth = 1: depth 2 is refused before any counting.
     let too_deep = store
         .create_session(CreateSession {
+            metadata: Default::default(),
             session_id: SessionId::new("child-3"),
             display_name: None,
             origin: Some(origin("inv-3", 2)),
@@ -493,6 +505,7 @@ async fn pg_live_fork_stitches_reads_and_clamps_parent_tail() {
     let root = SessionId::new("root-session");
     store
         .create_session(CreateSession {
+            metadata: Default::default(),
             session_id: root.clone(),
             display_name: None,
             origin: None,
@@ -637,6 +650,7 @@ async fn pg_live_operator_universe_lifecycle_stats_and_purge() {
     let session_id = SessionId::new("operator-session");
     store
         .create_session(CreateSession {
+            metadata: Default::default(),
             session_id: session_id.clone(),
             display_name: None,
             origin: None,
@@ -786,6 +800,7 @@ async fn pg_live_records_session_roots_and_blob_edges() {
     let session_id = SessionId::new("session-graph");
     store
         .create_session(CreateSession {
+            metadata: Default::default(),
             session_id: session_id.clone(),
             display_name: None,
             origin: None,
@@ -1403,6 +1418,7 @@ async fn pg_live_universe_environments_are_independent_of_sessions() {
     assert_eq!(
         store
             .list_environments(ListEnvironments {
+                metadata: Default::default(),
                 provider_id: Some(provider_id.clone()),
                 binding_id: Some(EnvironmentProviderBindingId::new("primary")),
                 status: Some(EnvironmentStatus::Offline),
@@ -1415,6 +1431,7 @@ async fn pg_live_universe_environments_are_independent_of_sessions() {
 
     store
         .create_session(CreateSession {
+            metadata: Default::default(),
             session_id: session_id.clone(),
             display_name: None,
             origin: None,
@@ -1464,6 +1481,7 @@ async fn pg_live_universe_environments_are_independent_of_sessions() {
     );
     let by_session = store
         .list_environments(ListEnvironments {
+            metadata: Default::default(),
             origin_session_id: Some(session_id.clone()),
             ..ListEnvironments::default()
         })
@@ -2217,6 +2235,125 @@ async fn pg_live_environment_credentials_round_trip() {
             .len(),
         1
     );
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires ./dev.sh infra or compatible Postgres + MinIO env"]
+async fn pg_live_session_metadata_filters_by_containment_and_put_replaces() {
+    use engine::storage::{ListSessions, SessionListPage};
+    use std::collections::BTreeMap;
+
+    let store = live_store("session-metadata", 64).await;
+    let pair = |key: &str, value: &str| (key.to_owned(), value.to_owned());
+    let harbor = BTreeMap::from([
+        pair("source", "harbor"),
+        pair("job", "nightly"),
+        pair("trial", "1"),
+    ]);
+    for (name, metadata, created_at_ms) in [
+        ("meta-harbor", harbor.clone(), 10),
+        (
+            "meta-bot",
+            BTreeMap::from([pair("source", "bot"), pair("bot", "triage")]),
+            20,
+        ),
+        ("meta-none", BTreeMap::new(), 30),
+    ] {
+        store
+            .create_session(CreateSession {
+                session_id: SessionId::new(name),
+                display_name: None,
+                metadata,
+                origin: None,
+                created_at_ms,
+            })
+            .await
+            .expect("create session");
+    }
+    let list = |metadata: BTreeMap<String, String>| ListSessions {
+        cursor: None,
+        limit: 10,
+        root_session_id: None,
+        parent_session_id: None,
+        metadata,
+    };
+    let ids = |page: SessionListPage| {
+        page.sessions
+            .into_iter()
+            .map(|record| record.session_id.as_str().to_owned())
+            .collect::<Vec<_>>()
+    };
+
+    // The stored map comes back verbatim through load and list.
+    let loaded = store
+        .load_session(&SessionId::new("meta-harbor"))
+        .await
+        .expect("load")
+        .expect("exists");
+    assert_eq!(loaded.metadata, harbor);
+
+    // One pair, two pairs (AND), a mismatched value, a missing key, no filter.
+    for (filter, expected) in [
+        (
+            BTreeMap::from([pair("source", "harbor")]),
+            vec!["meta-harbor"],
+        ),
+        (
+            BTreeMap::from([pair("source", "harbor"), pair("job", "nightly")]),
+            vec!["meta-harbor"],
+        ),
+        (
+            BTreeMap::from([pair("source", "harbor"), pair("job", "weekly")]),
+            vec![],
+        ),
+        (BTreeMap::from([pair("task", "x")]), vec![]),
+        (
+            BTreeMap::new(),
+            vec!["meta-none", "meta-bot", "meta-harbor"],
+        ),
+    ] {
+        let page = store
+            .list_sessions(list(filter.clone()))
+            .await
+            .expect("list");
+        assert_eq!(ids(page), expected, "filter {filter:?}");
+    }
+
+    // Put replaces the whole map and leaves updated_at_ms alone.
+    let replaced = store
+        .set_session_metadata(
+            &SessionId::new("meta-harbor"),
+            BTreeMap::from([pair("owner", "lukas")]),
+        )
+        .await
+        .expect("set metadata");
+    assert_eq!(replaced.metadata, BTreeMap::from([pair("owner", "lukas")]));
+    assert_eq!(replaced.updated_at_ms, 10);
+    assert!(
+        ids(store
+            .list_sessions(list(BTreeMap::from([pair("job", "nightly")])))
+            .await
+            .expect("list after put"))
+        .is_empty()
+    );
+    assert_eq!(
+        ids(store
+            .list_sessions(list(BTreeMap::from([pair("owner", "lukas")])))
+            .await
+            .expect("list by new key")),
+        vec!["meta-harbor"]
+    );
+    let cleared = store
+        .set_session_metadata(&SessionId::new("meta-harbor"), BTreeMap::new())
+        .await
+        .expect("clear metadata");
+    assert!(cleared.metadata.is_empty());
+    assert!(matches!(
+        store
+            .set_session_metadata(&SessionId::new("meta-missing"), BTreeMap::new())
+            .await,
+        Err(SessionStoreError::SessionNotFound { .. })
+    ));
 }
 
 async fn live_store(test_name: &str, inline_threshold_bytes: usize) -> PgStore {

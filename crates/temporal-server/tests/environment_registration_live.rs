@@ -823,6 +823,7 @@ async fn wait_for_registered_count(
 async fn list_by_key(api: &GatewayAgentApi, key_id: &str) -> anyhow::Result<Vec<EnvironmentView>> {
     Ok(api
         .list_environments(EnvironmentListParams {
+            metadata: Default::default(),
             registration_key_id: Some(key_id.to_owned()),
             ..EnvironmentListParams::default()
         })

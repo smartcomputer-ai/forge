@@ -232,6 +232,7 @@ async fn list_descendants(
     for _ in 0..DESCENDANT_MAX_PAGES {
         let page = api
             .list_sessions(SessionListParams {
+                metadata: Default::default(),
                 cursor: cursor.take(),
                 limit: Some(DESCENDANT_PAGE_LIMIT),
                 root_session_id: Some(root_session_id.to_owned()),
@@ -270,6 +271,15 @@ async fn read_profile_instructions(
             })
         }
     }
+}
+
+/// Descriptive metadata every bot-created session carries (routed ones
+/// included), so a `bot=<id>` filter finds a bot's sessions.
+fn bot_session_metadata(bot_id: &bots::BotId) -> BTreeMap<String, String> {
+    BTreeMap::from([
+        ("source".to_owned(), "bot".to_owned()),
+        ("bot".to_owned(), bot_id.to_string()),
+    ])
 }
 
 /// The profile the bot's session runs: the catalog profile's config and
@@ -439,6 +449,7 @@ pub async fn ensure_session(
         .start_managed_session(ManagedSessionStartParams {
             session_id: Some(request.session_id.clone()),
             display_name: request.display_name.clone(),
+            metadata: bot_session_metadata(&request.bot_id),
             config: None,
             profile: Some(ProfileSource::Inline {
                 profile: Box::new(resolved.clone()),
@@ -817,6 +828,7 @@ mod tests {
             .find(|run| matches!(run.status, RunStatus::Running | RunStatus::Parked))
             .cloned();
         SessionView {
+            metadata: Default::default(),
             id: "bot:v1:triage".to_owned(),
             display_name: None,
             status,

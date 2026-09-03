@@ -67,6 +67,15 @@ Sets the display name, or clears it when displayName is omitted.
 - Params: `SessionRenameParams`
 - Result: `AgentApiOutcome<SessionRenameResponse>`
 
+### `session/metadata/put`
+
+**Replace session metadata**
+
+Replaces the complete descriptive key/value map (bounded like session/start); an omitted or empty map clears it. Record-only: the event log and updatedAtMs are untouched.
+
+- Params: `SessionMetadataPutParams`
+- Result: `AgentApiOutcome<SessionMetadataPutResponse>`
+
 ### `session/close`
 
 **Close a session**

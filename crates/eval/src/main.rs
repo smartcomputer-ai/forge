@@ -589,6 +589,7 @@ impl EvalRuntime {
     async fn start_session(&self, session_id: &SessionId) -> Result<()> {
         self.sessions
             .create_session(CreateSession {
+                metadata: Default::default(),
                 session_id: session_id.clone(),
                 display_name: None,
                 origin: None,

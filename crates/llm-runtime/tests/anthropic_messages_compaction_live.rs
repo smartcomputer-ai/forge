@@ -315,6 +315,7 @@ async fn live_runner(session_id: &SessionId) -> (SessionRunner, Arc<InMemoryBlob
     let blobs = Arc::new(InMemoryBlobStore::new());
     sessions
         .create_session(CreateSession {
+            metadata: Default::default(),
             session_id: session_id.clone(),
             display_name: None,
             origin: None,

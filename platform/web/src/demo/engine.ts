@@ -156,6 +156,8 @@ export async function waitForEvents(
 // ---------------------------------------------------------------------------
 
 export interface NewSessionInit {
+  /// Descriptive key/value metadata stamped at creation.
+  metadata?: Record<string, string>;
   id?: string;
   displayName?: string | null;
   config?: Record<string, unknown>;
@@ -179,6 +181,7 @@ export function newSession(
   const view: SessionView = {
     id,
     displayName: init.displayName ?? null,
+    metadata: init.metadata ?? {},
     createdAtMs: at,
     updatedAtMs: at,
     status: "idle",

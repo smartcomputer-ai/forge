@@ -159,7 +159,7 @@ impl GatewayAgentApi {
                 incarnation_id: allocate_incarnation_id(),
                 connection,
                 display_name: params.display_name,
-                metadata: params.metadata,
+                metadata: validated_caller_metadata(params.metadata)?,
                 created_at_ms: now_ms()?,
             },
         )
@@ -210,7 +210,7 @@ impl GatewayAgentApi {
                 binding_id,
                 template_id,
                 display_name: params.display_name,
-                metadata: params.metadata,
+                metadata: validated_caller_metadata(params.metadata)?,
                 origin_session,
                 idle_policy,
                 created_at_ms: now_ms()?,
@@ -323,6 +323,7 @@ impl GatewayAgentApi {
         let environments = EnvironmentStore::list_environments(
             self.store.as_ref(),
             ListEnvironments {
+                metadata: params.metadata,
                 provider_id: params
                     .provider_id
                     .map(parse_environment_provider_id)
@@ -424,6 +425,7 @@ impl GatewayAgentApi {
         let Ok(environments) = EnvironmentStore::list_environments(
             self.store.as_ref(),
             ListEnvironments {
+                metadata: Default::default(),
                 origin_session_id: Some(session_id.clone()),
                 ..ListEnvironments::default()
             },
@@ -818,4 +820,13 @@ pub(super) fn allocate_environment_id() -> EnvironmentId {
 
 pub(super) fn allocate_incarnation_id() -> EnvironmentIncarnationId {
     EnvironmentIncarnationId::new(format!("incarnation_{}", uuid::Uuid::new_v4().simple()))
+}
+
+/// Caller-supplied environment metadata: the same bounds and reserved-prefix
+/// rule as session metadata, checked before the record is written.
+fn validated_caller_metadata(
+    metadata: std::collections::BTreeMap<String, String>,
+) -> Result<std::collections::BTreeMap<String, String>, AgentApiError> {
+    super::validate_caller_metadata(&metadata)?;
+    Ok(metadata)
 }

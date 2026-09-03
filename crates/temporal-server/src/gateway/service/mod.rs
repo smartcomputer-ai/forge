@@ -189,10 +189,21 @@ fn env_flag(name: &str) -> bool {
         .is_some_and(|value| matches!(value.to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
 }
 
+/// Caller-supplied metadata on sessions and environments shares one validator
+/// (bounds plus the reserved-prefix rule), so a session and the environment
+/// it ran in accept the same keys.
+pub(super) fn validate_caller_metadata(
+    metadata: &BTreeMap<String, String>,
+) -> Result<(), AgentApiError> {
+    environment_protocol::registration::validate_registration_metadata(None, metadata)
+        .map_err(|message| AgentApiError::invalid_request(format!("invalid metadata: {message}")))
+}
+
 fn session_summary_view(record: engine::storage::SessionRecord) -> SessionSummaryView {
     SessionSummaryView {
         id: record.session_id.as_str().to_owned(),
         display_name: record.display_name,
+        metadata: record.metadata,
         lifecycle_status: match record.lifecycle_status {
             engine::storage::SessionLifecycleStatus::New => SessionLifecycleStatus::New,
             engine::storage::SessionLifecycleStatus::Open => SessionLifecycleStatus::Open,
@@ -884,10 +895,12 @@ impl GatewayAgentApi {
         config
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn workflow_args(
         &self,
         session_id: SessionId,
         display_name: Option<String>,
+        metadata: BTreeMap<String, String>,
         session_config: SessionConfig,
         workflow_tools: Option<ManagedSessionWorkflowTools>,
         close_on_terminal: bool,
@@ -897,6 +910,7 @@ impl GatewayAgentApi {
             universe_id: self.universe_id(),
             session_id,
             display_name,
+            metadata,
             session_config,
             workflow_tools,
             legacy_max_steps_per_input: None,
@@ -918,6 +932,7 @@ impl GatewayAgentApi {
     ) -> Result<(), AgentApiError> {
         self.start_session_internal(
             SessionStartParams {
+                metadata: Default::default(),
                 session_id: Some(session_id.as_str().to_owned()),
                 display_name: None,
                 config: None,
@@ -942,6 +957,7 @@ impl GatewayAgentApi {
     ) -> Result<(), AgentApiError> {
         self.start_session_internal(
             SessionStartParams {
+                metadata: Default::default(),
                 session_id: Some(session_id.as_str().to_owned()),
                 display_name: None,
                 config: None,
@@ -1093,9 +1109,11 @@ impl GatewayAgentApi {
         let SessionStartParams {
             session_id,
             display_name,
+            metadata,
             config,
             profile,
         } = params;
+        validate_caller_metadata(&metadata)?;
         let workflow_tools = trusted_workflow_tools;
         let client_supplied_id = session_id.is_some();
         let session_id = match session_id {
@@ -1197,6 +1215,7 @@ impl GatewayAgentApi {
                 self.workflow_args(
                     session_id.clone(),
                     display_name,
+                    metadata,
                     session_config,
                     workflow_tools.clone(),
                     close_on_terminal,
@@ -2554,6 +2573,7 @@ impl AgentApiService for GatewayAgentApi {
         let ManagedSessionStartParams {
             session_id,
             display_name,
+            metadata,
             config,
             profile,
             workflow_tools,
@@ -2563,6 +2583,7 @@ impl AgentApiService for GatewayAgentApi {
             SessionStartParams {
                 session_id,
                 display_name,
+                metadata,
                 config,
                 profile,
             },
@@ -2783,6 +2804,7 @@ impl AgentApiService for GatewayAgentApi {
                 limit,
                 root_session_id,
                 parent_session_id,
+                metadata: params.metadata,
             })
             .await
             .map_err(map_session_store_error)?;
@@ -2809,6 +2831,24 @@ impl AgentApiService for GatewayAgentApi {
             .await
             .map_err(map_session_store_error)?;
         Ok(AgentApiOutcome::new(SessionRenameResponse {
+            session: session_summary_view(record),
+        }))
+    }
+
+    async fn put_session_metadata(
+        &self,
+        params: SessionMetadataPutParams,
+    ) -> Result<AgentApiOutcome<SessionMetadataPutResponse>, AgentApiError> {
+        let session_id = SessionId::try_new(params.session_id).map_err(|error| {
+            AgentApiError::invalid_request(format!("invalid session id: {error}"))
+        })?;
+        validate_caller_metadata(&params.metadata)?;
+        let record = self
+            .store
+            .set_session_metadata(&session_id, params.metadata)
+            .await
+            .map_err(map_session_store_error)?;
+        Ok(AgentApiOutcome::new(SessionMetadataPutResponse {
             session: session_summary_view(record),
         }))
     }

@@ -34,6 +34,7 @@ pub(super) async fn initialize(
             CreateOrLoadSessionRequest {
                 session_id: args.session_id.clone(),
                 display_name: args.display_name.clone(),
+                metadata: args.metadata.clone(),
                 observed_at_ms,
             },
             activity_options(),

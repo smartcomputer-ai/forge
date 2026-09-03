@@ -69,6 +69,7 @@ async fn temporal_live_two_universes_share_one_worker_with_isolation() -> anyhow
         for api in [api_a.as_ref(), api_b.as_ref()] {
             let started = api
                 .start_session(SessionStartParams {
+                    metadata: Default::default(),
                     session_id: Some(session_id.as_str().to_owned()),
                     display_name: None,
                     config: None,

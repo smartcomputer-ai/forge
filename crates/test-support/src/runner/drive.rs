@@ -1274,6 +1274,7 @@ mod tests {
         let session_id = engine::SessionId::new("session-a");
         sessions
             .create_session(CreateSession {
+                metadata: Default::default(),
                 session_id: session_id.clone(),
                 display_name: None,
                 origin: None,
@@ -1371,6 +1372,7 @@ mod tests {
         let session_id = SessionId::new("session-environment-projection");
         sessions
             .create_session(CreateSession {
+                metadata: Default::default(),
                 session_id: session_id.clone(),
                 display_name: None,
                 origin: None,
@@ -1442,6 +1444,7 @@ mod tests {
         let child_id = SessionId::new("child-session");
         sessions
             .create_session(CreateSession {
+                metadata: Default::default(),
                 session_id: source_id.clone(),
                 display_name: None,
                 origin: None,
@@ -1524,6 +1527,7 @@ mod tests {
         let session_id = SessionId::new("session-a");
         sessions
             .create_session(CreateSession {
+                metadata: Default::default(),
                 session_id: session_id.clone(),
                 display_name: None,
                 origin: None,
@@ -1612,6 +1616,7 @@ mod tests {
         let session_id = SessionId::new("session-prompts");
         sessions
             .create_session(CreateSession {
+                metadata: Default::default(),
                 session_id: session_id.clone(),
                 display_name: None,
                 origin: None,
@@ -1873,6 +1878,7 @@ mod tests {
         let session_id = SessionId::new("session-a");
         sessions
             .create_session(CreateSession {
+                metadata: Default::default(),
                 session_id: session_id.clone(),
                 display_name: None,
                 origin: None,
@@ -1992,6 +1998,7 @@ mod tests {
         let session_id = SessionId::new("session-workspace");
         sessions
             .create_session(CreateSession {
+                metadata: Default::default(),
                 session_id: session_id.clone(),
                 display_name: None,
                 origin: None,

@@ -34,6 +34,13 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
             "null"
           ]
         },
+        "metadata": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Descriptive key/value metadata, applied only when the session is\nfirst created: at most 32 entries, keys 1..=64 bytes, values 1..=256\nbytes, no control characters, no `lightspeed.` prefix. It never\naffects routing, authority, or selection; filter on it with\n`session/list`.",
+          "type": "object"
+        },
         "profile": {
           "anyOf": [
             {
@@ -1225,6 +1232,13 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
             "null"
           ]
         },
+        "metadata": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Only sessions carrying every listed key/value pair (AND semantics).\nCombines with the lineage filters.",
+          "type": "object"
+        },
         "parentSessionId": {
           "description": "Only sub-agent sessions delegated directly by this session.",
           "type": [
@@ -2061,6 +2075,34 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
             "string",
             "null"
           ]
+        },
+        "sessionId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "sessionId"
+      ],
+      "type": "object"
+    }
+  },
+  {
+    "name": "lightspeed_session_metadata_put",
+    "method": "session/metadata/put",
+    "summary": "Replace session metadata",
+    "description": "Replaces the complete descriptive key/value map (bounded like session/start); an omitted or empty map clears it. Record-only: the event log and updatedAtMs are untouched.",
+    "paramsType": "SessionMetadataPutParams",
+    "resultType": "AgentApiOutcome<SessionMetadataPutResponse>",
+    "inputSchema": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "description": "Replace a session's metadata with a complete map (the same bounds as\n`session/start`). Record-only: it does not touch the event log or\n`updatedAtMs`. There is no merge form; read, edit, and put.",
+      "properties": {
+        "metadata": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "The complete new map; empty clears it.",
+          "type": "object"
         },
         "sessionId": {
           "type": "string"
@@ -4585,6 +4627,13 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
             "string",
             "null"
           ]
+        },
+        "metadata": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Only environments carrying every listed metadata pair (AND\nsemantics); the same filter `session/list` accepts.",
+          "type": "object"
         },
         "originSessionId": {
           "description": "Only environments a profile provisioned for this session.",

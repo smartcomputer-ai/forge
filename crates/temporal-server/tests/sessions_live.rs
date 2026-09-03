@@ -144,6 +144,7 @@ async fn run_checkpoint_and_bounded_reads_live_client(
         .build();
 
     api.start_session(SessionStartParams {
+        metadata: Default::default(),
         session_id: Some(session_id.as_str().to_owned()),
         display_name: Some("Checkpoint and bounded reads live test".to_owned()),
         config: Some(SessionConfig {
@@ -339,6 +340,7 @@ async fn run_fake_live_client(
 
     let started = api
         .start_session(SessionStartParams {
+            metadata: Default::default(),
             session_id: Some(session_id.as_str().to_owned()),
             display_name: None,
             config: Some(SessionConfig {
@@ -534,6 +536,7 @@ async fn run_fake_live_client(
     // Retried session/start with the same session id returns the session.
     let restarted = api
         .start_session(SessionStartParams {
+            metadata: Default::default(),
             session_id: Some(session_id.as_str().to_owned()),
             display_name: None,
             config: None,
@@ -600,6 +603,7 @@ async fn run_lifecycle_delete_live_client(
         .build();
 
     api.start_session(SessionStartParams {
+        metadata: Default::default(),
         session_id: Some(session_id.as_str().to_owned()),
         display_name: Some("Lifecycle delete live test".to_owned()),
         config: None,
@@ -685,6 +689,7 @@ async fn run_continue_as_new_live_client(
         .build();
 
     api.start_session(SessionStartParams {
+        metadata: Default::default(),
         session_id: Some(session_id.as_str().to_owned()),
         display_name: None,
         config: Some(SessionConfig {
@@ -809,6 +814,7 @@ async fn run_context_append_live_client(
         .build();
 
     api.start_session(SessionStartParams {
+        metadata: Default::default(),
         session_id: Some(session_id.as_str().to_owned()),
         display_name: None,
         config: Some(SessionConfig {
@@ -996,6 +1002,7 @@ async fn run_admission_failure_live_client(
         .build();
 
     api.start_session(SessionStartParams {
+        metadata: Default::default(),
         session_id: Some(session_id.as_str().to_owned()),
         display_name: None,
         config: Some(SessionConfig {
@@ -1102,6 +1109,7 @@ async fn run_openai_live_client(
         .build();
 
     api.start_session(SessionStartParams {
+        metadata: Default::default(),
         session_id: Some(session_id.as_str().to_owned()),
         display_name: None,
         config: Some(SessionConfig {
@@ -1172,6 +1180,7 @@ async fn run_openai_completions_live_client(
         .build();
 
     api.start_session(SessionStartParams {
+        metadata: Default::default(),
         session_id: Some(session_id.as_str().to_owned()),
         display_name: None,
         config: Some(SessionConfig {
@@ -1247,5 +1256,132 @@ async fn run_openai_completions_live_client(
                 .build(),
         )
         .await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires ./dev.sh infra or compatible Temporal + Postgres env"]
+async fn temporal_live_session_metadata_is_stamped_filtered_and_replaced() -> anyhow::Result<()> {
+    let _lock = LIVE_TEST_LOCK.lock().await;
+    let _ = dotenvy::dotenv();
+    require_storage_live_env()?;
+
+    let activities = fake_worker_activities().await?;
+    run_with_live_worker(activities, run_session_metadata_live_client).await
+}
+
+async fn run_session_metadata_live_client(
+    client: Client,
+    task_queue: String,
+    session_id: SessionId,
+) -> anyhow::Result<()> {
+    use std::collections::BTreeMap;
+
+    let store = pg_store_from_env().await?;
+    let model = default_model_from_env();
+    let api = GatewayAgentApi::builder(client, store)
+        .with_task_queue(task_queue)
+        .with_default_model(model)
+        .build();
+    let pair = |key: &str, value: &str| (key.to_owned(), value.to_owned());
+    // The job value is unique per run so the filter isolates this session
+    // in the shared live universe.
+    let job = BTreeMap::from([
+        pair("source", "harbor"),
+        pair("job", &format!("job-{}", session_id.as_str())),
+    ]);
+
+    let started = api
+        .start_session(SessionStartParams {
+            session_id: Some(session_id.as_str().to_owned()),
+            display_name: Some("Metadata live test".to_owned()),
+            metadata: job.clone(),
+            config: None,
+            profile: None,
+        })
+        .await?;
+    assert_eq!(started.result.session.id, session_id.as_str());
+
+    // Containment: the full map finds it, an extra pair does not.
+    let listed = api
+        .list_sessions(SessionListParams {
+            metadata: job.clone(),
+            ..Default::default()
+        })
+        .await?;
+    assert_eq!(
+        listed
+            .result
+            .sessions
+            .iter()
+            .map(|summary| summary.id.as_str())
+            .collect::<Vec<_>>(),
+        vec![session_id.as_str()]
+    );
+    assert_eq!(listed.result.sessions[0].metadata, job);
+    let mut extra = job.clone();
+    extra.insert("trial".to_owned(), "9".to_owned());
+    let listed = api
+        .list_sessions(SessionListParams {
+            metadata: extra,
+            ..Default::default()
+        })
+        .await?;
+    assert!(listed.result.sessions.is_empty());
+    let read = api
+        .read_session(SessionReadParams {
+            session_id: session_id.as_str().to_owned(),
+            run_limit: None,
+        })
+        .await?;
+    assert_eq!(read.result.session.metadata, job);
+
+    // Put replaces the whole map without touching updatedAtMs.
+    let before = read.result.session.updated_at_ms;
+    let replaced = api
+        .put_session_metadata(api::SessionMetadataPutParams {
+            session_id: session_id.as_str().to_owned(),
+            metadata: BTreeMap::from([pair("owner", "live")]),
+        })
+        .await?;
+    assert_eq!(
+        replaced.result.session.metadata,
+        BTreeMap::from([pair("owner", "live")])
+    );
+    assert_eq!(replaced.result.session.updated_at_ms, before);
+    let listed = api
+        .list_sessions(SessionListParams {
+            metadata: job.clone(),
+            ..Default::default()
+        })
+        .await?;
+    assert!(listed.result.sessions.is_empty());
+
+    // The registration bounds apply at start and at put.
+    let reserved = api
+        .start_session(SessionStartParams {
+            session_id: Some(format!("{}-reserved", session_id.as_str())),
+            display_name: None,
+            metadata: BTreeMap::from([pair("lightspeed.owner", "x")]),
+            config: None,
+            profile: None,
+        })
+        .await
+        .expect_err("reserved prefix is rejected at start");
+    assert_eq!(reserved.kind, AgentApiErrorKind::InvalidRequest);
+    let oversized = api
+        .put_session_metadata(api::SessionMetadataPutParams {
+            session_id: session_id.as_str().to_owned(),
+            metadata: BTreeMap::from([pair("k", &"v".repeat(257))]),
+        })
+        .await
+        .expect_err("oversized value is rejected at put");
+    assert_eq!(oversized.kind, AgentApiErrorKind::InvalidRequest);
+
+    api.close_session(api::SessionCloseParams {
+        session_id: session_id.as_str().to_owned(),
+        force: true,
+    })
+    .await?;
     Ok(())
 }

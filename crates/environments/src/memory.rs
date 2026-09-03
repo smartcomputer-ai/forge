@@ -626,6 +626,7 @@ impl EnvironmentStore for InMemoryEnvironmentRegistryStore {
                     .as_ref()
                     .is_none_or(|id| record.registration_key_id() == Some(id))
             })
+            .filter(|record| engine::storage::metadata_matches(&record.metadata, &request.metadata))
             .cloned()
             .collect())
     }

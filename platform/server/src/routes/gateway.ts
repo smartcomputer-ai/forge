@@ -74,10 +74,32 @@ const profileSourceSchema = z.discriminatedUnion("kind", [
 /// Session-create body for the web chat's "New session". The web models
 /// every setup as a profile source: named while untouched, inline once the
 /// user authors or customizes it.
+/// Descriptive session metadata. Lightspeed enforces the byte bounds and
+/// the reserved prefix; the schema only keeps the shape honest.
+const metadataSchema = z.record(z.string().min(1).max(64), z.string().min(1).max(256));
+
 const sessionCreateSchema = z.object({
   displayName: z.string().trim().min(1).max(200).optional(),
+  metadata: metadataSchema.optional(),
   profile: profileSourceSchema,
 });
+
+/// Put replaces the whole map; an empty map clears it.
+const sessionMetadataPutSchema = z.object({
+  metadata: metadataSchema.default({}),
+});
+
+/// `?metadata=key=value`, repeatable, becomes the containment filter map the
+/// engine's `session/list` and `environments/list` accept.
+function metadataQueryFilter(values: string[] | undefined): Record<string, string> {
+  const filter: Record<string, string> = {};
+  for (const raw of values ?? []) {
+    const at = raw.indexOf("=");
+    if (at <= 0 || at === raw.length - 1) continue;
+    filter[raw.slice(0, at)] = raw.slice(at + 1);
+  }
+  return filter;
+}
 
 const sessionConfigPutSchema = z.object({
   config: looseDocumentSchema,
@@ -434,6 +456,7 @@ export function gatewayRoutes(ctx: AppContext) {
     // Sub-agent lineage filters: children of a root or of a parent.
     const rootSessionId = c.req.query("rootSessionId") || null;
     const parentSessionId = c.req.query("parentSessionId") || null;
+    const metadata = metadataQueryFilter(c.req.queries("metadata"));
     return withGateway(c, async () => {
       const client = engineClientFor(ctx, access.universe);
       const response = await client.call("session/list", {
@@ -441,6 +464,7 @@ export function gatewayRoutes(ctx: AppContext) {
         limit,
         ...(rootSessionId ? { rootSessionId } : {}),
         ...(parentSessionId ? { parentSessionId } : {}),
+        ...(Object.keys(metadata).length > 0 ? { metadata } : {}),
       });
       return c.json({
         sessions: response.result.sessions ?? [],
@@ -548,10 +572,37 @@ export function gatewayRoutes(ctx: AppContext) {
       const client = engineClientFor(ctx, access.universe);
       const response = await client.call("session/start", {
         ...(input.displayName ? { displayName: input.displayName } : {}),
+        ...(input.metadata && Object.keys(input.metadata).length > 0
+          ? { metadata: input.metadata }
+          : {}),
         profile: input.profile as ProfileSource,
       });
       const current = await client.call("session/read", {
         sessionId: response.result.session.id,
+      });
+      return c.json(current.result.session);
+    });
+  });
+
+  /// Metadata is a complete map: put replaces, an empty map clears. The
+  /// engine validates the bounds and rejects reserved keys.
+  app.put("/:id/sessions/:sessionId/metadata", async (c) => {
+    const access = await universeForSession(ctx, c, c.req.param("id"), true);
+    if (!access) {
+      return c.json({ error: "not found" }, 404);
+    }
+    const body = await parseBody(c, sessionMetadataPutSchema);
+    if (!body.ok) {
+      return body.response;
+    }
+    return withGateway(c, async () => {
+      const client = engineClientFor(ctx, access.universe);
+      await client.call("session/metadata/put", {
+        sessionId: c.req.param("sessionId"),
+        metadata: body.data.metadata,
+      });
+      const current = await client.call("session/read", {
+        sessionId: c.req.param("sessionId"),
       });
       return c.json(current.result.session);
     });

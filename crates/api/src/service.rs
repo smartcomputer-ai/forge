@@ -72,6 +72,11 @@ pub trait AgentApiService: Send + Sync {
         params: SessionRenameParams,
     ) -> Result<AgentApiOutcome<SessionRenameResponse>, AgentApiError>;
 
+    async fn put_session_metadata(
+        &self,
+        params: SessionMetadataPutParams,
+    ) -> Result<AgentApiOutcome<SessionMetadataPutResponse>, AgentApiError>;
+
     async fn read_session_events(
         &self,
         params: SessionEventsReadParams,

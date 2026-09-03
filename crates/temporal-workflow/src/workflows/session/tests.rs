@@ -414,6 +414,7 @@ fn admission(command: CoreAgentCommand) -> AgentAdmission {
 
 fn agent_session_args_with_close_on_terminal(close_on_terminal: bool) -> AgentSessionArgs {
     AgentSessionArgs {
+        metadata: Default::default(),
         universe_id: test_universe(),
         session_id: SessionId::new("session_test"),
         display_name: None,

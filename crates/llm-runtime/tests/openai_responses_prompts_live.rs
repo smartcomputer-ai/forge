@@ -208,6 +208,7 @@ async fn openai_responses_live_uses_vfs_prompt_instructions() {
     let session_id = SessionId::new("session-live-prompts");
     sessions
         .create_session(CreateSession {
+            metadata: Default::default(),
             session_id: session_id.clone(),
             display_name: None,
             origin: None,

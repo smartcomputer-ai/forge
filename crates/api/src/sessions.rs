@@ -6,6 +6,13 @@ pub struct SessionStartParams {
     pub session_id: Option<SessionId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
+    /// Descriptive key/value metadata, applied only when the session is
+    /// first created: at most 32 entries, keys 1..=64 bytes, values 1..=256
+    /// bytes, no control characters, no `lightspeed.` prefix. It never
+    /// affects routing, authority, or selection; filter on it with
+    /// `session/list`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub metadata: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config: Option<SessionConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -20,6 +27,10 @@ pub struct ManagedSessionStartParams {
     pub session_id: Option<SessionId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
+    /// Descriptive key/value metadata with the same bounds as
+    /// `session/start`; applied only when the session is first created.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub metadata: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config: Option<SessionConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -778,6 +789,10 @@ pub struct SessionListParams {
     /// Only sub-agent sessions delegated directly by this session.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_session_id: Option<SessionId>,
+    /// Only sessions carrying every listed key/value pair (AND semantics).
+    /// Combines with the lineage filters.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub metadata: BTreeMap<String, String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -797,6 +812,9 @@ pub struct SessionSummaryView {
     pub id: SessionId,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
+    /// Descriptive key/value metadata; empty when none was set.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub metadata: BTreeMap<String, String>,
     pub lifecycle_status: SessionLifecycleStatus,
     /// True only when immutable lifecycle ownership was admitted with a
     /// lifecycle controller at managed-session creation.
@@ -871,6 +889,24 @@ pub struct SessionRenameParams {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionRenameResponse {
+    pub session: SessionSummaryView,
+}
+
+/// Replace a session's metadata with a complete map (the same bounds as
+/// `session/start`). Record-only: it does not touch the event log or
+/// `updatedAtMs`. There is no merge form; read, edit, and put.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionMetadataPutParams {
+    pub session_id: SessionId,
+    /// The complete new map; empty clears it.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub metadata: BTreeMap<String, String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionMetadataPutResponse {
     pub session: SessionSummaryView,
 }
 

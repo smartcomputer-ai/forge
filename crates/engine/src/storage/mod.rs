@@ -22,5 +22,5 @@ pub use session::{
     SessionListPage, SessionOrigin, SessionOriginCounts, SessionOriginKind, SessionOriginLimit,
     SessionPage, SessionRecord, SessionStore, SessionStoreError, apply_lifecycle_projection,
     check_origin_limits, is_terminal_run_entry, largest_safe_fork_seq,
-    largest_safe_fork_seq_from_state, lifecycle_at_fork, validate_fork_point,
+    largest_safe_fork_seq_from_state, lifecycle_at_fork, metadata_matches, validate_fork_point,
 };

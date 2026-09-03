@@ -296,6 +296,7 @@ export function sessionSummary(record: SessionRecord): SessionSummary {
   return {
     id: view.id,
     displayName: view.displayName ?? null,
+    metadata: view.metadata ?? {},
     createdAtMs: view.createdAtMs,
     updatedAtMs: view.updatedAtMs,
     lifecycleStatus: view.status === "closed" ? "closed" : "open",

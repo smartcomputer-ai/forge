@@ -422,6 +422,8 @@ export interface SessionOrigin {
 export interface SessionSummary {
   id: string;
   displayName?: string | null;
+  /// Descriptive key/value metadata; absent or empty when none was set.
+  metadata?: Record<string, string>;
   createdAtMs: number;
   updatedAtMs: number;
   lifecycleStatus: "new" | "open" | "closed";
@@ -451,6 +453,7 @@ export interface ManagedWorkflowTool {
 export interface SessionView {
   id: string;
   displayName?: string | null;
+  metadata?: Record<string, string>;
   createdAtMs: number;
   updatedAtMs: number;
   status: "notLoaded" | "idle" | "active" | "closed" | "error";

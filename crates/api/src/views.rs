@@ -6,6 +6,9 @@ pub struct SessionView {
     pub id: SessionId,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
+    /// Descriptive key/value metadata; empty when none was set.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub metadata: BTreeMap<String, String>,
     pub status: SessionStatus,
     /// True only when immutable lifecycle ownership was admitted with a
     /// lifecycle controller at managed-session creation.

@@ -236,6 +236,7 @@ impl ChatSessionDriver {
         let api = build_chat_api(&options).await?;
         let started = api
             .open_or_start_session(SessionStartParams {
+                metadata: Default::default(),
                 session_id: Some(session_id.clone()),
                 display_name: None,
                 config: Some(session_start_config(&options.draft_settings)),
@@ -1093,6 +1094,7 @@ impl ChatSessionDriver {
         self.run_states.clear();
         self.api
             .start_session(SessionStartParams {
+                metadata: Default::default(),
                 session_id: Some(session_id.clone()),
                 display_name: None,
                 config: Some(session_start_config(&self.settings)),

@@ -2170,6 +2170,7 @@ mod tests {
             .expect("binding");
         sessions
             .create_session(CreateSession {
+                metadata: Default::default(),
                 session_id: session_id.clone(),
                 display_name: None,
                 origin: None,
@@ -2372,6 +2373,7 @@ mod tests {
 
         sessions
             .create_session(CreateSession {
+                metadata: Default::default(),
                 session_id: SessionId::new("unrelated-session-created-after-scheduling"),
                 display_name: None,
                 origin: None,
@@ -3556,6 +3558,7 @@ mod tests {
         let parent = SessionId::new("parent");
         sessions
             .create_session(CreateSession {
+                metadata: Default::default(),
                 session_id: parent.clone(),
                 display_name: None,
                 origin: None,
@@ -3667,6 +3670,7 @@ mod tests {
         let parent = SessionId::new("parent_no_fleet_await");
         sessions
             .create_session(CreateSession {
+                metadata: Default::default(),
                 session_id: parent.clone(),
                 display_name: None,
                 origin: None,

@@ -19,6 +19,7 @@ async fn pg_live_lifecycle_projection_rejects_managed_branches() {
     let parent = SessionId::new("lifecycle-parent");
     let created = store
         .create_session(CreateSession {
+            metadata: Default::default(),
             session_id: parent.clone(),
             display_name: Some("Lifecycle parent".to_owned()),
             origin: None,
@@ -77,6 +78,7 @@ async fn pg_live_lifecycle_projection_rejects_managed_branches() {
 
     let listed = store
         .list_sessions(ListSessions {
+            metadata: Default::default(),
             cursor: None,
             limit: 10,
             root_session_id: None,
@@ -126,6 +128,7 @@ async fn pg_live_lifecycle_projection_rejects_managed_branches() {
     let tool_only = SessionId::new("workflow-tools-without-controller");
     store
         .create_session(CreateSession {
+            metadata: Default::default(),
             session_id: tool_only.clone(),
             display_name: None,
             origin: None,
@@ -192,6 +195,7 @@ async fn pg_live_delete_is_closed_only_and_preserves_fork_history() {
     let parent = SessionId::new("delete-parent");
     store
         .create_session(CreateSession {
+            metadata: Default::default(),
             session_id: parent.clone(),
             display_name: None,
             origin: None,

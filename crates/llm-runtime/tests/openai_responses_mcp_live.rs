@@ -97,6 +97,7 @@ async fn openai_responses_live_core_session_uses_public_remote_mcp() {
     let session_id = SessionId::new("session-live-mcp-playground");
     sessions
         .create_session(CreateSession {
+            metadata: Default::default(),
             session_id: session_id.clone(),
             display_name: None,
             origin: None,

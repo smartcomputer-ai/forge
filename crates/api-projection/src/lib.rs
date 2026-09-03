@@ -106,6 +106,7 @@ impl<'a> CoreAgentProjector<'a> {
         let session = SessionView {
             id: params.session_id.as_str().to_owned(),
             display_name: params.record.display_name.clone(),
+            metadata: params.record.metadata.clone(),
             status: session_status(params.state),
             managed: params.record.managed,
             config_revision: params.state.lifecycle.config_revision,
@@ -2742,6 +2743,7 @@ mod tests {
         let session_id = SessionId::new("managed-session");
         let state = CoreAgentState::new();
         let record = SessionRecord {
+            metadata: Default::default(),
             session_id: session_id.clone(),
             display_name: None,
             lifecycle_status: engine::storage::SessionLifecycleStatus::New,

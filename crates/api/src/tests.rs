@@ -1889,6 +1889,7 @@ impl AgentApiService for TestService {
     ) -> Result<AgentApiOutcome<SessionListResponse>, AgentApiError> {
         Ok(AgentApiOutcome::new(SessionListResponse {
             sessions: vec![SessionSummaryView {
+                metadata: Default::default(),
                 id: "session_test".to_owned(),
                 display_name: Some("Test session".to_owned()),
                 lifecycle_status: SessionLifecycleStatus::Open,
@@ -1907,8 +1908,27 @@ impl AgentApiService for TestService {
     ) -> Result<AgentApiOutcome<SessionRenameResponse>, AgentApiError> {
         Ok(AgentApiOutcome::new(SessionRenameResponse {
             session: SessionSummaryView {
+                metadata: Default::default(),
                 id: params.session_id,
                 display_name: params.display_name,
+                lifecycle_status: SessionLifecycleStatus::Open,
+                managed: false,
+                origin: None,
+                created_at_ms: 1,
+                updated_at_ms: 2,
+            },
+        }))
+    }
+
+    async fn put_session_metadata(
+        &self,
+        params: SessionMetadataPutParams,
+    ) -> Result<AgentApiOutcome<SessionMetadataPutResponse>, AgentApiError> {
+        Ok(AgentApiOutcome::new(SessionMetadataPutResponse {
+            session: SessionSummaryView {
+                id: params.session_id,
+                display_name: None,
+                metadata: params.metadata,
                 lifecycle_status: SessionLifecycleStatus::Open,
                 managed: false,
                 origin: None,
@@ -1940,6 +1960,7 @@ impl AgentApiService for TestService {
     ) -> Result<AgentApiOutcome<SessionDeleteResponse>, AgentApiError> {
         Ok(AgentApiOutcome::new(SessionDeleteResponse {
             session: SessionSummaryView {
+                metadata: Default::default(),
                 id: params.session_id,
                 display_name: None,
                 lifecycle_status: SessionLifecycleStatus::Closed,
@@ -3082,6 +3103,7 @@ fn test_workspace(workspace_id: String, revision: u64) -> VfsWorkspaceView {
 
 fn test_session(id: SessionId, status: SessionStatus) -> SessionView {
     SessionView {
+        metadata: Default::default(),
         id,
         display_name: Some("Test session".to_owned()),
         status,

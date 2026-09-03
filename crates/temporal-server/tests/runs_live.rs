@@ -224,6 +224,7 @@ async fn run_control_api(
         }
     };
     api.start_session(SessionStartParams {
+        metadata: Default::default(),
         session_id: Some(session_id.as_str().to_owned()),
         display_name: None,
         config: Some(config),
@@ -710,6 +711,7 @@ async fn run_parallel_tool_batch_live_client(
     // The VFS tool surface derives parallel-safe function tools (vfs reads),
     // so the fake model's three calls form one concurrent per-call group.
     api.start_session(SessionStartParams {
+        metadata: Default::default(),
         session_id: Some(session_id.as_str().to_owned()),
         display_name: None,
         config: Some(SessionConfig {
@@ -837,6 +839,7 @@ async fn run_transient_llm_retry_live_client(
         .build();
 
     api.start_session(SessionStartParams {
+        metadata: Default::default(),
         session_id: Some(session_id.as_str().to_owned()),
         display_name: None,
         config: None,
@@ -914,6 +917,7 @@ async fn run_llm_retry_exhaustion_live_client(
         .build();
 
     api.start_session(SessionStartParams {
+        metadata: Default::default(),
         session_id: Some(session_id.as_str().to_owned()),
         display_name: None,
         config: None,
@@ -1015,6 +1019,7 @@ async fn run_unbounded_hosted_run_live_client(
         .build();
 
     api.start_session(SessionStartParams {
+        metadata: Default::default(),
         session_id: Some(session_id.as_str().to_owned()),
         display_name: None,
         config: Some(SessionConfig {

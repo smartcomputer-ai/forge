@@ -485,6 +485,7 @@ async fn load_session_snapshots(
     loop {
         let page = sessions
             .list_sessions(ListSessions {
+                metadata: Default::default(),
                 cursor,
                 limit: SESSION_PAGE_LIMIT,
                 root_session_id: None,
@@ -728,6 +729,7 @@ mod tests {
                     session_id.clone(),
                     LoadedSessionSnapshot {
                         record: SessionRecord {
+                            metadata: Default::default(),
                             session_id,
                             display_name: None,
                             lifecycle_status: engine::storage::SessionLifecycleStatus::New,

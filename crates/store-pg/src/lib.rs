@@ -46,6 +46,8 @@ pub const SESSION_CHECKPOINTS_SCHEMA_SQL: &str =
     include_str!("../migrations/011_session_checkpoints.sql");
 pub const ENVIRONMENT_REGISTRATION_SCHEMA_SQL: &str =
     include_str!("../migrations/012_environment_registration.sql");
+pub const SESSION_METADATA_SCHEMA_SQL: &str =
+    include_str!("../migrations/013_session_metadata.sql");
 
 pub const DEFAULT_INLINE_THRESHOLD_BYTES: usize = 64 * 1024;
 

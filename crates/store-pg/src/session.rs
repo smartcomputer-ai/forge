@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use async_trait::async_trait;
 use engine::{
     session::{EventSeq, SessionId, SessionPosition, StoredSessionEntry, UncommittedStoredEvent},
@@ -24,6 +26,7 @@ use crate::{
 const SESSION_COLUMNS: &str = r#"
     session_id,
     display_name,
+    metadata_json,
     lifecycle_status,
     closed_at_seq,
     managed,
@@ -418,9 +421,10 @@ impl SessionStore for PgStore {
                 origin_root_session_id,
                 origin_parent_session_id,
                 created_at_ms,
-                updated_at_ms
+                updated_at_ms,
+                metadata_json
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $7)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $7, $8)
             ON CONFLICT (universe_id, session_id) DO NOTHING
             RETURNING {SESSION_COLUMNS}
             "#,
@@ -433,6 +437,7 @@ impl SessionStore for PgStore {
             .bind(origin_columns.root_session_id)
             .bind(origin_columns.parent_session_id)
             .bind(created_at_ms)
+            .bind(metadata_json(&request.metadata)?)
             .fetch_optional(&mut *tx)
             .await
             .map_err(|error| session_sql_error("create session", error))?;
@@ -485,6 +490,17 @@ impl SessionStore for PgStore {
             ),
             None => (None, None),
         };
+        // The metadata predicate is appended only when a filter is present so
+        // the containment operator can use the GIN index; a `$n IS NULL OR`
+        // form would fall back to scanning once the statement goes generic.
+        let metadata_filter = (!request.metadata.is_empty())
+            .then(|| metadata_json(&request.metadata))
+            .transpose()?;
+        let metadata_predicate = if metadata_filter.is_some() {
+            "AND metadata_json @> $7"
+        } else {
+            ""
+        };
         let query = format!(
             r#"
             SELECT {SESSION_COLUMNS}
@@ -493,11 +509,12 @@ impl SessionStore for PgStore {
               AND ($2::bigint IS NULL OR (updated_at_ms, session_id) < ($2, $3))
               AND ($4::text IS NULL OR origin_root_session_id = $4)
               AND ($5::text IS NULL OR origin_parent_session_id = $5)
+              {metadata_predicate}
             ORDER BY updated_at_ms DESC, session_id DESC
             LIMIT $6
             "#,
         );
-        let rows = sqlx::query(&query)
+        let mut sql = sqlx::query(&query)
             .bind(self.config.universe_id)
             .bind(cursor_updated_at_ms)
             .bind(cursor_session_id)
@@ -513,7 +530,11 @@ impl SessionStore for PgStore {
                     .as_ref()
                     .map(|id| id.as_str().to_owned()),
             )
-            .bind(fetch_limit)
+            .bind(fetch_limit);
+        if let Some(filter) = metadata_filter {
+            sql = sql.bind(filter);
+        }
+        let rows = sql
             .fetch_all(&self.pool)
             .await
             .map_err(|error| session_sql_error("list sessions", error))?;
@@ -556,6 +577,35 @@ impl SessionStore for PgStore {
             .fetch_optional(&self.pool)
             .await
             .map_err(|error| session_sql_error("set session display name", error))?;
+
+        let Some(row) = row else {
+            return Err(SessionStoreError::SessionNotFound {
+                session_id: session_id.clone(),
+            });
+        };
+        session_record_from_row(&row)
+    }
+
+    async fn set_session_metadata(
+        &self,
+        session_id: &SessionId,
+        metadata: BTreeMap<String, String>,
+    ) -> Result<SessionRecord, SessionStoreError> {
+        let query = format!(
+            r#"
+            UPDATE sessions
+            SET metadata_json = $3
+            WHERE universe_id = $1 AND session_id = $2
+            RETURNING {SESSION_COLUMNS}
+            "#,
+        );
+        let row = sqlx::query(&query)
+            .bind(self.config.universe_id)
+            .bind(session_id.as_str())
+            .bind(metadata_json(&metadata)?)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|error| session_sql_error("set session metadata", error))?;
 
         let Some(row) = row else {
             return Err(SessionStoreError::SessionNotFound {
@@ -1035,6 +1085,16 @@ fn session_record_from_row(
     let display_name = row
         .try_get::<Option<String>, _>("display_name")
         .map_err(|error| session_sql_error("decode session display name", error))?;
+    let metadata = row
+        .try_get::<serde_json::Value, _>("metadata_json")
+        .map_err(|error| session_sql_error("decode session metadata", error))
+        .and_then(|value| {
+            serde_json::from_value::<BTreeMap<String, String>>(value).map_err(|error| {
+                SessionStoreError::Store {
+                    message: format!("decode session metadata: {error}"),
+                }
+            })
+        })?;
     let lifecycle_status = row
         .try_get::<String, _>("lifecycle_status")
         .map_err(|error| session_sql_error("decode session lifecycle status", error))
@@ -1081,6 +1141,7 @@ fn session_record_from_row(
     Ok(SessionRecord {
         session_id,
         display_name,
+        metadata,
         lifecycle_status,
         closed_at_seq,
         managed,
@@ -1090,6 +1151,16 @@ fn session_record_from_row(
         origin,
         created_at_ms,
         updated_at_ms,
+    })
+}
+
+/// Metadata maps travel as jsonb objects; the column keeps a
+/// `jsonb_typeof = 'object'` check, so an encoding failure is a store bug.
+fn metadata_json(
+    metadata: &BTreeMap<String, String>,
+) -> Result<serde_json::Value, SessionStoreError> {
+    serde_json::to_value(metadata).map_err(|error| SessionStoreError::Store {
+        message: format!("encode session metadata: {error}"),
     })
 }
 

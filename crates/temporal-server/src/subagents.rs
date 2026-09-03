@@ -258,6 +258,9 @@ impl SubagentService {
             .create_session(CreateSession {
                 session_id: child_session_id.clone(),
                 display_name,
+                // Copied once at spawn so a filter on the parent's campaign
+                // catches its descendants; later puts do not propagate.
+                metadata: parent.metadata.clone(),
                 origin: Some(origin.clone()),
                 created_at_ms: now_ms,
             })
@@ -687,6 +690,7 @@ mod tests {
         let blobs = Arc::new(InMemoryBlobStore::new());
         sessions
             .create_session(CreateSession {
+                metadata: Default::default(),
                 session_id: SessionId::new("parent"),
                 display_name: None,
                 origin: None,
@@ -895,6 +899,7 @@ mod tests {
         let listed = h
             .sessions
             .list_sessions(engine::storage::ListSessions {
+                metadata: Default::default(),
                 cursor: None,
                 limit: 10,
                 root_session_id: Some(SessionId::new("parent")),
@@ -1005,6 +1010,7 @@ mod tests {
         };
         h.sessions
             .create_session(CreateSession {
+                metadata: Default::default(),
                 session_id: SessionId::new("root"),
                 display_name: None,
                 origin: None,
@@ -1014,6 +1020,7 @@ mod tests {
             .expect("create root");
         h.sessions
             .create_session(CreateSession {
+                metadata: Default::default(),
                 session_id: SessionId::new("mid"),
                 display_name: None,
                 origin: Some(SessionOrigin {

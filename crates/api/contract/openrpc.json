@@ -1992,6 +1992,23 @@
         ],
         "type": "object"
       },
+      "AgentApiOutcomeOfSessionMetadataPutResponse": {
+        "properties": {
+          "notifications": {
+            "items": {
+              "$ref": "#/components/schemas/AgentNotification"
+            },
+            "type": "array"
+          },
+          "result": {
+            "$ref": "#/components/schemas/SessionMetadataPutResponse"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "type": "object"
+      },
       "AgentApiOutcomeOfSessionReadResponse": {
         "properties": {
           "notifications": {
@@ -8387,6 +8404,13 @@
               "null"
             ]
           },
+          "metadata": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Only environments carrying every listed metadata pair (AND\nsemantics); the same filter `session/list` accepts.",
+            "type": "object"
+          },
           "originSessionId": {
             "description": "Only environments a profile provisioned for this session.",
             "type": [
@@ -9718,6 +9742,13 @@
               "string",
               "null"
             ]
+          },
+          "metadata": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Descriptive key/value metadata with the same bounds as\n`session/start`; applied only when the session is first created.",
+            "type": "object"
           },
           "profile": {
             "anyOf": [
@@ -14885,6 +14916,13 @@
               "null"
             ]
           },
+          "metadata": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Only sessions carrying every listed key/value pair (AND semantics).\nCombines with the lineage filters.",
+            "type": "object"
+          },
           "parentSessionId": {
             "description": "Only sub-agent sessions delegated directly by this session.",
             "type": [
@@ -14919,6 +14957,36 @@
             "type": "array"
           }
         },
+        "type": "object"
+      },
+      "SessionMetadataPutParams": {
+        "description": "Replace a session's metadata with a complete map (the same bounds as\n`session/start`). Record-only: it does not touch the event log or\n`updatedAtMs`. There is no merge form; read, edit, and put.",
+        "properties": {
+          "metadata": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "The complete new map; empty clears it.",
+            "type": "object"
+          },
+          "sessionId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "sessionId"
+        ],
+        "type": "object"
+      },
+      "SessionMetadataPutResponse": {
+        "properties": {
+          "session": {
+            "$ref": "#/components/schemas/SessionSummaryView"
+          }
+        },
+        "required": [
+          "session"
+        ],
         "type": "object"
       },
       "SessionMutationView": {
@@ -15100,6 +15168,13 @@
               "null"
             ]
           },
+          "metadata": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Descriptive key/value metadata, applied only when the session is\nfirst created: at most 32 entries, keys 1..=64 bytes, values 1..=256\nbytes, no control characters, no `lightspeed.` prefix. It never\naffects routing, authority, or selection; filter on it with\n`session/list`.",
+            "type": "object"
+          },
           "profile": {
             "anyOf": [
               {
@@ -15162,6 +15237,13 @@
           "managed": {
             "description": "True only when immutable lifecycle ownership was admitted with a\nlifecycle controller at managed-session creation.",
             "type": "boolean"
+          },
+          "metadata": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Descriptive key/value metadata; empty when none was set.",
+            "type": "object"
           },
           "origin": {
             "anyOf": [
@@ -15267,6 +15349,13 @@
               }
             ],
             "description": "Immutable workflow-backed tool declaration. A lifecycle controller\nindicates external session ownership; tool-only declarations do not."
+          },
+          "metadata": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Descriptive key/value metadata; empty when none was set.",
+            "type": "object"
           },
           "origin": {
             "anyOf": [
@@ -17182,6 +17271,27 @@
         }
       },
       "summary": "Rename a session"
+    },
+    {
+      "description": "Replaces the complete descriptive key/value map (bounded like session/start); an omitted or empty map clears it. Record-only: the event log and updatedAtMs are untouched.",
+      "name": "session/metadata/put",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "params",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/SessionMetadataPutParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/AgentApiOutcomeOfSessionMetadataPutResponse"
+        }
+      },
+      "summary": "Replace session metadata"
     },
     {
       "description": "Closes an idle session and detaches its environment bindings. Force mode cancels active work, drops queued runs, and can recover a session whose workflow is unavailable.",

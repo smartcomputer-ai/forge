@@ -12,6 +12,7 @@ export const METHODS = [
   "session/list",
   "session/config/put",
   "session/rename",
+  "session/metadata/put",
   "session/close",
   "session/delete",
   "session/events/read",
@@ -170,6 +171,11 @@ export const METHOD_INFO = {
     scope: "universe",
     summary: "Rename a session",
     description: "Sets the display name, or clears it when displayName is omitted.",
+  },
+  "session/metadata/put": {
+    scope: "universe",
+    summary: "Replace session metadata",
+    description: "Replaces the complete descriptive key/value map (bounded like session/start); an omitted or empty map clears it. Record-only: the event log and updatedAtMs are untouched.",
   },
   "session/close": {
     scope: "universe",
@@ -853,6 +859,15 @@ export interface MethodMap {
   "session/rename": {
     params: Api.SessionRenameParams;
     result: Api.AgentApiOutcomeOfSessionRenameResponse;
+  };
+  /**
+   * Replace session metadata
+   *
+   * Replaces the complete descriptive key/value map (bounded like session/start); an omitted or empty map clears it. Record-only: the event log and updatedAtMs are untouched.
+   */
+  "session/metadata/put": {
+    params: Api.SessionMetadataPutParams;
+    result: Api.AgentApiOutcomeOfSessionMetadataPutResponse;
   };
   /**
    * Close a session
@@ -2008,6 +2023,14 @@ export const rpc = {
    */
   sessionRename(client: RpcCaller, params: Api.SessionRenameParams): Promise<Api.AgentApiOutcomeOfSessionRenameResponse> {
     return client.call("session/rename", params);
+  },
+  /**
+   * Replace session metadata
+   *
+   * Replaces the complete descriptive key/value map (bounded like session/start); an omitted or empty map clears it. Record-only: the event log and updatedAtMs are untouched.
+   */
+  sessionMetadataPut(client: RpcCaller, params: Api.SessionMetadataPutParams): Promise<Api.AgentApiOutcomeOfSessionMetadataPutResponse> {
+    return client.call("session/metadata/put", params);
   },
   /**
    * Close a session

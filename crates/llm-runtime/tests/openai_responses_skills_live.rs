@@ -212,6 +212,7 @@ async fn openai_responses_live_selects_and_activates_the_matching_skill() {
     let session_id = SessionId::new("session-live-skills");
     sessions
         .create_session(CreateSession {
+            metadata: Default::default(),
             session_id: session_id.clone(),
             display_name: None,
             origin: None,

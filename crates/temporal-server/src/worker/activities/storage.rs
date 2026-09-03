@@ -27,6 +27,7 @@ pub(super) async fn create_or_load_session(
         .create_session(CreateSession {
             session_id: request.session_id.clone(),
             display_name: request.display_name.clone(),
+            metadata: request.metadata.clone(),
             origin: None,
             created_at_ms: request.observed_at_ms,
         })
@@ -539,6 +540,7 @@ mod tests {
         let session_id = SessionId::new("session-a");
         store
             .create_session(CreateSession {
+                metadata: Default::default(),
                 session_id: session_id.clone(),
                 display_name: None,
                 origin: None,
@@ -704,6 +706,7 @@ mod tests {
         let session_id = SessionId::new("bridge_large_session");
         store
             .create_session(CreateSession {
+                metadata: Default::default(),
                 session_id: session_id.clone(),
                 display_name: None,
                 origin: None,
@@ -772,6 +775,7 @@ mod tests {
         let result = create_or_load_session(
             &deps,
             CreateOrLoadSessionRequest {
+                metadata: Default::default(),
                 display_name: None,
                 session_id: session_id.clone(),
                 observed_at_ms: 2,
@@ -810,6 +814,7 @@ mod tests {
         let session_id = SessionId::new("oversized");
         let result = CreateOrLoadSessionResult {
             record: SessionRecord {
+                metadata: Default::default(),
                 session_id: session_id.clone(),
                 display_name: None,
                 lifecycle_status: engine::storage::SessionLifecycleStatus::New,

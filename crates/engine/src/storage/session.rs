@@ -18,6 +18,10 @@ pub struct SessionRecord {
     /// log or deterministic replay.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
+    /// Descriptive key/value metadata (bounded at the API boundary). Store
+    /// metadata only — never part of the event log or deterministic replay.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub metadata: BTreeMap<String, String>,
     /// Cheap, durable projection of the CoreAgent lifecycle. The event log
     /// remains authoritative; stores update this alongside event appends.
     #[serde(default)]
@@ -146,6 +150,9 @@ pub struct CreateSession {
     pub session_id: SessionId,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
+    /// Descriptive metadata stamped at creation; validated by the caller.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub metadata: BTreeMap<String, String>,
     /// Delegation provenance. Stores treat the creation as the root-scoped
     /// reservation: the parent and root must exist and the origin's limits
     /// must hold, atomically with the insert.
@@ -247,6 +254,21 @@ pub struct ListSessions {
     /// Only sessions whose origin names this parent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_session_id: Option<SessionId>,
+    /// Only sessions carrying every listed key/value pair (containment).
+    /// Empty means no metadata filter.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub metadata: BTreeMap<String, String>,
+}
+
+/// Containment match for metadata filters: every filter pair must be present
+/// on the record with the same value. An empty filter matches everything.
+pub fn metadata_matches(
+    record: &BTreeMap<String, String>,
+    filter: &BTreeMap<String, String>,
+) -> bool {
+    filter
+        .iter()
+        .all(|(key, value)| record.get(key) == Some(value))
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -341,6 +363,21 @@ pub trait SessionStore: Send + Sync {
         Err(SessionStoreError::Store {
             message: format!(
                 "set_session_display_name is not supported by this session store for {session_id}"
+            ),
+        })
+    }
+
+    /// Replace the session's metadata map. Metadata only: does not touch
+    /// the event log or `updated_at_ms`.
+    async fn set_session_metadata(
+        &self,
+        session_id: &SessionId,
+        metadata: BTreeMap<String, String>,
+    ) -> Result<SessionRecord, SessionStoreError> {
+        let _ = metadata;
+        Err(SessionStoreError::Store {
+            message: format!(
+                "set_session_metadata is not supported by this session store for {session_id}"
             ),
         })
     }
@@ -496,6 +533,7 @@ impl SessionStore for InMemorySessionStore {
         let record = SessionRecord {
             session_id: request.session_id,
             display_name: request.display_name,
+            metadata: request.metadata,
             lifecycle_status: SessionLifecycleStatus::New,
             closed_at_seq: None,
             managed: false,
@@ -558,6 +596,7 @@ impl SessionStore for InMemorySessionStore {
                         .is_some_and(|origin| &origin.parent_session_id == parent)
                 })
             })
+            .filter(|record| metadata_matches(&record.metadata, &request.metadata))
             .filter(|record| {
                 request.cursor.as_ref().is_none_or(|cursor| {
                     (record.updated_at_ms, record.session_id.as_str())
@@ -595,6 +634,23 @@ impl SessionStore for InMemorySessionStore {
             }
         })?;
         record.display_name = display_name;
+        Ok(record.clone())
+    }
+
+    async fn set_session_metadata(
+        &self,
+        session_id: &SessionId,
+        metadata: BTreeMap<String, String>,
+    ) -> Result<SessionRecord, SessionStoreError> {
+        let mut inner = self.inner.write().map_err(|_| SessionStoreError::Store {
+            message: "session store write lock poisoned".into(),
+        })?;
+        let record = inner.records.get_mut(session_id).ok_or_else(|| {
+            SessionStoreError::SessionNotFound {
+                session_id: session_id.clone(),
+            }
+        })?;
+        record.metadata = metadata;
         Ok(record.clone())
     }
 
@@ -661,6 +717,7 @@ impl SessionStore for InMemorySessionStore {
         }
 
         let mut record = SessionRecord {
+            metadata: Default::default(),
             session_id: request.session_id,
             display_name: None,
             lifecycle_status: SessionLifecycleStatus::New,
@@ -712,6 +769,7 @@ impl SessionStore for InMemorySessionStore {
         let (lifecycle_status, closed_at_seq) = lifecycle_at_fork(source, request.source_seq);
         let head = position_from_nonzero_seq(request.source_seq);
         let record = SessionRecord {
+            metadata: Default::default(),
             session_id: request.session_id,
             display_name: None,
             lifecycle_status,
@@ -1238,6 +1296,7 @@ mod tests {
         let session_id = SessionId::new("session-a");
         store
             .create_session(CreateSession {
+                metadata: Default::default(),
                 session_id: session_id.clone(),
                 display_name: None,
                 origin: None,
@@ -1269,6 +1328,7 @@ mod tests {
         let session_id = SessionId::new("checkpoint-pointer");
         store
             .create_session(CreateSession {
+                metadata: Default::default(),
                 session_id: session_id.clone(),
                 display_name: None,
                 origin: None,
@@ -1318,6 +1378,7 @@ mod tests {
         for (name, created_at_ms) in [("session-a", 10), ("session-b", 20), ("session-c", 20)] {
             store
                 .create_session(CreateSession {
+                    metadata: Default::default(),
                     session_id: SessionId::new(name),
                     display_name: Some(format!("Session {name}")),
                     origin: None,
@@ -1329,6 +1390,7 @@ mod tests {
 
         let first = store
             .list_sessions(ListSessions {
+                metadata: Default::default(),
                 cursor: None,
                 limit: 2,
                 root_session_id: None,
@@ -1348,6 +1410,7 @@ mod tests {
 
         let second = store
             .list_sessions(ListSessions {
+                metadata: Default::default(),
                 cursor: Some(cursor),
                 limit: 2,
                 root_session_id: None,
@@ -1372,6 +1435,7 @@ mod tests {
         assert!(matches!(
             store
                 .list_sessions(ListSessions {
+                    metadata: Default::default(),
                     cursor: None,
                     limit: 0,
                     root_session_id: None,
@@ -1408,6 +1472,7 @@ mod tests {
     ) -> Result<SessionRecord, SessionStoreError> {
         store
             .create_session(CreateSession {
+                metadata: Default::default(),
                 session_id: SessionId::new(session_id),
                 display_name: None,
                 origin: Some(origin),
@@ -1432,6 +1497,7 @@ mod tests {
         let store = InMemorySessionStore::new();
         store
             .create_session(CreateSession {
+                metadata: Default::default(),
                 session_id: SessionId::new("root"),
                 display_name: None,
                 origin: None,
@@ -1519,6 +1585,7 @@ mod tests {
         let store = InMemorySessionStore::new();
         store
             .create_session(CreateSession {
+                metadata: Default::default(),
                 session_id: SessionId::new("root"),
                 display_name: None,
                 origin: None,
@@ -1556,6 +1623,7 @@ mod tests {
         let store = InMemorySessionStore::new();
         store
             .create_session(CreateSession {
+                metadata: Default::default(),
                 session_id: SessionId::new("root"),
                 display_name: None,
                 origin: None,
@@ -1597,6 +1665,7 @@ mod tests {
         for root in ["root-a", "root-b"] {
             store
                 .create_session(CreateSession {
+                    metadata: Default::default(),
                     session_id: SessionId::new(root),
                     display_name: None,
                     origin: None,
@@ -1639,6 +1708,7 @@ mod tests {
         };
         let under_a = store
             .list_sessions(ListSessions {
+                metadata: Default::default(),
                 cursor: None,
                 limit: 10,
                 root_session_id: Some(SessionId::new("root-a")),
@@ -1649,6 +1719,7 @@ mod tests {
         assert_eq!(ids(under_a), vec!["a-child", "a-grandchild"]);
         let children_of_a = store
             .list_sessions(ListSessions {
+                metadata: Default::default(),
                 cursor: None,
                 limit: 10,
                 root_session_id: None,
@@ -1659,6 +1730,7 @@ mod tests {
         assert_eq!(ids(children_of_a), vec!["a-child"]);
         let everything = store
             .list_sessions(ListSessions {
+                metadata: Default::default(),
                 cursor: None,
                 limit: 10,
                 root_session_id: None,
@@ -1674,11 +1746,109 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn in_memory_session_store_sets_metadata_and_filters_by_containment() {
+        let store = InMemorySessionStore::new();
+        let labelled = SessionId::new("labelled");
+        let other = SessionId::new("other");
+        let job = BTreeMap::from([
+            ("source".to_owned(), "harbor".to_owned()),
+            ("job".to_owned(), "nightly".to_owned()),
+        ]);
+        store
+            .create_session(CreateSession {
+                session_id: labelled.clone(),
+                display_name: None,
+                metadata: job.clone(),
+                origin: None,
+                created_at_ms: 10,
+            })
+            .await
+            .expect("create labelled");
+        store
+            .create_session(CreateSession {
+                session_id: other.clone(),
+                display_name: None,
+                metadata: BTreeMap::from([("source".to_owned(), "bot".to_owned())]),
+                origin: None,
+                created_at_ms: 20,
+            })
+            .await
+            .expect("create other");
+
+        let list = |metadata: BTreeMap<String, String>| ListSessions {
+            cursor: None,
+            limit: 10,
+            root_session_id: None,
+            parent_session_id: None,
+            metadata,
+        };
+        let by_job = store
+            .list_sessions(list(BTreeMap::from([(
+                "job".to_owned(),
+                "nightly".to_owned(),
+            )])))
+            .await
+            .expect("list by job");
+        assert_eq!(by_job.sessions.len(), 1);
+        assert_eq!(by_job.sessions[0].session_id, labelled);
+        assert_eq!(by_job.sessions[0].metadata, job);
+
+        // Two pairs require both; a missing key matches nothing.
+        let both = store
+            .list_sessions(list(BTreeMap::from([
+                ("source".to_owned(), "harbor".to_owned()),
+                ("job".to_owned(), "nightly".to_owned()),
+            ])))
+            .await
+            .expect("list by both");
+        assert_eq!(both.sessions.len(), 1);
+        let missing = store
+            .list_sessions(list(BTreeMap::from([("trial".to_owned(), "1".to_owned())])))
+            .await
+            .expect("list by missing key");
+        assert!(missing.sessions.is_empty());
+        let all = store
+            .list_sessions(list(BTreeMap::new()))
+            .await
+            .expect("list all");
+        assert_eq!(all.sessions.len(), 2);
+
+        // Put replaces the whole map without touching updated_at_ms.
+        let replaced = store
+            .set_session_metadata(
+                &labelled,
+                BTreeMap::from([("owner".to_owned(), "lukas".to_owned())]),
+            )
+            .await
+            .expect("set metadata");
+        assert_eq!(
+            replaced.metadata,
+            BTreeMap::from([("owner".to_owned(), "lukas".to_owned())])
+        );
+        assert_eq!(replaced.updated_at_ms, 10);
+        let by_job_after = store
+            .list_sessions(list(BTreeMap::from([(
+                "job".to_owned(),
+                "nightly".to_owned(),
+            )])))
+            .await
+            .expect("list by job after put");
+        assert!(by_job_after.sessions.is_empty());
+        assert!(matches!(
+            store
+                .set_session_metadata(&SessionId::new("missing"), BTreeMap::new())
+                .await,
+            Err(SessionStoreError::SessionNotFound { .. })
+        ));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn in_memory_session_store_sets_and_clears_display_name() {
         let store = InMemorySessionStore::new();
         let session_id = SessionId::new("session-a");
         store
             .create_session(CreateSession {
+                metadata: Default::default(),
                 session_id: session_id.clone(),
                 display_name: None,
                 origin: None,
@@ -1714,6 +1884,7 @@ mod tests {
         let parent = SessionId::new("parent");
         store
             .create_session(CreateSession {
+                metadata: Default::default(),
                 session_id: parent.clone(),
                 display_name: None,
                 origin: None,
@@ -1828,6 +1999,7 @@ mod tests {
         let parent = SessionId::new("managed-parent");
         store
             .create_session(CreateSession {
+                metadata: Default::default(),
                 session_id: parent.clone(),
                 display_name: None,
                 origin: None,
@@ -1891,6 +2063,7 @@ mod tests {
         let tool_only = SessionId::new("tool-only");
         store
             .create_session(CreateSession {
+                metadata: Default::default(),
                 session_id: tool_only.clone(),
                 display_name: None,
                 origin: None,
@@ -1931,6 +2104,7 @@ mod tests {
         let session_id = SessionId::new("session-a");
         store
             .create_session(CreateSession {
+                metadata: Default::default(),
                 session_id: session_id.clone(),
                 display_name: None,
                 origin: None,
@@ -1972,6 +2146,7 @@ mod tests {
         let session_id = SessionId::new("session-a");
         store
             .create_session(CreateSession {
+                metadata: Default::default(),
                 session_id: session_id.clone(),
                 display_name: None,
                 origin: None,
@@ -1982,6 +2157,7 @@ mod tests {
 
         let duplicate = store
             .create_session(CreateSession {
+                metadata: Default::default(),
                 session_id: session_id.clone(),
                 display_name: None,
                 origin: None,
@@ -2026,6 +2202,7 @@ mod tests {
         let source_id = SessionId::new("source");
         store
             .create_session(CreateSession {
+                metadata: Default::default(),
                 session_id: source_id.clone(),
                 display_name: None,
                 origin: None,
@@ -2078,6 +2255,7 @@ mod tests {
         let root = SessionId::new("root");
         store
             .create_session(CreateSession {
+                metadata: Default::default(),
                 session_id: root.clone(),
                 display_name: None,
                 origin: None,
@@ -2182,6 +2360,7 @@ mod tests {
         let session_id = SessionId::new("session-a");
         store
             .create_session(CreateSession {
+                metadata: Default::default(),
                 session_id: session_id.clone(),
                 display_name: None,
                 origin: None,

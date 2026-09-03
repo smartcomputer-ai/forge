@@ -13,7 +13,8 @@
   activity, retention from close) and records that the bot routed-session
   "TTL" runs from creation instead of idle, with the fix and a rename to
   `closeAfterMs`.
-- [ ] [P153](p153-session-metadata.md) — session metadata: the bounded
+- [x] [P153](p153-session-metadata.md) — session metadata (implemented
+  2026-09-03): the bounded
   string map registered environments already carry, set at `session/start`
   and replaced with `session/metadata/put`, a containment filter on
   `session/list` and `environments/list`, chips and a filter bar with a

@@ -1782,6 +1782,12 @@ export interface SessionView {
    */
   management?: ManagedSessionWorkflowToolsInput | null;
   /**
+   * Descriptive key/value metadata; empty when none was set.
+   */
+  metadata?: {
+    [k: string]: string;
+  };
+  /**
    * Sub-agent lineage; absent for root sessions.
    */
   origin?: SessionOriginView | null;
@@ -3591,6 +3597,12 @@ export interface SessionSummaryView {
    * lifecycle controller at managed-session creation.
    */
   managed: boolean;
+  /**
+   * Descriptive key/value metadata; empty when none was set.
+   */
+  metadata?: {
+    [k: string]: string;
+  };
   /**
    * Sub-agent lineage; absent for root sessions.
    */
@@ -5552,6 +5564,21 @@ export interface SessionListResponse {
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "AgentApiOutcomeOfSessionMetadataPutResponse".
+ */
+export interface AgentApiOutcomeOfSessionMetadataPutResponse {
+  notifications?: AgentNotification[];
+  result: SessionMetadataPutResponse;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "SessionMetadataPutResponse".
+ */
+export interface SessionMetadataPutResponse {
+  session: SessionSummaryView;
+}
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "AgentApiOutcomeOfSessionReadResponse".
  */
 export interface AgentApiOutcomeOfSessionReadResponse {
@@ -6641,6 +6668,13 @@ export interface EnvironmentJobReadParams {
 export interface EnvironmentListParams {
   bindingId?: string | null;
   /**
+   * Only environments carrying every listed metadata pair (AND
+   * semantics); the same filter `session/list` accepts.
+   */
+  metadata?: {
+    [k: string]: string;
+  };
+  /**
    * Only environments a profile provisioned for this session.
    */
   originSessionId?: string | null;
@@ -6784,6 +6818,13 @@ export interface JsonRpcError {
 export interface ManagedSessionStartParams {
   config?: SessionConfig | null;
   displayName?: string | null;
+  /**
+   * Descriptive key/value metadata with the same bounds as
+   * `session/start`; applied only when the session is first created.
+   */
+  metadata?: {
+    [k: string]: string;
+  };
   profile?: ProfileSource | null;
   sessionId?: string | null;
   /**
@@ -7263,6 +7304,13 @@ export interface SessionListParams {
   cursor?: string | null;
   limit?: number | null;
   /**
+   * Only sessions carrying every listed key/value pair (AND semantics).
+   * Combines with the lineage filters.
+   */
+  metadata?: {
+    [k: string]: string;
+  };
+  /**
    * Only sub-agent sessions delegated directly by this session.
    */
   parentSessionId?: string | null;
@@ -7270,6 +7318,23 @@ export interface SessionListParams {
    * Only sub-agent sessions whose lineage root is this session.
    */
   rootSessionId?: string | null;
+}
+/**
+ * Replace a session's metadata with a complete map (the same bounds as
+ * `session/start`). Record-only: it does not touch the event log or
+ * `updatedAtMs`. There is no merge form; read, edit, and put.
+ *
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "SessionMetadataPutParams".
+ */
+export interface SessionMetadataPutParams {
+  /**
+   * The complete new map; empty clears it.
+   */
+  metadata?: {
+    [k: string]: string;
+  };
+  sessionId: string;
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
@@ -7301,6 +7366,16 @@ export interface SessionRenameParams {
 export interface SessionStartParams {
   config?: SessionConfig | null;
   displayName?: string | null;
+  /**
+   * Descriptive key/value metadata, applied only when the session is
+   * first created: at most 32 entries, keys 1..=64 bytes, values 1..=256
+   * bytes, no control characters, no `lightspeed.` prefix. It never
+   * affects routing, authority, or selection; filter on it with
+   * `session/list`.
+   */
+  metadata?: {
+    [k: string]: string;
+  };
   profile?: ProfileSource | null;
   sessionId?: string | null;
 }

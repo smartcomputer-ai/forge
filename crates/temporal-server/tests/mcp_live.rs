@@ -417,6 +417,7 @@ async fn run_matrix_client(
     fixture.set_large_tool_count(LARGE_TOOL_COUNT).await;
 
     api.start_session(SessionStartParams {
+        metadata: Default::default(),
         session_id: Some(session_id.as_str().to_owned()),
         display_name: None,
         config: Some(SessionConfig {
@@ -1229,6 +1230,7 @@ async fn run_approval_live_client(
         .with_default_model(model.clone())
         .build();
     api.start_session(SessionStartParams {
+        metadata: Default::default(),
         session_id: Some(session_id.as_str().to_owned()),
         display_name: None,
         config: Some(SessionConfig {
@@ -1390,6 +1392,7 @@ async fn run_native_mcp_live_client(
     .await?;
 
     api.start_session(SessionStartParams {
+        metadata: Default::default(),
         session_id: Some(session_id.as_str().to_owned()),
         display_name: None,
         config: Some(SessionConfig {
@@ -1541,6 +1544,7 @@ async fn run_mcp_live_client(
     );
 
     api.start_session(SessionStartParams {
+        metadata: Default::default(),
         session_id: Some(session_id.as_str().to_owned()),
         display_name: None,
         config: Some(SessionConfig {

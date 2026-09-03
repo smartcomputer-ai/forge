@@ -1121,6 +1121,9 @@ pub struct ListEnvironments {
     pub origin_session_id: Option<SessionId>,
     /// Only environments admitted by this registration key.
     pub registration_key_id: Option<EnvironmentRegistrationKeyId>,
+    /// Only environments carrying every listed metadata pair (containment).
+    #[serde(default)]
+    pub metadata: BTreeMap<String, String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1467,12 +1470,12 @@ fn invalid_error(message: impl Into<String>) -> EnvironmentRegistryError {
     }
 }
 
+/// Stored records obey the registration handshake's bounds (entry count,
+/// key and value bytes, no control characters). The reserved-prefix check
+/// applies to caller input at the API boundary, not here: Lightspeed itself
+/// annotates records under that prefix.
 fn validate_metadata(value: &BTreeMap<String, String>) -> Result<(), EnvironmentRegistryError> {
-    for (key, value) in value {
-        validate_nonempty_string("metadata key", key)?;
-        validate_nonempty_string("metadata value", value)?;
-    }
-    Ok(())
+    environment_protocol::registration::validate_metadata_bounds(value).map_err(invalid_error)
 }
 
 fn validate_nonempty_optional(
