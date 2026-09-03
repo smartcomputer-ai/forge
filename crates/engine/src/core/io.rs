@@ -157,6 +157,13 @@ pub struct ToolInvocationRequest {
     pub workflow_tool: Option<WorkflowToolCallRuntime>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub promise_control: Option<PromiseControlCallRuntime>,
+    /// Native MCP routing facts for an injected or search-exposure call,
+    /// materialized by the deterministic owner for every dispatch of the
+    /// batch. Present on the batch request and on the per-call request
+    /// alike, so batch-unit and per-call execution route the call the same
+    /// way; absent for every other tool.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_mcp: Option<RemoteMcpCallRuntime>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -335,8 +342,6 @@ pub struct ToolInvocationCallRequest {
     /// Execution policy facts selected from the admitted tool binding.
     #[serde(default)]
     pub execution: ToolExecutionSpec,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub remote_mcp: Option<RemoteMcpCallRuntime>,
 }
 
 /// Bounded summary of one sibling call in the same tool batch.
@@ -373,7 +378,6 @@ impl ToolInvocationBatchRequest {
         &self,
         index: usize,
         execution: ToolExecutionSpec,
-        remote_mcp: Option<RemoteMcpCallRuntime>,
     ) -> Option<ToolInvocationCallRequest> {
         let call = self.calls.get(index)?.clone();
         let sibling_calls = self
@@ -400,7 +404,6 @@ impl ToolInvocationBatchRequest {
             call,
             sibling_calls,
             execution,
-            remote_mcp,
         })
     }
 }
@@ -452,6 +455,14 @@ impl ToolInvocationBatchResult {
     }
 }
 
+/// One native MCP call of a batch that must receive a run-owned approval
+/// decision before the worker performs any MCP wire I/O.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NativeMcpApprovalRequest {
+    pub call_id: ToolCallId,
+    pub subject: crate::ApprovalSubject,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "kind")]
 pub enum ToolBatchOutcome {
@@ -465,6 +476,17 @@ pub enum ToolBatchOutcome {
         completed_results: Vec<ToolInvocationResult>,
         spec: AwaitSpec,
     },
+    /// One or more native MCP calls are gated on approval. Every ungated
+    /// sibling has already executed and reports its terminal result here;
+    /// the gated calls (and an `await` sibling, which never defers while a
+    /// decision is outstanding) stay pending and are re-dispatched once the
+    /// run is unparked.
+    AwaitingApproval {
+        batch_id: ToolBatchId,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        completed_results: Vec<ToolInvocationResult>,
+        approvals: Vec<NativeMcpApprovalRequest>,
+    },
 }
 
 impl ToolBatchOutcome {
@@ -477,6 +499,11 @@ impl ToolBatchOutcome {
             Self::Completed { result } => Ok(result),
             Self::Deferred { batch_id, .. } => Err(CoreAgentIoError::Failed {
                 message: format!("tool batch {batch_id} deferred instead of completing"),
+            }),
+            Self::AwaitingApproval { batch_id, .. } => Err(CoreAgentIoError::Failed {
+                message: format!(
+                    "tool batch {batch_id} is awaiting approval instead of completing"
+                ),
             }),
         }
     }
@@ -505,6 +532,14 @@ pub struct ToolInvocationResult {
     /// `ToolCallResult` unchanged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duration_ms: Option<u64>,
+    /// Bytes of model-visible text the tool produced before the runtime's
+    /// projection budget was applied. Absent for synthetic results and
+    /// executors that do not measure. Recorded telemetry only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_bytes: Option<u64>,
+    /// True when the projection cut the model-visible text to its budget.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub truncated: bool,
 }
 
 impl ToolInvocationResult {
@@ -548,6 +583,37 @@ mod tests {
     use super::*;
 
     #[test]
+    fn call_requests_carry_the_call_native_mcp_routing() {
+        let mut batch = batch_request_with_calls(&["call_a", "call_b"]);
+        let routing = RemoteMcpCallRuntime::Injected {
+            target: RemoteMcpCallTarget {
+                server_id: "echo".to_owned(),
+                record_revision: 1,
+                server_label: "echo".to_owned(),
+                server_url: "https://echo.example.com/mcp".to_owned(),
+                allowed_tools: None,
+                approval: crate::RemoteMcpApprovalPolicy::Never,
+                auth_ref: None,
+                auth_required: false,
+                allow_private_network: false,
+            },
+            remote_tool_name: "hello".to_owned(),
+            approval_decision: Some(true),
+        };
+        batch.calls[1].remote_mcp = Some(routing.clone());
+
+        let request = batch
+            .call_request(1, ToolExecutionSpec::default())
+            .expect("call request");
+
+        assert_eq!(request.call.remote_mcp, Some(routing.clone()));
+        assert_eq!(
+            request.into_batch_request().calls[0].remote_mcp,
+            Some(routing)
+        );
+    }
+
+    #[test]
     fn tool_batch_single_result_requires_exactly_one_result() {
         let empty = ToolInvocationBatchResult {
             run_id: RunId::new(1),
@@ -577,6 +643,7 @@ mod tests {
                     arguments_ref: BlobRef::from_bytes(call_id.as_bytes()),
                     workflow_tool: None,
                     promise_control: None,
+                    remote_mcp: None,
                 })
                 .collect(),
         }
@@ -587,7 +654,7 @@ mod tests {
         let batch = batch_request_with_calls(&["call_a", "call_b", "call_c"]);
 
         let request = batch
-            .call_request(1, ToolExecutionSpec::default(), None)
+            .call_request(1, ToolExecutionSpec::default())
             .expect("call request");
 
         assert_eq!(request.call.call_id, ToolCallId::new("call_b"));
@@ -603,7 +670,7 @@ mod tests {
         );
         assert!(
             batch
-                .call_request(3, ToolExecutionSpec::default(), None)
+                .call_request(3, ToolExecutionSpec::default())
                 .is_none()
         );
 
@@ -626,6 +693,8 @@ mod tests {
                 .iter()
                 .map(|call| ToolInvocationResult {
                     duration_ms: None,
+                    output_bytes: None,
+                    truncated: false,
                     call_id: call.call_id.clone(),
                     status: ToolCallStatus::Succeeded,
                     output_ref: Some(call.arguments_ref.clone()),
@@ -647,7 +716,7 @@ mod tests {
     async fn default_invoke_call_adapts_through_batch_execution() {
         let batch = batch_request_with_calls(&["call_a", "call_b"]);
         let request = batch
-            .call_request(0, ToolExecutionSpec::default(), None)
+            .call_request(0, ToolExecutionSpec::default())
             .expect("call request");
 
         let result = BatchOnlyTools
@@ -671,6 +740,7 @@ mod promise_base_tests {
             arguments_ref: BlobRef::from_bytes(b"{}"),
             workflow_tool: None,
             promise_control: None,
+            remote_mcp: None,
         }
     }
 
@@ -689,13 +759,13 @@ mod promise_base_tests {
             calls: vec![call("a"), call("b"), call("c")],
         };
         let third = batch
-            .call_request(2, ToolExecutionSpec::default(), None)
+            .call_request(2, ToolExecutionSpec::default())
             .expect("third call");
         assert_eq!(third.promise_id_base, 9);
         assert_eq!(third.into_batch_request().promise_id_base, 9);
         assert!(
             batch
-                .call_request(3, ToolExecutionSpec::default(), None)
+                .call_request(3, ToolExecutionSpec::default())
                 .is_none()
         );
     }

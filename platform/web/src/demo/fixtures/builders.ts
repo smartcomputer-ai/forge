@@ -565,7 +565,7 @@ export interface BotInit {
   brief: string;
   runsPerDay: number | null;
   breaker: BotBreaker | null;
-  routedSessionTtlMs?: number | null;
+  routedSessionCloseAfterMs?: number | null;
   selfConfig?: boolean;
   emit: boolean;
   revision?: number;
@@ -585,7 +585,7 @@ export function bot(universe: UniverseState, init: BotInit): BotView {
     brief: init.brief,
     runsPerDay: init.runsPerDay,
     breaker: init.breaker,
-    routedSessionTtlMs: init.routedSessionTtlMs ?? null,
+    routedSessionCloseAfterMs: init.routedSessionCloseAfterMs ?? null,
     selfConfig: init.selfConfig ?? false,
     emit: init.emit,
     enabled: true,
@@ -602,7 +602,7 @@ export interface TriggerRest {
   route?: BotTriggerRoute | null;
   coalesce?: BotCoalescePolicy | null;
   deliver?: BotDeliverPolicy | null;
-  sessionTtlMs?: number | null;
+  sessionCloseAfterMs?: number | null;
   enabled?: boolean;
   disabledReason?: BotTriggerDisabledReason | null;
   disabledAtMs?: number | null;
@@ -622,7 +622,7 @@ function baseTrigger(botId: string, triggerId: string, rest: TriggerRest) {
     route: rest.route ?? null,
     coalesce: rest.coalesce ?? null,
     deliver: rest.deliver ?? null,
-    sessionTtlMs: rest.sessionTtlMs ?? null,
+    sessionCloseAfterMs: rest.sessionCloseAfterMs ?? null,
     enabled: rest.enabled ?? true,
     disabledReason: rest.disabledReason ?? null,
     disabledAtMs: rest.disabledAtMs ?? null,
@@ -715,7 +715,7 @@ export interface ChatSpecInit {
 /// A chat connection: one session per conversation, kept forever.
 export function chatTrigger(botId: string, triggerId: string, spec: ChatSpecInit, rest: TriggerRest): BotTriggerView {
   return {
-    ...baseTrigger(botId, triggerId, { route: { policy: "perKey", key: null }, sessionTtlMs: 0, ...rest }),
+    ...baseTrigger(botId, triggerId, { route: { policy: "perKey", key: null }, sessionCloseAfterMs: 0, ...rest }),
     kind: "chat",
     accountId: spec.accountId,
     matchScope: spec.matchScope ?? null,
@@ -1045,6 +1045,7 @@ export function sessionSummaryOf(session: SessionRecord): SessionSummaryView {
     createdAtMs: view.createdAtMs,
     updatedAtMs: view.updatedAtMs,
     lifecycleStatus: view.status === "closed" ? "closed" : "open",
+    retention: view.retention,
     managed: view.managed,
     origin: view.origin ?? null,
   };

@@ -7,7 +7,7 @@ import {
   useQueryClient,
 } from "@tanstack/react-query";
 import { NavLink, useNavigate, useParams } from "react-router-dom";
-import { Archive, ArrowLeft, Check, Copy, ListFilter, LoaderCircle, Plus, ShieldCheck, SlidersHorizontal, Trash2 } from "lucide-react";
+import { Archive, ArrowLeft, Check, Copy, ListChecks, ListFilter, LoaderCircle, Plus, ShieldCheck, SlidersHorizontal, Trash2, X } from "lucide-react";
 import {
   api,
   type BlobContent,
@@ -28,6 +28,7 @@ import {
 } from "@/api";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Checkbox } from "@/components/ui/checkbox";
 import { BotFaceIcon } from "@/components/icons/bot";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import {
@@ -167,12 +168,18 @@ function SessionList({
   slug: string;
   activeId: string | undefined;
 }) {
+  const queryClient = useQueryClient();
+  const [metadataFilter, setMetadataFilter] = useState<Record<string, string>>({});
+  const [filterDraft, setFilterDraft] = useState("");
+  const filterEntries = Object.entries(metadataFilter);
+  const listQuery = new URLSearchParams({ limit: "50" });
+  for (const [key, value] of filterEntries) listQuery.append("metadata", `${key}=${value}`);
   const pages = useInfiniteQuery({
-    queryKey: ["sessions", universeId],
+    queryKey: ["sessions", universeId, metadataFilter],
     queryFn: ({ pageParam }) =>
       api<SessionListPage>(
         "GET",
-        `/api/v1/universes/${universeId}/sessions?limit=50${
+        `/api/v1/universes/${universeId}/sessions?${listQuery.toString()}${
           pageParam ? `&cursor=${encodeURIComponent(pageParam)}` : ""
         }`,
     ),
@@ -186,12 +193,82 @@ function SessionList({
   const [createOpen, setCreateOpen] = useState(false);
   const [showClosed, setShowClosed] = useState(true);
   const [showSubagents, setShowSubagents] = useState(true);
+  const [selecting, setSelecting] = useState(false);
+  const [selected, setSelected] = useState<Set<string>>(() => new Set());
+  const [bulkNotice, setBulkNotice] = useState<string | null>(null);
 
   const allSessions = pages.data?.pages.flatMap((page) => page.sessions) ?? [];
   const sessions = allSessions
     .filter((session) => showClosed || session.lifecycleStatus !== "closed")
     .filter((session) => showSubagents || !session.origin);
   const tree = buildSessionTree(sessions);
+  const visibleIds = sessions.map((session) => session.id);
+  const selectedSessions = sessions.filter((session) => selected.has(session.id));
+  const selectedOpen = selectedSessions.filter((session) => session.lifecycleStatus !== "closed");
+  const selectedClosed = selectedSessions.filter((session) => session.lifecycleStatus === "closed");
+  const allVisibleSelected = visibleIds.length > 0 && visibleIds.every((id) => selected.has(id));
+
+  const addFilter = (key: string, value: string) => {
+    setMetadataFilter((current) => ({ ...current, [key]: value }));
+    setSelected(new Set());
+  };
+  const removeFilter = (key: string) => {
+    setMetadataFilter((current) => {
+      const next = { ...current };
+      delete next[key];
+      return next;
+    });
+    setSelected(new Set());
+  };
+  const submitFilter = (event: FormEvent) => {
+    event.preventDefault();
+    const pair = parseMetadataPair(filterDraft);
+    if (!pair) return;
+    addFilter(pair.key, pair.value);
+    setFilterDraft("");
+  };
+  const toggleSelected = (id: string) =>
+    setSelected((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  const exitSelecting = () => {
+    setSelecting(false);
+    setSelected(new Set());
+  };
+
+  /// The API has no bulk operation by design: the filtered list is the
+  /// primitive and the client loops, a few requests at a time.
+  const bulk = useMutation({
+    mutationFn: async ({ action, ids }: { action: "close" | "delete"; ids: string[] }) => {
+      const results = await runBatched(ids, 6, (id): Promise<unknown> =>
+        action === "close"
+          ? api<SessionView>(
+              "POST",
+              `/api/v1/universes/${universeId}/sessions/${id}/close`,
+              { force: true },
+            )
+          : api<SessionSummary>("DELETE", `/api/v1/universes/${universeId}/sessions/${id}`),
+      );
+      const failed = results.filter((result) => result.status === "rejected").length;
+      return { action, done: ids.length - failed, failed };
+    },
+    onSuccess: (result) => {
+      const verb = result.action === "close" ? "Closed" : "Deleted";
+      setBulkNotice(
+        `${verb} ${result.done} ${result.done === 1 ? "session" : "sessions"}${
+          result.failed > 0 ? `, ${result.failed} failed` : ""
+        }.`,
+      );
+      exitSelecting();
+    },
+    onError: (error) => setBulkNotice(error.message),
+    onSettled: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["sessions", universeId] });
+    },
+  });
 
   return (
     <>
@@ -235,12 +312,94 @@ function SessionList({
         <Button
           variant="ghost"
           size="icon-sm"
+          className={cn(selecting && "text-primary")}
+          onClick={() => (selecting ? exitSelecting() : setSelecting(true))}
+          aria-label={selecting ? "Exit selection" : "Select sessions"}
+          title={selecting ? "Exit selection" : "Select sessions to close or delete"}
+        >
+          <ListChecks />
+        </Button>
+        <Button
+          variant="ghost"
+          size="icon-sm"
           onClick={() => setCreateOpen(true)}
           aria-label="New session"
         >
           <Plus />
         </Button>
       </div>
+      <form
+        onSubmit={submitFilter}
+        className="flex shrink-0 flex-wrap items-center gap-1.5 border-b px-4 py-2"
+      >
+        {filterEntries.map(([key, value]) => (
+          <Badge key={key} variant="secondary" className="gap-1 font-mono text-[11px]">
+            {key}={value}
+            <button
+              type="button"
+              onClick={() => removeFilter(key)}
+              aria-label={`Remove filter ${key}`}
+              className="rounded hover:text-foreground"
+            >
+              <X className="size-3" />
+            </button>
+          </Badge>
+        ))}
+        <Input
+          value={filterDraft}
+          onChange={(event) => setFilterDraft(event.target.value)}
+          placeholder="Filter by metadata: key=value"
+          aria-label="Metadata filter"
+          className="h-7 min-w-40 flex-1 font-mono text-xs"
+        />
+      </form>
+      {selecting && (
+        <div className="flex shrink-0 items-center gap-2 border-b bg-muted/40 px-4 py-2 text-xs">
+          <Checkbox
+            checked={allVisibleSelected}
+            onCheckedChange={(checked) =>
+              setSelected(checked === true ? new Set(visibleIds) : new Set())
+            }
+            aria-label="Select all listed sessions"
+          />
+          <span className="text-muted-foreground">
+            {selected.size} selected
+            {filterEntries.length > 0 ? " in filter" : ""}
+          </span>
+          <div className="ml-auto flex items-center gap-1">
+            <BulkActionDialog
+              action="close"
+              count={selectedOpen.length}
+              pending={bulk.isPending}
+              onConfirm={() =>
+                bulk.mutate({ action: "close", ids: selectedOpen.map((session) => session.id) })
+              }
+            />
+            <BulkActionDialog
+              action="delete"
+              count={selectedClosed.length}
+              pending={bulk.isPending}
+              onConfirm={() =>
+                bulk.mutate({ action: "delete", ids: selectedClosed.map((session) => session.id) })
+              }
+            />
+          </div>
+        </div>
+      )}
+      {bulkNotice && (
+        <p className="flex shrink-0 items-center gap-2 border-b px-4 py-1.5 text-xs text-muted-foreground">
+          {bulk.isPending && <LoaderCircle className="size-3 animate-spin" />}
+          {bulkNotice}
+          <button
+            type="button"
+            className="ml-auto hover:text-foreground"
+            onClick={() => setBulkNotice(null)}
+            aria-label="Dismiss"
+          >
+            <X className="size-3" />
+          </button>
+        </p>
+      )}
       <div className="min-h-0 flex-1 overflow-y-auto">
         {pages.isLoading && <p className="p-4 text-sm text-muted-foreground">Loading…</p>}
         {pages.error && (
@@ -248,7 +407,9 @@ function SessionList({
         )}
         {pages.data && allSessions.length === 0 && (
           <p className="p-4 text-sm text-muted-foreground">
-            No sessions yet — start one, or bind a chat.
+            {filterEntries.length > 0
+              ? "No sessions match this metadata filter."
+              : "No sessions yet — start one, or bind a chat."}
           </p>
         )}
         {pages.data && !showClosed && allSessions.length > 0 && sessions.length === 0 && (
@@ -258,7 +419,17 @@ function SessionList({
         )}
         <ul>
           {tree.map((node) => (
-            <SessionTreeItem key={node.session.id} node={node} slug={slug} activeId={activeId} depth={0} />
+            <SessionTreeItem
+              key={node.session.id}
+              node={node}
+              slug={slug}
+              activeId={activeId}
+              depth={0}
+              selecting={selecting}
+              selected={selected}
+              onToggle={toggleSelected}
+              onFilter={addFilter}
+            />
           ))}
         </ul>
         {pages.hasNextPage && (
@@ -285,6 +456,86 @@ function SessionList({
   );
 }
 
+/// `key=value` typed into the filter bar; the value may itself contain `=`.
+export function parseMetadataPair(raw: string): { key: string; value: string } | null {
+  const at = raw.indexOf("=");
+  if (at <= 0) return null;
+  const key = raw.slice(0, at).trim();
+  const value = raw.slice(at + 1).trim();
+  return key && value ? { key, value } : null;
+}
+
+/// Run `task` over `items` with at most `width` in flight; every outcome is
+/// kept so the caller can count failures without aborting the rest.
+export async function runBatched<T, R>(
+  items: T[],
+  width: number,
+  task: (item: T) => Promise<R>,
+): Promise<PromiseSettledResult<R>[]> {
+  const results: PromiseSettledResult<R>[] = [];
+  for (let at = 0; at < items.length; at += width) {
+    results.push(...(await Promise.allSettled(items.slice(at, at + width).map(task))));
+  }
+  return results;
+}
+
+function BulkActionDialog({
+  action,
+  count,
+  pending,
+  onConfirm,
+}: {
+  action: "close" | "delete";
+  count: number;
+  pending: boolean;
+  onConfirm: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const verb = action === "close" ? "Close" : "Delete";
+  const noun = count === 1 ? "session" : "sessions";
+  return (
+    <AlertDialog open={open} onOpenChange={setOpen}>
+      <AlertDialogTrigger
+        render={
+          <Button
+            variant="outline"
+            size="sm"
+            className="text-destructive"
+            disabled={count === 0 || pending}
+          />
+        }
+      >
+        {action === "close" ? <Archive /> : <Trash2 />}
+        {verb} {count}
+      </AlertDialogTrigger>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>
+            {verb} {count} {noun}?
+          </AlertDialogTitle>
+          <AlertDialogDescription>
+            {action === "close"
+              ? "Each selected open session is force-closed in turn: active and queued work is cancelled and the session cannot be reopened. Closed sessions in the selection are left alone."
+              : "Each selected closed session is deleted in turn, removing its history. Open sessions in the selection are left alone."}
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <AlertDialogAction
+            className="bg-destructive text-white hover:bg-destructive/90"
+            onClick={() => {
+              setOpen(false);
+              onConfirm();
+            }}
+          >
+            {verb} {count} {noun}
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  );
+}
+
 type SessionNode = { session: SessionSummary; children: SessionNode[] };
 
 /// Group sub-agent sessions under their parent when the parent is in the
@@ -303,17 +554,25 @@ function buildSessionTree(sessions: SessionSummary[]): SessionNode[] {
   return roots;
 }
 
+interface SessionRowControls {
+  selecting: boolean;
+  selected: Set<string>;
+  onToggle: (id: string) => void;
+  onFilter: (key: string, value: string) => void;
+}
+
 function SessionTreeItem({
   node,
   slug,
   activeId,
   depth,
+  ...controls
 }: {
   node: SessionNode;
   slug: string;
   activeId: string | undefined;
   depth: number;
-}) {
+} & SessionRowControls) {
   return (
     <>
       <SessionListItem
@@ -321,69 +580,134 @@ function SessionTreeItem({
         slug={slug}
         active={node.session.id === activeId}
         depth={depth}
+        {...controls}
       />
       {node.children.map((child) => (
-        <SessionTreeItem key={child.session.id} node={child} slug={slug} activeId={activeId} depth={depth + 1} />
+        <SessionTreeItem
+          key={child.session.id}
+          node={child}
+          slug={slug}
+          activeId={activeId}
+          depth={depth + 1}
+          {...controls}
+        />
       ))}
     </>
   );
 }
+
+const ROW_CHIP_LIMIT = 3;
 
 function SessionListItem({
   session,
   slug,
   active,
   depth = 0,
+  selecting,
+  selected,
+  onToggle,
+  onFilter,
 }: {
   session: SessionSummary;
   slug: string;
   active: boolean;
   depth?: number;
-}) {
+} & SessionRowControls) {
   const botManaged = session.managed && session.id.startsWith("bot:v1:");
   const origin = session.origin ?? null;
+  const metadata = Object.entries(session.metadata ?? {});
+  const isSelected = selected.has(session.id);
+  const indent = depth > 0 ? { paddingLeft: `${1 + depth * 1.25}rem` } : undefined;
+  const summary = (
+    <>
+      <span className="flex min-w-0 items-center gap-2">
+        {depth > 0 && <span className="shrink-0 text-muted-foreground">↳</span>}
+        <span className="truncate font-medium">
+          {session.displayName ?? session.id.slice(0, 18)}
+        </span>
+        {origin && (
+          <Badge
+            variant="outline"
+            title={`Sub-agent of ${origin.parentSessionId} (depth ${origin.depth}, profile ${origin.agent.profileId} rev ${origin.agent.revision})`}
+          >
+            sub-agent
+          </Badge>
+        )}
+        {session.lifecycleStatus === "closed" && (
+          <span className="shrink-0 rounded-full bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
+            closed
+          </span>
+        )}
+        {session.managed && (
+          <Badge variant="secondary" title={botManaged ? "Bot-managed session" : undefined}>
+            {botManaged && <BotFaceIcon />}
+            {botManaged ? "Bot Managed" : "Managed"}
+          </Badge>
+        )}
+      </span>
+      <span className="flex gap-2 font-mono text-xs text-muted-foreground">
+        <span className="truncate">{session.id.slice(0, 14)}…</span>
+        <span className="ml-auto shrink-0 font-sans">
+          {relativeTime(session.updatedAtMs)}
+        </span>
+      </span>
+      {session.retention.deleteAfterCloseMs != null && (
+        <span className="text-xs text-muted-foreground">
+          {sessionRetentionLabel(session)}
+        </span>
+      )}
+    </>
+  );
+  const rowClass = cn(
+    "flex flex-col gap-0.5 px-4 py-2.5 text-sm hover:bg-muted/50",
+    metadata.length > 0 ? "pb-1" : "border-b",
+    (active || isSelected) && "bg-muted",
+  );
   return (
     <li>
-      <NavLink
-        to={`/u/${slug}/sessions/${session.id}`}
-        className={cn(
-          "flex flex-col gap-0.5 border-b px-4 py-2.5 text-sm hover:bg-muted/50",
-          active && "bg-muted",
-        )}
-        style={depth > 0 ? { paddingLeft: `${1 + depth * 1.25}rem` } : undefined}
-      >
-        <span className="flex min-w-0 items-center gap-2">
-          {depth > 0 && <span className="shrink-0 text-muted-foreground">↳</span>}
-          <span className="truncate font-medium">
-            {session.displayName ?? session.id.slice(0, 18)}
+      {selecting ? (
+        <label className={cn(rowClass, "cursor-pointer")} style={indent}>
+          <span className="flex items-start gap-2">
+            <Checkbox
+              checked={isSelected}
+              onCheckedChange={() => onToggle(session.id)}
+              className="mt-0.5"
+              aria-label={`Select ${session.displayName ?? session.id}`}
+            />
+            <span className="flex min-w-0 flex-1 flex-col gap-0.5">{summary}</span>
           </span>
-          {origin && (
-            <Badge
-              variant="outline"
-              title={`Sub-agent of ${origin.parentSessionId} (depth ${origin.depth}, profile ${origin.agent.profileId} rev ${origin.agent.revision})`}
+        </label>
+      ) : (
+        <NavLink to={`/u/${slug}/sessions/${session.id}`} className={rowClass} style={indent}>
+          {summary}
+        </NavLink>
+      )}
+      {metadata.length > 0 && (
+        <div
+          className={cn("flex flex-wrap gap-1 border-b px-4 pb-2", (active || isSelected) && "bg-muted")}
+          style={indent}
+        >
+          {metadata.slice(0, ROW_CHIP_LIMIT).map(([key, value]) => (
+            <button
+              type="button"
+              key={key}
+              onClick={() => onFilter(key, value)}
+              title={`Filter by ${key}=${value}`}
+              className="max-w-48 truncate rounded bg-muted px-1 font-mono text-[10px] text-muted-foreground hover:text-foreground"
             >
-              sub-agent
-            </Badge>
-          )}
-          {session.lifecycleStatus === "closed" && (
-            <span className="shrink-0 rounded-full bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
-              closed
+              {key}={value}
+            </button>
+          ))}
+          {metadata.length > ROW_CHIP_LIMIT && (
+            <span
+              className="text-[10px] text-muted-foreground"
+              title={metadata.map(([key, value]) => `${key}=${value}`).join("\n")}
+            >
+              +{metadata.length - ROW_CHIP_LIMIT}
             </span>
           )}
-          {session.managed && (
-            <Badge variant="secondary" title={botManaged ? "Bot-managed session" : undefined}>
-              {botManaged && <BotFaceIcon />}
-              {botManaged ? "Bot Managed" : "Managed"}
-            </Badge>
-          )}
-        </span>
-        <span className="flex gap-2 font-mono text-xs text-muted-foreground">
-          <span className="truncate">{session.id.slice(0, 14)}…</span>
-          <span className="ml-auto shrink-0 font-sans">
-            {relativeTime(session.updatedAtMs)}
-          </span>
-        </span>
-      </NavLink>
+        </div>
+      )}
     </li>
   );
 }
@@ -769,6 +1093,7 @@ export function SessionDetail({
   const [closeOpen, setCloseOpen] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [deleteOpen, setDeleteOpen] = useState(false);
+  const [deleteCascade, setDeleteCascade] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [decidingApproval, setDecidingApproval] = useState<{
     approvalId: string;
@@ -1189,12 +1514,12 @@ export function SessionDetail({
     mutationFn: () =>
       api<SessionSummary>(
         "DELETE",
-        `/api/v1/universes/${universeId}/sessions/${sessionId}`,
+        `/api/v1/universes/${universeId}/sessions/${sessionId}${deleteCascade ? "?cascade=true" : ""}`,
       ),
     onSuccess: async () => {
       setDeleteOpen(false);
-      queryClient.setQueryData<InfiniteData<SessionListPage>>(
-        ["sessions", universeId],
+      queryClient.setQueriesData<InfiniteData<SessionListPage>>(
+        { queryKey: ["sessions", universeId] },
         (current) => current
           ? {
               ...current,
@@ -1223,9 +1548,26 @@ export function SessionDetail({
         <h1 className="min-w-0 truncate text-sm font-semibold">
           {session.data?.displayName ?? sessionId.slice(0, 24)}
         </h1>
+        {Object.entries(session.data?.metadata ?? {}).slice(0, 4).map(([key, value]) => (
+          <span
+            key={key}
+            className="hidden shrink-0 rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground lg:inline"
+            title={`${key}=${value}`}
+          >
+            {key}={value}
+          </span>
+        ))}
         {closed && (
           <span className="rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">
             Closed
+          </span>
+        )}
+        {session.data?.retention.deleteAfterCloseMs != null && (
+          <span className="rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">
+            {sessionRetentionLabel({
+              lifecycleStatus: closed ? "closed" : "open",
+              retention: session.data.retention,
+            })}
           </span>
         )}
         {managed && (
@@ -1311,7 +1653,10 @@ export function SessionDetail({
               open={deleteOpen}
               onOpenChange={(open) => {
                 setDeleteOpen(open);
-                if (open) setDeleteError(null);
+                if (open) {
+                  setDeleteError(null);
+                  setDeleteCascade(false);
+                }
               }}
             >
               <AlertDialogTrigger
@@ -1331,10 +1676,23 @@ export function SessionDetail({
                   <AlertDialogTitle>Delete this session permanently?</AlertDialogTitle>
                   <AlertDialogDescription>
                     This removes the session and its retained history. It cannot be undone.
-                    Sessions with forks that still inherit their history must be deleted
-                    leaf-first.
+                    A session with history forks or delegated children cannot be deleted
+                    unless cascade is enabled.
                   </AlertDialogDescription>
                 </AlertDialogHeader>
+                <label className="flex items-start gap-2 rounded-lg border p-3 text-sm">
+                  <Checkbox
+                    checked={deleteCascade}
+                    onCheckedChange={(checked) => setDeleteCascade(checked === true)}
+                    disabled={deleteSession.isPending}
+                  />
+                  <span>
+                    <span className="block font-medium">Also delete forks and delegated children</span>
+                    <span className="block text-xs text-muted-foreground">
+                      Every descendant must already be closed. Config-only clones are not included.
+                    </span>
+                  </span>
+                </label>
                 {deleteError && <p className="text-sm text-destructive">{deleteError}</p>}
                 <AlertDialogFooter>
                   <AlertDialogCancel disabled={deleteSession.isPending}>Cancel</AlertDialogCancel>
@@ -1654,4 +2012,22 @@ function relativeTime(ms: number): string {
   if (delta < 3_600_000) return `${Math.floor(delta / 60_000)}m`;
   if (delta < 86_400_000) return `${Math.floor(delta / 3_600_000)}h`;
   return `${Math.floor(delta / 86_400_000)}d`;
+}
+
+function sessionRetentionLabel(
+  session: Pick<SessionSummary, "lifecycleStatus" | "retention">,
+): string {
+  const duration = session.retention.deleteAfterCloseMs;
+  if (duration == null) return "Kept until manually deleted";
+  const deadline = session.retention.deleteAtMs;
+  if (deadline == null) return `Deletes ${formatDuration(duration)} after root closes`;
+  const remaining = deadline - Date.now();
+  if (remaining <= 0) return "Deletion pending";
+  return `Deletes in ${formatDuration(remaining)}`;
+}
+
+function formatDuration(ms: number): string {
+  if (ms < 3_600_000) return `${Math.max(1, Math.ceil(ms / 60_000))} minutes`;
+  if (ms < 86_400_000) return `${Math.ceil(ms / 3_600_000)} hours`;
+  return `${Math.ceil(ms / 86_400_000)} days`;
 }

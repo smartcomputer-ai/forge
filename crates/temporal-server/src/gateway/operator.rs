@@ -435,6 +435,25 @@ impl OperatorApiService for GatewayOperatorApi {
         store_pg::delete_universe(self.pool(), universe_id)
             .await
             .map_err(map_store_error)?;
+        // Objects whose catalog rows were already swept, or whose deletion
+        // failed after the row went, are not in the listing above; clear the
+        // universe's whole CAS prefix so nothing outlives the row cascade.
+        if let Some(object_store) = self.runtime.stores().object_store() {
+            let prefix = store_pg::universe_cas_object_prefix(
+                self.runtime.stores().object_prefix(),
+                universe_id,
+            );
+            match store_pg::delete_objects_under_prefix(object_store.as_ref(), &prefix).await {
+                Ok(deleted) => blob_objects_deleted += deleted,
+                Err(error) => tracing::warn!(
+                    target: "temporal_server",
+                    universe_id = %universe_id,
+                    prefix,
+                    %error,
+                    "universe rows are deleted but clearing its object prefix failed"
+                ),
+            }
+        }
         self.runtime.evict(universe_id).await;
 
         tracing::info!(

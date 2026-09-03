@@ -27,7 +27,7 @@ pub const MAX_POLL_ARGV: usize = 64;
 pub const MIN_POLL_TIMEOUT_MS: u64 = 1_000;
 pub const MAX_POLL_TIMEOUT_MS: u64 = 600_000;
 pub const MAX_POLL_BODY_LEN: usize = 100_000;
-pub const MAX_SESSION_TTL_MS: u64 = 31_536_000_000;
+pub const MAX_SESSION_CLOSE_AFTER_MS: u64 = 31_536_000_000;
 pub const MIN_BREAKER_WINDOW_MS: u64 = 1_000;
 pub const MAX_BREAKER_WINDOW_MS: u64 = 86_400_000;
 pub const MAX_BREAKER_FIRES: u32 = 100_000;
@@ -105,11 +105,11 @@ pub fn validate_bot_document(document: &BotDocument) -> Result<(), BotError> {
     if let Some(breaker) = &document.breaker {
         validate_breaker(breaker)?;
     }
-    if let Some(ttl) = document.routed_session_ttl_ms
-        && !(1_000..=MAX_SESSION_TTL_MS).contains(&ttl)
+    if let Some(close_after_ms) = document.routed_session_close_after_ms
+        && !(1_000..=MAX_SESSION_CLOSE_AFTER_MS).contains(&close_after_ms)
     {
         return Err(invalid(format!(
-            "routedSessionTtlMs must be 1000..={MAX_SESSION_TTL_MS}"
+            "routedSessionCloseAfterMs must be 1000..={MAX_SESSION_CLOSE_AFTER_MS}"
         )));
     }
     Ok(())
@@ -361,10 +361,10 @@ pub fn validate_trigger_document(
                 || document.route.is_some()
                 || document.coalesce.is_some()
                 || document.deliver.is_some()
-                || document.session_ttl_ms.is_some()
+                || document.session_close_after_ms.is_some()
             {
                 return Err(invalid(
-                    "schedule triggers deliver to the main session and take no filter, route, coalesce, deliver, or sessionTtlMs",
+                    "schedule triggers deliver to the main session and take no filter, route, coalesce, deliver, or sessionCloseAfterMs",
                 ));
             }
         }
@@ -446,11 +446,11 @@ pub fn validate_trigger_document(
     if let Some(coalesce) = &document.coalesce {
         validate_coalesce(coalesce)?;
     }
-    if let Some(ttl) = document.session_ttl_ms
-        && ttl > MAX_SESSION_TTL_MS
+    if let Some(close_after_ms) = document.session_close_after_ms
+        && close_after_ms > MAX_SESSION_CLOSE_AFTER_MS
     {
         return Err(invalid(format!(
-            "sessionTtlMs must be at most {MAX_SESSION_TTL_MS}"
+            "sessionCloseAfterMs must be at most {MAX_SESSION_CLOSE_AFTER_MS}"
         )));
     }
     Ok(())
@@ -497,7 +497,7 @@ mod tests {
             route: None,
             coalesce: None,
             deliver: None,
-            session_ttl_ms: None,
+            session_close_after_ms: None,
             enabled: true,
         }
     }
@@ -544,7 +544,7 @@ mod tests {
             route: None,
             coalesce: None,
             deliver: None,
-            session_ttl_ms: None,
+            session_close_after_ms: None,
             enabled: true,
         };
         let error = validate_trigger_document(&document, 0).unwrap_err();
@@ -566,7 +566,7 @@ mod tests {
             route: Some(BotTriggerRoute::Bot),
             coalesce: None,
             deliver: None,
-            session_ttl_ms: None,
+            session_close_after_ms: None,
             enabled: true,
         };
         assert!(validate_trigger_document(&document, 0).is_err());
@@ -592,7 +592,7 @@ mod tests {
             brief: None,
             runs_per_day: Some(0),
             breaker: None,
-            routed_session_ttl_ms: None,
+            routed_session_close_after_ms: None,
             self_config: false,
             emit: false,
             enabled: true,

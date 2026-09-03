@@ -10,15 +10,19 @@ clap = { version = "4", features = ["derive", "env"] }
 dotenvy = "0.15"
 release-info = { path = "../release-info" }
 futures-util = "0.3"
+flate2 = "1"
 glob = "0.3"
 grep-regex = "0.1"
 grep-searcher = "0.1"
 environment-protocol = { path = "../environment-protocol" }
 ignore = "0.4"
 portable-pty = "0.9"
-reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls", "stream"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha2 = "0.10"
+tar = { version = "0.4", default-features = false }
+tempfile = "3"
 thiserror = "1"
 tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "process", "rt", "signal", "sync", "time"] }
 tokio-tungstenite = { version = "0.26", default-features = false, features = ["connect", "handshake", "rustls-tls-webpki-roots"] }
@@ -34,7 +38,6 @@ libc = "0.2"
 [dev-dependencies]
 engine = { path = "../engine" }
 environment-client = { path = "../environment-client" }
-tempfile = "3"
 tools = { path = "../tools" }
 
 [[bin]]

@@ -2089,6 +2089,7 @@ async fn vfs_snapshot_api_helpers_commit_and_read_manifest() {
     let store = engine::storage::InMemoryBlobStore::new();
     let snapshot = vfs::create_inline_snapshot(
         &store,
+        None,
         vfs::CreateInlineSnapshotRequest::new(vec![
             vfs::InlineFile::new("README.md", b"hello\n".to_vec()).unwrap(),
         ]),
@@ -2099,6 +2100,7 @@ async fn vfs_snapshot_api_helpers_commit_and_read_manifest() {
 
     let committed = commit_vfs_snapshot(
         &store,
+        None,
         VfsSnapshotCommitParams {
             manifest: manifest.clone(),
         },
@@ -2141,6 +2143,7 @@ async fn vfs_snapshot_commit_rejects_missing_file_blob_refs() {
 
     let error = commit_vfs_snapshot(
         &store,
+        None,
         VfsSnapshotCommitParams {
             manifest: serde_json::to_value(manifest).expect("manifest json"),
         },

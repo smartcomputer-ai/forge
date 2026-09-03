@@ -28,7 +28,8 @@ use environment_protocol::{
             PROCESS_START_METHOD,
         },
         process::{
-            ProcessOutputChunk, ProcessOutputStream, ReadProcessResponse, StartProcessParams,
+            LeftoverProcess, ProcessOutputChunk, ProcessOutputStream, ReadProcessResponse,
+            StartProcessParams,
         },
     },
     shared::{
@@ -132,7 +133,6 @@ fn process_start_params_match_fixture() {
             stdin: Some(ByteChunk::from(b"input\n".as_slice())),
             timeout_ms: Some(60_000),
             tty: false,
-            pipe_stdin: true,
         },
         fixture("process_start_params"),
     );
@@ -159,7 +159,13 @@ fn process_read_response_preserves_ordered_output_chunks() {
             exit_code: Some(0),
             closed: true,
             failure: None,
-            orphaned_descendants: true,
+            termination: None,
+            pid: Some(90),
+            omitted_bytes: 0,
+            leftover_processes: vec![LeftoverProcess {
+                pid: 91,
+                command: "python -m http.server 8080".to_owned(),
+            }],
         },
         fixture("process_read_response"),
     );
@@ -355,6 +361,7 @@ fn power_vocabulary_round_trips_and_maps_steady_states() {
             idle_for_ms: 1_500,
             running_processes: 0,
             running_jobs: 2,
+            leftover_process_groups: 0,
         },
         json!({"idleForMs": 1500, "runningProcesses": 0, "runningJobs": 2}),
     );

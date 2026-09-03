@@ -46,12 +46,12 @@ export function briefSummary(brief: string | null | undefined): string {
 }
 
 export function guardrailsSummary(
-  bot: Pick<BotView, "runsPerDay" | "breaker" | "routedSessionTtlMs" | "selfConfig">,
+  bot: Pick<BotView, "runsPerDay" | "breaker" | "routedSessionCloseAfterMs" | "selfConfig">,
 ): string {
   return [
     bot.runsPerDay == null ? "no daily limit" : `${bot.runsPerDay} runs a day`,
     bot.breaker ? `flood ${bot.breaker.fires}/${Math.round(bot.breaker.windowMs / 60_000)} min` : null,
-    bot.routedSessionTtlMs ? `threads close after ${Math.round(bot.routedSessionTtlMs / 86_400_000)}d` : "threads kept",
+    bot.routedSessionCloseAfterMs ? `threads close after ${Math.round(bot.routedSessionCloseAfterMs / 86_400_000)}d` : "threads kept",
     bot.selfConfig ? "can change own triggers" : null,
   ]
     .filter((part): part is string => part !== null)

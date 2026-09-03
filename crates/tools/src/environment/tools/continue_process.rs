@@ -1,40 +1,62 @@
-//! Canonical write-process-stdin operation.
+//! Substrate operation: continue with a running handle.
+//!
+//! Optionally act on the process (deliver input, close stdin, or send a
+//! signal), then wait for the window and return the output produced since
+//! the last call. Terminate is a field of this operation, not an operation.
 
 use serde::{Deserialize, Serialize};
 
 use crate::{
     environment::EnvironmentToolContext,
-    environment::process::{ProcessHandle, ProcessOutput, WriteProcessStdinRequest},
+    environment::process::{ContinueProcessRequest, ProcessHandle, ProcessOutput, ProcessSignal},
     error::ToolResult,
 };
 
 use super::unsupported_process_capability;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct WriteProcessStdinArgs {
+pub struct ContinueProcessArgs {
     pub handle: ProcessHandle,
-    pub input: String,
+    pub input: Option<String>,
     #[serde(default)]
     pub close_stdin: bool,
-    pub yield_time_ms: Option<u64>,
+    pub signal: Option<ProcessSignal>,
+    /// Collect output for this long, returning early only when the process
+    /// exits. Absent waits up to the deployment ceiling.
+    pub wait_ms: Option<u64>,
     pub max_output_bytes: Option<u64>,
 }
 
-pub async fn invoke_write_process_stdin(
+impl ContinueProcessArgs {
+    pub fn wait(handle: ProcessHandle, wait_ms: Option<u64>) -> Self {
+        Self {
+            handle,
+            input: None,
+            close_stdin: false,
+            signal: None,
+            wait_ms,
+            max_output_bytes: None,
+        }
+    }
+}
+
+pub async fn invoke_continue_process(
     ctx: &EnvironmentToolContext,
-    args: WriteProcessStdinArgs,
+    args: ContinueProcessArgs,
 ) -> ToolResult<ProcessOutput> {
     let process = ctx
         .process
         .as_ref()
         .ok_or_else(unsupported_process_capability)?;
+    let ceiling = ctx.limits.max_process_timeout_ms;
 
     process
-        .write_stdin(WriteProcessStdinRequest {
+        .continue_process(ContinueProcessRequest {
             handle: args.handle,
-            input: args.input.into_bytes(),
+            input: args.input.map(String::into_bytes),
             close_stdin: args.close_stdin,
-            yield_time_ms: args.yield_time_ms,
+            signal: args.signal,
+            wait_ms: Some(args.wait_ms.unwrap_or(ceiling).min(ceiling)),
             max_output_bytes: Some(
                 args.max_output_bytes
                     .unwrap_or(ctx.limits.max_process_output_bytes),
@@ -62,7 +84,7 @@ mod tests {
 
     #[derive(Default)]
     struct RecordingProcessExecutor {
-        requests: Mutex<Vec<WriteProcessStdinRequest>>,
+        requests: Mutex<Vec<ContinueProcessRequest>>,
     }
 
     #[async_trait]
@@ -73,69 +95,86 @@ mod tests {
             })
         }
 
-        async fn write_stdin(
+        async fn continue_process(
             &self,
-            request: WriteProcessStdinRequest,
+            request: ContinueProcessRequest,
         ) -> ProcessExecResult<ProcessOutput> {
             self.requests.lock().expect("lock").push(request);
             Ok(ProcessOutput {
                 status: ProcessStatus::Running,
                 handle: Some(ProcessHandle::new("proc-1")),
+                pid: Some(7),
                 exit_code: None,
+                failure: None,
                 stdout: StreamOutput {
                     bytes: b"next".to_vec(),
-                    truncated: false,
+                    omitted_at: None,
                 },
                 stderr: StreamOutput::default(),
-                orphaned_descendants: false,
+                omitted_bytes: 0,
+                leftover_processes: Vec::new(),
             })
         }
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn invoke_write_process_stdin_writes_to_existing_handle() {
+    async fn invoke_continue_process_forwards_input_signal_and_bounded_wait() {
         let process = Arc::new(RecordingProcessExecutor::default());
         let ctx =
             EnvironmentToolContext::new(Some(process.clone()), Arc::new(InMemoryBlobStore::new()));
+        let ceiling = ctx.limits.max_process_timeout_ms;
 
-        let output = invoke_write_process_stdin(
+        let output = invoke_continue_process(
             &ctx,
-            WriteProcessStdinArgs {
+            ContinueProcessArgs {
                 handle: ProcessHandle::new("proc-1"),
-                input: "hello".to_string(),
+                input: Some("hello".to_string()),
                 close_stdin: true,
-                yield_time_ms: Some(10),
+                signal: None,
+                wait_ms: Some(10),
                 max_output_bytes: None,
             },
         )
         .await
-        .expect("write stdin");
-
+        .expect("continue");
         assert_eq!(output.status, ProcessStatus::Running);
+
+        invoke_continue_process(
+            &ctx,
+            ContinueProcessArgs {
+                handle: ProcessHandle::new("proc-1"),
+                input: None,
+                close_stdin: false,
+                signal: Some(ProcessSignal::Interrupt),
+                wait_ms: None,
+                max_output_bytes: Some(16),
+            },
+        )
+        .await
+        .expect("interrupt");
+
         let requests = process.requests.lock().expect("lock");
-        assert_eq!(requests.len(), 1);
+        assert_eq!(requests.len(), 2);
         assert_eq!(requests[0].handle, ProcessHandle::new("proc-1"));
-        assert_eq!(requests[0].input, b"hello".to_vec());
+        assert_eq!(requests[0].input, Some(b"hello".to_vec()));
         assert!(requests[0].close_stdin);
+        assert_eq!(requests[0].wait_ms, Some(10));
         assert_eq!(requests[0].max_output_bytes, Some(512 * 1024));
+        assert_eq!(requests[1].signal, Some(ProcessSignal::Interrupt));
+        assert_eq!(requests[1].wait_ms, Some(ceiling));
+        assert_eq!(requests[1].max_output_bytes, Some(16));
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn invoke_write_process_stdin_requires_process_capability() {
+    async fn invoke_continue_process_requires_process_capability() {
         let ctx = EnvironmentToolContext::new(None, Arc::new(InMemoryBlobStore::new()));
 
-        let error = invoke_write_process_stdin(
+        let error = invoke_continue_process(
             &ctx,
-            WriteProcessStdinArgs {
-                handle: ProcessHandle::new("proc-1"),
-                input: "hello".to_string(),
-                close_stdin: false,
-                yield_time_ms: None,
-                max_output_bytes: None,
-            },
+            ContinueProcessArgs::wait(ProcessHandle::new("proc-1"), None),
         )
         .await
-        .expect_err("write stdin should fail");
+        .expect_err("continue should fail");
 
         assert!(matches!(error, ToolError::UnsupportedCapability { .. }));
         assert!(

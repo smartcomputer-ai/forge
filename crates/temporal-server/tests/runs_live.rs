@@ -224,10 +224,12 @@ async fn run_control_api(
         }
     };
     api.start_session(SessionStartParams {
+        metadata: Default::default(),
         session_id: Some(session_id.as_str().to_owned()),
         display_name: None,
         config: Some(config),
         profile: None,
+        delete_after_close_ms: None,
     })
     .await?;
     Ok(api)
@@ -710,6 +712,7 @@ async fn run_parallel_tool_batch_live_client(
     // The VFS tool surface derives parallel-safe function tools (vfs reads),
     // so the fake model's three calls form one concurrent per-call group.
     api.start_session(SessionStartParams {
+        metadata: Default::default(),
         session_id: Some(session_id.as_str().to_owned()),
         display_name: None,
         config: Some(SessionConfig {
@@ -727,6 +730,7 @@ async fn run_parallel_tool_batch_live_client(
             ..SessionConfig::default()
         }),
         profile: None,
+        delete_after_close_ms: None,
     })
     .await?;
 
@@ -771,6 +775,48 @@ async fn run_parallel_tool_batch_live_client(
          the scripted failure fails alone and its siblings succeed"
     );
 
+    // Completion events carry the executing runtime's output accounting:
+    // the succeeded calls report the bytes they produced, uncut by the
+    // projection budget; the scripted failure has no output to account for.
+    let events = api
+        .read_session_events(SessionEventsReadParams {
+            session_id: session_id.as_str().to_owned(),
+            after: None,
+            limit: Some(500),
+            wait_ms: None,
+        })
+        .await?
+        .result
+        .events;
+    let mut completions = events
+        .iter()
+        .filter_map(|event| match &event.kind {
+            api::SessionEventKindView::ToolCallCompleted {
+                call_id,
+                status,
+                output_bytes,
+                truncated,
+                ..
+            } => Some((call_id.clone(), *status, *output_bytes, *truncated)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    completions.sort_by(|left, right| left.0.cmp(&right.0));
+    assert_eq!(completions.len(), 3, "{completions:?}");
+    for (call_id, status, output_bytes, truncated) in &completions {
+        assert!(!truncated, "{call_id} was not cut by the projection budget");
+        match status {
+            api::ToolItemStatus::Succeeded => assert!(
+                output_bytes.is_some_and(|bytes| bytes > 0),
+                "{call_id} reports the bytes it produced: {output_bytes:?}"
+            ),
+            api::ToolItemStatus::Failed => {
+                assert_eq!(*output_bytes, None, "{call_id} produced no output")
+            }
+            other => panic!("{call_id} ended with {other:?}"),
+        }
+    }
+
     let handle = live_workflow_handle(&client, &session_id)?;
     let _ = handle
         .terminate(
@@ -795,10 +841,12 @@ async fn run_transient_llm_retry_live_client(
         .build();
 
     api.start_session(SessionStartParams {
+        metadata: Default::default(),
         session_id: Some(session_id.as_str().to_owned()),
         display_name: None,
         config: None,
         profile: None,
+        delete_after_close_ms: None,
     })
     .await?;
 
@@ -872,10 +920,12 @@ async fn run_llm_retry_exhaustion_live_client(
         .build();
 
     api.start_session(SessionStartParams {
+        metadata: Default::default(),
         session_id: Some(session_id.as_str().to_owned()),
         display_name: None,
         config: None,
         profile: None,
+        delete_after_close_ms: None,
     })
     .await?;
 
@@ -897,6 +947,30 @@ async fn run_llm_retry_exhaustion_live_client(
         first_run.status,
         api::RunStatus::Failed,
         "exhausted provider retries must fail the run with a terminal generation result"
+    );
+    // The failure event carries the engine's classification, not only text.
+    let events = api
+        .read_session_events(SessionEventsReadParams {
+            session_id: session_id.as_str().to_owned(),
+            after: None,
+            limit: Some(500),
+            wait_ms: None,
+        })
+        .await?
+        .result
+        .events;
+    assert!(
+        events.iter().any(|event| matches!(
+            &event.kind,
+            api::SessionEventKindView::RunFailed { run_id, kind, .. }
+                if run_id.as_str() == first_run.id.as_str()
+                    && *kind == api::RunFailureKindView::ModelFailure
+        )),
+        "runFailed names the model failure kind: {:?}",
+        events
+            .iter()
+            .filter(|event| matches!(event.kind, api::SessionEventKindView::RunFailed { .. }))
+            .collect::<Vec<_>>()
     );
 
     // The session workflow survived exhaustion, and the scripted transient
@@ -949,6 +1023,7 @@ async fn run_unbounded_hosted_run_live_client(
         .build();
 
     api.start_session(SessionStartParams {
+        metadata: Default::default(),
         session_id: Some(session_id.as_str().to_owned()),
         display_name: None,
         config: Some(SessionConfig {
@@ -966,6 +1041,7 @@ async fn run_unbounded_hosted_run_live_client(
             ..SessionConfig::default()
         }),
         profile: None,
+        delete_after_close_ms: None,
     })
     .await?;
     let initial_temporal_run_id = live_workflow_handle(&client, &session_id)?

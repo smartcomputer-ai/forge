@@ -387,6 +387,7 @@ mod tests {
         let workspace_store = Arc::new(TestWorkspaceStore::default());
         let snapshot = create_inline_snapshot(
             blobs.as_ref(),
+            None,
             CreateInlineSnapshotRequest::new(vec![skill_file(
                 "review/SKILL.md",
                 "review",
@@ -425,7 +426,7 @@ mod tests {
         ));
 
         let inputs = resolved.inputs();
-        let build = build_skill_catalog(blobs.as_ref(), &inputs)
+        let build = build_skill_catalog(blobs.as_ref(), None, &inputs)
             .await
             .expect("build catalog");
 
@@ -450,6 +451,7 @@ mod tests {
         let workspace_store = Arc::new(TestWorkspaceStore::default());
         let snapshot = create_inline_snapshot(
             blobs.as_ref(),
+            None,
             CreateInlineSnapshotRequest::new(vec![skill_file(
                 ".lightspeed/skills/review/SKILL.md",
                 "review",
@@ -502,7 +504,7 @@ mod tests {
         ));
 
         let inputs = resolved.inputs();
-        let build = build_skill_catalog(blobs.as_ref(), &inputs)
+        let build = build_skill_catalog(blobs.as_ref(), None, &inputs)
             .await
             .expect("build catalog");
 

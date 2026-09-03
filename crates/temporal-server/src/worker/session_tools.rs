@@ -355,6 +355,13 @@ impl SessionTools {
                     results: vec![result],
                 }));
             }
+            // Native MCP calls never reach this runtime; the activity
+            // wrapper dispatches them and owns approval gating.
+            ToolBatchOutcome::AwaitingApproval { .. } => {
+                return Err(io_error(
+                    "tool runtime reported an approval outcome for a batch without native MCP calls",
+                ));
+            }
         };
 
         let await_request = ToolInvocationBatchRequest {
@@ -387,6 +394,9 @@ impl SessionTools {
                     spec,
                 })
             }
+            ToolBatchOutcome::AwaitingApproval { .. } => Err(io_error(
+                "tool runtime reported an approval outcome for a batch without native MCP calls",
+            )),
         }
     }
 
@@ -741,13 +751,17 @@ impl SessionTools {
             .put_bytes(serde_json::to_vec(output).map_err(io_error)?)
             .await
             .map_err(map_blob_error)?;
+        let visible = visible.into().into_bytes();
+        let output_bytes = visible.len() as u64;
         let visible_ref = self
             .blobs
-            .put_bytes(visible.into().into_bytes())
+            .put_bytes(visible)
             .await
             .map_err(map_blob_error)?;
         Ok(ToolInvocationResult {
             duration_ms: None,
+            output_bytes: Some(output_bytes),
+            truncated: false,
             call_id: call.call_id.clone(),
             status: ToolCallStatus::Succeeded,
             output_ref: Some(output_ref),
@@ -767,9 +781,11 @@ impl SessionTools {
         jobs: Vec<ModelJobResult>,
     ) -> Result<ToolInvocationResult, CoreAgentIoError> {
         let output = ModelJobResultSet { jobs };
+        let output_json = serde_json::to_vec(&output).map_err(io_error)?;
+        let output_bytes = output_json.len() as u64;
         let output_ref = self
             .blobs
-            .put_bytes(serde_json::to_vec(&output).map_err(io_error)?)
+            .put_bytes(output_json)
             .await
             .map_err(map_blob_error)?;
         let edges = output
@@ -793,6 +809,8 @@ impl SessionTools {
         }
         Ok(ToolInvocationResult {
             duration_ms: None,
+            output_bytes: Some(output_bytes),
+            truncated: false,
             call_id: call.call_id.clone(),
             status: ToolCallStatus::Succeeded,
             output_ref: Some(output_ref.clone()),
@@ -1165,7 +1183,8 @@ impl SessionTools {
                 self.workspace_store.clone(),
                 links.clone(),
             )
-            .map_err(io_error)?;
+            .map_err(io_error)?
+            .with_blob_graph(self.blob_graph.clone());
             let cwd = linked_vfs_cwd(fs.links())?;
             Some(FsToolContext::new(Arc::new(fs), self.blobs.clone()).with_cwd(cwd))
         };
@@ -1551,9 +1570,6 @@ impl CoreAgentTools for SessionTools {
                 )
                 .await
             }
-            ToolCallExecution::NeedsApproval { .. } => Err(CoreAgentIoError::Failed {
-                message: "native MCP approval cannot originate from SessionTools".to_owned(),
-            }),
         }
     }
 }
@@ -1569,9 +1585,6 @@ pub enum ToolCallExecution {
         call_id: engine::ToolCallId,
         environment_id: String,
         status: environments::EnvironmentStatus,
-    },
-    NeedsApproval {
-        subject: engine::ApprovalSubject,
     },
 }
 
@@ -1872,6 +1885,8 @@ async fn failed_result_bytes(
     let error_ref = blobs.put_bytes(bytes).await.map_err(map_blob_error)?;
     Ok(ToolInvocationResult {
         duration_ms: None,
+        output_bytes: None,
+        truncated: false,
         call_id: call_id.clone(),
         status: ToolCallStatus::Failed,
         output_ref: None,
@@ -1946,8 +1961,8 @@ mod tests {
     use tools::environment::{
         EnvironmentToolContext,
         process::{
-            ProcessError, ProcessExecResult, ProcessExecutor, ProcessOutput, ProcessRequest,
-            ProcessStatus, StreamOutput, WriteProcessStdinRequest,
+            ContinueProcessRequest, ProcessError, ProcessExecResult, ProcessExecutor,
+            ProcessOutput, ProcessRequest, ProcessStatus, StreamOutput,
         },
     };
     use vfs::{
@@ -1989,6 +2004,7 @@ mod tests {
                 arguments_ref: BlobRef::from_bytes(arguments),
                 workflow_tool: None,
                 promise_control: None,
+                remote_mcp: None,
             },
             sibling_calls: siblings
                 .iter()
@@ -1999,7 +2015,6 @@ mod tests {
                     arguments_ref: BlobRef::from_bytes(arguments),
                 })
                 .collect(),
-            remote_mcp: None,
             execution: engine::ToolExecutionSpec::default(),
         }
     }
@@ -2160,9 +2175,11 @@ mod tests {
             .expect("binding");
         sessions
             .create_session(CreateSession {
+                metadata: Default::default(),
                 session_id: session_id.clone(),
                 display_name: None,
                 origin: None,
+                delete_after_close_ms: None,
                 created_at_ms: 1,
             })
             .await
@@ -2228,6 +2245,7 @@ mod tests {
                 prior_emission_count,
             )),
             promise_control: None,
+            remote_mcp: None,
         }];
         calls.push(engine::ToolInvocationRequest {
             call_id: ToolCallId::new("call-name-mismatch"),
@@ -2238,6 +2256,7 @@ mod tests {
                 prior_emission_count,
             )),
             promise_control: None,
+            remote_mcp: None,
         });
         calls.push(engine::ToolInvocationRequest {
             call_id: ToolCallId::new("call-fingerprint-mismatch"),
@@ -2248,6 +2267,7 @@ mod tests {
                 prior_emission_count,
             )),
             promise_control: None,
+            remote_mcp: None,
         });
         calls.push(engine::ToolInvocationRequest {
             call_id: ToolCallId::new("call-missing-runtime"),
@@ -2255,6 +2275,7 @@ mod tests {
             arguments_ref: valid_arguments.clone(),
             workflow_tool: None,
             promise_control: None,
+            remote_mcp: None,
         });
         calls.extend(
             (0..engine::MAX_WORKFLOW_TOOL_EMISSIONS_PER_RUN - prior_emission_count).map(|index| {
@@ -2267,6 +2288,7 @@ mod tests {
                         prior_emission_count,
                     )),
                     promise_control: None,
+                    remote_mcp: None,
                 }
             }),
         );
@@ -2279,6 +2301,7 @@ mod tests {
                 prior_emission_count,
             )),
             promise_control: None,
+            remote_mcp: None,
         });
         let request = ToolInvocationBatchRequest {
             session_id,
@@ -2362,9 +2385,11 @@ mod tests {
 
         sessions
             .create_session(CreateSession {
+                metadata: Default::default(),
                 session_id: SessionId::new("unrelated-session-created-after-scheduling"),
                 display_name: None,
                 origin: None,
+                delete_after_close_ms: None,
                 created_at_ms: 10,
             })
             .await
@@ -2441,6 +2466,7 @@ mod tests {
             arguments_ref: arguments_ref.clone(),
             workflow_tool: Some(engine::WorkflowToolCallRuntime::v1(binding.clone(), 0)),
             promise_control: None,
+            remote_mcp: None,
         };
         let request = ToolInvocationBatchRequest {
             session_id: SessionId::new("session-job-start"),
@@ -2610,6 +2636,7 @@ mod tests {
                 arguments_ref,
                 workflow_tool: Some(engine::WorkflowToolCallRuntime::v1(binding.clone(), 0)),
                 promise_control: None,
+                remote_mcp: None,
             }],
         }
     }
@@ -2784,19 +2811,22 @@ mod tests {
             Ok(ProcessOutput {
                 status: ProcessStatus::Succeeded,
                 handle: None,
+                pid: Some(1),
                 exit_code: Some(0),
+                failure: None,
                 stdout: StreamOutput {
                     bytes: b"process ok".to_vec(),
-                    truncated: false,
+                    omitted_at: None,
                 },
                 stderr: StreamOutput::default(),
-                orphaned_descendants: false,
+                omitted_bytes: 0,
+                leftover_processes: Vec::new(),
             })
         }
 
-        async fn write_stdin(
+        async fn continue_process(
             &self,
-            _request: WriteProcessStdinRequest,
+            _request: ContinueProcessRequest,
         ) -> ProcessExecResult<ProcessOutput> {
             Err(ProcessError::Unsupported {
                 message: "not needed".to_owned(),
@@ -2908,6 +2938,7 @@ mod tests {
         let session_id = SessionId::new("session_1");
         let snapshot = create_inline_snapshot(
             blobs.as_ref(),
+            None,
             CreateInlineSnapshotRequest::new(vec![
                 InlineFile::new("README.md", b"hello\n".to_vec()).expect("inline file"),
             ]),
@@ -3084,10 +3115,10 @@ mod tests {
                 arguments_ref,
                 workflow_tool: None,
                 promise_control: None,
+                remote_mcp: None,
             },
             sibling_calls: Vec::new(),
             execution: engine::ToolExecutionSpec::default(),
-            remote_mcp: None,
         };
 
         let result = tools.invoke_call(request).await.expect("invoke call");
@@ -3153,10 +3184,10 @@ mod tests {
                 arguments_ref,
                 workflow_tool: None,
                 promise_control: None,
+                remote_mcp: None,
             },
             sibling_calls: Vec::new(),
             execution: engine::ToolExecutionSpec::default(),
-            remote_mcp: None,
         };
 
         // Hosted per-call path: the call does not run and reports not-ready.
@@ -3270,10 +3301,10 @@ mod tests {
                 arguments_ref,
                 workflow_tool: None,
                 promise_control: None,
+                remote_mcp: None,
             },
             sibling_calls: Vec::new(),
             execution: engine::ToolExecutionSpec::default(),
-            remote_mcp: None,
         };
 
         let result = tools.invoke_call(request).await.expect("invoke call");
@@ -3323,6 +3354,7 @@ mod tests {
                 arguments_ref,
                 workflow_tool: None,
                 promise_control: None,
+                remote_mcp: None,
             }],
         };
 
@@ -3402,6 +3434,7 @@ mod tests {
                     arguments_ref,
                     workflow_tool: None,
                     promise_control: None,
+                    remote_mcp: None,
                 }],
             })
             .await
@@ -3442,6 +3475,7 @@ mod tests {
                     arguments_ref,
                     workflow_tool: None,
                     promise_control: None,
+                    remote_mcp: None,
                 }],
             })
             .await
@@ -3489,13 +3523,17 @@ mod tests {
                         arguments_ref: read_args,
                         workflow_tool: None,
                         promise_control: None,
+                        remote_mcp: None,
                     },
                     engine::ToolInvocationRequest {
                         call_id: ToolCallId::new("call_process"),
-                        tool_name: ToolName::new("exec_command"),
+                        // The canonical surface takes argv; `exec_command` is
+                        // the Codex-like shape and takes a shell string.
+                        tool_name: ToolName::new("run_process"),
                         arguments_ref: process_args,
                         workflow_tool: None,
                         promise_control: None,
+                        remote_mcp: None,
                     },
                 ],
             })
@@ -3541,9 +3579,11 @@ mod tests {
         let parent = SessionId::new("parent");
         sessions
             .create_session(CreateSession {
+                metadata: Default::default(),
                 session_id: parent.clone(),
                 display_name: None,
                 origin: None,
+                delete_after_close_ms: None,
                 created_at_ms: 1,
             })
             .await
@@ -3614,6 +3654,7 @@ mod tests {
                         arguments_ref: wait_args,
                         workflow_tool: None,
                         promise_control: None,
+                        remote_mcp: None,
                     },
                     engine::ToolInvocationRequest {
                         call_id: ToolCallId::new("call_read"),
@@ -3621,6 +3662,7 @@ mod tests {
                         arguments_ref: read_args,
                         workflow_tool: None,
                         promise_control: None,
+                        remote_mcp: None,
                     },
                 ],
             })
@@ -3652,9 +3694,11 @@ mod tests {
         let parent = SessionId::new("parent_no_fleet_await");
         sessions
             .create_session(CreateSession {
+                metadata: Default::default(),
                 session_id: parent.clone(),
                 display_name: None,
                 origin: None,
+                delete_after_close_ms: None,
                 created_at_ms: 1,
             })
             .await
@@ -3709,6 +3753,7 @@ mod tests {
                     arguments_ref: wait_args,
                     workflow_tool: None,
                     promise_control: None,
+                    remote_mcp: None,
                 }],
             })
             .await
@@ -3765,6 +3810,7 @@ mod tests {
                             },
                         },
                     ])),
+                    remote_mcp: None,
                 }],
             })
             .await
@@ -3819,6 +3865,7 @@ mod tests {
                             },
                         },
                     ])),
+                    remote_mcp: None,
                 }],
             })
             .await
@@ -3856,6 +3903,7 @@ mod tests {
             arguments_ref: sleep_args.clone(),
             workflow_tool: None,
             promise_control: None,
+            remote_mcp: None,
         };
 
         let result = tools
@@ -3959,6 +4007,7 @@ mod tests {
                     arguments_ref,
                     workflow_tool: None,
                     promise_control: None,
+                    remote_mcp: None,
                 }],
             })
             .await
@@ -4001,6 +4050,7 @@ mod tests {
                     arguments_ref,
                     workflow_tool: None,
                     promise_control: None,
+                    remote_mcp: None,
                 }],
             })
             .await

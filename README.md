@@ -168,7 +168,8 @@ Two more decisions make this practical inside a workflow engine:
 1. **Minimal provider abstraction.** The core extracts only the facts needed to
    make decisions; provider-native data stays opaque and blob-backed.
 2. **Offloading to CAS.** Large payloads live in content-addressed storage,
-   keeping workflow histories small.
+   keeping workflow histories small. Blobs nothing reaches any more are
+   collected after a grace period, so deleting sessions frees their storage.
 
 The full design walk-through is in [docs/design.md](docs/design.md).
 

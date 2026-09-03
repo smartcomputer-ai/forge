@@ -11,8 +11,8 @@ pub(crate) struct EnvArgs {
 
 #[derive(Subcommand, Debug, Clone)]
 enum EnvCommand {
-    /// List universe environments.
-    List(ResourceArgs),
+    /// List universe environments, optionally filtered by metadata.
+    List(EnvListArgs),
     /// Read one universe environment.
     Read(EnvironmentResourceArgs),
     /// Activate a universe environment for a session.
@@ -156,6 +156,14 @@ struct ResourceArgs {
     api_url: String,
     #[arg(long)]
     json: bool,
+}
+
+#[derive(Args, Debug, Clone)]
+struct EnvListArgs {
+    #[command(flatten)]
+    common: ResourceArgs,
+    #[command(flatten)]
+    metadata: crate::session_cli::MetadataPairs,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -405,13 +413,16 @@ async fn idle_policy(args: IdlePolicyArgs) -> Result<()> {
     })
 }
 
-async fn list(args: ResourceArgs) -> Result<()> {
-    let response = HttpAgentApi::new(args.api_url)
-        .list_environments(api::EnvironmentListParams::default())
+async fn list(args: EnvListArgs) -> Result<()> {
+    let response = HttpAgentApi::new(args.common.api_url)
+        .list_environments(api::EnvironmentListParams {
+            metadata: args.metadata.map(),
+            ..Default::default()
+        })
         .await
         .map_err(crate::api_client::api_error)?
         .result;
-    print_json_or(args.json, &response, || {
+    print_json_or(args.common.json, &response, || {
         for environment in &response.environments {
             println!(
                 "{} {} {:?}",
@@ -564,7 +575,11 @@ fn print_credential(credential: &api::EnvironmentCredentialView) {
     );
 }
 
-fn print_json_or<T: serde::Serialize>(json: bool, value: &T, text: impl FnOnce()) -> Result<()> {
+pub(crate) fn print_json_or<T: serde::Serialize>(
+    json: bool,
+    value: &T,
+    text: impl FnOnce(),
+) -> Result<()> {
     if json {
         println!("{}", serde_json::to_string_pretty(value)?);
     } else {

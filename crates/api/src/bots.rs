@@ -185,9 +185,9 @@ pub struct BotDocument {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub breaker: Option<BotBreaker>,
     /// Close routed (`perKey` / `perEvent`) sessions idle longer than this;
-    /// absent keeps them open. A trigger's `sessionTtlMs` overrides it.
+    /// absent keeps them open. A trigger's `sessionCloseAfterMs` overrides it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub routed_session_ttl_ms: Option<u64>,
+    pub routed_session_close_after_ms: Option<u64>,
     /// Capability grant: the mutating self-configuration tools
     /// (`bot_trigger_put`, `bot_trigger_delete`, `bot_brief_put`).
     #[serde(default)]
@@ -608,11 +608,11 @@ pub struct BotTriggerDocument {
     pub coalesce: Option<BotCoalescePolicy>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deliver: Option<BotDeliverPolicy>,
-    /// Retention of the sessions this trigger routes to: absent inherits the
-    /// bot's `routedSessionTtlMs`, `0` keeps them open indefinitely (the
+    /// Idle-close policy for sessions this trigger routes to: absent inherits the
+    /// bot's `routedSessionCloseAfterMs`, `0` keeps them open indefinitely (the
     /// chat default).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub session_ttl_ms: Option<u64>,
+    pub session_close_after_ms: Option<u64>,
     #[serde(default = "default_true")]
     pub enabled: bool,
 }

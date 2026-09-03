@@ -127,6 +127,42 @@
       "summary": "Rename a session"
     },
     {
+      "description": "Replaces the complete descriptive key/value map (bounded like session/start); an omitted or empty map clears it. Record-only: the event log and updatedAtMs are untouched.",
+      "method": "session/metadata/put",
+      "params": {
+        "schema": {
+          "$ref": "#/definitions/SessionMetadataPutParams"
+        },
+        "type": "SessionMetadataPutParams"
+      },
+      "result": {
+        "schema": {
+          "$ref": "#/definitions/AgentApiOutcomeOfSessionMetadataPutResponse"
+        },
+        "type": "AgentApiOutcome<SessionMetadataPutResponse>"
+      },
+      "scope": "universe",
+      "summary": "Replace session metadata"
+    },
+    {
+      "description": "Sets the positive close-relative automatic-deletion duration on a retention root, or clears it with null. Forks and delegated children inherit the root policy and cannot override it.",
+      "method": "session/retention/put",
+      "params": {
+        "schema": {
+          "$ref": "#/definitions/SessionRetentionPutParams"
+        },
+        "type": "SessionRetentionPutParams"
+      },
+      "result": {
+        "schema": {
+          "$ref": "#/definitions/AgentApiOutcomeOfSessionRetentionPutResponse"
+        },
+        "type": "AgentApiOutcome<SessionRetentionPutResponse>"
+      },
+      "scope": "universe",
+      "summary": "Replace session retention"
+    },
+    {
       "description": "Closes an idle session and detaches its environment bindings. Force mode cancels active work, drops queued runs, and can recover a session whose workflow is unavailable.",
       "method": "session/close",
       "params": {
@@ -145,7 +181,7 @@
       "summary": "Close a session"
     },
     {
-      "description": "Permanently removes session storage after the session has been closed; close active/open sessions first.",
+      "description": "Permanently removes a closed retention-tree leaf, or its closed history-fork and delegated-child subtree when cascade is true. Config-only clones are never included.",
       "method": "session/delete",
       "params": {
         "schema": {
@@ -160,7 +196,7 @@
         "type": "AgentApiOutcome<SessionDeleteResponse>"
       },
       "scope": "universe",
-      "summary": "Delete a closed session"
+      "summary": "Delete closed sessions"
     },
     {
       "description": "Reads events after a cursor and optionally long-polls when caught up. Continue from nextCursor/headCursor and inspect complete/gap rather than assuming an uninterrupted page.",
@@ -865,7 +901,7 @@
       "summary": "Revoke an environment registration key"
     },
     {
-      "description": "Queries supported providers directly on every call and returns best-effort selectable routes. One provider failure does not discard successful results from others.",
+      "description": "Queries supported providers directly, with a brief process-local burst cache, and returns best-effort selectable routes. One provider failure does not discard successful results from others.",
       "method": "models/list",
       "params": {
         "schema": {

@@ -1,6 +1,64 @@
 # Lightspeed Roadmap
 
 ## Work
+- [ ] [P157](p157-native-mcp-in-mixed-tool-batches.md) — native MCP in mixed
+  tool batches (proposed 2026-09-03): a batch containing any managed workflow
+  tool takes the batch-unit path, where injected MCP calls currently fall
+  through to the inline runtime and fail as unknown tools. Carry native MCP
+  routing into unit execution and reuse the per-call executor semantics.
+- [x] [P156](p156-cas-blob-garbage-collection.md) — CAS blob garbage
+  collection (implemented 2026-09-03): roots derived from a generated
+  `blob_refs` column on session events (the roots table is dropped),
+  `touched_at_ms` on every put with a grace period instead of put
+  coordination, edges for the five nested formats, a bounded worker-role
+  sweeper with a dry-run CLI pass, raw provider dumps off by default behind
+  `LIGHTSPEED_LLM_DEBUG_DUMPS`, and non-ref-shaped fingerprints. Also fixed
+  the clone lineage foreign key that made deleting a session with a
+  surviving clone fail.
+- [x] [P155](p155-models-list-cache.md) — `models/list` discovery cache
+  (implemented 2026-09-03): a process-local, per-universe and per-provider
+  single-flight cache with a 10-second success TTL, 2-second failure TTL, and
+  generation-safe invalidation when credentials or endpoint configuration are
+  replaced.
+- [x] [P154](p154-session-retention.md) — session-tree retention: an opt-in
+  `deleteAfterCloseMs` on the retention root, inherited ownership for history
+  forks and delegated children but not config-only clones, effective retention
+  views, explicit manual cascade, and an always-cascading worker-role reaper.
+  Unset means keep until manual deletion; descendants never have competing
+  policies. Also settles the clock vocabulary and fixes and renames the bot
+  routed-session idle timer.
+- [x] [P153](p153-session-metadata.md) — session metadata (implemented
+  2026-09-03): the bounded
+  string map registered environments already carry, set at `session/start`
+  and replaced with `session/metadata/put`, a containment filter on
+  `session/list` and `environments/list`, chips and a filter bar with a
+  selection model in the Platform sessions page, and the Harbor adapter and
+  bots stamping the same keys on sessions and environments. No patch, no
+  bulk endpoints, no usage roll-up. Motivated by evaluation jobs that create
+  hundreds of sessions per universe.
+- [ ] [P152](p152-envd-release-and-distribution.md) — envd release and
+  distribution: install the rustls provider at startup (the workspace
+  release binary panics on its first TLS connection), publish static musl
+  builds so any sandbox image can run it, a discovery document beside each
+  bundle and at `/.well-known/lightspeed-envd` on the gateway, and
+  `initialize` reporting the build's git sha and matching envd. Manual and
+  opt-in automatic self-upgrade are implemented; deployment-side serving and
+  its protocol-change notice remain open in the deployment repository.
+- [ ] [P151](p151-exec-leftover-processes.md) — leftover processes survive a
+  normal `exec_command` exit (timeouts, termination, and durable jobs keep
+  sweeping), leftover output is drained instead of abandoned, the tool
+  reports what is still running, and the handle becomes usable: a
+  two-operation substrate (`run_process`, `continue_process` with optional
+  input or signal) with a daemon-owned read cursor, a window wait, and a
+  capped retained buffer, presented on three surfaces: Canonical as
+  Lightspeed's neutral shape, Codex-like (`exec_command`/`write_stdin`, the
+  OpenAI default, copied from Codex `728cb12fe5`), and Claude-Code-like
+  (`Bash`/`BashOutput`/`KillShell`, the Anthropic default, which today has
+  no handle path). Greenfield, no compatibility shims. The idle report
+  counts leftover groups without treating them as busy, and a server-only
+  slice exposes the engine's failure kind on `runFailed` plus output size
+  and truncation on `toolCallCompleted`. Motivated by seven Terminal-Bench
+  tasks in the first P149 run.
 - [ ] [P150](p150-scalable-mcp-discovery-and-tool-search.md) — scalable MCP
   discovery and tool search: exempt management discovery from the gateway
   response budget instead of truncating descriptions, expand truncated

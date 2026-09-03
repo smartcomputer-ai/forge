@@ -12,15 +12,16 @@ use api::{
     ContextEntrySourceView, ContextEntryView, ContextMessageRoleView, ContextView, EventCursor,
     EventJoinsView, InputItem, LlmUsageView, ManagedSessionWorkflowToolsInput, MediaKind,
     ModelConfig, PendingApprovalView, PrincipalKind, PrincipalRefView, ProviderContextDisplayView,
-    ProviderNativeToolExecutionView, RunAcceptedSourceView, RunStatus as ApiRunStatus,
-    RunSummarySourceView, RunSummaryView, RunView, RunViewSource, SessionEventKindView,
-    SessionEventView, SessionManagementView, SessionStatus as ApiSessionStatus, SessionView,
-    TokenEstimateQualityView, TokenEstimateView, ToolBatchView, ToolCallDisplayGroup,
-    ToolCallDisplayView, ToolCallEventView, ToolCallView, ToolEffectView, ToolItemStatus,
-    ToolKindView, ToolParallelismView, ToolView, WorkflowEndpointInput, WorkflowStartRefInput,
-    WorkflowToolCompletionInput, WorkflowToolCompletionKeySourceInput,
-    WorkflowToolDeclarationInput, WorkflowToolDefinitionInput, WorkflowToolKindInput,
-    WorkflowToolSpecInput, WorkflowToolTargetInput,
+    ProviderNativeToolExecutionView, RunAcceptedSourceView, RunFailureKindView,
+    RunStatus as ApiRunStatus, RunSummarySourceView, RunSummaryView, RunView, RunViewSource,
+    SessionEventKindView, SessionEventView, SessionManagementView, SessionRetentionView,
+    SessionStatus as ApiSessionStatus, SessionView, TokenEstimateQualityView, TokenEstimateView,
+    ToolBatchView, ToolCallDisplayGroup, ToolCallDisplayView, ToolCallEventView, ToolCallView,
+    ToolEffectView, ToolItemStatus, ToolKindView, ToolParallelismView, ToolView,
+    WorkflowEndpointInput, WorkflowStartRefInput, WorkflowToolCompletionInput,
+    WorkflowToolCompletionKeySourceInput, WorkflowToolDeclarationInput,
+    WorkflowToolDefinitionInput, WorkflowToolKindInput, WorkflowToolSpecInput,
+    WorkflowToolTargetInput,
 };
 use engine::{
     CompactionPolicy, ContextCompactionStatus, ContextCompactionTrigger, ContextEntry,
@@ -28,9 +29,9 @@ use engine::{
     ContextMessageRole, ContextRemovalReason, ContextRewriteReason, CoreAgentCodec, CoreAgentEntry,
     CoreAgentEvent, CoreAgentJoins, CoreAgentLifecycleEvent, CoreAgentState, CoreAgentStatus,
     EventSeq, LlmGenerationStatus, ModelSelection, OPENAI_RESPONSES_MCP_CALL_PROVIDER_KIND,
-    ObservedToolCall, ProviderApiKind, RunEvent, RunFailure, RunId, RunSource, RunStatus,
-    SessionConfig, SessionId, SteeringId, ToolBatchId, ToolCallStatus, ToolChoice, ToolConfigEvent,
-    ToolEvent, ToolKind, ToolParallelism, ToolSpec, TurnEvent, TurnId,
+    ObservedToolCall, ProviderApiKind, RunEvent, RunFailure, RunFailureKind, RunId, RunSource,
+    RunStatus, SessionConfig, SessionId, SteeringId, ToolBatchId, ToolCallStatus, ToolChoice,
+    ToolConfigEvent, ToolEvent, ToolKind, ToolParallelism, ToolSpec, TurnEvent, TurnId,
     storage::{
         BlobStore, BlobStoreError, ReadSessionEvents, SessionRecord, SessionStore,
         SessionStoreError, StoredSessionEntry,
@@ -47,6 +48,7 @@ pub struct ProjectSession<'a> {
     pub session_id: &'a SessionId,
     pub state: &'a CoreAgentState,
     pub record: &'a SessionRecord,
+    pub retention: &'a SessionRetentionView,
     pub run_limit: usize,
     pub run_cursor: Option<RunId>,
 }
@@ -105,7 +107,10 @@ impl<'a> CoreAgentProjector<'a> {
         let session = SessionView {
             id: params.session_id.as_str().to_owned(),
             display_name: params.record.display_name.clone(),
+            metadata: params.record.metadata.clone(),
             status: session_status(params.state),
+            closed_at_ms: params.record.closed_at_ms,
+            retention: params.retention.clone(),
             managed: params.record.managed,
             config_revision: params.state.lifecycle.config_revision,
             config,
@@ -672,6 +677,7 @@ impl<'a> CoreAgentProjector<'a> {
                 }
                 RunEvent::Failed { run_id, failure } => Ok(SessionEventKindView::RunFailed {
                     run_id: api_run_id(*run_id),
+                    kind: run_failure_kind_to_api(failure.kind.clone()),
                     message: self.run_failure_message(failure).await,
                 }),
                 RunEvent::Cancelled { run_id }
@@ -950,6 +956,8 @@ impl<'a> CoreAgentProjector<'a> {
                     call_id: result.call_id.as_str().to_owned(),
                     status: core_tool_status_to_api_status(result.status),
                     effects: tool_effects_to_api(&result.effects),
+                    output_bytes: result.output_bytes,
+                    truncated: result.truncated,
                 }),
                 ToolEvent::BatchDeferred {
                     run_id,
@@ -1184,6 +1192,17 @@ impl<'a> CoreAgentProjector<'a> {
             return message;
         }
         format!("{:?}", failure.kind)
+    }
+}
+
+fn run_failure_kind_to_api(kind: RunFailureKind) -> RunFailureKindView {
+    match kind {
+        RunFailureKind::ModelFailure => RunFailureKindView::ModelFailure,
+        RunFailureKind::ToolFailure => RunFailureKindView::ToolFailure,
+        RunFailureKind::ContextFailure => RunFailureKindView::ContextFailure,
+        RunFailureKind::LimitExceeded => RunFailureKindView::LimitExceeded,
+        RunFailureKind::Cancelled => RunFailureKindView::Cancelled,
+        RunFailureKind::Internal => RunFailureKindView::Internal,
     }
 }
 
@@ -2114,6 +2133,9 @@ pub fn map_session_store_error(error: SessionStoreError) -> AgentApiError {
         SessionStoreError::InvalidLimit { limit } => {
             AgentApiError::invalid_request(format!("invalid page limit: {limit}"))
         }
+        SessionStoreError::InvalidRetention { .. } => {
+            AgentApiError::invalid_request(error.to_string())
+        }
         SessionStoreError::InvalidForkPoint { .. } => {
             AgentApiError::invalid_request(error.to_string())
         }
@@ -2122,12 +2144,18 @@ pub fn map_session_store_error(error: SessionStoreError) -> AgentApiError {
         SessionStoreError::ManagedSessionCannotBranch { .. } => {
             AgentApiError::rejected(error.to_string())
         }
-        SessionStoreError::SessionHasForkChildren { .. } => {
+        SessionStoreError::SessionHasChildren { .. }
+        | SessionStoreError::SessionRetentionOwnedBy { .. }
+        | SessionStoreError::SessionRetentionNotDue { .. } => {
             AgentApiError::conflict(error.to_string())
+        }
+        SessionStoreError::SessionTreeNotClosed { .. } => {
+            AgentApiError::rejected(error.to_string())
         }
         SessionStoreError::ExpectedHeadMismatch { .. } => {
             AgentApiError::conflict(error.to_string())
         }
+        SessionStoreError::MissingBlobs { .. } => AgentApiError::invalid_request(error.to_string()),
         SessionStoreError::Store { message } => AgentApiError::internal(message),
     }
 }
@@ -2377,21 +2405,32 @@ fn tool_call_display(tool_name: &str, arguments: &str) -> Option<ToolCallDisplay
                 .and_then(|patch| patch_target(&patch)),
             detail: None,
         },
-        "exec_command" | "bash" | "run_process" => ToolCallDisplayView {
+        "exec_command" | "bash" | "Bash" | "run_process" => ToolCallDisplayView {
             group: ToolCallDisplayGroup::Execute,
             verb: "Run".to_owned(),
             target: json.as_ref().and_then(command_display),
             detail: json
                 .as_ref()
-                .and_then(|json| first_string(json, &["cwd"]))
+                .and_then(|json| first_string(json, &["cwd", "workdir"]))
                 .map(|cwd| format!("in {cwd}")),
         },
-        "write_stdin" | "write_process_stdin" => ToolCallDisplayView {
+        "write_stdin" | "continue_process" | "BashOutput" => ToolCallDisplayView {
             group: ToolCallDisplayGroup::Execute,
-            verb: "Send input".to_owned(),
+            verb: "Continue process".to_owned(),
+            target: json.as_ref().and_then(|json| {
+                first_string(
+                    json,
+                    &["session_id", "handle", "bash_id", "process_id", "id"],
+                )
+            }),
+            detail: None,
+        },
+        "KillShell" => ToolCallDisplayView {
+            group: ToolCallDisplayGroup::Execute,
+            verb: "Stop process".to_owned(),
             target: json
                 .as_ref()
-                .and_then(|json| first_string(json, &["process_id", "handle", "id"])),
+                .and_then(|json| first_string(json, &["shell_id", "handle", "id"])),
             detail: None,
         },
         "sleep" => ToolCallDisplayView {
@@ -2716,10 +2755,15 @@ mod tests {
         let session_id = SessionId::new("managed-session");
         let state = CoreAgentState::new();
         let record = SessionRecord {
+            metadata: Default::default(),
             session_id: session_id.clone(),
             display_name: None,
             lifecycle_status: engine::storage::SessionLifecycleStatus::New,
             closed_at_seq: None,
+            closed_at_ms: None,
+            retention_root_session_id: session_id.clone(),
+            delete_after_close_ms: None,
+            delete_at_ms: None,
             managed: true,
             head: None,
             source_session_id: None,
@@ -2728,12 +2772,18 @@ mod tests {
             created_at_ms: 1,
             updated_at_ms: 2,
         };
+        let retention = SessionRetentionView {
+            root_session_id: session_id.as_str().to_owned(),
+            delete_after_close_ms: None,
+            delete_at_ms: None,
+        };
 
         let session = projector
             .project_session(ProjectSession {
                 session_id: &session_id,
                 state: &state,
                 record: &record,
+                retention: &retention,
                 run_limit: 20,
                 run_cursor: None,
             })
@@ -2974,6 +3024,8 @@ mod tests {
                 batch_id: ToolBatchId::new(4),
                 result: engine::ToolCallResult {
                     duration_ms: None,
+                    output_bytes: None,
+                    truncated: false,
                     call_id: engine::ToolCallId::new("call-5"),
                     status: engine::ToolCallStatus::Succeeded,
                     output_ref: None,

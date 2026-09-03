@@ -288,6 +288,7 @@ impl NativeMcpRuntime {
         arguments: serde_json::Value,
     ) -> Result<NativeMcpExecutionOutcome, String> {
         let runtime = request
+            .call
             .remote_mcp
             .as_ref()
             .ok_or_else(|| "native MCP runtime facts are missing".to_owned())?;
@@ -1161,6 +1162,31 @@ mod tests {
         assert!(!value.to_string().contains("aGVsbG8="));
         attach_mcp_asset_refs(&mut value, &[engine::BlobRef::from_bytes(b"hello")]);
         assert!(value.to_string().contains("sha256:"));
+    }
+
+    /// The output-to-asset edges the tool activity records are exactly the
+    /// refs the attached output embeds.
+    #[test]
+    fn attached_asset_refs_are_the_only_refs_the_output_embeds() {
+        let mut value = serde_json::json!({
+            "content": [
+                {"type": "image", "mimeType": "image/png", "data": "aGVsbG8="},
+                {"type": "text", "text": "see sha256:not-a-ref"},
+                {"type": "resource", "resource": {"mimeType": "application/pdf", "blob": "d29ybGQ="}}
+            ]
+        });
+        let mut assets = Vec::new();
+        extract_mcp_assets(&mut value, &mut assets).expect("extract");
+        let refs = assets
+            .iter()
+            .map(|asset| engine::BlobRef::from_bytes(&asset.bytes))
+            .collect::<Vec<_>>();
+        assert_eq!(refs.len(), 2);
+        attach_mcp_asset_refs(&mut value, &refs);
+        assert_eq!(
+            engine::storage::collect_blob_refs(&value),
+            refs.iter().cloned().collect()
+        );
     }
 
     #[test]

@@ -121,10 +121,14 @@ impl InlineToolRuntime {
     }
 
     fn resolve_call_context(&self, binding: &ToolBinding) -> ToolResult<BuiltinToolContext<'_>> {
-        let tool = BuiltinTool::from_binding(&binding.logical_id, binding.adapter_id.as_deref())
-            .ok_or_else(|| ToolError::UnsupportedCapability {
-                message: format!("unsupported tool binding: {}", binding.logical_id),
-            })?;
+        let tool = BuiltinTool::from_binding(
+            &binding.logical_id,
+            binding.adapter_id.as_deref(),
+            binding.tool_name.as_str(),
+        )
+        .ok_or_else(|| ToolError::UnsupportedCapability {
+            message: format!("unsupported tool binding: {}", binding.logical_id),
+        })?;
         match tool.domain() {
             BuiltinToolDomain::Vfs => {
                 self.vfs
@@ -184,21 +188,17 @@ impl InlineToolRuntime {
         let output_bytes = serde_json::to_vec(&output.output_json)
             .map_err(|error| io_error(format!("failed to encode tool output: {error}")))?;
         let output_ref = self.put_blob(ctx, output_bytes).await?;
-        let model_visible_ref = self
-            .put_blob(
-                ctx,
-                truncate_bytes(
-                    output.model_visible_text.into_bytes(),
-                    ctx.limits().max_model_visible_output_bytes,
-                ),
-            )
-            .await?;
+        let visible = output.model_visible_text.into_bytes();
+        let projection = projected(visible, ctx.limits().max_model_visible_output_bytes);
+        let model_visible_ref = self.put_blob(ctx, projection.bytes).await?;
 
         let mut effects = output.effects;
         effects.extend(ctx.drain_tool_effects());
 
         Ok(ToolInvocationResult {
             duration_ms: None,
+            output_bytes: Some(projection.output_bytes),
+            truncated: projection.truncated,
             call_id: call.call_id.clone(),
             status: ToolCallStatus::Succeeded,
             output_ref: Some(output_ref),
@@ -218,19 +218,16 @@ impl InlineToolRuntime {
         call: &ToolInvocationRequest,
         error: ToolError,
     ) -> Result<ToolInvocationResult, CoreAgentIoError> {
-        let error_text = format!("{error}");
-        let error_ref = self
-            .put_blob(
-                ctx,
-                truncate_bytes(
-                    error_text.into_bytes(),
-                    ctx.limits().max_model_visible_output_bytes,
-                ),
-            )
-            .await?;
+        let projection = projected(
+            format!("{error}").into_bytes(),
+            ctx.limits().max_model_visible_output_bytes,
+        );
+        let error_ref = self.put_blob(ctx, projection.bytes).await?;
 
         Ok(ToolInvocationResult {
             duration_ms: None,
+            output_bytes: Some(projection.output_bytes),
+            truncated: projection.truncated,
             call_id: call.call_id.clone(),
             status: ToolCallStatus::Failed,
             output_ref: None,
@@ -252,15 +249,16 @@ impl InlineToolRuntime {
         let output_bytes = serde_json::to_vec(&output.output_json)
             .map_err(|error| io_error(format!("failed to encode tool output: {error}")))?;
         let output_ref = self.put_blob_bytes(output_bytes).await?;
-        let model_visible_ref = self
-            .put_blob_bytes(truncate_bytes(
-                output.model_visible_text.into_bytes(),
-                self.limits.max_model_visible_output_bytes,
-            ))
-            .await?;
+        let projection = projected(
+            output.model_visible_text.into_bytes(),
+            self.limits.max_model_visible_output_bytes,
+        );
+        let model_visible_ref = self.put_blob_bytes(projection.bytes).await?;
 
         Ok(ToolInvocationResult {
             duration_ms: None,
+            output_bytes: Some(projection.output_bytes),
+            truncated: projection.truncated,
             call_id: call.call_id.clone(),
             status: ToolCallStatus::Succeeded,
             output_ref: Some(output_ref),
@@ -279,15 +277,16 @@ impl InlineToolRuntime {
         call: &ToolInvocationRequest,
         error: ToolError,
     ) -> Result<ToolInvocationResult, CoreAgentIoError> {
-        let error_ref = self
-            .put_blob_bytes(truncate_bytes(
-                error.to_string().into_bytes(),
-                self.limits.max_model_visible_output_bytes,
-            ))
-            .await?;
+        let projection = projected(
+            error.to_string().into_bytes(),
+            self.limits.max_model_visible_output_bytes,
+        );
+        let error_ref = self.put_blob_bytes(projection.bytes).await?;
 
         Ok(ToolInvocationResult {
             duration_ms: None,
+            output_bytes: Some(projection.output_bytes),
+            truncated: projection.truncated,
             call_id: call.call_id.clone(),
             status: ToolCallStatus::Failed,
             output_ref: None,
@@ -342,11 +341,14 @@ impl InlineToolRuntime {
         if binding.logical_id == WEB_FETCH_LOGICAL_ID {
             return invoke_web_fetch(arguments).await;
         }
-        let builtin_tool =
-            BuiltinTool::from_binding(&binding.logical_id, binding.adapter_id.as_deref())
-                .ok_or_else(|| ToolError::UnsupportedCapability {
-                    message: format!("unsupported tool binding: {}", binding.logical_id),
-                })?;
+        let builtin_tool = BuiltinTool::from_binding(
+            &binding.logical_id,
+            binding.adapter_id.as_deref(),
+            binding.tool_name.as_str(),
+        )
+        .ok_or_else(|| ToolError::UnsupportedCapability {
+            message: format!("unsupported tool binding: {}", binding.logical_id),
+        })?;
         let ctx = ctx.ok_or_else(|| ToolError::InvalidRequest {
             message: format!("tool {tool_name} requires its filesystem domain context"),
         })?;
@@ -401,6 +403,25 @@ impl CoreAgentTools for InlineToolRuntime {
     }
 }
 
+/// Model-visible text after the projection budget, with the accounting
+/// facts the completion event carries: how much the tool produced and
+/// whether the budget cut it.
+struct ProjectedText {
+    bytes: Vec<u8>,
+    output_bytes: u64,
+    truncated: bool,
+}
+
+fn projected(bytes: Vec<u8>, max_bytes: u64) -> ProjectedText {
+    let output_bytes = bytes.len() as u64;
+    let truncated = output_bytes > max_bytes;
+    ProjectedText {
+        bytes: truncate_bytes(bytes, max_bytes),
+        output_bytes,
+        truncated,
+    }
+}
+
 fn truncate_bytes(mut bytes: Vec<u8>, max_bytes: u64) -> Vec<u8> {
     let max_bytes = max_bytes as usize;
     if bytes.len() <= max_bytes {
@@ -436,8 +457,8 @@ mod tests {
     use crate::builtin::BuiltinToolOperation;
     use crate::environment::EnvironmentToolContext;
     use crate::environment::process::{
-        ProcessError, ProcessExecResult, ProcessExecutor, ProcessOutput, ProcessRequest,
-        ProcessStatus, StreamOutput, WriteProcessStdinRequest,
+        ContinueProcessRequest, ProcessError, ProcessExecResult, ProcessExecutor, ProcessHandle,
+        ProcessOutput, ProcessRequest, ProcessSignal, ProcessStatus, StreamOutput,
     };
     use crate::fs::{FileSystem, FsPath, InMemoryFileSystem};
     use crate::runtime::{ToolCatalog, ToolTarget};
@@ -450,34 +471,63 @@ mod tests {
     #[derive(Default)]
     struct RecordingProcessExecutor {
         requests: Mutex<Vec<ProcessRequest>>,
+        continues: Mutex<Vec<ContinueProcessRequest>>,
     }
 
     #[async_trait]
     impl ProcessExecutor for RecordingProcessExecutor {
         async fn run_process(&self, request: ProcessRequest) -> ProcessExecResult<ProcessOutput> {
+            let running = request.yield_ms == Some(0);
             self.requests.lock().expect("lock").push(request);
             Ok(ProcessOutput {
-                status: ProcessStatus::Succeeded,
-                handle: None,
-                exit_code: Some(0),
+                status: if running {
+                    ProcessStatus::Running
+                } else {
+                    ProcessStatus::Succeeded
+                },
+                handle: running.then(|| ProcessHandle::new("proc-1")),
+                pid: Some(42),
+                exit_code: (!running).then_some(0),
+                failure: None,
                 stdout: StreamOutput {
                     bytes: b"ok".to_vec(),
-                    truncated: false,
+                    omitted_at: None,
                 },
                 stderr: StreamOutput::default(),
-                orphaned_descendants: false,
+                omitted_bytes: 0,
+                leftover_processes: Vec::new(),
             })
         }
 
-        async fn write_stdin(
+        async fn continue_process(
             &self,
-            _request: WriteProcessStdinRequest,
+            request: ContinueProcessRequest,
         ) -> ProcessExecResult<ProcessOutput> {
-            Err(ProcessError::Unsupported {
-                message: "not needed".to_owned(),
+            let killed = request.signal == Some(ProcessSignal::Kill);
+            self.continues.lock().expect("lock").push(request);
+            Ok(ProcessOutput {
+                status: if killed {
+                    ProcessStatus::Killed
+                } else {
+                    ProcessStatus::Succeeded
+                },
+                handle: None,
+                pid: Some(42),
+                exit_code: (!killed).then_some(0),
+                failure: None,
+                stdout: StreamOutput {
+                    bytes: b"more".to_vec(),
+                    omitted_at: None,
+                },
+                stderr: StreamOutput::default(),
+                omitted_bytes: 0,
+                leftover_processes: Vec::new(),
             })
         }
     }
+
+    #[allow(dead_code)]
+    fn unused(_: ProcessError) {}
 
     fn call(arguments_ref: BlobRef, tool_name: &str) -> ToolInvocationRequest {
         ToolInvocationRequest {
@@ -486,6 +536,7 @@ mod tests {
             arguments_ref,
             workflow_tool: None,
             promise_control: None,
+            remote_mcp: None,
         }
     }
 
@@ -767,6 +818,7 @@ mod tests {
                     arguments_ref: args_ref,
                     workflow_tool: None,
                     promise_control: None,
+                    remote_mcp: None,
                 }],
             },
         )
@@ -830,7 +882,7 @@ mod tests {
             .expect("write args");
 
         let result = runtime
-            .invoke_batch(batch_request(call(args_ref, "exec_command")))
+            .invoke_batch(batch_request(call(args_ref, "run_process")))
             .await
             .expect("invoke batch")
             .completed_result()
@@ -842,9 +894,115 @@ mod tests {
         let visible_ref = visible_tool_result_ref(&result);
         let visible = blobs.read_text(&visible_ref).await.expect("visible text");
         assert!(visible.contains("ok"));
+        assert!(visible.contains("[exited with code 0]"));
         let requests = process.requests.lock().expect("lock");
         assert_eq!(requests.len(), 1);
         assert_eq!(requests[0].argv, ["echo", "hello"]);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn claude_code_like_process_tools_dispatch_by_variant() {
+        let blobs = Arc::new(InMemoryBlobStore::new());
+        let process = Arc::new(RecordingProcessExecutor::default());
+        let process_ctx: Arc<dyn ProcessExecutor> = process.clone();
+        let env_ctx = EnvironmentToolContext::new(Some(process_ctx), blobs.clone());
+        let catalog = catalog_for_operations_with_presentation(
+            engine::ProviderApiKind::AnthropicMessages,
+            BuiltinToolPresentation::ProviderDefault,
+            [
+                BuiltinToolOperation::RunProcess,
+                BuiltinToolOperation::ContinueProcess,
+            ],
+        );
+        let runtime = InlineToolRuntime::with_environment(env_ctx, catalog);
+
+        let started = runtime
+            .invoke_json(
+                &ToolName::new("Bash"),
+                json!({ "command": "sleep 5", "run_in_background": true }),
+            )
+            .await
+            .expect("Bash");
+        assert!(
+            started
+                .model_visible_text
+                .contains("Command running in background with ID: proc-1")
+        );
+        assert!(started.model_visible_text.contains("BashOutput"));
+        assert!(started.model_visible_text.contains("KillShell"));
+
+        let read = runtime
+            .invoke_json(&ToolName::new("BashOutput"), json!({ "bash_id": "proc-1" }))
+            .await
+            .expect("BashOutput");
+        assert!(read.model_visible_text.contains("[exited with code 0]"));
+
+        let killed = runtime
+            .invoke_json(&ToolName::new("KillShell"), json!({ "shell_id": "proc-1" }))
+            .await
+            .expect("KillShell");
+        assert!(killed.model_visible_text.ends_with("[killed]"));
+
+        let requests = process.requests.lock().expect("lock");
+        assert_eq!(requests[0].yield_ms, Some(0));
+        assert_eq!(requests[0].timeout_ms, None);
+        let continues = process.continues.lock().expect("lock");
+        assert_eq!(continues.len(), 2);
+        assert_eq!(continues[0].signal, None);
+        assert_eq!(continues[1].signal, Some(ProcessSignal::Kill));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn codex_like_exec_command_is_the_openai_responses_default() {
+        let blobs = Arc::new(InMemoryBlobStore::new());
+        let process = Arc::new(RecordingProcessExecutor::default());
+        let process_ctx: Arc<dyn ProcessExecutor> = process.clone();
+        let env_ctx = EnvironmentToolContext::new(Some(process_ctx), blobs.clone());
+        let catalog = catalog_for_operations_with_presentation(
+            engine::ProviderApiKind::OpenAiResponses,
+            BuiltinToolPresentation::ProviderDefault,
+            [
+                BuiltinToolOperation::RunProcess,
+                BuiltinToolOperation::ContinueProcess,
+            ],
+        );
+        let runtime = InlineToolRuntime::with_environment(env_ctx, catalog);
+
+        let output = runtime
+            .invoke_json(
+                &ToolName::new("exec_command"),
+                json!({ "cmd": "echo hi", "yield_time_ms": 250 }),
+            )
+            .await
+            .expect("exec_command");
+        assert!(output.model_visible_text.starts_with("Wall time: "));
+        assert!(
+            output
+                .model_visible_text
+                .contains("Process exited with code 0\nOutput:\nok")
+        );
+        {
+            let requests = process.requests.lock().expect("lock");
+            assert_eq!(requests[0].argv, ["bash", "-lc", "echo hi"]);
+            assert_eq!(requests[0].yield_ms, Some(250));
+            assert_eq!(requests[0].timeout_ms, None);
+        }
+
+        let polled = runtime
+            .invoke_json(
+                &ToolName::new("write_stdin"),
+                json!({ "session_id": "proc-1", "chars": "" }),
+            )
+            .await
+            .expect("write_stdin");
+        assert!(
+            polled
+                .model_visible_text
+                .contains("Process exited with code 0")
+        );
+        let continues = process.continues.lock().expect("lock");
+        assert_eq!(continues[0].input, None);
+        assert_eq!(continues[0].wait_ms, Some(60_000));
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -868,7 +1026,7 @@ mod tests {
             .expect("write args");
 
         let result = runtime
-            .invoke_batch(batch_request(call(args_ref, "exec_command")))
+            .invoke_batch(batch_request(call(args_ref, "run_process")))
             .await
             .expect("invoke batch")
             .completed_result()

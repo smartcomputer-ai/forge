@@ -354,8 +354,18 @@ fn request_fingerprint(
             PlanningError::Rejected(format!("failed to fingerprint request: {error}"))
         })?;
     let digest = Sha256::digest(encoded);
-    Ok(format!("sha256:{}", hex::encode(digest)))
+    Ok(format!(
+        "{LLM_REQUEST_FINGERPRINT_PREFIX}{}",
+        hex::encode(digest)
+    ))
 }
+
+/// Fingerprints are digests of request inputs, not stored blobs. They carry a
+/// prefix that keeps them from looking like a `sha256:` blob ref, because the
+/// session store derives collection roots from every ref-shaped string in an
+/// appended event and rejects refs whose blob does not exist.
+pub const LLM_REQUEST_FINGERPRINT_PREFIX: &str = "llm:sha256:";
+pub const LLM_COMPACTION_FINGERPRINT_PREFIX: &str = "compaction:sha256:";
 
 /// Fallback failure content for LLM generation or compaction that failed at
 /// the runtime boundary (for example after exhausting provider retries) when
@@ -381,7 +391,10 @@ fn compaction_request_fingerprint(
             PlanningError::Rejected(format!("failed to fingerprint compaction request: {error}"))
         })?;
     let digest = Sha256::digest(encoded);
-    Ok(format!("sha256:{}", hex::encode(digest)))
+    Ok(format!(
+        "{LLM_COMPACTION_FINGERPRINT_PREFIX}{}",
+        hex::encode(digest)
+    ))
 }
 
 #[cfg(test)]

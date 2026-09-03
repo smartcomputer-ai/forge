@@ -300,9 +300,13 @@ where
         })?;
     key.check_admits(now_ms).map_err(map_registry_error)?;
     let mut metadata = params.metadata.clone();
-    if let Some(version) = params.implementation.version.as_deref() {
-        metadata.insert("lightspeed.envd.version".to_owned(), version.to_owned());
-    }
+    metadata.extend(
+        environments::RegisteredDaemonBuild::from_registration(
+            &params.implementation,
+            params.protocol_version,
+        )
+        .metadata(),
+    );
     let environment = store
         .create_registered_environment(CreateRegisteredEnvironment {
             registration_key_id: key.registration_key_id.clone(),
@@ -663,9 +667,20 @@ async fn control_session(
     ) {
         let _ = previous.commands.try_send(ControlCommand::Supersede);
     }
+    // Every admission re-records which build serves the environment, so a
+    // replaced daemon shows its new version, commit, and protocol on the row
+    // instead of the one it first registered with.
+    let daemon_build = environments::RegisteredDaemonBuild::from_registration(
+        &register.implementation,
+        register.protocol_version,
+    );
     let observe = |observation: RegisteredConnectionObservation| {
         let store = store.clone();
         let environment_id = environment.environment_id.clone();
+        let metadata = match observation {
+            RegisteredConnectionObservation::Connected => daemon_build.metadata(),
+            _ => std::collections::BTreeMap::new(),
+        };
         async move {
             let result = EnvironmentStore::observe_registered_environment(
                 store.as_ref(),
@@ -673,6 +688,7 @@ async fn control_session(
                     environment_id,
                     observation,
                     observed_at_ms: now_ms(),
+                    metadata,
                 },
             )
             .await;
@@ -881,6 +897,8 @@ mod tests {
             implementation: ImplementationInfo {
                 name: "lightspeed-envd".to_owned(),
                 version: Some("0.1.0".to_owned()),
+                git_sha: Some("1111111111111111111111111111111111111111".to_owned()),
+                target: Some("x86_64-unknown-linux-musl".to_owned()),
             },
         }
     }
@@ -968,6 +986,22 @@ mod tests {
                 .get("lightspeed.envd.version")
                 .map(String::as_str),
             Some("0.1.0")
+        );
+        assert_eq!(
+            created
+                .environment
+                .metadata
+                .get("lightspeed.envd.gitSha")
+                .map(String::as_str),
+            Some("1111111111111111111111111111111111111111")
+        );
+        assert_eq!(
+            created
+                .environment
+                .metadata
+                .get("lightspeed.envd.protocolVersion")
+                .map(String::as_str),
+            Some(CURRENT_PROTOCOL_VERSION.to_string().as_str())
         );
 
         // Reconnects ignore the key entirely, even a wrong one.

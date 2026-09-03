@@ -38,7 +38,10 @@ use crate::{
         default_anthropic_thinking_display,
     },
     provider_keys::{ModelProviderResolver, NoStoredModelProviders, resolve_model_provider},
-    result::{LlmGenerationExecution, partial_output_entries, truncation_failure_text},
+    result::{
+        LlmGenerationExecution, debug_dump_request, partial_output_entries, store_debug_dumps,
+        truncation_failure_text,
+    },
     secrets::{
         REDACTED_SECRET_PLACEHOLDER, SecretResolveError, SecretResolver, UnconfiguredSecretResolver,
     },
@@ -111,6 +114,10 @@ impl AnthropicMessagesApi for am::Client {
 pub struct AnthropicMessagesLlmAdapter {
     client: Arc<dyn AnthropicMessagesApi>,
     blobs: Arc<dyn BlobStore>,
+    /// Store the raw provider request and response of every generation as
+    /// unrooted debug blobs. Off by default: each request carries the whole
+    /// context, so the dumps grow quadratically with turn count.
+    debug_dumps: bool,
     secrets: Arc<dyn SecretResolver>,
     provider_keys: Arc<dyn ModelProviderResolver>,
     inventory: Arc<dyn McpInventoryResolver>,
@@ -121,6 +128,7 @@ impl AnthropicMessagesLlmAdapter {
         Self {
             client,
             blobs,
+            debug_dumps: false,
             secrets: Arc::new(UnconfiguredSecretResolver),
             provider_keys: Arc::new(NoStoredModelProviders),
             inventory: Arc::new(UnconfiguredMcpInventoryResolver),
@@ -129,6 +137,12 @@ impl AnthropicMessagesLlmAdapter {
 
     pub fn with_secret_resolver(mut self, secrets: Arc<dyn SecretResolver>) -> Self {
         self.secrets = secrets;
+        self
+    }
+
+    /// Enable or disable storing raw provider request/response dumps.
+    pub fn with_debug_dumps(mut self, enabled: bool) -> Self {
+        self.debug_dumps = enabled;
         self
     }
 
@@ -186,7 +200,7 @@ impl LlmGenerationAdapter for AnthropicMessagesLlmAdapter {
                 .await?;
         let provider =
             resolve_model_provider(self.provider_keys.as_ref(), &request.request.model).await?;
-        let provider_request_ref = put_json(self.blobs.as_ref(), &redacted_request).await?;
+        let request_dump = debug_dump_request(self.debug_dumps, &redacted_request)?;
         let response = self
             .client
             .create(
@@ -194,13 +208,19 @@ impl LlmGenerationAdapter for AnthropicMessagesLlmAdapter {
                 provider.as_ref().map(|provider| provider.as_request_auth()),
             )
             .await?;
-        let raw_response_ref = put_json(self.blobs.as_ref(), &response.raw_json).await?;
         let result = result_from_response(self.blobs.as_ref(), &request, &response).await?;
+        let debug_dumps = store_debug_dumps(
+            self.blobs.as_ref(),
+            request_dump,
+            &response.raw_json,
+            &request,
+            "anthropic_messages",
+        )
+        .await?;
 
         Ok(LlmGenerationExecution {
             result,
-            provider_request_ref,
-            raw_response_ref,
+            debug_dumps,
         })
     }
 }
@@ -222,7 +242,6 @@ impl LlmCompactionAdapter for AnthropicMessagesLlmAdapter {
         let provider_request = self.materialize_compact_request(&request.request).await?;
         let provider =
             resolve_model_provider(self.provider_keys.as_ref(), &request.request.model).await?;
-        let _provider_request_ref = put_json(self.blobs.as_ref(), &provider_request).await?;
         let response = self
             .client
             .create(
@@ -230,7 +249,6 @@ impl LlmCompactionAdapter for AnthropicMessagesLlmAdapter {
                 provider.as_ref().map(|provider| provider.as_request_auth()),
             )
             .await?;
-        let _raw_response_ref = put_json(self.blobs.as_ref(), &response.raw_json).await?;
         result_from_compact_response(self.blobs.as_ref(), &request, &response).await
     }
 }
@@ -2467,6 +2485,7 @@ mod tests {
         let blobs = Arc::new(InMemoryBlobStore::new());
         let api = fake_api(completed_text_response_json());
         let adapter = AnthropicMessagesLlmAdapter::new(api.clone(), blobs.clone())
+            .with_debug_dumps(true)
             .with_secret_resolver(Arc::new(
                 crate::secrets::StaticSecretResolver::new().with_secret(
                     "mcp_server",
@@ -2492,7 +2511,8 @@ mod tests {
             json!("token-xyz")
         );
 
-        let stored = crate::blob_io::read_json(blobs.as_ref(), &execution.provider_request_ref)
+        let dumps = execution.debug_dumps.expect("debug dumps are enabled");
+        let stored = crate::blob_io::read_json(blobs.as_ref(), &dumps.provider_request_ref)
             .await
             .expect("stored provider request");
         assert_eq!(

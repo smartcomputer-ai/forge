@@ -1,9 +1,9 @@
-use std::cmp::Ordering;
+use std::{cmp::Ordering, collections::BTreeSet};
 
 use engine::{
     BlobRef, ContextEntryInput, ContextEntryKey, ContextEntryKind, CoreAgentCommand,
     CoreAgentState, SKILL_CATALOG_CONTEXT_KEY, SkillId,
-    storage::{BlobStore, BlobStoreError},
+    storage::{BlobGraphStore, BlobStore, BlobStoreError, record_contains_edges},
 };
 use serde::Serialize;
 use thiserror::Error;
@@ -55,6 +55,7 @@ pub enum SkillCatalogError {
 
 pub struct SkillCatalogBuilder<'a> {
     blobs: &'a dyn BlobStore,
+    blob_graph: Option<&'a dyn BlobGraphStore>,
     roots: Vec<SkillCatalogRootInput<'a>>,
 }
 
@@ -62,8 +63,14 @@ impl<'a> SkillCatalogBuilder<'a> {
     pub fn new(blobs: &'a dyn BlobStore) -> Self {
         Self {
             blobs,
+            blob_graph: None,
             roots: Vec::new(),
         }
+    }
+
+    pub fn with_blob_graph(mut self, blob_graph: Option<&'a dyn BlobGraphStore>) -> Self {
+        self.blob_graph = blob_graph;
+        self
     }
 
     pub fn with_root(mut self, root: SkillCatalogRootInput<'a>) -> Self {
@@ -72,19 +79,42 @@ impl<'a> SkillCatalogBuilder<'a> {
     }
 
     pub async fn build(self) -> Result<SkillCatalogBuild, SkillCatalogError> {
-        build_skill_catalog(self.blobs, &self.roots).await
+        build_skill_catalog(self.blobs, self.blob_graph, &self.roots).await
     }
 }
 
 pub async fn build_skill_catalog(
     blobs: &dyn BlobStore,
+    blob_graph: Option<&dyn BlobGraphStore>,
     roots: &[SkillCatalogRootInput<'_>],
 ) -> Result<SkillCatalogBuild, SkillCatalogError> {
-    build_skill_catalog_with_warnings(blobs, roots, Vec::new()).await
+    build_skill_catalog_with_warnings(blobs, blob_graph, roots, Vec::new()).await
+}
+
+/// Every blob a catalog document names: skill docs plus the snapshot
+/// manifests skills were read from. The catalog write records one `contains`
+/// edge per ref so they stay reachable while the catalog is.
+pub fn skill_catalog_blob_refs(catalog: &SkillCatalogSnapshot) -> BTreeSet<BlobRef> {
+    let mut refs = BTreeSet::new();
+    for skill in &catalog.skills {
+        refs.extend(skill.skill_doc_ref.clone());
+        if let SkillSource::Snapshot { snapshot_ref, .. } = &skill.source {
+            refs.insert(snapshot_ref.clone());
+        }
+        if let SkillLocation::LinkedSnapshot {
+            source_snapshot_ref,
+            ..
+        } = &skill.location
+        {
+            refs.insert(source_snapshot_ref.clone());
+        }
+    }
+    refs
 }
 
 pub async fn build_skill_catalog_with_warnings(
     blobs: &dyn BlobStore,
+    blob_graph: Option<&dyn BlobGraphStore>,
     roots: &[SkillCatalogRootInput<'_>],
     mut warnings: Vec<SkillLoadWarning>,
 ) -> Result<SkillCatalogBuild, SkillCatalogError> {
@@ -108,6 +138,7 @@ pub async fn build_skill_catalog_with_warnings(
     let catalog = SkillCatalogSnapshot::new(skills, warnings);
     let catalog_bytes = encode_json(&catalog)?;
     let catalog_ref = blobs.put_bytes(catalog_bytes.clone()).await?;
+    record_contains_edges(blob_graph, &catalog_ref, skill_catalog_blob_refs(&catalog)).await?;
     let source_fingerprint = source_fingerprint(source_inputs)?;
     let build_record = SkillCatalogBuildRecord::new(catalog_ref.clone(), source_fingerprint);
 
@@ -121,19 +152,22 @@ pub async fn build_skill_catalog_with_warnings(
 
 pub async fn prepare_skill_catalog_publication(
     blobs: &dyn BlobStore,
+    blob_graph: Option<&dyn BlobGraphStore>,
     state: &CoreAgentState,
     roots: &[SkillCatalogRootInput<'_>],
 ) -> Result<SkillCatalogPublication, SkillCatalogError> {
-    prepare_skill_catalog_publication_with_warnings(blobs, state, roots, Vec::new()).await
+    prepare_skill_catalog_publication_with_warnings(blobs, blob_graph, state, roots, Vec::new())
+        .await
 }
 
 pub async fn prepare_skill_catalog_publication_with_warnings(
     blobs: &dyn BlobStore,
+    blob_graph: Option<&dyn BlobGraphStore>,
     state: &CoreAgentState,
     roots: &[SkillCatalogRootInput<'_>],
     warnings: Vec<SkillLoadWarning>,
 ) -> Result<SkillCatalogPublication, SkillCatalogError> {
-    let build = build_skill_catalog_with_warnings(blobs, roots, warnings).await?;
+    let build = build_skill_catalog_with_warnings(blobs, blob_graph, roots, warnings).await?;
     let command = if current_skill_catalog_ref(state).as_ref() == Some(&build.catalog_ref) {
         None
     } else {
@@ -556,6 +590,7 @@ mod tests {
         let blobs = Arc::new(InMemoryBlobStore::new());
         let build = build_skill_catalog(
             blobs.as_ref(),
+            None,
             &[root_input(
                 &fs,
                 SkillCatalogRoot {
@@ -591,6 +626,70 @@ mod tests {
         ));
     }
 
+    /// The recorded edge set must equal every ref the catalog document
+    /// embeds: skill docs and the snapshot manifests they were read from.
+    #[tokio::test]
+    async fn catalog_writes_record_an_edge_for_every_embedded_ref() {
+        let fs = skill_fs(&[
+            (
+                "/skills/deploy-review/SKILL.md",
+                skill_doc("deploy-review", "Use when reviewing deployment risk."),
+            ),
+            (
+                "/skills/release-notes/SKILL.md",
+                skill_doc("release-notes", "Use when writing release notes."),
+            ),
+        ])
+        .await;
+        let blobs = Arc::new(InMemoryBlobStore::new());
+        // In production the root's snapshot manifest is a stored blob.
+        let snapshot_ref = blobs
+            .put_bytes(b"snapshot manifest".to_vec())
+            .await
+            .expect("put snapshot");
+        let build = build_skill_catalog(
+            blobs.as_ref(),
+            Some(blobs.as_ref()),
+            &[root_input(
+                &fs,
+                SkillCatalogRoot {
+                    root_id: "system".to_owned(),
+                    root_path: FsPath::new("/skills").unwrap(),
+                    source: SkillCatalogRootSource::LinkedSnapshot {
+                        snapshot_ref: snapshot_ref.clone(),
+                        link_path: VfsPath::parse("/skills").unwrap(),
+                    },
+                    trust: SkillTrustLevel::System,
+                    scope: SkillScope::Global,
+                },
+            )],
+        )
+        .await
+        .expect("build catalog");
+
+        let embedded = engine::storage::collect_blob_refs(
+            &serde_json::from_slice(&build.catalog_bytes).expect("catalog json"),
+        );
+        let recorded: std::collections::BTreeSet<BlobRef> = blobs
+            .edges()
+            .into_iter()
+            .inspect(|edge| assert_eq!(edge.parent, build.catalog_ref))
+            .map(|edge| edge.child)
+            .collect();
+        assert_eq!(recorded, embedded);
+        assert_eq!(recorded, skill_catalog_blob_refs(&build.catalog));
+        assert!(embedded.contains(&snapshot_ref));
+        assert_eq!(
+            embedded.len(),
+            3,
+            "two skill docs and the snapshot manifest"
+        );
+        assert!(
+            BlobRef::parse(&build.build_record.source_fingerprint.digest).is_err(),
+            "fingerprints must not look like blob refs"
+        );
+    }
+
     #[tokio::test]
     async fn duplicate_names_are_allowed_across_roots() {
         let first = skill_fs(&[(
@@ -606,6 +705,7 @@ mod tests {
         let blobs = InMemoryBlobStore::new();
         let build = build_skill_catalog(
             &blobs,
+            None,
             &[
                 root_input(
                     &first,
@@ -660,6 +760,7 @@ mod tests {
         let blobs = InMemoryBlobStore::new();
         let build = build_skill_catalog(
             &blobs,
+            None,
             &[root_input(
                 &fs,
                 SkillCatalogRoot {
@@ -709,7 +810,7 @@ mod tests {
             scope: SkillScope::Global,
         };
 
-        let first = build_skill_catalog(&blobs, &[root_input(&fs, root.clone())])
+        let first = build_skill_catalog(&blobs, None, &[root_input(&fs, root.clone())])
             .await
             .expect("first build");
 
@@ -726,7 +827,7 @@ mod tests {
         .await
         .expect("edit body");
 
-        let second = build_skill_catalog(&blobs, &[root_input(&fs, root)])
+        let second = build_skill_catalog(&blobs, None, &[root_input(&fs, root)])
             .await
             .expect("second build");
 
@@ -757,10 +858,10 @@ mod tests {
             scope: SkillScope::Global,
         };
 
-        let first = build_skill_catalog(&blobs, &[root_input(&fs, root(b"head-1"))])
+        let first = build_skill_catalog(&blobs, None, &[root_input(&fs, root(b"head-1"))])
             .await
             .expect("first build");
-        let second = build_skill_catalog(&blobs, &[root_input(&fs, root(b"head-2"))])
+        let second = build_skill_catalog(&blobs, None, &[root_input(&fs, root(b"head-2"))])
             .await
             .expect("second build");
 
@@ -783,6 +884,7 @@ mod tests {
 
         let publication = prepare_skill_catalog_publication(
             &blobs,
+            None,
             &state,
             &[root_input(&fs, snapshot_root("system", "/skills"))],
         )
@@ -809,6 +911,7 @@ mod tests {
         let blobs = InMemoryBlobStore::new();
         let first = prepare_skill_catalog_publication(
             &blobs,
+            None,
             &CoreAgentState::new(),
             &[root_input(&fs, snapshot_root("system", "/skills"))],
         )
@@ -833,6 +936,7 @@ mod tests {
 
         let second = prepare_skill_catalog_publication(
             &blobs,
+            None,
             &state,
             &[root_input(&fs, snapshot_root("system", "/skills"))],
         )

@@ -210,6 +210,8 @@ jobs:
           LIGHTSPEED_BINARY_URL_ENVD: ${{ steps.archives.outputs.ENVD_URL }}
           LIGHTSPEED_BINARY_URL_CLI: ${{ steps.archives.outputs.CLI_URL }}
           LIGHTSPEED_ARTIFACT_URL_DEMO: ${{ steps.archives.outputs.DEMO_URL }}
+          LIGHTSPEED_RELEASE_CHANNEL: release
+          LIGHTSPEED_ENVD_PUBLIC_URL_BASE: https://github.com/${{ github.repository }}/releases/download/${{ steps.identity.outputs.tag }}
           STAGING_TAG: ${{ steps.identity.outputs.staging_tag }}
         run: |
           set -euo pipefail
@@ -251,6 +253,7 @@ jobs:
             dist/npm/*.tgz
             dist/checksums.txt
             dist/release-manifest.json
+            dist/envd.json
             dist/sbom.spdx.json
             release-bundle.tar.gz
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -344,6 +347,7 @@ jobs:
               dist/npm/*.tgz \
               dist/checksums.txt \
               dist/release-manifest.json \
+              dist/envd.json \
               dist/sbom.spdx.json; do
               grep -Fx "$(basename "$file")" <<< "$published_assets"
             done
@@ -353,5 +357,6 @@ jobs:
               dist/npm/*.tgz \
               dist/checksums.txt \
               dist/release-manifest.json \
+              dist/envd.json \
               dist/sbom.spdx.json
           fi

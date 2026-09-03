@@ -422,11 +422,21 @@ export interface SessionOrigin {
 export interface SessionSummary {
   id: string;
   displayName?: string | null;
+  /// Descriptive key/value metadata; absent or empty when none was set.
+  metadata?: Record<string, string>;
   createdAtMs: number;
   updatedAtMs: number;
+  closedAtMs?: number | null;
   lifecycleStatus: "new" | "open" | "closed";
+  retention: SessionRetention;
   managed: boolean;
   origin?: SessionOrigin | null;
+}
+
+export interface SessionRetention {
+  rootSessionId: string;
+  deleteAfterCloseMs?: number | null;
+  deleteAtMs?: number | null;
 }
 
 export interface SessionManagement {
@@ -451,9 +461,12 @@ export interface ManagedWorkflowTool {
 export interface SessionView {
   id: string;
   displayName?: string | null;
+  metadata?: Record<string, string>;
   createdAtMs: number;
   updatedAtMs: number;
+  closedAtMs?: number | null;
   status: "notLoaded" | "idle" | "active" | "closed" | "error";
+  retention: SessionRetention;
   managed: boolean;
   activeEnvironmentId?: string | null;
   config?: Record<string, unknown> | null;

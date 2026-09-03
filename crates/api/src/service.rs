@@ -72,6 +72,18 @@ pub trait AgentApiService: Send + Sync {
         params: SessionRenameParams,
     ) -> Result<AgentApiOutcome<SessionRenameResponse>, AgentApiError>;
 
+    async fn put_session_metadata(
+        &self,
+        params: SessionMetadataPutParams,
+    ) -> Result<AgentApiOutcome<SessionMetadataPutResponse>, AgentApiError>;
+
+    async fn put_session_retention(
+        &self,
+        _params: SessionRetentionPutParams,
+    ) -> Result<AgentApiOutcome<SessionRetentionPutResponse>, AgentApiError> {
+        Err(AgentApiError::internal("session retention is unavailable"))
+    }
+
     async fn read_session_events(
         &self,
         params: SessionEventsReadParams,

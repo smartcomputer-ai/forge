@@ -541,7 +541,12 @@ impl EnvironmentStore for InMemoryEnvironmentRegistryStore {
             .environments
             .get_mut(&request.environment_id)
             .ok_or_else(|| not_found("environment", &request.environment_id))?;
-        apply_registered_observation(record, request.observation, request.observed_at_ms)?;
+        apply_registered_observation(
+            record,
+            request.observation,
+            request.observed_at_ms,
+            request.metadata,
+        )?;
         record.validate()?;
         Ok(record.clone())
     }
@@ -626,6 +631,7 @@ impl EnvironmentStore for InMemoryEnvironmentRegistryStore {
                     .as_ref()
                     .is_none_or(|id| record.registration_key_id() == Some(id))
             })
+            .filter(|record| engine::storage::metadata_matches(&record.metadata, &request.metadata))
             .cloned()
             .collect())
     }
@@ -842,6 +848,7 @@ pub fn apply_registered_observation(
     record: &mut EnvironmentRecord,
     observation: RegisteredConnectionObservation,
     observed_at_ms: i64,
+    metadata: std::collections::BTreeMap<String, String>,
 ) -> Result<(), EnvironmentRegistryError> {
     if !record.is_registered() {
         return invalid("connection observations apply only to registered environments");
@@ -852,6 +859,7 @@ pub fn apply_registered_observation(
     ) {
         return Ok(());
     }
+    record.metadata.extend(metadata);
     match observation {
         RegisteredConnectionObservation::Connected => {
             record.status = EnvironmentStatus::Ready;

@@ -199,6 +199,7 @@ mod tests {
         let store = Arc::new(TestWorkspaceStore::default());
         let snapshot = create_inline_snapshot(
             blobs.as_ref(),
+            None,
             CreateInlineSnapshotRequest::new(vec![
                 InlineFile::new("README.md", b"hello".to_vec()).unwrap(),
             ]),

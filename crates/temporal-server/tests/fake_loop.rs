@@ -30,9 +30,11 @@ async fn runner() -> (
     let session_id = SessionId::new("session_test");
     sessions
         .create_session(CreateSession {
+            metadata: Default::default(),
             session_id: session_id.clone(),
             display_name: None,
             origin: None,
+            delete_after_close_ms: None,
             created_at_ms: 1,
         })
         .await

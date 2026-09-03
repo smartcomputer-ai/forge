@@ -389,6 +389,7 @@ async fn origin_session_is_recorded_listed_and_swept() {
 
     let by_session = store
         .list_environments(ListEnvironments {
+            metadata: Default::default(),
             origin_session_id: Some(SessionId::new("s-1")),
             ..ListEnvironments::default()
         })
@@ -396,6 +397,37 @@ async fn origin_session_is_recorded_listed_and_swept() {
         .expect("list");
     assert_eq!(by_session.len(), 1);
     assert_eq!(by_session[0].environment_id.as_str(), "env-s1");
+
+    // Metadata filters by containment: every listed pair must match.
+    let mut tagged = create("tagged", "env-tagged", "inc-tagged", 3);
+    tagged.metadata = BTreeMap::from([
+        ("source".to_owned(), "harbor".to_owned()),
+        ("job".to_owned(), "nightly".to_owned()),
+    ]);
+    store
+        .create_environment(tagged)
+        .await
+        .expect("create tagged");
+    let by_metadata = store
+        .list_environments(ListEnvironments {
+            metadata: BTreeMap::from([("job".to_owned(), "nightly".to_owned())]),
+            ..ListEnvironments::default()
+        })
+        .await
+        .expect("list by metadata");
+    assert_eq!(by_metadata.len(), 1);
+    assert_eq!(by_metadata[0].environment_id.as_str(), "env-tagged");
+    let mismatched = store
+        .list_environments(ListEnvironments {
+            metadata: BTreeMap::from([
+                ("job".to_owned(), "nightly".to_owned()),
+                ("trial".to_owned(), "1".to_owned()),
+            ]),
+            ..ListEnvironments::default()
+        })
+        .await
+        .expect("list by mismatched metadata");
+    assert!(mismatched.is_empty());
 
     let sweep = store
         .list_environments_closing_with_session()
@@ -776,6 +808,7 @@ async fn registered_admission_is_keyed_by_daemon_identity() {
             environment_id: created.environment_id.clone(),
             observation: RegisteredConnectionObservation::Disconnected,
             observed_at_ms: 3_000,
+            metadata: BTreeMap::new(),
         })
         .await
         .expect("disconnect");
@@ -783,16 +816,42 @@ async fn registered_admission_is_keyed_by_daemon_identity() {
     assert_eq!(offline.last_seen_at_ms, Some(2_000));
     assert!(offline.registered_daemon_absent(3_000, 60_000));
 
+    // A reconnecting daemon may be a newer build: the admission re-records
+    // its build facts on the row.
     let back = store
         .observe_registered_environment(ObserveRegisteredEnvironment {
             environment_id: created.environment_id.clone(),
             observation: RegisteredConnectionObservation::Connected,
             observed_at_ms: 4_000,
+            metadata: RegisteredDaemonBuild {
+                version: Some("0.2.0".to_owned()),
+                git_sha: Some("bbbb".to_owned()),
+                protocol_version: 3,
+            }
+            .metadata(),
         })
         .await
         .expect("reconnect");
     assert_eq!(back.status, EnvironmentStatus::Ready);
     assert_eq!(back.last_seen_at_ms, Some(4_000));
+    assert_eq!(
+        back.metadata
+            .get(ENVD_VERSION_METADATA_KEY)
+            .map(String::as_str),
+        Some("0.2.0")
+    );
+    assert_eq!(
+        back.metadata
+            .get(ENVD_GIT_SHA_METADATA_KEY)
+            .map(String::as_str),
+        Some("bbbb")
+    );
+    assert_eq!(
+        back.metadata
+            .get(ENVD_PROTOCOL_VERSION_METADATA_KEY)
+            .map(String::as_str),
+        Some("3")
+    );
     assert!(!back.registered_daemon_absent(4_500, 60_000));
     assert!(back.registered_daemon_absent(100_000, 60_000));
 
@@ -817,10 +876,18 @@ async fn registered_admission_is_keyed_by_daemon_identity() {
             environment_id: created.environment_id.clone(),
             observation: RegisteredConnectionObservation::Connected,
             observed_at_ms: 5_200,
+            metadata: BTreeMap::from([(ENVD_GIT_SHA_METADATA_KEY.to_owned(), "cccc".to_owned())]),
         })
         .await
         .expect("late heartbeat");
     assert_eq!(still_closed.status, EnvironmentStatus::Closed);
+    assert_eq!(
+        still_closed
+            .metadata
+            .get(ENVD_GIT_SHA_METADATA_KEY)
+            .map(String::as_str),
+        Some("bbbb")
+    );
 
     // The identity is spent: the same key with a fresh environment id is
     // refused, and a different registration key cannot move it either.
@@ -927,6 +994,7 @@ async fn registration_key_policy_gates_admission_without_touching_reconnects() {
             environment_id: EnvironmentId::new("env-2"),
             observation: RegisteredConnectionObservation::Connected,
             observed_at_ms: 5_500,
+            metadata: BTreeMap::new(),
         })
         .await
         .expect("reconnect after revoke");
@@ -1001,6 +1069,7 @@ async fn registered_environments_group_by_key_and_access_policy_scopes_them() {
 
     let by_key = store
         .list_environments(ListEnvironments {
+            metadata: Default::default(),
             registration_key_id: Some(EnvironmentRegistrationKeyId::new("rk-a")),
             ..ListEnvironments::default()
         })
@@ -1033,4 +1102,49 @@ async fn registered_environments_group_by_key_and_access_policy_scopes_them() {
     assert!(!neither.allows(&provisioned));
     assert!(!neither.allows(&a));
     assert!(!neither.allows(&external));
+}
+
+/// The gateway stamps reserved entries on top of whatever a daemon sent, so
+/// a daemon using its whole allowance must still be admitted; the allowance
+/// itself stays enforced on the caller's keys.
+#[tokio::test(flavor = "current_thread")]
+async fn reserved_metadata_sits_on_top_of_the_caller_allowance() {
+    use environment_protocol::registration::MAX_METADATA_ENTRIES;
+
+    let (_universe_id, store) = store().await;
+    minted_key(
+        &store,
+        "rk-meta",
+        registration_policy(RegisteredIdentityMode::Persistent),
+    )
+    .await;
+    let reserved = RegisteredDaemonBuild {
+        version: Some("0.1.0".to_owned()),
+        git_sha: Some("a".repeat(40)),
+        protocol_version: 2,
+    }
+    .metadata();
+
+    let mut full = register("rk-meta", "env-meta", &daemon_key(0x31), 1_000);
+    full.metadata = (0..MAX_METADATA_ENTRIES)
+        .map(|index| (format!("caller.key{index}"), "v".to_owned()))
+        .collect();
+    full.metadata.extend(reserved.clone());
+    let created = store
+        .create_registered_environment(full)
+        .await
+        .expect("full caller allowance plus reserved entries");
+    assert_eq!(
+        created.metadata.len(),
+        MAX_METADATA_ENTRIES + reserved.len()
+    );
+
+    let mut over = register("rk-meta", "env-over", &daemon_key(0x32), 1_000);
+    over.metadata = (0..=MAX_METADATA_ENTRIES)
+        .map(|index| (format!("caller.key{index}"), "v".to_owned()))
+        .collect();
+    assert!(matches!(
+        store.create_registered_environment(over).await,
+        Err(EnvironmentRegistryError::InvalidInput { .. })
+    ));
 }

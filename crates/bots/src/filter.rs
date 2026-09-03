@@ -13,7 +13,7 @@ use serde_json::Value;
 
 use crate::ids::{bot_keyed_session_id, bot_per_event_session_id};
 use crate::poll::number_to_string;
-use crate::records::{RoutedSession, RoutedSessionTtl};
+use crate::records::{RoutedSession, RoutedSessionClosePolicy};
 
 /// Longest route key taken from a CEL expression or a preset (characters).
 pub const MAX_ROUTE_KEY_CHARS: usize = 200;
@@ -161,9 +161,9 @@ impl From<WebhookPreset> for RoutePreset {
 /// The routing target of an event; `None` is the bot's main session.
 ///
 /// `perKey` takes the CEL key when it yields a non-empty string or a number,
-/// else the preset's key, else [`DEFAULT_ROUTE_KEY`]. The returned `ttl` is
-/// [`RoutedSessionTtl::Inherit`]; the caller applies the trigger's
-/// `sessionTtlMs`.
+/// else the preset's key, else [`DEFAULT_ROUTE_KEY`]. The returned close policy is
+/// [`RoutedSessionClosePolicy::Inherit`]; the caller applies the trigger's
+/// `sessionCloseAfterMs`.
 pub fn compute_route_session(
     bot_id: &BotId,
     route: &BotTriggerRoute,
@@ -183,7 +183,7 @@ pub fn compute_route_session(
         BotTriggerRoute::PerEvent => Some(RoutedSession {
             session_id: bot_per_event_session_id(bot_id, event_id),
             label: format!("event {}", truncate_chars(event_id, PER_EVENT_LABEL_CHARS)),
-            ttl: RoutedSessionTtl::Inherit,
+            close_policy: RoutedSessionClosePolicy::Inherit,
         }),
         BotTriggerRoute::PerKey { key } => {
             let key = key
@@ -195,7 +195,7 @@ pub fn compute_route_session(
             Some(RoutedSession {
                 session_id: bot_keyed_session_id(bot_id, &key),
                 label,
-                ttl: RoutedSessionTtl::Inherit,
+                close_policy: RoutedSessionClosePolicy::Inherit,
             })
         }
     }
@@ -457,7 +457,7 @@ mod tests {
         assert_eq!(suffix.len(), 12);
         assert!(is_hex(suffix), "{suffix}");
         assert_eq!(routed.label, "event delivery-1");
-        assert_eq!(routed.ttl, RoutedSessionTtl::Inherit);
+        assert_eq!(routed.close_policy, RoutedSessionClosePolicy::Inherit);
         assert_eq!(
             routed,
             compute_route_session(
@@ -503,7 +503,7 @@ mod tests {
         assert_eq!(suffix.len(), 8);
         assert!(is_hex(suffix), "{suffix}");
         assert_eq!(routed.session_id, bot_keyed_session_id(&bot(), "7"));
-        assert_eq!(routed.ttl, RoutedSessionTtl::Inherit);
+        assert_eq!(routed.close_policy, RoutedSessionClosePolicy::Inherit);
     }
 
     #[test]

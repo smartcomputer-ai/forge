@@ -182,7 +182,7 @@
     per target session concurrently (main + each routed session); a stalled
     run or lost terminal blocks only its own session. Budget reservations
     count in-flight lanes; emissions resolve to the lane by terminal token.
-  - **Routed-session retention**: per-bot `routedSessionTtlMs`; a sweep
+  - **Routed-session retention**: per-bot `routedSessionCloseAfterMs`; a sweep
     closes idle routed sessions via `session/close` (non-force, busy
     sessions retried later), records `session_closed`, and bumps a
     per-key generation so the next event for that key opens

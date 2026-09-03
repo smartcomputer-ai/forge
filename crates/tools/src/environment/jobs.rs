@@ -468,9 +468,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use async_trait::async_trait;
-    use engine::storage::{
-        BlobEdge, BlobGraphStore, BlobStore, BlobStoreError, InMemoryBlobStore, SessionBlobRoot,
-    };
+    use engine::storage::{BlobEdge, BlobGraphStore, BlobStore, BlobStoreError, InMemoryBlobStore};
     use environment_protocol::data::jobs::{JobOutputStream, JobStatus};
     use serde_json::json;
 
@@ -750,13 +748,6 @@ mod tests {
 
     #[async_trait]
     impl BlobGraphStore for RecordingGraph {
-        async fn record_session_blob_roots(
-            &self,
-            _roots: Vec<SessionBlobRoot>,
-        ) -> Result<(), BlobStoreError> {
-            Ok(())
-        }
-
         async fn record_blob_edges(&self, edges: Vec<BlobEdge>) -> Result<(), BlobStoreError> {
             self.edges.lock().expect("edge lock").extend(edges);
             Ok(())

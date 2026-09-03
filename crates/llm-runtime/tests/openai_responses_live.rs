@@ -143,7 +143,8 @@ async fn openai_responses_live_fast_mode_reports_effective_service_tier() {
     let adapter = OpenAiResponsesLlmAdapter::new(
         retrying_openai_responses_client(live_client()),
         blobs.clone(),
-    );
+    )
+    .with_debug_dumps(true);
     let request = LlmGenerationRequest {
         session_id: SessionId::new("session-live-fast-mode"),
         run_id: RunId::new(1),
@@ -197,7 +198,7 @@ async fn openai_responses_live_fast_mode_reports_effective_service_tier() {
     let execution = adapter.generate(request).await.expect("Fast mode response");
     let provider_request: Value = serde_json::from_str(
         &blobs
-            .read_text(&execution.provider_request_ref)
+            .read_text(&dumps(&execution).provider_request_ref)
             .await
             .expect("provider request"),
     )
@@ -206,7 +207,7 @@ async fn openai_responses_live_fast_mode_reports_effective_service_tier() {
 
     let raw_response: Value = serde_json::from_str(
         &blobs
-            .read_text(&execution.raw_response_ref)
+            .read_text(&dumps(&execution).raw_response_ref)
             .await
             .expect("raw response"),
     )
@@ -276,7 +277,8 @@ async fn openai_responses_live_adapter_describes_image_input() {
     let adapter = OpenAiResponsesLlmAdapter::new(
         retrying_openai_responses_client(live_client()),
         blobs.clone(),
-    );
+    )
+    .with_debug_dumps(true);
     let request = LlmGenerationRequest {
         session_id: SessionId::new("session-live-image"),
         run_id: RunId::new(1),
@@ -427,7 +429,8 @@ async fn openai_responses_live_adapter_reads_pdf_document_input() {
     let adapter = OpenAiResponsesLlmAdapter::new(
         retrying_openai_responses_client(live_client()),
         blobs.clone(),
-    );
+    )
+    .with_debug_dumps(true);
     let request = LlmGenerationRequest {
         session_id: SessionId::new("session-live-pdf"),
         run_id: RunId::new(1),
@@ -519,7 +522,8 @@ async fn openai_responses_live_adapter_generates_result() {
     let adapter = OpenAiResponsesLlmAdapter::new(
         retrying_openai_responses_client(live_client()),
         blobs.clone(),
-    );
+    )
+    .with_debug_dumps(true);
     let request = LlmGenerationRequest {
         session_id: SessionId::new("session-live"),
         run_id: RunId::new(1),
@@ -598,7 +602,7 @@ async fn openai_responses_live_adapter_generates_result() {
     );
 
     let provider_request = blobs
-        .read_text(&execution.provider_request_ref)
+        .read_text(&dumps(&execution).provider_request_ref)
         .await
         .expect("provider request blob");
     assert!(
@@ -606,7 +610,7 @@ async fn openai_responses_live_adapter_generates_result() {
         "expected provider request JSON, got {provider_request}"
     );
     let raw_response = blobs
-        .read_text(&execution.raw_response_ref)
+        .read_text(&dumps(&execution).raw_response_ref)
         .await
         .expect("raw response blob");
     assert!(
@@ -645,7 +649,8 @@ async fn openai_responses_live_adapter_captures_provider_triggered_compaction() 
     let adapter = OpenAiResponsesLlmAdapter::new(
         retrying_openai_responses_client(live_client()),
         blobs.clone(),
-    );
+    )
+    .with_debug_dumps(true);
     let request = LlmGenerationRequest {
         session_id: SessionId::new("session-live-compaction"),
         run_id: RunId::new(1),
@@ -746,7 +751,8 @@ async fn openai_responses_live_adapter_captures_web_search_call() {
     let adapter = OpenAiResponsesLlmAdapter::new(
         retrying_openai_responses_client(live_client()),
         blobs.clone(),
-    );
+    )
+    .with_debug_dumps(true);
     let request = LlmGenerationRequest {
         session_id: SessionId::new("session-live-web-search"),
         run_id: RunId::new(1),
@@ -794,7 +800,7 @@ async fn openai_responses_live_adapter_captures_web_search_call() {
         "expected provider-opaque web_search_call context item"
     );
     let raw_response = blobs
-        .read_text(&execution.raw_response_ref)
+        .read_text(&dumps(&execution).raw_response_ref)
         .await
         .expect("raw response");
     let raw_response: Value = serde_json::from_str(&raw_response).expect("raw response JSON");
@@ -807,4 +813,13 @@ async fn openai_responses_live_adapter_captures_web_search_call() {
                 .any(|item| item.get("type") == Some(&json!("web_search_call")))),
         "expected raw response output to include web_search_call: {raw_response}"
     );
+}
+
+/// Live adapters run with debug dumps enabled so the tests can inspect the
+/// exact provider exchange.
+fn dumps(execution: &llm_runtime::LlmGenerationExecution) -> &llm_runtime::LlmDebugDumps {
+    execution
+        .debug_dumps
+        .as_ref()
+        .expect("live adapters are built with debug dumps enabled")
 }

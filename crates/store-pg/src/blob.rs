@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use engine::{
     BlobRef,
-    storage::{BlobEdge, BlobGraphStore, BlobInfo, BlobStore, BlobStoreError, SessionBlobRoot},
+    storage::{BlobEdge, BlobGraphStore, BlobInfo, BlobStore, BlobStoreError},
 };
 use sqlx::Row;
 
@@ -9,23 +9,42 @@ use crate::{
     PgStore,
     object::direct_blob_key,
     shared::{
-        blob_sql_error, blob_store_error, i64_to_u64, optional_event_seq_to_i64, sha256_hex,
-        usize_to_blob_i64,
+        blob_sql_error, blob_store_error, i64_to_u64, sha256_hex, unix_now_ms, usize_to_blob_i64,
     },
 };
 
 impl PgStore {
+    /// Touch-or-insert. Existing content only moves `touched_at_ms` forward;
+    /// bytes are never rewritten and objects never re-uploaded. The touch is
+    /// what keeps a deduplicated write safe against a concurrent sweep: the
+    /// sweep only considers blobs untouched for longer than its grace, so a
+    /// ref handed out here cannot dangle before its holder commits.
     async fn put_single_blob(&self, bytes: Vec<u8>) -> Result<BlobRef, BlobStoreError> {
         let blob_ref = BlobRef::from_bytes(&bytes);
         let digest = sha256_hex(&blob_ref)?;
         let byte_len = usize_to_blob_i64(bytes.len(), "blob byte length")?;
+        let now_ms = unix_now_ms();
         // Write-through: the ref derives from these exact bytes, so the
         // hash-verified invariant of the cache holds by construction.
         if let Some(cache) = &self.blob_cache {
             cache.insert(self.config.universe_id, &blob_ref, &bytes);
         }
 
-        if self.has_blob(&blob_ref).await? {
+        let touched = sqlx::query(
+            r#"
+            UPDATE cas_blobs
+            SET touched_at_ms = GREATEST(touched_at_ms, $3)
+            WHERE universe_id = $1 AND digest = $2
+            RETURNING 1
+            "#,
+        )
+        .bind(self.config.universe_id)
+        .bind(digest)
+        .bind(now_ms)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|error| blob_sql_error("touch blob", error))?;
+        if touched.is_some() {
             return Ok(blob_ref);
         }
 
@@ -41,16 +60,20 @@ impl PgStore {
                     digest,
                     byte_len,
                     storage_kind,
-                    inline_bytes
+                    inline_bytes,
+                    created_at_ms,
+                    touched_at_ms
                 )
-                VALUES ($1, $2, $3, 'inline', $4)
-                ON CONFLICT (universe_id, digest) DO NOTHING
+                VALUES ($1, $2, $3, 'inline', $4, $5, $5)
+                ON CONFLICT (universe_id, digest) DO UPDATE
+                SET touched_at_ms = GREATEST(cas_blobs.touched_at_ms, EXCLUDED.touched_at_ms)
                 "#,
             )
             .bind(self.config.universe_id)
             .bind(digest)
             .bind(byte_len)
             .bind(bytes)
+            .bind(now_ms)
             .execute(&self.pool)
             .await
             .map_err(|error| blob_sql_error("insert inline blob", error))?;
@@ -59,6 +82,8 @@ impl PgStore {
 
         let object_key = direct_blob_key(&self.config, &blob_ref)?;
         let put_result = self.put_object(&object_key, bytes).await?;
+        // Two writers racing on a new digest both upload the same object
+        // under the same key; the second insert only touches the row.
         sqlx::query(
             r#"
             INSERT INTO cas_blobs (
@@ -68,10 +93,13 @@ impl PgStore {
                 storage_kind,
                 object_key,
                 object_etag,
-                object_version
+                object_version,
+                created_at_ms,
+                touched_at_ms
             )
-            VALUES ($1, $2, $3, 'object', $4, $5, $6)
-            ON CONFLICT (universe_id, digest) DO NOTHING
+            VALUES ($1, $2, $3, 'object', $4, $5, $6, $7, $7)
+            ON CONFLICT (universe_id, digest) DO UPDATE
+            SET touched_at_ms = GREATEST(cas_blobs.touched_at_ms, EXCLUDED.touched_at_ms)
             "#,
         )
         .bind(self.config.universe_id)
@@ -80,10 +108,46 @@ impl PgStore {
         .bind(object_key)
         .bind(put_result.e_tag)
         .bind(put_result.version)
+        .bind(now_ms)
         .execute(&self.pool)
         .await
         .map_err(|error| blob_sql_error("insert object blob", error))?;
         Ok(blob_ref)
+    }
+
+    /// Catalog timestamps of one blob: `(created_at_ms, touched_at_ms)`.
+    pub async fn blob_timestamps(
+        &self,
+        blob_ref: &BlobRef,
+    ) -> Result<Option<(u64, u64)>, BlobStoreError> {
+        let digest = sha256_hex(blob_ref)?;
+        let row = sqlx::query(
+            r#"
+            SELECT created_at_ms, touched_at_ms
+            FROM cas_blobs
+            WHERE universe_id = $1 AND digest = $2
+            "#,
+        )
+        .bind(self.config.universe_id)
+        .bind(digest)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|error| blob_sql_error("load blob timestamps", error))?;
+        row.map(|row| {
+            let created_at_ms: i64 = row
+                .try_get("created_at_ms")
+                .map_err(|error| blob_sql_error("decode blob created time", error))?;
+            let touched_at_ms: i64 = row
+                .try_get("touched_at_ms")
+                .map_err(|error| blob_sql_error("decode blob touched time", error))?;
+            Ok((
+                i64_to_u64(created_at_ms, "blob created time")
+                    .map_err(|message| BlobStoreError::Store { message })?,
+                i64_to_u64(touched_at_ms, "blob touched time")
+                    .map_err(|message| BlobStoreError::Store { message })?,
+            ))
+        })
+        .transpose()
     }
 }
 
@@ -216,64 +280,6 @@ impl BlobStore for PgStore {
 
 #[async_trait]
 impl BlobGraphStore for PgStore {
-    async fn record_session_blob_roots(
-        &self,
-        roots: Vec<SessionBlobRoot>,
-    ) -> Result<(), BlobStoreError> {
-        if roots.is_empty() {
-            return Ok(());
-        }
-        let mut tx = self
-            .pool
-            .begin()
-            .await
-            .map_err(|error| blob_sql_error("begin blob roots transaction", error))?;
-        for root in roots {
-            if root.root_kind.is_empty() {
-                return Err(BlobStoreError::Store {
-                    message: "session blob root kind must not be empty".into(),
-                });
-            }
-            sqlx::query(
-                r#"
-                INSERT INTO cas_session_roots (
-                    universe_id,
-                    session_id,
-                    digest,
-                    root_kind,
-                    first_seq,
-                    last_seq
-                )
-                VALUES ($1, $2, $3, $4, $5, $6)
-                ON CONFLICT (universe_id, session_id, digest, root_kind) DO UPDATE
-                SET
-                    first_seq = CASE
-                        WHEN cas_session_roots.first_seq IS NULL THEN EXCLUDED.first_seq
-                        WHEN EXCLUDED.first_seq IS NULL THEN cas_session_roots.first_seq
-                        ELSE LEAST(cas_session_roots.first_seq, EXCLUDED.first_seq)
-                    END,
-                    last_seq = CASE
-                        WHEN cas_session_roots.last_seq IS NULL THEN EXCLUDED.last_seq
-                        WHEN EXCLUDED.last_seq IS NULL THEN cas_session_roots.last_seq
-                        ELSE GREATEST(cas_session_roots.last_seq, EXCLUDED.last_seq)
-                    END
-                "#,
-            )
-            .bind(self.config.universe_id)
-            .bind(root.session_id.as_str())
-            .bind(sha256_hex(&root.blob_ref)?)
-            .bind(root.root_kind)
-            .bind(optional_event_seq_to_i64(root.first_seq)?)
-            .bind(optional_event_seq_to_i64(root.last_seq)?)
-            .execute(&mut *tx)
-            .await
-            .map_err(|error| blob_sql_error("record session blob root", error))?;
-        }
-        tx.commit()
-            .await
-            .map_err(|error| blob_sql_error("commit blob roots transaction", error))
-    }
-
     async fn record_blob_edges(&self, edges: Vec<BlobEdge>) -> Result<(), BlobStoreError> {
         if edges.is_empty() {
             return Ok(());

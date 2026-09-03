@@ -178,6 +178,7 @@ const MAX_RUN_DETAIL_LIMIT: usize = 512;
 const MAX_RUN_DETAIL_EVENTS: usize = 20_000;
 /// Resource bound for the opaque managed-controller run terminal token.
 const MAX_RUN_TERMINAL_NOTIFICATION_TOKEN_BYTES: usize = 512;
+const MAX_DELETE_AFTER_CLOSE_MS: u64 = 100 * 365 * 24 * 60 * 60 * 1_000;
 
 /// Default public base URL for the gateway-hosted OAuth callback; matches
 /// `DEFAULT_GATEWAY_BIND`. Hosted deployments must set the real public URL.
@@ -189,15 +190,54 @@ fn env_flag(name: &str) -> bool {
         .is_some_and(|value| matches!(value.to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
 }
 
-fn session_summary_view(record: engine::storage::SessionRecord) -> SessionSummaryView {
+/// Caller-supplied metadata on sessions and environments shares one validator
+/// (bounds plus the reserved-prefix rule), so a session and the environment
+/// it ran in accept the same keys.
+pub(super) fn validate_caller_metadata(
+    metadata: &BTreeMap<String, String>,
+) -> Result<(), AgentApiError> {
+    environment_protocol::registration::validate_registration_metadata(None, metadata)
+        .map_err(|message| AgentApiError::invalid_request(format!("invalid metadata: {message}")))
+}
+
+fn validate_delete_after_close_ms(value: Option<u64>) -> Result<(), AgentApiError> {
+    if let Some(value) = value
+        && !(1..=MAX_DELETE_AFTER_CLOSE_MS).contains(&value)
+    {
+        return Err(AgentApiError::invalid_request(format!(
+            "deleteAfterCloseMs must be 1..={MAX_DELETE_AFTER_CLOSE_MS}"
+        )));
+    }
+    Ok(())
+}
+
+fn session_retention_view(
+    record: &engine::storage::SessionRecord,
+    root: &engine::storage::SessionRecord,
+) -> SessionRetentionView {
+    SessionRetentionView {
+        root_session_id: record.retention_root_session_id.as_str().to_owned(),
+        delete_after_close_ms: root.delete_after_close_ms,
+        delete_at_ms: root.delete_at_ms,
+    }
+}
+
+fn session_summary_view(
+    record: engine::storage::SessionRecord,
+    root: &engine::storage::SessionRecord,
+) -> SessionSummaryView {
+    let retention = session_retention_view(&record, root);
     SessionSummaryView {
         id: record.session_id.as_str().to_owned(),
         display_name: record.display_name,
+        metadata: record.metadata,
         lifecycle_status: match record.lifecycle_status {
             engine::storage::SessionLifecycleStatus::New => SessionLifecycleStatus::New,
             engine::storage::SessionLifecycleStatus::Open => SessionLifecycleStatus::Open,
             engine::storage::SessionLifecycleStatus::Closed => SessionLifecycleStatus::Closed,
         },
+        closed_at_ms: record.closed_at_ms,
+        retention,
         managed: record.managed,
         origin: record
             .origin
@@ -884,10 +924,13 @@ impl GatewayAgentApi {
         config
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn workflow_args(
         &self,
         session_id: SessionId,
         display_name: Option<String>,
+        metadata: BTreeMap<String, String>,
+        delete_after_close_ms: Option<u64>,
         session_config: SessionConfig,
         workflow_tools: Option<ManagedSessionWorkflowTools>,
         close_on_terminal: bool,
@@ -897,6 +940,8 @@ impl GatewayAgentApi {
             universe_id: self.universe_id(),
             session_id,
             display_name,
+            metadata,
+            delete_after_close_ms,
             session_config,
             workflow_tools,
             legacy_max_steps_per_input: None,
@@ -918,10 +963,12 @@ impl GatewayAgentApi {
     ) -> Result<(), AgentApiError> {
         self.start_session_internal(
             SessionStartParams {
+                metadata: Default::default(),
                 session_id: Some(session_id.as_str().to_owned()),
                 display_name: None,
                 config: None,
                 profile: Some(profile),
+                delete_after_close_ms: None,
             },
             false,
             true,
@@ -942,10 +989,12 @@ impl GatewayAgentApi {
     ) -> Result<(), AgentApiError> {
         self.start_session_internal(
             SessionStartParams {
+                metadata: Default::default(),
                 session_id: Some(session_id.as_str().to_owned()),
                 display_name: None,
                 config: None,
                 profile,
+                delete_after_close_ms: None,
             },
             close_on_terminal,
             false,
@@ -1093,9 +1142,13 @@ impl GatewayAgentApi {
         let SessionStartParams {
             session_id,
             display_name,
+            metadata,
             config,
             profile,
+            delete_after_close_ms,
         } = params;
+        validate_caller_metadata(&metadata)?;
+        validate_delete_after_close_ms(delete_after_close_ms)?;
         let workflow_tools = trusted_workflow_tools;
         let client_supplied_id = session_id.is_some();
         let session_id = match session_id {
@@ -1197,6 +1250,8 @@ impl GatewayAgentApi {
                 self.workflow_args(
                     session_id.clone(),
                     display_name,
+                    metadata,
+                    delete_after_close_ms,
                     session_config,
                     workflow_tools.clone(),
                     close_on_terminal,
@@ -1684,16 +1739,38 @@ impl GatewayAgentApi {
         })
     }
 
+    async fn load_retention_root(
+        &self,
+        record: &engine::storage::SessionRecord,
+    ) -> Result<engine::storage::SessionRecord, AgentApiError> {
+        if record.retention_root_session_id == record.session_id {
+            return Ok(record.clone());
+        }
+        self.store
+            .load_session(&record.retention_root_session_id)
+            .await
+            .map_err(map_session_store_error)?
+            .ok_or_else(|| {
+                AgentApiError::internal(format!(
+                    "retention root {} is missing for session {}",
+                    record.retention_root_session_id, record.session_id
+                ))
+            })
+    }
+
     async fn project_session_by_id(
         &self,
         session_id: &SessionId,
     ) -> Result<SessionView, AgentApiError> {
         let loaded = self.load_session_state(session_id).await?;
+        let retention_root = self.load_retention_root(&loaded.record).await?;
+        let retention = session_retention_view(&loaded.record, &retention_root);
         self.projector()
             .project_session(ProjectSession {
                 session_id,
                 state: &loaded.state,
                 record: &loaded.record,
+                retention: &retention,
                 run_limit: DEFAULT_RUN_SUMMARY_LIMIT,
                 run_cursor: None,
             })
@@ -1707,11 +1784,14 @@ impl GatewayAgentApi {
         run_limit: usize,
     ) -> Result<(SessionView, Option<api::RunId>, bool), AgentApiError> {
         let loaded = self.load_session_state(session_id).await?;
+        let retention_root = self.load_retention_root(&loaded.record).await?;
+        let retention = session_retention_view(&loaded.record, &retention_root);
         self.projector()
             .project_session(ProjectSession {
                 session_id,
                 state: &loaded.state,
                 record: &loaded.record,
+                retention: &retention,
                 run_limit,
                 run_cursor: None,
             })
@@ -2523,7 +2603,14 @@ impl AgentApiService for GatewayAgentApi {
             protocol_version: api::PROTOCOL_VERSION.to_owned(),
             server_info: ServerInfo {
                 name: "lightspeed-agent".to_owned(),
-                version: env!("CARGO_PKG_VERSION").to_owned(),
+                version: format!("{}+{}", release_info::VERSION, release_info::GIT_SHA),
+                git_sha: release_info::GIT_SHA.to_owned(),
+                envd: EnvironmentDaemonInfo {
+                    version: release_info::VERSION.to_owned(),
+                    git_sha: release_info::GIT_SHA.to_owned(),
+                    protocol_version: environment_protocol::shared::CURRENT_PROTOCOL_VERSION,
+                    targets: release_info::envd_targets().map(str::to_owned).collect(),
+                },
             },
             capabilities: ServerCapabilities {
                 notifications: false,
@@ -2554,8 +2641,10 @@ impl AgentApiService for GatewayAgentApi {
         let ManagedSessionStartParams {
             session_id,
             display_name,
+            metadata,
             config,
             profile,
+            delete_after_close_ms,
             workflow_tools,
         } = params;
         let workflow_tools = managed_workflow_tools_from_api(workflow_tools)?;
@@ -2563,8 +2652,10 @@ impl AgentApiService for GatewayAgentApi {
             SessionStartParams {
                 session_id,
                 display_name,
+                metadata,
                 config,
                 profile,
+                delete_after_close_ms,
             },
             false,
             false,
@@ -2783,15 +2874,17 @@ impl AgentApiService for GatewayAgentApi {
                 limit,
                 root_session_id,
                 parent_session_id,
+                metadata: params.metadata,
             })
             .await
             .map_err(map_session_store_error)?;
+        let mut sessions = Vec::with_capacity(page.sessions.len());
+        for record in page.sessions {
+            let root = self.load_retention_root(&record).await?;
+            sessions.push(session_summary_view(record, &root));
+        }
         Ok(AgentApiOutcome::new(SessionListResponse {
-            sessions: page
-                .sessions
-                .into_iter()
-                .map(session_summary_view)
-                .collect(),
+            sessions,
             next_cursor: page.next_cursor.as_ref().map(encode_session_list_cursor),
         }))
     }
@@ -2808,8 +2901,47 @@ impl AgentApiService for GatewayAgentApi {
             .set_session_display_name(&session_id, params.display_name)
             .await
             .map_err(map_session_store_error)?;
+        let root = self.load_retention_root(&record).await?;
         Ok(AgentApiOutcome::new(SessionRenameResponse {
-            session: session_summary_view(record),
+            session: session_summary_view(record, &root),
+        }))
+    }
+
+    async fn put_session_metadata(
+        &self,
+        params: SessionMetadataPutParams,
+    ) -> Result<AgentApiOutcome<SessionMetadataPutResponse>, AgentApiError> {
+        let session_id = SessionId::try_new(params.session_id).map_err(|error| {
+            AgentApiError::invalid_request(format!("invalid session id: {error}"))
+        })?;
+        validate_caller_metadata(&params.metadata)?;
+        let record = self
+            .store
+            .set_session_metadata(&session_id, params.metadata)
+            .await
+            .map_err(map_session_store_error)?;
+        let root = self.load_retention_root(&record).await?;
+        Ok(AgentApiOutcome::new(SessionMetadataPutResponse {
+            session: session_summary_view(record, &root),
+        }))
+    }
+
+    async fn put_session_retention(
+        &self,
+        params: SessionRetentionPutParams,
+    ) -> Result<AgentApiOutcome<SessionRetentionPutResponse>, AgentApiError> {
+        validate_delete_after_close_ms(params.delete_after_close_ms)?;
+        let session_id = SessionId::try_new(params.session_id).map_err(|error| {
+            AgentApiError::invalid_request(format!("invalid session id: {error}"))
+        })?;
+        let record = self
+            .store
+            .set_session_retention(&session_id, params.delete_after_close_ms)
+            .await
+            .map_err(map_session_store_error)?;
+        let root = record.clone();
+        Ok(AgentApiOutcome::new(SessionRetentionPutResponse {
+            session: session_summary_view(record, &root),
         }))
     }
 
@@ -2938,14 +3070,27 @@ impl AgentApiService for GatewayAgentApi {
         let session_id = SessionId::try_new(params.session_id).map_err(|error| {
             AgentApiError::invalid_request(format!("invalid session id: {error}"))
         })?;
-        let record = self
+        let target_before_delete = self
             .store
-            .delete_closed_session(&session_id)
+            .load_session(&session_id)
             .await
-            .map_err(map_session_store_error)?;
-        self.close_session_owned_environments(&session_id).await;
+            .map_err(map_session_store_error)?
+            .ok_or_else(|| AgentApiError::not_found(format!("session not found: {session_id}")))?;
+        let root = self.load_retention_root(&target_before_delete).await?;
+        let deleted = crate::session_deletion::delete_session_subtree(
+            self.store.as_ref(),
+            engine::storage::DeleteClosedSessions {
+                session_id: session_id.clone(),
+                cascade: params.cascade,
+                due_at_or_before_ms: None,
+            },
+            crate::session_deletion::SessionDeletionCause::Manual,
+        )
+        .await
+        .map_err(map_session_store_error)?;
         Ok(AgentApiOutcome::new(SessionDeleteResponse {
-            session: session_summary_view(record),
+            session: session_summary_view(deleted.target, &root),
+            deleted_session_count: deleted.deleted_session_ids.len() as u64,
         }))
     }
 
@@ -4084,7 +4229,8 @@ impl AgentApiService for GatewayAgentApi {
         &self,
         params: VfsSnapshotCommitParams,
     ) -> Result<AgentApiOutcome<VfsSnapshotCommitResponse>, AgentApiError> {
-        let response = commit_vfs_snapshot(self.store.as_ref(), params).await?;
+        let response =
+            commit_vfs_snapshot(self.store.as_ref(), Some(self.store.as_ref()), params).await?;
         let snapshot_ref = parse_blob_ref(&response.snapshot_ref)?;
         self.record_vfs_snapshot(
             snapshot_ref,
@@ -4639,9 +4785,13 @@ impl AgentApiService for GatewayAgentApi {
                 .map_err(map_auth_error)?;
         }
         match self.store.create_auth_provider(draft.provider).await {
-            Ok(record) => Ok(AgentApiOutcome::new(AuthProviderCreateResponse {
-                provider: auth_provider_view(record),
-            })),
+            Ok(record) => {
+                self.model_discovery
+                    .invalidate_auth_provider(record.provider_id.as_str());
+                Ok(AgentApiOutcome::new(AuthProviderCreateResponse {
+                    provider: auth_provider_view(record),
+                }))
+            }
             Err(error) => {
                 if let Some(secret) = &draft.secret {
                     let _ = self.store.delete_secret(&secret.secret_id).await;
@@ -4692,6 +4842,8 @@ impl AgentApiService for GatewayAgentApi {
             .delete_auth_provider(&provider_id)
             .await
             .map_err(map_auth_error)?;
+        self.model_discovery
+            .invalidate_auth_provider(record.provider_id.as_str());
         if let Some(secret_id) = &record.credential_secret {
             let _ = self.store.delete_secret(secret_id).await;
         }

@@ -14,7 +14,7 @@ use api::{
 };
 use bots::tools::{BOT_EVENT_RESOLVE_TOOL_ID, BOT_TOOLS_REVISION, is_pushed_tool};
 use bots::{
-    BotCoalesceParams, BotControllerConfig, BotEvent, RoutedSession, RoutedSessionTtl, ids,
+    BotCoalesceParams, BotControllerConfig, BotEvent, RoutedSession, RoutedSessionClosePolicy, ids,
 };
 use engine::{
     BlobRef, EmissionBody, EmissionEnvelope, EmissionProducer, RunStatus, WorkflowToolInvocation,
@@ -144,7 +144,7 @@ pub struct ManagedSession {
     pub last_active_at_ms: Option<i64>,
     /// Retention from the trigger; `Inherit` takes the bot's.
     #[serde(default)]
-    pub ttl: RoutedSessionTtl,
+    pub close_policy: RoutedSessionClosePolicy,
     /// Receiver-bound tools the session was created with; a run that used
     /// one counts as handled.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -598,22 +598,43 @@ impl ControllerState {
             .find(|session| session.session_id == session_id)
     }
 
-    /// Effective retention of a routed session: the trigger's, else the
+    /// Record a routed event against an already-known session. The activity
+    /// stamp drives both idle close and least-recently-used cap eviction.
+    pub fn observe_routed_session(
+        &mut self,
+        session_id: &str,
+        routed: &RoutedSession,
+        observed_at_ms: i64,
+    ) -> bool {
+        let Some(known) = self.extra_session_mut(session_id) else {
+            return false;
+        };
+        if routed.close_policy != RoutedSessionClosePolicy::Inherit {
+            known.close_policy = routed.close_policy;
+        }
+        known.last_active_at_ms = Some(observed_at_ms);
+        true
+    }
+
+    /// Effective idle-close duration of a routed session: the trigger's, else the
     /// bot's; `None` never closes.
-    pub fn session_ttl_ms(&self, session: &ManagedSession) -> Option<u64> {
-        match session.ttl {
-            RoutedSessionTtl::Inherit => self.config.routed_session_ttl_ms.filter(|ttl| *ttl > 0),
-            RoutedSessionTtl::Never => None,
-            RoutedSessionTtl::After { ms } => (ms > 0).then_some(ms),
+    pub fn session_close_after_ms(&self, session: &ManagedSession) -> Option<u64> {
+        match session.close_policy {
+            RoutedSessionClosePolicy::Inherit => self
+                .config
+                .routed_session_close_after_ms
+                .filter(|duration| *duration > 0),
+            RoutedSessionClosePolicy::Never => None,
+            RoutedSessionClosePolicy::After { ms } => (ms > 0).then_some(ms),
         }
     }
 
     pub fn session_expiry_ms(&self, session: &ManagedSession) -> Option<i64> {
-        let ttl = self.session_ttl_ms(session)?;
-        Some(session.last_active_at_ms.unwrap_or(0) + ttl as i64)
+        let close_after_ms = self.session_close_after_ms(session)?;
+        Some(session.last_active_at_ms.unwrap_or(0) + close_after_ms as i64)
     }
 
-    pub fn next_retention_deadline(&self) -> Option<i64> {
+    pub fn next_idle_close_deadline(&self) -> Option<i64> {
         self.extra_sessions
             .iter()
             .filter(|session| !self.is_session_busy(&session.session_id))
@@ -621,7 +642,7 @@ impl ControllerState {
             .min()
     }
 
-    /// Routed sessions idle past their retention window.
+    /// Routed sessions idle past their close window.
     pub fn expired_sessions(&self, now_ms: i64) -> Vec<String> {
         self.extra_sessions
             .iter()
@@ -969,7 +990,7 @@ impl ControllerState {
             .map(|session| RoutedSession {
                 session_id: ids::routed_session_base(&session.session_id).to_owned(),
                 label: session.label.clone(),
-                ttl: session.ttl,
+                close_policy: session.close_policy,
             });
         BotControllerSummary {
             snapshot: self.snapshot(now_ms),
@@ -992,13 +1013,13 @@ impl ControllerState {
             || self.dispatchable(self.clock_ms)
     }
 
-    /// The earliest time-driven reason to wake: a buffer flush, a retention
+    /// The earliest time-driven reason to wake: a buffer flush, a routed-session idle-close
     /// expiry, a rotation retry, the UTC day boundary while budget-parked,
     /// or the descendant refresh while a run is in flight.
     pub fn wake_deadline(&self, now_ms: i64) -> Option<i64> {
         let mut deadlines = vec![
             self.next_buffer_deadline(),
-            self.next_retention_deadline(),
+            self.next_idle_close_deadline(),
             self.rotation_retry_at_ms,
         ];
         if !self.pending_deliveries.is_empty()
@@ -1386,7 +1407,7 @@ mod tests {
             profile_id: ProfileId::new("triager"),
             brief: None,
             runs_per_day: None,
-            routed_session_ttl_ms: None,
+            routed_session_close_after_ms: None,
             self_config: false,
             emit: false,
             enabled: true,
@@ -1431,7 +1452,7 @@ mod tests {
         event.session = Some(RoutedSession {
             session_id: session.to_owned(),
             label: "pr 42".to_owned(),
-            ttl: RoutedSessionTtl::Inherit,
+            close_policy: RoutedSessionClosePolicy::Inherit,
         });
         event
     }
@@ -1645,7 +1666,7 @@ mod tests {
         append.session = Some(RoutedSession {
             session_id: "bot:v1:triage:k-a-1".to_owned(),
             label: "a".to_owned(),
-            ttl: RoutedSessionTtl::Inherit,
+            close_policy: RoutedSessionClosePolicy::Inherit,
         });
         state.accept_event(append, NOW).unwrap();
         state.accept_event(event("e2", 2), NOW).unwrap();
@@ -2039,7 +2060,7 @@ mod tests {
             label: "pr 42".to_owned(),
             kind: BotSessionKind::PerKey,
             last_active_at_ms: Some(NOW),
-            ttl: RoutedSessionTtl::Never,
+            close_policy: RoutedSessionClosePolicy::Never,
             carried_tool_ids: Vec::new(),
         });
         let summary = state.controller_summary("bot:v1:triage:k-pr-42-abcdef01-g2", NOW);
@@ -2055,35 +2076,41 @@ mod tests {
 
     // ── Retention ───────────────────────────────────────────────────────
 
-    fn managed(id: &str, ttl: RoutedSessionTtl, last_active: i64) -> ManagedSession {
+    fn managed(
+        id: &str,
+        close_policy: RoutedSessionClosePolicy,
+        last_active: i64,
+    ) -> ManagedSession {
         ManagedSession {
             session_id: id.to_owned(),
             label: id.to_owned(),
             kind: BotSessionKind::PerKey,
             last_active_at_ms: Some(last_active),
-            ttl,
+            close_policy,
             carried_tool_ids: Vec::new(),
         }
     }
 
     #[test]
-    fn retention_uses_the_session_ttl_then_the_bot_default() {
+    fn idle_close_uses_the_session_policy_then_the_bot_default() {
         let mut state = ready(fresh());
-        state.config.routed_session_ttl_ms = Some(10_000);
+        state.config.routed_session_close_after_ms = Some(10_000);
         state.extra_sessions.push(managed(
             "bot:v1:triage:k-a-1",
-            RoutedSessionTtl::Inherit,
+            RoutedSessionClosePolicy::Inherit,
             NOW,
         ));
-        state
-            .extra_sessions
-            .push(managed("bot:v1:triage:k-b-1", RoutedSessionTtl::Never, NOW));
+        state.extra_sessions.push(managed(
+            "bot:v1:triage:k-b-1",
+            RoutedSessionClosePolicy::Never,
+            NOW,
+        ));
         state.extra_sessions.push(managed(
             "bot:v1:triage:k-c-1",
-            RoutedSessionTtl::After { ms: 2_000 },
+            RoutedSessionClosePolicy::After { ms: 2_000 },
             NOW,
         ));
-        assert_eq!(state.next_retention_deadline(), Some(NOW + 2_000));
+        assert_eq!(state.next_idle_close_deadline(), Some(NOW + 2_000));
         assert!(state.expired_sessions(NOW + 1_999).is_empty());
         assert_eq!(
             state.expired_sessions(NOW + 2_000),
@@ -2096,12 +2123,12 @@ mod tests {
                 "bot:v1:triage:k-c-1".to_owned()
             ]
         );
-        state.config.routed_session_ttl_ms = None;
-        assert_eq!(state.next_retention_deadline(), Some(NOW + 2_000));
+        state.config.routed_session_close_after_ms = None;
+        assert_eq!(state.next_idle_close_deadline(), Some(NOW + 2_000));
         assert_eq!(
             state.expired_sessions(NOW + 10_000),
             vec!["bot:v1:triage:k-c-1".to_owned()],
-            "absent bot ttl keeps inherited sessions"
+            "absent bot idle-close policy keeps inherited sessions"
         );
 
         // Busy sessions never expire; forgetting bumps the generation.
@@ -2112,7 +2139,7 @@ mod tests {
         assert!(state.expired_sessions(NOW + 10_000).is_empty());
         state.release_lane("bot:v1:triage:k-c-1", NOW + 20_000);
         assert_eq!(
-            state.next_retention_deadline(),
+            state.next_idle_close_deadline(),
             Some(NOW + 22_000),
             "touched"
         );
@@ -2125,21 +2152,41 @@ mod tests {
     }
 
     #[test]
+    fn routed_events_refresh_idle_close_and_lru_activity() {
+        let mut state = ready(fresh());
+        state.config.routed_session_close_after_ms = Some(10_000);
+        state.extra_sessions.push(managed(
+            "bot:v1:triage:k-a-1",
+            RoutedSessionClosePolicy::Inherit,
+            NOW,
+        ));
+        let routed = RoutedSession {
+            session_id: "bot:v1:triage:k-a-1".to_owned(),
+            label: "a".to_owned(),
+            close_policy: RoutedSessionClosePolicy::Inherit,
+        };
+
+        assert!(state.observe_routed_session(&routed.session_id, &routed, NOW + 5_000));
+        assert!(state.expired_sessions(NOW + 10_000).is_empty());
+        assert_eq!(state.next_idle_close_deadline(), Some(NOW + 15_000));
+    }
+
+    #[test]
     fn idlest_free_session_is_the_eviction_candidate() {
         let mut state = ready(fresh());
         state.extra_sessions.push(managed(
             "bot:v1:triage:k-a-1",
-            RoutedSessionTtl::Inherit,
+            RoutedSessionClosePolicy::Inherit,
             NOW + 5,
         ));
         state.extra_sessions.push(managed(
             "bot:v1:triage:k-b-1",
-            RoutedSessionTtl::Inherit,
+            RoutedSessionClosePolicy::Inherit,
             NOW + 1,
         ));
         state.extra_sessions.push(managed(
             "bot:v1:triage:k-c-1",
-            RoutedSessionTtl::Inherit,
+            RoutedSessionClosePolicy::Inherit,
             NOW + 3,
         ));
         state
@@ -2206,7 +2253,7 @@ mod tests {
         state.rotate_main_session(true);
         state.extra_sessions.push(managed(
             "bot:v1:triage:k-a-1",
-            RoutedSessionTtl::Inherit,
+            RoutedSessionClosePolicy::Inherit,
             NOW,
         ));
         assert_eq!(
@@ -2280,7 +2327,7 @@ mod tests {
             .insert("bot:v1:triage:k-a-1".to_owned(), 2);
         state.extra_sessions.push(managed(
             "bot:v1:triage:k-a-1-g2",
-            RoutedSessionTtl::Never,
+            RoutedSessionClosePolicy::Never,
             NOW,
         ));
         state.request_rotation("bot:v1:triage:k-a-1-g2".to_owned());
@@ -2360,7 +2407,7 @@ mod tests {
         state.accept_event(coalesced("e1", 1, "k"), NOW).unwrap();
         state.extra_sessions.push(managed(
             "bot:v1:triage:k-a-1",
-            RoutedSessionTtl::Inherit,
+            RoutedSessionClosePolicy::Inherit,
             NOW,
         ));
         let snapshot = state.snapshot(NOW);

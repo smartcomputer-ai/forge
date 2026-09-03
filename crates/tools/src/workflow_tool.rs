@@ -464,6 +464,7 @@ mod tests {
             arguments_ref,
             workflow_tool: None,
             promise_control: None,
+            remote_mcp: None,
         };
         let first = invoke_workflow_tool(
             blobs.as_ref(),
@@ -566,6 +567,7 @@ mod tests {
             arguments_ref,
             workflow_tool: None,
             promise_control: None,
+            remote_mcp: None,
         };
         let output = invoke_workflow_tool(
             blobs.as_ref(),
@@ -627,6 +629,7 @@ mod tests {
             arguments_ref,
             workflow_tool: None,
             promise_control: None,
+            remote_mcp: None,
         };
 
         let output = invoke_workflow_tool(
@@ -675,6 +678,7 @@ mod tests {
             arguments_ref,
             workflow_tool: None,
             promise_control: None,
+            remote_mcp: None,
         };
 
         let arguments_ref = blobs
@@ -766,6 +770,7 @@ mod tests {
             arguments_ref,
             workflow_tool: None,
             promise_control: None,
+            remote_mcp: None,
         };
 
         let output = invoke_workflow_tool(
@@ -809,6 +814,7 @@ mod tests {
             arguments_ref,
             workflow_tool: None,
             promise_control: None,
+            remote_mcp: None,
         };
         let invoke = |arguments: &'static [u8]| {
             let blobs = blobs.clone();
@@ -910,6 +916,7 @@ mod tests {
             arguments_ref,
             workflow_tool: None,
             promise_control: None,
+            remote_mcp: None,
         };
         let output = invoke_workflow_tool(
             blobs.as_ref(),

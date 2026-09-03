@@ -27,7 +27,7 @@ pub struct BotControllerConfig {
     pub profile_id: ProfileId,
     pub brief: Option<String>,
     pub runs_per_day: Option<u32>,
-    pub routed_session_ttl_ms: Option<u64>,
+    pub routed_session_close_after_ms: Option<u64>,
     #[serde(default)]
     pub self_config: bool,
     #[serde(default)]
@@ -49,7 +49,7 @@ impl BotControllerConfig {
             profile_id: record.document.profile_id.clone(),
             brief: record.document.brief.clone(),
             runs_per_day: record.document.runs_per_day,
-            routed_session_ttl_ms: record.document.routed_session_ttl_ms,
+            routed_session_close_after_ms: record.document.routed_session_close_after_ms,
             self_config: record.document.self_config,
             emit: record.document.emit,
             enabled: record.document.enabled,

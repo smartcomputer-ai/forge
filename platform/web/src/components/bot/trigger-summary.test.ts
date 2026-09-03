@@ -59,7 +59,7 @@ describe("triggerSummary", () => {
 });
 
 describe("deliverySentence", () => {
-  it("reads routing, batching, busy handling, and retention as one line", () => {
+  it("reads routing, batching, busy handling, and idle close as one line", () => {
     const shape = deliveryShapeOf(
       trigger({
         kind: "webhook",
@@ -67,7 +67,7 @@ describe("deliverySentence", () => {
         route: { policy: "perKey", key: "data.pull_request.number" },
         coalesce: { debounceMs: 30_000, maxWaitMs: 120_000, maxCount: 20 },
         deliver: { whenBusy: "queue" },
-        sessionTtlMs: 7 * 24 * 3_600_000,
+        sessionCloseAfterMs: 7 * 24 * 3_600_000,
       }),
     );
     expect(deliverySentence(shape)).toBe(
@@ -84,8 +84,8 @@ describe("deliverySentence", () => {
           whenBusy: "steer",
           debounceSeconds: "0.4",
           maxWaitSeconds: "1.5",
-          ttlMode: "forever",
-          ttlHours: "",
+          closeMode: "forever",
+          closeHours: "",
         },
         true,
       ),

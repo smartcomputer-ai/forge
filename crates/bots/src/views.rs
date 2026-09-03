@@ -55,8 +55,8 @@ pub fn bot_status_view(record: &BotRecord, snapshot: Option<&BotControllerSnapsh
     );
     insert_some(
         &mut bot,
-        "routedSessionTtlMs",
-        document.routed_session_ttl_ms,
+        "routedSessionCloseAfterMs",
+        document.routed_session_close_after_ms,
     );
     bot.insert("selfConfig".to_owned(), json!(document.self_config));
     bot.insert("emit".to_owned(), json!(document.emit));
@@ -216,7 +216,11 @@ pub fn trigger_tool_view(
     view.insert("route".to_owned(), json!(document.route));
     view.insert("coalesce".to_owned(), json!(document.coalesce));
     view.insert("deliver".to_owned(), json!(document.deliver));
-    insert_some(&mut view, "sessionTtlMs", document.session_ttl_ms);
+    insert_some(
+        &mut view,
+        "sessionCloseAfterMs",
+        document.session_close_after_ms,
+    );
     view.insert("enabled".to_owned(), json!(document.enabled));
     insert_some(
         &mut view,
@@ -712,7 +716,7 @@ mod tests {
                     fires: 60,
                     window_ms: 3_600_000,
                 }),
-                routed_session_ttl_ms: None,
+                routed_session_close_after_ms: None,
                 self_config: true,
                 emit: true,
                 enabled: true,
@@ -736,7 +740,7 @@ mod tests {
                 route: None,
                 coalesce: None,
                 deliver: None,
-                session_ttl_ms: None,
+                session_close_after_ms: None,
                 enabled: true,
             },
             secrets: BotTriggerSecrets {
@@ -778,7 +782,7 @@ mod tests {
             session: Some(RoutedSession {
                 session_id: "bot:v1:triage:k-pr-12-0123abcd".to_owned(),
                 label: "pr-12".to_owned(),
-                ttl: Default::default(),
+                close_policy: Default::default(),
             }),
             sender_bot_id: None,
             hops: 0,
@@ -807,7 +811,7 @@ mod tests {
             session: Some(RoutedSession {
                 session_id: "bot:v1:infra:k-inc-7-abcd1234".to_owned(),
                 label: "inc-7".to_owned(),
-                ttl: Default::default(),
+                close_policy: Default::default(),
             }),
         });
         let mut reply = event(17, &format!("reply:infra:{}", "f".repeat(64)));
@@ -1132,7 +1136,7 @@ mod tests {
             json!("event.kind.startsWith(\"pull_request\")")
         );
         assert_eq!(view["coalesce"], Value::Null);
-        assert!(view.get("sessionTtlMs").is_none());
+        assert!(view.get("sessionCloseAfterMs").is_none());
         assert!(view["ingestUrl"].as_str().unwrap().contains("/hooks/bots/"));
         assert!(
             !serde_json::to_string(&view)
@@ -1171,7 +1175,7 @@ mod tests {
                 priority: 100,
             },
         );
-        chat.document.session_ttl_ms = Some(0);
+        chat.document.session_close_after_ms = Some(0);
         chat.disabled_reason = Some(api::BotTriggerDisabledReason::Breaker);
         chat.document.enabled = false;
         let managed = trigger_tool_view(&chat, None, true);
@@ -1179,7 +1183,7 @@ mod tests {
         assert_eq!(managed["spec"]["account"], json!("tg-main"));
         assert!(managed["spec"].get("accountId").is_none());
         assert_eq!(managed["pairingCode"], json!("Pair-Code-42"));
-        assert_eq!(managed["sessionTtlMs"], json!(0));
+        assert_eq!(managed["sessionCloseAfterMs"], json!(0));
         assert_eq!(managed["enabled"], json!(false));
         assert_eq!(managed["disabledReason"], json!("breaker"));
         let redacted = trigger_tool_view(&chat, None, false);

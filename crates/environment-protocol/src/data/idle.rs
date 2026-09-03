@@ -20,6 +20,17 @@ pub struct IdleResponse {
     pub running_processes: u32,
     /// Jobs that are running or cancelling.
     pub running_jobs: u32,
+    /// Process groups of finished commands that still have members alive:
+    /// services and other leftovers a command started and did not stop.
+    /// They are not running work, so they never block idle power policy;
+    /// a policy may prefer freezing over stopping while the count is
+    /// non-zero.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub leftover_process_groups: u32,
+}
+
+fn is_zero(value: &u32) -> bool {
+    *value == 0
 }
 
 impl IdleResponse {

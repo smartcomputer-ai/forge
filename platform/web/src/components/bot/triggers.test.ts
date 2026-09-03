@@ -5,7 +5,7 @@ import {
   inboxBotOptionIds,
   inboxSelectionSpec,
   mintPairingCode,
-  sessionTtlMs,
+  sessionCloseAfterMs,
 } from "./triggers";
 
 describe("bot inbox sender selection", () => {
@@ -89,10 +89,10 @@ describe("pairing codes", () => {
   });
 });
 
-describe("session retention", () => {
+describe("session idle close", () => {
   it("inherits with null, keeps forever with 0, and converts hours", () => {
-    expect(sessionTtlMs({ ttlMode: "inherit", ttlHours: "" })).toBeNull();
-    expect(sessionTtlMs({ ttlMode: "forever", ttlHours: "" })).toBe(0);
-    expect(sessionTtlMs({ ttlMode: "hours", ttlHours: "24" })).toBe(86_400_000);
+    expect(sessionCloseAfterMs({ closeMode: "inherit", closeHours: "" })).toBeNull();
+    expect(sessionCloseAfterMs({ closeMode: "forever", closeHours: "" })).toBe(0);
+    expect(sessionCloseAfterMs({ closeMode: "hours", closeHours: "24" })).toBe(86_400_000);
   });
 });

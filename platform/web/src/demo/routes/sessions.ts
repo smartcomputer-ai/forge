@@ -32,6 +32,17 @@ interface ResolvedProfile {
   environment: ProfileEnvironment | null;
 }
 
+/// `?metadata=key=value`, repeatable, as the containment filter map.
+function metadataQueryFilter(values: string[] | undefined): Record<string, string> {
+  const filter: Record<string, string> = {};
+  for (const raw of values ?? []) {
+    const at = raw.indexOf("=");
+    if (at <= 0 || at === raw.length - 1) continue;
+    filter[raw.slice(0, at)] = raw.slice(at + 1);
+  }
+  return filter;
+}
+
 export function sessionRoutes(store: DemoStore): Hono {
   const app = new Hono();
 
@@ -50,10 +61,14 @@ export function sessionRoutes(store: DemoStore): Hono {
     const offset = intQuery(c, "cursor", 0);
     const rootSessionId = c.req.query("rootSessionId") || null;
     const parentSessionId = c.req.query("parentSessionId") || null;
+    const metadata = metadataQueryFilter(c.req.queries("metadata"));
     const all = [...universe.sessions.values()]
       .filter((record) => !rootSessionId || record.view.origin?.rootSessionId === rootSessionId)
       .filter(
         (record) => !parentSessionId || record.view.origin?.parentSessionId === parentSessionId,
+      )
+      .filter((record) =>
+        Object.entries(metadata).every(([key, value]) => record.view.metadata?.[key] === value),
       )
       .sort((a, b) => b.view.updatedAtMs - a.view.updatedAtMs);
     const page = all.slice(offset, offset + limit);
@@ -69,7 +84,12 @@ export function sessionRoutes(store: DemoStore): Hono {
   app.post("/:id/sessions", async (c) => {
     const universe = universeFor(store, c);
     if (!universe) return notFound(c);
-    const body = await readBody<{ displayName?: string; profile?: ProfileSource }>(c);
+    const body = await readBody<{
+      displayName?: string;
+      metadata?: Record<string, string>;
+      deleteAfterCloseMs?: number | null;
+      profile?: ProfileSource;
+    }>(c);
     if (!body.profile) return badRequest(c, "profile is required");
     const profile = resolveProfile(universe, body.profile);
     if (!profile) return notFound(c, "not found in engine");
@@ -80,6 +100,8 @@ export function sessionRoutes(store: DemoStore): Hono {
     const session = newSession(store, universe, {
       id: sessionId,
       displayName: body.displayName?.trim() || null,
+      metadata: body.metadata ?? {},
+      deleteAfterCloseMs: body.deleteAfterCloseMs,
       config,
       activeEnvironmentId: resolved.environmentId,
       instructions: instructionText(store, profile.instructions),
@@ -90,6 +112,48 @@ export function sessionRoutes(store: DemoStore): Hono {
   app.get("/:id/sessions/:sessionId", (c) => {
     const found = lookup(c);
     return found ? c.json(found.session.view) : notFound(c, "not found in engine");
+  });
+
+  /// Put replaces the whole map; an empty map clears it.
+  app.put("/:id/sessions/:sessionId/metadata", async (c) => {
+    const found = lookup(c);
+    if (!found) return notFound(c, "not found in engine");
+    const body = await readBody<{ metadata?: Record<string, string> }>(c);
+    found.session.view.metadata = body.metadata ?? {};
+    return c.json(found.session.view);
+  });
+
+  app.put("/:id/sessions/:sessionId/retention", async (c) => {
+    const found = lookup(c);
+    if (!found) return notFound(c, "not found in engine");
+    const { session } = found;
+    if (session.view.retention.rootSessionId !== session.view.id) {
+      return conflict(
+        c,
+        `engine conflict: retention is owned by ${session.view.retention.rootSessionId}`,
+      );
+    }
+    const body = await readBody<{ deleteAfterCloseMs?: unknown }>(c);
+    if (!Object.prototype.hasOwnProperty.call(body, "deleteAfterCloseMs")) {
+      return badRequest(c, "deleteAfterCloseMs is required");
+    }
+    if (
+      body.deleteAfterCloseMs !== null
+      && (typeof body.deleteAfterCloseMs !== "number" || body.deleteAfterCloseMs <= 0)
+    ) {
+      return badRequest(c, "deleteAfterCloseMs must be positive or null");
+    }
+    session.view.retention.deleteAfterCloseMs = body.deleteAfterCloseMs;
+    session.view.retention.deleteAtMs = session.view.closedAtMs == null
+      || body.deleteAfterCloseMs == null
+        ? null
+        : session.view.closedAtMs + body.deleteAfterCloseMs;
+    for (const child of found.universe.sessions.values()) {
+      if (child.view.retention.rootSessionId === session.view.id && child !== session) {
+        child.view.retention = { ...session.view.retention };
+      }
+    }
+    return c.json(session.view);
   });
 
   /// Closing keeps history; `force` cancels active and queued work first.
@@ -114,11 +178,22 @@ export function sessionRoutes(store: DemoStore): Hono {
     if (session.view.status !== "closed") {
       return conflict(c, "engine conflict: only closed sessions can be deleted");
     }
-    for (const timer of session.timers) clearTimeout(timer);
-    session.timers.clear();
-    // A parked tail returns now instead of waiting out its poll.
-    for (const wake of [...session.waiters]) wake();
-    universe.sessions.delete(session.view.id);
+    const descendants = retentionDescendants(universe, session.view.id);
+    const cascade = c.req.query("cascade") === "true";
+    if (descendants.length > 0 && !cascade) {
+      return conflict(c, "engine conflict: session has forks or delegated children; enable cascade");
+    }
+    const selected = cascade ? [session, ...descendants] : [session];
+    if (selected.some((candidate) => candidate.view.status !== "closed")) {
+      return conflict(c, "engine conflict: every session in the subtree must be closed");
+    }
+    for (const candidate of selected.reverse()) {
+      for (const timer of candidate.timers) clearTimeout(timer);
+      candidate.timers.clear();
+      // A parked tail returns now instead of waiting out its poll.
+      for (const wake of [...candidate.waiters]) wake();
+      universe.sessions.delete(candidate.view.id);
+    }
     return c.json(sessionSummary(session));
   });
 
@@ -312,6 +387,20 @@ export function sessionRoutes(store: DemoStore): Hono {
   });
 
   return app;
+}
+
+function retentionDescendants(universe: UniverseState, parentId: string): SessionRecord[] {
+  const descendants: SessionRecord[] = [];
+  const pending = [parentId];
+  while (pending.length > 0) {
+    const parent = pending.shift()!;
+    for (const candidate of universe.sessions.values()) {
+      if (candidate.view.origin?.parentSessionId !== parent) continue;
+      descendants.push(candidate);
+      pending.push(candidate.view.id);
+    }
+  }
+  return descendants;
 }
 
 function resolveProfile(universe: UniverseState, source: ProfileSource): ResolvedProfile | null {

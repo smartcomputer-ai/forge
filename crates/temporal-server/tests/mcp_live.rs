@@ -14,7 +14,7 @@ use api::{
     McpServerToolsDiscoverParams, McpServerToolsDiscoverResponse, RemoteMcpApprovalPolicy,
     RemoteMcpExecution, RemoteMcpExposure, RunApprovalsDecideParams, RunLimitsConfig,
     RunStartConfig, RunStartParams, RunStartSource, SessionConfig, SessionConfigPutParams,
-    SessionEventsReadParams, SessionReadParams, SessionStartParams,
+    SessionEventsReadParams, SessionReadParams, SessionStartParams, TimersFeature,
 };
 use api_projection::model_to_api;
 use async_trait::async_trait;
@@ -29,7 +29,7 @@ use engine::{
     ApprovalContinuation, ApprovalSubject, ContextEntryInput, ContextEntryKind, ContextMessageRole,
     CoreAgentIoError, CoreAgentLlm, CoreAgentTools, LlmFinish, LlmGenerationFacts,
     LlmGenerationRequest, LlmGenerationResult, LlmGenerationStatus, ObservedApprovalRequest,
-    ObservedToolCall, SessionId, ToolCallId, ToolName, storage::BlobStore,
+    ObservedToolCall, SessionId, ToolCallId, ToolKind, ToolName, storage::BlobStore,
 };
 use serde_json::{Value, json};
 use support::live::{
@@ -41,10 +41,11 @@ use temporal_server::{
     default_model_from_env,
     gateway::{DEFAULT_MAX_REQUEST_BODY_BYTES, GatewayAgentApi, GatewayState, gateway_router},
     pg_store_from_env,
-    worker::{ActivityState, FakeTools, WorkerActivities},
+    worker::{ActivityState, FakeTools, SessionTools, WorkerActivities},
 };
 use temporalio_client::{Client, WorkflowTerminateOptions};
 use tokio::sync::Mutex;
+use tools::concurrency::{AWAIT_TOOL_NAME, SLEEP_TOOL_NAME};
 
 const LARGE_TOOL_COUNT: usize = 45;
 const LARGE_PAGE_SIZE: usize = 15;
@@ -417,6 +418,7 @@ async fn run_matrix_client(
     fixture.set_large_tool_count(LARGE_TOOL_COUNT).await;
 
     api.start_session(SessionStartParams {
+        metadata: Default::default(),
         session_id: Some(session_id.as_str().to_owned()),
         display_name: None,
         config: Some(SessionConfig {
@@ -441,6 +443,7 @@ async fn run_matrix_client(
             ..SessionConfig::default()
         }),
         profile: None,
+        delete_after_close_ms: None,
     })
     .await?;
     let started = api
@@ -908,6 +911,39 @@ async fn temporal_live_native_mcp_search_call_and_approval() -> anyhow::Result<(
     .await
 }
 
+/// A model turn that mixes an `await` (batch-unit execution) with an injected
+/// native MCP call whose server gates every call on approval. The batch must
+/// park once on the MCP approval while the await stays pending, then complete
+/// every call through its intended runtime after the decision.
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires ./dev.sh infra, npm install, and LIGHTSPEED_MCP_PRIVATE_NETWORKS allowing loopback"]
+async fn temporal_live_native_mcp_mixed_await_batch_parks_once_and_completes() -> anyhow::Result<()>
+{
+    let _lock = LIVE_TEST_LOCK.lock().await;
+    let _ = dotenvy::dotenv();
+    require_storage_live_env()?;
+    let server_id = format!("native_mixed_{}", uuid::Uuid::new_v4().simple());
+    let store = pg_store_from_env().await?;
+    let blobs: Arc<dyn BlobStore> = store.clone();
+    let llm = Arc::new(MixedBatchScriptedLlm {
+        blobs: blobs.clone(),
+        server_id: server_id.clone(),
+        selected_tool: "lightspeed_models_list".to_owned(),
+    }) as Arc<dyn CoreAgentLlm>;
+    // The hosted runtime is required: `sleep` and `await` are real tools here
+    // and the mixed batch must take the production batch-unit path.
+    let hosted = Arc::new(SessionTools::from_pg_store(store.clone()));
+    let tools: Arc<dyn CoreAgentTools> = hosted.clone();
+    let state = ActivityState::from_pg_store(store.clone(), llm, tools)
+        .with_hosted_tools(hosted)
+        .with_native_mcp_from_pg_store(store)?;
+    let activities = WorkerActivities::for_universe(support::live::live_universe_id()?, state);
+    run_with_live_worker(activities, move |client, task_queue, session_id| {
+        run_mixed_batch_live_client(client, task_queue, session_id, server_id)
+    })
+    .await
+}
+
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "requires ./dev.sh infra or compatible Temporal + Postgres env"]
 async fn temporal_live_mcp_and_session_links_materialize() -> anyhow::Result<()> {
@@ -1229,6 +1265,7 @@ async fn run_approval_live_client(
         .with_default_model(model.clone())
         .build();
     api.start_session(SessionStartParams {
+        metadata: Default::default(),
         session_id: Some(session_id.as_str().to_owned()),
         display_name: None,
         config: Some(SessionConfig {
@@ -1236,6 +1273,7 @@ async fn run_approval_live_client(
             ..SessionConfig::default()
         }),
         profile: None,
+        delete_after_close_ms: None,
     })
     .await?;
 
@@ -1390,6 +1428,7 @@ async fn run_native_mcp_live_client(
     .await?;
 
     api.start_session(SessionStartParams {
+        metadata: Default::default(),
         session_id: Some(session_id.as_str().to_owned()),
         display_name: None,
         config: Some(SessionConfig {
@@ -1406,6 +1445,7 @@ async fn run_native_mcp_live_client(
             ..SessionConfig::default()
         }),
         profile: None,
+        delete_after_close_ms: None,
     })
     .await?;
     let started = api
@@ -1541,6 +1581,7 @@ async fn run_mcp_live_client(
     );
 
     api.start_session(SessionStartParams {
+        metadata: Default::default(),
         session_id: Some(session_id.as_str().to_owned()),
         display_name: None,
         config: Some(SessionConfig {
@@ -1548,6 +1589,7 @@ async fn run_mcp_live_client(
             ..SessionConfig::default()
         }),
         profile: None,
+        delete_after_close_ms: None,
     })
     .await?;
 
@@ -1578,7 +1620,9 @@ async fn run_mcp_live_client(
         })
         .await?;
     let linked_view = read_session_view(&api, &session_id).await?;
-    let tool_id = format!("mcp_{server_id}");
+    // The toolset entry is named after the model-facing server label, not
+    // the record id: `crm` links as `mcp_crm`.
+    let tool_id = "mcp_crm".to_owned();
     assert!(
         linked_view
             .active_tools
@@ -1795,4 +1839,338 @@ fn expected_configurator_tool_names() -> anyhow::Result<BTreeSet<String>> {
             Ok(format!("lightspeed_{suffix}"))
         })
         .collect()
+}
+
+/// Scripted model for the mixed-batch scenario: schedule a timer, then emit
+/// one turn holding both the `await` on that timer and an injected native MCP
+/// call, then summarize every tool result it can see.
+#[derive(Clone)]
+struct MixedBatchScriptedLlm {
+    blobs: Arc<dyn BlobStore>,
+    server_id: String,
+    selected_tool: String,
+}
+
+const MIXED_SLEEP_CALL_ID: &str = "mixed_sleep";
+const MIXED_AWAIT_CALL_ID: &str = "mixed_await";
+const MIXED_MCP_CALL_ID: &str = "mixed_mcp";
+
+fn parse_timer_promise(sleep_result: &str) -> Option<String> {
+    // "Timer scheduled for N ms (promise promise_1). Await it with ..."
+    let start = sleep_result.find("(promise ")? + "(promise ".len();
+    let end = sleep_result[start..].find(')')? + start;
+    Some(sleep_result[start..end].to_owned())
+}
+
+#[async_trait]
+impl CoreAgentLlm for MixedBatchScriptedLlm {
+    async fn generate(
+        &self,
+        request: LlmGenerationRequest,
+    ) -> Result<LlmGenerationResult, CoreAgentIoError> {
+        let tool_results = request
+            .request
+            .context
+            .entries
+            .iter()
+            .filter_map(|entry| match &entry.kind {
+                ContextEntryKind::ToolResult { call_id, .. } => {
+                    Some((call_id.clone(), entry.content_ref.clone()))
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        match tool_results.as_slice() {
+            [] => {
+                self.tool_calls(
+                    &request,
+                    vec![(SLEEP_TOOL_NAME, MIXED_SLEEP_CALL_ID, json!({"ms": 1500}))],
+                )
+                .await
+            }
+            [(call_id, result_ref)] if call_id.as_str() == MIXED_SLEEP_CALL_ID => {
+                let text = self.blobs.read_text(result_ref).await.map_err(io_error)?;
+                let promise =
+                    parse_timer_promise(&text).ok_or_else(|| CoreAgentIoError::Failed {
+                        message: format!("sleep result did not name a promise: {text}"),
+                    })?;
+                let injected = self.injected_tool_name(&request)?;
+                self.tool_calls(
+                    &request,
+                    vec![
+                        (
+                            AWAIT_TOOL_NAME,
+                            MIXED_AWAIT_CALL_ID,
+                            json!({"promises": [promise], "mode": "all", "timeout_ms": 60_000}),
+                        ),
+                        (injected.as_str(), MIXED_MCP_CALL_ID, json!({})),
+                    ],
+                )
+                .await
+            }
+            results => {
+                let mut texts = Vec::with_capacity(results.len());
+                for (call_id, result_ref) in results {
+                    let text = self.blobs.read_text(result_ref).await.map_err(io_error)?;
+                    texts.push(format!("{call_id}={text}"));
+                }
+                self.final_result(
+                    &request,
+                    format!("mixed native MCP batch completed: {}", texts.join(" | ")),
+                )
+                .await
+            }
+        }
+    }
+}
+
+impl MixedBatchScriptedLlm {
+    /// The injected call name is `<server tool>__<remote tool>`; the server
+    /// tool is found by its record id so the test never hard-codes the
+    /// label-derived tool name.
+    fn injected_tool_name(
+        &self,
+        request: &LlmGenerationRequest,
+    ) -> Result<String, CoreAgentIoError> {
+        request
+            .request
+            .tools
+            .iter()
+            .find(|tool| {
+                matches!(&tool.kind, ToolKind::RemoteMcp(spec) if spec.server_id == self.server_id)
+            })
+            .map(|tool| format!("{}__{}", tool.name, self.selected_tool))
+            .ok_or_else(|| CoreAgentIoError::Failed {
+                message: format!(
+                    "mixed batch scripted model expected the {} MCP server tool",
+                    self.server_id
+                ),
+            })
+    }
+
+    async fn tool_calls(
+        &self,
+        request: &LlmGenerationRequest,
+        calls: Vec<(&str, &str, Value)>,
+    ) -> Result<LlmGenerationResult, CoreAgentIoError> {
+        let mut context_entries = Vec::with_capacity(calls.len());
+        let mut tool_calls = Vec::with_capacity(calls.len());
+        for (tool, call_id, arguments) in calls {
+            let arguments_ref = self
+                .blobs
+                .put_bytes(serde_json::to_vec(&arguments).map_err(io_error)?)
+                .await
+                .map_err(io_error)?;
+            let call_id = ToolCallId::new(call_id);
+            let tool_name = ToolName::new(tool);
+            context_entries.push(ContextEntryInput {
+                kind: ContextEntryKind::ToolCall {
+                    call_id: call_id.clone(),
+                    name: tool_name.clone(),
+                },
+                content_ref: arguments_ref.clone(),
+                media_type: Some("application/json".to_owned()),
+                preview: None,
+                provider_kind: Some("mixed-batch-script".to_owned()),
+                provider_item_id: Some(call_id.as_str().to_owned()),
+                token_estimate: None,
+            });
+            tool_calls.push(ObservedToolCall {
+                call_id,
+                tool_name,
+                provider_kind: Some("mixed-batch-script".to_owned()),
+                arguments_ref,
+                native_call_ref: None,
+            });
+        }
+        Ok(LlmGenerationResult {
+            run_id: request.run_id,
+            turn_id: request.turn_id,
+            status: LlmGenerationStatus::Succeeded,
+            failure_ref: None,
+            context_entries,
+            facts: LlmGenerationFacts {
+                duration_ms: None,
+                provider_response_id: Some(format!("mixed-batch-{}", request.turn_id.as_u64())),
+                finish: LlmFinish::ToolCalls,
+                usage: None,
+                tool_calls,
+                approval_requests: Vec::new(),
+                context_token_estimate: None,
+            },
+        })
+    }
+
+    async fn final_result(
+        &self,
+        request: &LlmGenerationRequest,
+        text: String,
+    ) -> Result<LlmGenerationResult, CoreAgentIoError> {
+        let content_ref = self
+            .blobs
+            .put_bytes(text.into_bytes())
+            .await
+            .map_err(io_error)?;
+        Ok(LlmGenerationResult {
+            run_id: request.run_id,
+            turn_id: request.turn_id,
+            status: LlmGenerationStatus::Succeeded,
+            failure_ref: None,
+            context_entries: vec![ContextEntryInput {
+                kind: ContextEntryKind::Message {
+                    role: ContextMessageRole::Assistant,
+                },
+                content_ref,
+                media_type: Some("text/plain".to_owned()),
+                preview: None,
+                provider_kind: Some("mixed-batch-script".to_owned()),
+                provider_item_id: None,
+                token_estimate: None,
+            }],
+            facts: LlmGenerationFacts {
+                duration_ms: None,
+                provider_response_id: Some(format!(
+                    "mixed-batch-final-{}",
+                    request.turn_id.as_u64()
+                )),
+                finish: LlmFinish::Stop,
+                usage: None,
+                tool_calls: Vec::new(),
+                approval_requests: Vec::new(),
+                context_token_estimate: None,
+            },
+        })
+    }
+}
+
+async fn run_mixed_batch_live_client(
+    client: Client,
+    task_queue: String,
+    session_id: SessionId,
+    server_id: String,
+) -> anyhow::Result<()> {
+    let store = pg_store_from_env().await?;
+    let model = default_model_from_env();
+    let api = Arc::new(
+        GatewayAgentApi::builder(client.clone(), store)
+            .with_task_queue(task_queue)
+            .with_default_model(model.clone())
+            .build(),
+    );
+    let configurator = LiveConfigurator::start(api.clone()).await?;
+    let selected_tool = "lightspeed_models_list";
+    assert!(expected_configurator_tool_names()?.contains(selected_tool));
+    api.put_mcp_server(McpServerPutParams {
+        server: McpServerInput {
+            server_id: server_id.clone(),
+            display_name: Some("Native Mixed Configurator".to_owned()),
+            server_url: configurator.mcp_url.clone(),
+            default_server_label: "native_mixed".to_owned(),
+            description: Some("Read this Lightspeed universe".to_owned()),
+            allowed_tools: Some(vec![selected_tool.to_owned()]),
+            execution: api::RemoteMcpExecution::Native,
+            exposure: api::RemoteMcpExposure::Inject,
+            approval_default: RemoteMcpApprovalPolicy::Always,
+            defer_loading_default: None,
+            allow_private_network: true,
+            auth_policy: api::McpServerAuthPolicy::None,
+            credential: None,
+            status: McpServerStatus::Active,
+        },
+        expected_revision: None,
+    })
+    .await?;
+
+    api.start_session(SessionStartParams {
+        metadata: Default::default(),
+        session_id: Some(session_id.as_str().to_owned()),
+        display_name: None,
+        config: Some(SessionConfig {
+            model: Some(model_to_api(&model)),
+            features: Some(FeaturesConfig {
+                timers: Some(TimersFeature {
+                    version: api::CURRENT_FEATURE_VERSION,
+                }),
+                mcp: Some(api::McpFeature {
+                    version: api::CURRENT_FEATURE_VERSION,
+                    servers: vec![api::McpServerLink {
+                        server_id: server_id.clone(),
+                    }],
+                }),
+                ..FeaturesConfig::default()
+            }),
+            ..SessionConfig::default()
+        }),
+        profile: None,
+        delete_after_close_ms: None,
+    })
+    .await?;
+    let started = api
+        .start_run(RunStartParams {
+            session_id: session_id.as_str().to_owned(),
+            source: RunStartSource::Input {
+                items: vec![InputItem::Text {
+                    text: "Schedule a timer, then await it while listing models".to_owned(),
+                }],
+            },
+            submission_id: None,
+            config: None,
+            notify_on_terminal: None,
+        })
+        .await?;
+
+    // The mixed batch parks on the MCP approval; the await sibling neither
+    // fails nor defers ahead of the decision.
+    let pending =
+        wait_for_temporal_pending_approval(&api, &session_id, &started.result.run.id).await?;
+    match &pending.subject {
+        api::ApprovalSubjectView::McpToolCall {
+            server_id: actual_server,
+            tool_name,
+            ..
+        } => {
+            assert_eq!(actual_server, &server_id);
+            assert_eq!(tool_name, selected_tool);
+        }
+    }
+    api.decide_run_approvals(RunApprovalsDecideParams {
+        session_id: session_id.as_str().to_owned(),
+        run_id: started.result.run.id.clone(),
+        decisions: vec![ApprovalDecisionInput {
+            approval_id: pending.approval_id,
+            decision: ApprovalDecisionKind::Approve,
+            note: None,
+        }],
+    })
+    .await?;
+
+    let terminal = wait_for_terminal_run(&api, &session_id, &started.result.run.id).await?;
+    let output = final_assistant_text(&terminal).expect("mixed batch final output");
+    assert!(
+        output.contains("mixed native MCP batch completed"),
+        "unexpected final output: {output}"
+    );
+    for call_id in [MIXED_SLEEP_CALL_ID, MIXED_AWAIT_CALL_ID, MIXED_MCP_CALL_ID] {
+        assert!(
+            output.contains(&format!("{call_id}=")),
+            "final output lacks the {call_id} result: {output}"
+        );
+    }
+    assert!(
+        !output.contains("unknown tool") && !output.contains("requires batch-unit execution"),
+        "a call fell through to the wrong runtime: {output}"
+    );
+    assert!(terminal.pending_approvals.is_empty());
+
+    api.delete_mcp_server(McpServerDeleteParams { server_id })
+        .await?;
+    let handle = live_workflow_handle(&client, &session_id)?;
+    let _ = handle
+        .terminate(
+            WorkflowTerminateOptions::builder()
+                .reason("native MCP mixed batch live test cleanup")
+                .build(),
+        )
+        .await;
+    Ok(())
 }

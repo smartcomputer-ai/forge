@@ -100,6 +100,7 @@ impl GatewayAgentApi {
         }
         let publication = tools::skills::prepare_skill_catalog_publication_with_warnings(
             self.store.as_ref(),
+            Some(self.store.as_ref()),
             &state,
             &inputs,
             resolved.warnings().to_vec(),

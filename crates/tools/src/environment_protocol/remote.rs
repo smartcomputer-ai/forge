@@ -1,9 +1,8 @@
 //! Remote environment adapters backed by `environment-client`.
 
 use std::{
-    collections::BTreeMap,
     sync::{
-        Arc, LazyLock, Mutex as StdMutex,
+        Arc, LazyLock,
         atomic::{AtomicU64, Ordering},
     },
     time::{SystemTime, UNIX_EPOCH},
@@ -16,7 +15,8 @@ use environment_protocol::{
     data::{
         fs as remote_fs, jobs as remote_jobs,
         process::{
-            self as remote_process, ProcessOutputStream, ReadProcessResponse, WriteProcessStatus,
+            self as remote_process, ProcessOutputStream, ProcessTermination, ReadProcessResponse,
+            WriteProcessStatus,
         },
     },
     error::EnvironmentProtocolErrorCode,
@@ -29,8 +29,9 @@ use crate::{
         EnvironmentToolContext,
         jobs::{JobError, JobExecResult, JobExecutor},
         process::{
-            ProcessError, ProcessExecResult, ProcessExecutor, ProcessHandle, ProcessOutput,
-            ProcessRequest, ProcessStatus, StreamOutput, WriteProcessStdinRequest,
+            ContinueProcessRequest, LeftoverProcess, ProcessError, ProcessExecResult,
+            ProcessExecutor, ProcessHandle, ProcessOutput, ProcessRequest, ProcessSignal,
+            ProcessStatus, StreamOutput,
         },
     },
     fs::{
@@ -108,7 +109,6 @@ where
             client: self.client.clone(),
             process_id_prefix,
             next_process_id: Arc::new(AtomicU64::new(1)),
-            next_seq_by_process: Arc::new(StdMutex::new(BTreeMap::new())),
         })
     }
 
@@ -416,12 +416,14 @@ where
     }
 }
 
+/// Process executor over the data plane. It keeps no per-handle state: the
+/// daemon owns the read cursor, so a handle continued from a later batch or
+/// connection reads only what was not delivered yet.
 #[derive(Clone)]
 pub struct RemoteProcessExecutor<T> {
     client: Arc<AsyncMutex<EnvironmentDataClient<T>>>,
     process_id_prefix: u64,
     next_process_id: Arc<AtomicU64>,
-    next_seq_by_process: Arc<StdMutex<BTreeMap<String, u64>>>,
 }
 
 #[async_trait]
@@ -446,8 +448,7 @@ where
                     secret_env: request.secret_env,
                     stdin: request.stdin.map(ByteChunk::from),
                     timeout_ms: request.timeout_ms,
-                    tty: false,
-                    pipe_stdin: request.yield_time_ms.is_some(),
+                    tty: request.tty,
                 })
                 .await
                 .map_err(map_process_error)?;
@@ -456,54 +457,73 @@ where
                     process_id: process_id.clone(),
                     after_seq: None,
                     max_bytes: request.max_output_bytes.map(|value| value as usize),
-                    wait_ms: request.yield_time_ms,
+                    wait_ms: request.yield_ms,
                 })
                 .await
                 .map_err(map_process_error)?
         };
-        Ok(self.output_from_read(process_id, response, request.max_output_bytes))
+        Ok(output_from_read(process_id, response))
     }
 
-    async fn write_stdin(
+    async fn continue_process(
         &self,
-        request: WriteProcessStdinRequest,
+        request: ContinueProcessRequest,
     ) -> ProcessExecResult<ProcessOutput> {
-        let process_id = ProcessId::new(request.handle.as_str().to_owned());
-        let after_seq = self.next_seq_for(request.handle.as_str())?;
+        let handle = request.handle;
+        let process_id = ProcessId::new(handle.as_str().to_owned());
+        let input = request.input.filter(|input| !input.is_empty());
         let response = {
             let mut client = self.client.lock().await;
-            let write = client
-                .write_process(&remote_process::WriteProcessParams {
-                    process_id: process_id.clone(),
-                    chunk: Some(ByteChunk::from(request.input)),
-                    close_stdin: request.close_stdin,
-                })
-                .await
-                .map_err(map_process_error)?;
-            match write.status {
-                WriteProcessStatus::Accepted | WriteProcessStatus::Starting => {}
-                WriteProcessStatus::UnknownProcess => {
-                    return Err(ProcessError::InvalidRequest {
-                        message: format!("unknown process handle {}", request.handle),
-                    });
-                }
-                WriteProcessStatus::StdinClosed => {
-                    return Err(ProcessError::InvalidRequest {
-                        message: format!("stdin is closed for process {}", request.handle),
-                    });
+            if let Some(signal) = request.signal {
+                client
+                    .terminate_process(&remote_process::TerminateProcessParams {
+                        process_id: process_id.clone(),
+                        signal: match signal {
+                            ProcessSignal::Interrupt => remote_process::ProcessSignal::Interrupt,
+                            ProcessSignal::Kill => remote_process::ProcessSignal::Kill,
+                        },
+                    })
+                    .await
+                    .map_err(map_process_error)?;
+            } else if input.is_some() || request.close_stdin {
+                let write = client
+                    .write_process(&remote_process::WriteProcessParams {
+                        process_id: process_id.clone(),
+                        chunk: input.map(ByteChunk::from),
+                        close_stdin: request.close_stdin,
+                    })
+                    .await
+                    .map_err(map_process_error)?;
+                match write.status {
+                    WriteProcessStatus::Accepted | WriteProcessStatus::Starting => {}
+                    WriteProcessStatus::UnknownProcess => {
+                        return Err(ProcessError::UnknownHandle { handle });
+                    }
+                    WriteProcessStatus::StdinClosed => {
+                        return Err(ProcessError::StdinClosed { handle });
+                    }
                 }
             }
             client
                 .read_process(&remote_process::ReadProcessParams {
                     process_id: process_id.clone(),
-                    after_seq,
+                    after_seq: None,
                     max_bytes: request.max_output_bytes.map(|value| value as usize),
-                    wait_ms: request.yield_time_ms,
+                    wait_ms: request.wait_ms,
                 })
                 .await
-                .map_err(map_process_error)?
+                .map_err(|error| match error {
+                    EnvironmentClientError::Protocol(error)
+                        if error.code == EnvironmentProtocolErrorCode::NotFound =>
+                    {
+                        ProcessError::UnknownHandle {
+                            handle: handle.clone(),
+                        }
+                    }
+                    other => map_process_error(other),
+                })?
         };
-        Ok(self.output_from_read(process_id, response, request.max_output_bytes))
+        Ok(output_from_read(process_id, response))
     }
 }
 
@@ -516,59 +536,42 @@ impl<T> RemoteProcessExecutor<T> {
             self.process_id_prefix
         ))
     }
+}
 
-    fn next_seq_for(&self, process_id: &str) -> ProcessExecResult<Option<u64>> {
-        let seqs = self
-            .next_seq_by_process
-            .lock()
-            .map_err(|error| ProcessError::Failed {
-                message: format!("remote process sequence lock poisoned: {error}"),
-            })?;
-        Ok(seqs.get(process_id).copied())
-    }
-
-    fn output_from_read(
-        &self,
-        process_id: ProcessId,
-        response: ReadProcessResponse,
-        max_output_bytes: Option<u64>,
-    ) -> ProcessOutput {
-        self.record_next_seq(&process_id, &response);
-        let (stdout, stderr) = split_output(response.chunks, max_output_bytes);
-        let status = if response.failure.is_some() {
-            ProcessStatus::Failed
-        } else if response.exited {
-            match response.exit_code {
-                Some(0) => ProcessStatus::Succeeded,
-                _ => ProcessStatus::Failed,
-            }
-        } else {
-            ProcessStatus::Running
-        };
-        let handle = if response.closed || response.exited {
-            None
-        } else {
-            Some(ProcessHandle::new(process_id.0))
-        };
-        ProcessOutput {
-            status,
-            handle,
-            exit_code: response.exit_code,
-            stdout,
-            stderr,
-            orphaned_descendants: response.orphaned_descendants,
-        }
-    }
-
-    fn record_next_seq(&self, process_id: &ProcessId, response: &ReadProcessResponse) {
-        let Ok(mut seqs) = self.next_seq_by_process.lock() else {
-            return;
-        };
-        if response.closed || response.exited {
-            seqs.remove(process_id.as_str());
-        } else {
-            seqs.insert(process_id.to_string(), response.next_seq);
-        }
+fn output_from_read(process_id: ProcessId, response: ReadProcessResponse) -> ProcessOutput {
+    let (stdout, stderr) = split_output(response.chunks, response.omitted_bytes);
+    let status = match response.termination {
+        Some(ProcessTermination::TimedOut) => ProcessStatus::TimedOut,
+        Some(ProcessTermination::Killed) => ProcessStatus::Killed,
+        None if response.failure.is_some() => ProcessStatus::Failed,
+        None if response.exited => match response.exit_code {
+            Some(0) => ProcessStatus::Succeeded,
+            _ => ProcessStatus::Failed,
+        },
+        None => ProcessStatus::Running,
+    };
+    let handle = if response.closed || response.exited {
+        None
+    } else {
+        Some(ProcessHandle::new(process_id.0))
+    };
+    ProcessOutput {
+        status,
+        handle,
+        pid: response.pid,
+        exit_code: response.exit_code,
+        failure: response.failure,
+        stdout,
+        stderr,
+        omitted_bytes: response.omitted_bytes,
+        leftover_processes: response
+            .leftover_processes
+            .into_iter()
+            .map(|member| LeftoverProcess {
+                pid: member.pid,
+                command: member.command,
+            })
+            .collect(),
     }
 }
 
@@ -724,37 +727,36 @@ fn map_job_error(error: EnvironmentClientError) -> JobError {
     }
 }
 
+/// Sorts chunks into their streams. The omission marker goes where the
+/// daemon dropped the middle: at the first sequence gap, or at the start of
+/// the output when the gap precedes everything returned.
 fn split_output(
     chunks: Vec<remote_process::ProcessOutputChunk>,
-    max_output_bytes: Option<u64>,
+    omitted_bytes: u64,
 ) -> (StreamOutput, StreamOutput) {
     let mut stdout = StreamOutput::default();
     let mut stderr = StreamOutput::default();
-    for chunk in chunks {
-        match chunk.stream {
-            ProcessOutputStream::Stdout | ProcessOutputStream::Pty => {
-                append_stream(&mut stdout, chunk.chunk.into_inner(), max_output_bytes);
-            }
-            ProcessOutputStream::Stderr => {
-                append_stream(&mut stderr, chunk.chunk.into_inner(), max_output_bytes);
-            }
+    let mut omission_placed = omitted_bytes == 0;
+    let gap_index = chunks
+        .windows(2)
+        .position(|pair| pair[1].seq != pair[0].seq + 1)
+        .map(|index| index + 1)
+        .unwrap_or(0);
+    for (index, chunk) in chunks.into_iter().enumerate() {
+        let stream = match chunk.stream {
+            ProcessOutputStream::Stdout | ProcessOutputStream::Pty => &mut stdout,
+            ProcessOutputStream::Stderr => &mut stderr,
+        };
+        if !omission_placed && index == gap_index {
+            stream.omitted_at = Some(stream.bytes.len());
+            omission_placed = true;
         }
+        stream.bytes.extend(chunk.chunk.into_inner());
+    }
+    if !omission_placed {
+        stdout.omitted_at = Some(stdout.bytes.len());
     }
     (stdout, stderr)
-}
-
-fn append_stream(output: &mut StreamOutput, bytes: Vec<u8>, max_output_bytes: Option<u64>) {
-    let Some(limit) = max_output_bytes.map(|value| value as usize) else {
-        output.bytes.extend(bytes);
-        return;
-    };
-    let remaining = limit.saturating_sub(output.bytes.len());
-    if bytes.len() > remaining {
-        output.bytes.extend_from_slice(&bytes[..remaining]);
-        output.truncated = true;
-    } else {
-        output.bytes.extend(bytes);
-    }
 }
 
 #[cfg(test)]
@@ -843,7 +845,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn remote_process_executor_starts_reads_and_tracks_next_sequence() {
+    async fn remote_process_executor_runs_and_continues_through_the_daemon_cursor() {
         let (transport, sent) = MockTransport::new([
             json!({
                 "jsonrpc": "2.0",
@@ -870,7 +872,8 @@ mod tests {
                     ],
                     "closed": false,
                     "exited": false,
-                    "nextSeq": 3
+                    "nextSeq": 3,
+                    "pid": 4242
                 }
             }),
             json!({
@@ -894,7 +897,9 @@ mod tests {
                     "closed": true,
                     "exited": true,
                     "exitCode": 0,
-                    "nextSeq": 4
+                    "nextSeq": 4,
+                    "pid": 4242,
+                    "leftoverProcesses": [{ "pid": 4243, "command": "sleep 100" }]
                 }
             }),
         ]);
@@ -911,8 +916,9 @@ mod tests {
                 env: BTreeMap::new(),
                 secret_env: BTreeMap::new(),
                 stdin: None,
-                timeout_ms: Some(60_000),
-                yield_time_ms: Some(10),
+                tty: true,
+                timeout_ms: None,
+                yield_ms: Some(10),
                 max_output_bytes: Some(1024),
             })
             .await
@@ -924,32 +930,151 @@ mod tests {
             .to_owned();
         assert_eq!(output.status, ProcessStatus::Running);
         assert_eq!(output.handle, Some(ProcessHandle::new(process_id.clone())));
+        assert_eq!(output.pid, Some(4242));
         assert_eq!(output.stdout.bytes, b"ok\n");
         assert_eq!(output.stderr.bytes, b"warn\n");
 
         let output = process
-            .write_stdin(WriteProcessStdinRequest {
+            .continue_process(ContinueProcessRequest {
                 handle: ProcessHandle::new(process_id.clone()),
-                input: b"input\n".to_vec(),
+                input: Some(b"input\n".to_vec()),
                 close_stdin: true,
-                yield_time_ms: Some(10),
+                signal: None,
+                wait_ms: Some(10),
                 max_output_bytes: Some(1024),
             })
             .await
-            .expect("write stdin");
+            .expect("continue");
 
         assert_eq!(output.status, ProcessStatus::Succeeded);
         assert_eq!(output.handle, None);
         assert_eq!(output.stdout.bytes, b"done\n");
+        assert_eq!(
+            output.leftover_processes,
+            vec![LeftoverProcess {
+                pid: 4243,
+                command: "sleep 100".to_owned()
+            }]
+        );
 
         let sent = sent.lock().expect("sent lock");
         assert_eq!(sent[0]["method"], "process/start");
         assert_eq!(sent[0]["params"]["processId"], process_id);
-        assert_eq!(sent[0]["params"]["pipeStdin"], true);
+        assert_eq!(sent[0]["params"]["tty"], true);
+        assert!(sent[0]["params"].get("pipeStdin").is_none());
+        assert!(sent[0]["params"].get("timeoutMs").is_none());
+        assert_eq!(sent[1]["method"], "process/read");
+        assert!(sent[1]["params"].get("afterSeq").is_none());
+        assert_eq!(sent[1]["params"]["waitMs"], 10);
+        assert_eq!(sent[2]["method"], "process/write");
+        assert_eq!(sent[2]["params"]["closeStdin"], true);
+        assert_eq!(sent[3]["method"], "process/read");
+        assert!(
+            sent[3]["params"].get("afterSeq").is_none(),
+            "the daemon owns the cursor; the runtime never re-sends a sequence"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn remote_process_executor_maps_signals_and_stdin_refusals() {
+        let (transport, sent) = MockTransport::new([
+            json!({ "jsonrpc": "2.0", "id": 1, "result": { "running": true } }),
+            json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "result": {
+                    "chunks": [],
+                    "closed": true,
+                    "exited": true,
+                    "nextSeq": 0,
+                    "termination": "killed"
+                }
+            }),
+            json!({ "jsonrpc": "2.0", "id": 3, "result": { "status": "stdinClosed" } }),
+            json!({ "jsonrpc": "2.0", "id": 4, "result": { "status": "unknownProcess" } }),
+        ]);
+        let process = RemoteEnvironmentConnection::new(
+            EnvironmentDataClient::new(transport),
+            EnvironmentCapabilities::filesystem(true, true).with_process(),
+        )
+        .process_executor()
+        .expect("process executor");
+
+        let killed = process
+            .continue_process(ContinueProcessRequest {
+                handle: ProcessHandle::new("proc-9"),
+                input: None,
+                close_stdin: false,
+                signal: Some(ProcessSignal::Kill),
+                wait_ms: Some(5),
+                max_output_bytes: None,
+            })
+            .await
+            .expect("kill");
+        assert_eq!(killed.status, ProcessStatus::Killed);
+        assert_eq!(killed.handle, None);
+
+        let refused = process
+            .continue_process(ContinueProcessRequest {
+                handle: ProcessHandle::new("proc-9"),
+                input: Some(b"x".to_vec()),
+                close_stdin: false,
+                signal: None,
+                wait_ms: Some(5),
+                max_output_bytes: None,
+            })
+            .await
+            .expect_err("stdin closed");
+        assert!(matches!(refused, ProcessError::StdinClosed { .. }));
+        assert!(refused.to_string().contains("tty: true"));
+
+        let unknown = process
+            .continue_process(ContinueProcessRequest {
+                handle: ProcessHandle::new("proc-gone"),
+                input: Some(b"x".to_vec()),
+                close_stdin: false,
+                signal: None,
+                wait_ms: Some(5),
+                max_output_bytes: None,
+            })
+            .await
+            .expect_err("unknown");
+        assert!(matches!(unknown, ProcessError::UnknownHandle { .. }));
+
+        let sent = sent.lock().expect("sent lock");
+        assert_eq!(sent[0]["method"], "process/terminate");
+        assert_eq!(sent[0]["params"]["signal"], "kill");
         assert_eq!(sent[1]["method"], "process/read");
         assert_eq!(sent[2]["method"], "process/write");
-        assert_eq!(sent[3]["method"], "process/read");
-        assert_eq!(sent[3]["params"]["afterSeq"], 3);
+        assert_eq!(sent[3]["method"], "process/write");
+    }
+
+    #[test]
+    fn split_output_places_the_omission_marker_at_the_sequence_gap() {
+        let chunk = |seq: u64, stream: ProcessOutputStream, text: &str| {
+            remote_process::ProcessOutputChunk {
+                seq,
+                stream,
+                chunk: ByteChunk::from(text.as_bytes()),
+            }
+        };
+        let (stdout, stderr) = split_output(
+            vec![
+                chunk(0, ProcessOutputStream::Stdout, "head"),
+                chunk(1, ProcessOutputStream::Stderr, "warn"),
+                chunk(40, ProcessOutputStream::Stdout, "tail"),
+            ],
+            500,
+        );
+        assert_eq!(stdout.bytes, b"headtail");
+        assert_eq!(stdout.omitted_at, Some(4));
+        assert_eq!(stderr.omitted_at, None);
+
+        let (stdout, _) = split_output(vec![chunk(40, ProcessOutputStream::Stdout, "tail")], 500);
+        assert_eq!(stdout.omitted_at, Some(0), "gap before everything returned");
+
+        let (stdout, _) = split_output(vec![chunk(0, ProcessOutputStream::Stdout, "all")], 0);
+        assert_eq!(stdout.omitted_at, None);
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -991,8 +1116,9 @@ mod tests {
                     env: BTreeMap::new(),
                     secret_env: BTreeMap::new(),
                     stdin: None,
+                    tty: false,
                     timeout_ms: Some(1_000),
-                    yield_time_ms: Some(1),
+                    yield_ms: Some(1),
                     max_output_bytes: Some(128),
                 })
                 .await

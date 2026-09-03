@@ -67,6 +67,24 @@ Sets the display name, or clears it when displayName is omitted.
 - Params: `SessionRenameParams`
 - Result: `AgentApiOutcome<SessionRenameResponse>`
 
+### `session/metadata/put`
+
+**Replace session metadata**
+
+Replaces the complete descriptive key/value map (bounded like session/start); an omitted or empty map clears it. Record-only: the event log and updatedAtMs are untouched.
+
+- Params: `SessionMetadataPutParams`
+- Result: `AgentApiOutcome<SessionMetadataPutResponse>`
+
+### `session/retention/put`
+
+**Replace session retention**
+
+Sets the positive close-relative automatic-deletion duration on a retention root, or clears it with null. Forks and delegated children inherit the root policy and cannot override it.
+
+- Params: `SessionRetentionPutParams`
+- Result: `AgentApiOutcome<SessionRetentionPutResponse>`
+
 ### `session/close`
 
 **Close a session**
@@ -78,9 +96,9 @@ Closes an idle session and detaches its environment bindings. Force mode cancels
 
 ### `session/delete`
 
-**Delete a closed session**
+**Delete closed sessions**
 
-Permanently removes session storage after the session has been closed; close active/open sessions first.
+Permanently removes a closed retention-tree leaf, or its closed history-fork and delegated-child subtree when cascade is true. Config-only clones are never included.
 
 - Params: `SessionDeleteParams`
 - Result: `AgentApiOutcome<SessionDeleteResponse>`
@@ -440,7 +458,7 @@ Stops the key from admitting new daemon identities; already registered daemons k
 
 **Discover available models**
 
-Queries supported providers directly on every call and returns best-effort selectable routes. One provider failure does not discard successful results from others.
+Queries supported providers directly, with a brief process-local burst cache, and returns best-effort selectable routes. One provider failure does not discard successful results from others.
 
 - Params: `ModelListParams`
 - Result: `AgentApiOutcome<ModelListResponse>`

@@ -8,6 +8,7 @@
 
 use std::{
     path::Path,
+    process::Command,
     sync::Arc,
     time::{Duration, Instant},
 };
@@ -32,10 +33,12 @@ use tokio_tungstenite::{
 
 use crate::{
     DaemonRuntime,
-    config::RegistrationConfig,
+    config::{REEXEC_REGISTRATION_KEY_ENV, RegistrationConfig},
     identity::DaemonIdentity,
     server::{run_data_connection, tracing_line},
 };
+
+const AUTO_UPGRADE_ATTEMPTED_ENV: &str = "LIGHTSPEED_ENVD_AUTO_UPGRADE_ATTEMPTED";
 
 /// How long the daemon waits for the gateway's challenge and verdict.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(20);
@@ -106,7 +109,7 @@ async fn control_session(
         .as_str()
         .into_client_request()
         .context("gateway URL")?;
-    let (socket, _) = connect_async_tls_with_config(request, None, false, tls.connector())
+    let (socket, _) = connect_async_tls_with_config(request, None, false, Some(tls.connector()))
         .await
         .map_err(|error| describe_connect_error(&registration.gateway_url, error))?;
     let (mut writer, mut reader) = socket.split();
@@ -120,12 +123,7 @@ async fn control_session(
             nonce,
         }) => {
             if protocol_version != CURRENT_PROTOCOL_VERSION {
-                bail!(TerminalRejection {
-                    code: RegistrationRejectionCode::UnsupportedProtocol,
-                    message: format!(
-                        "gateway speaks protocol {protocol_version}; this daemon speaks {CURRENT_PROTOCOL_VERSION}"
-                    ),
-                });
+                return Err(protocol_mismatch_error(registration, protocol_version).await);
             }
             decode_hex(&nonce).ok_or_else(|| anyhow!("gateway challenge nonce is not hex"))?
         }
@@ -212,6 +210,113 @@ async fn control_session(
             Message::Binary(_) | Message::Pong(_) | Message::Frame(_) => {}
         }
     }
+}
+
+async fn protocol_mismatch_error(
+    registration: &RegistrationConfig,
+    gateway_protocol: u32,
+) -> anyhow::Error {
+    let base = format!(
+        "gateway speaks protocol {gateway_protocol}; this daemon speaks {CURRENT_PROTOCOL_VERSION}; discovery document: {}",
+        registration.discovery_url
+    );
+    let Some(restart) = &registration.auto_upgrade else {
+        return TerminalRejection {
+            code: RegistrationRejectionCode::UnsupportedProtocol,
+            message: format!(
+                "{base}; run `lightspeed-envd upgrade` or set LIGHTSPEED_ENVD_AUTO_UPGRADE=1"
+            ),
+        }
+        .into();
+    };
+    if std::env::var_os(AUTO_UPGRADE_ATTEMPTED_ENV).is_some() {
+        return TerminalRejection {
+            code: RegistrationRejectionCode::UnsupportedProtocol,
+            message: format!(
+                "{base}; automatic upgrade was already attempted by this process lineage"
+            ),
+        }
+        .into();
+    }
+
+    tracing_line(&format!(
+        "{base}; automatic upgrade enabled, installing the gateway's envd build"
+    ));
+    let request = crate::upgrade::UpgradeRequest {
+        discovery_url: registration.discovery_url.clone(),
+        ca_file: registration.ca_file.clone(),
+        install_path: restart.executable.clone(),
+        target: release_info::TARGET.to_owned(),
+        expected_protocol: Some(gateway_protocol),
+    };
+    let installed = match crate::upgrade::install(request).await {
+        Ok(installed) => installed,
+        Err(error) => {
+            return TerminalRejection {
+                code: RegistrationRejectionCode::UnsupportedProtocol,
+                message: format!("{base}; automatic upgrade failed: {error:#}"),
+            }
+            .into();
+        }
+    };
+    tracing_line(&format!(
+        "installed lightspeed-envd {} ({}, protocol {}); re-executing {}",
+        installed.version,
+        installed.git_sha,
+        installed.protocol_version,
+        restart.executable.display()
+    ));
+    let error = exec_replacement(
+        &restart.executable,
+        &restart.arg0,
+        &restart.args,
+        registration.registration_key.as_ref(),
+    );
+    TerminalRejection {
+        code: RegistrationRejectionCode::UnsupportedProtocol,
+        message: format!("{base}; installed the replacement but could not re-execute it: {error}"),
+    }
+    .into()
+}
+
+#[cfg(unix)]
+fn exec_replacement(
+    executable: &Path,
+    arg0: &std::ffi::OsStr,
+    args: &[std::ffi::OsString],
+    registration_key: Option<&SecretString>,
+) -> std::io::Error {
+    use std::os::unix::process::CommandExt as _;
+
+    let mut command = Command::new(executable);
+    command
+        .arg0(arg0)
+        .args(args)
+        .env(AUTO_UPGRADE_ATTEMPTED_ENV, "1");
+    // Configuration parsing deliberately removes key variables from the
+    // current process. Hand the already-held value across exactly this exec
+    // so a first-seen daemon can still register even if its key file was
+    // removed; the replacement consumes and scrubs this internal variable.
+    if let Some(registration_key) = registration_key {
+        command
+            .env(REEXEC_REGISTRATION_KEY_ENV, registration_key.expose())
+            .env_remove("LIGHTSPEED_ENVD_REGISTRATION_KEY")
+            .env_remove("LIGHTSPEED_ENVD_REGISTRATION_KEY_FILE");
+    }
+    command.exec()
+}
+
+#[cfg(not(unix))]
+fn exec_replacement(
+    _executable: &Path,
+    _arg0: &std::ffi::OsStr,
+    _args: &[std::ffi::OsString],
+    _registration_key: Option<&SecretString>,
+) -> std::io::Error {
+    std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "envd automatic upgrade is supported only on Unix",
+    )
 }
 
 /// A gateway that answers the WebSocket upgrade with an HTTP status is
@@ -305,7 +410,7 @@ async fn serve_data_connection(
         AUTHORIZATION,
         HeaderValue::from_str(&format!("Bearer {}", token.expose())).context("token header")?,
     );
-    let (socket, _) = connect_async_tls_with_config(request, None, false, tls.connector())
+    let (socket, _) = connect_async_tls_with_config(request, None, false, Some(tls.connector()))
         .await
         .context("connect data route")?;
     run_data_connection(&runtime, socket).await
@@ -313,32 +418,36 @@ async fn serve_data_connection(
 
 /// TLS trust for the gateway: the bundled WebPKI roots, plus an operator
 /// supplied PEM bundle for gateways behind a private CA.
+///
+/// The client config always names its crypto provider. A workspace build
+/// links two rustls providers, so a config that relied on the process
+/// default would panic on the first dial; the daemon never hands the
+/// WebSocket client a `None` connector that would build such a config.
 #[derive(Clone)]
 struct TlsSettings {
-    connector: Option<Arc<rustls::ClientConfig>>,
+    config: Arc<rustls::ClientConfig>,
 }
 
 impl TlsSettings {
     fn from_config(ca_file: Option<&Path>) -> Result<Self> {
-        let Some(ca_file) = ca_file else {
-            return Ok(Self { connector: None });
-        };
         use rustls_pki_types::{CertificateDer, pem::PemObject as _};
         let mut roots = rustls::RootCertStore::empty();
         roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-        let mut added = 0usize;
-        for certificate in CertificateDer::pem_file_iter(ca_file)
-            .with_context(|| format!("read CA file {}", ca_file.display()))?
-        {
-            let certificate =
-                certificate.with_context(|| format!("parse CA file {}", ca_file.display()))?;
-            roots
-                .add(certificate)
-                .with_context(|| format!("add trust anchor from {}", ca_file.display()))?;
-            added += 1;
-        }
-        if added == 0 {
-            bail!("CA file {} holds no certificates", ca_file.display());
+        if let Some(ca_file) = ca_file {
+            let mut added = 0usize;
+            for certificate in CertificateDer::pem_file_iter(ca_file)
+                .with_context(|| format!("read CA file {}", ca_file.display()))?
+            {
+                let certificate =
+                    certificate.with_context(|| format!("parse CA file {}", ca_file.display()))?;
+                roots
+                    .add(certificate)
+                    .with_context(|| format!("add trust anchor from {}", ca_file.display()))?;
+                added += 1;
+            }
+            if added == 0 {
+                bail!("CA file {} holds no certificates", ca_file.display());
+            }
         }
         let config = rustls::ClientConfig::builder_with_provider(Arc::new(
             rustls::crypto::aws_lc_rs::default_provider(),
@@ -348,14 +457,12 @@ impl TlsSettings {
         .with_root_certificates(roots)
         .with_no_client_auth();
         Ok(Self {
-            connector: Some(Arc::new(config)),
+            config: Arc::new(config),
         })
     }
 
-    fn connector(&self) -> Option<Connector> {
-        self.connector
-            .as_ref()
-            .map(|config| Connector::Rustls(config.clone()))
+    fn connector(&self) -> Connector {
+        Connector::Rustls(self.config.clone())
     }
 }
 
@@ -402,6 +509,44 @@ mod tests {
         ));
     }
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn protocol_mismatch_without_auto_upgrade_names_discovery_and_command() {
+        let registration = RegistrationConfig {
+            gateway_url: "wss://gateway.example/environment-gateway/connect".to_owned(),
+            registration_key: None,
+            display_name: None,
+            metadata: Default::default(),
+            receipt_path: None,
+            ca_file: None,
+            discovery_url: "https://gateway.example/.well-known/lightspeed-envd".to_owned(),
+            auto_upgrade: None,
+        };
+        let error = protocol_mismatch_error(&registration, CURRENT_PROTOCOL_VERSION + 1).await;
+        let rejection = error
+            .downcast_ref::<TerminalRejection>()
+            .expect("terminal rejection");
+        assert_eq!(
+            rejection.code,
+            RegistrationRejectionCode::UnsupportedProtocol
+        );
+        assert!(rejection.message.contains(&registration.discovery_url));
+        assert!(rejection.message.contains("lightspeed-envd upgrade"));
+    }
+
+    /// A self-signed EC certificate, valid 2026-2036, used only as PEM input.
+    const TEST_CA_PEM: &str = "-----BEGIN CERTIFICATE-----
+MIIBmTCCAT+gAwIBAgIUGlIKCYXc2/JUu1OUJBgh5a7gJ4cwCgYIKoZIzj0EAwIw
+IjEgMB4GA1UEAwwXbGlnaHRzcGVlZC1lbnZkLXRlc3QtY2EwHhcNMjYwOTAzMTA1
+MjUwWhcNMzYwODMxMTA1MjUwWjAiMSAwHgYDVQQDDBdsaWdodHNwZWVkLWVudmQt
+dGVzdC1jYTBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IABHdyQgLSBwg3QZhQHj3S
+AnnUyqMnO2ZIP80Q4un3Fns7yFLOhs6YD5qu8hVSutuxSAbCAlM3Uxujy83VYJNe
+cxajUzBRMB0GA1UdDgQWBBRs3ltP/Ch8oC/RpiwqRAEBpGeuhzAfBgNVHSMEGDAW
+gBRs3ltP/Ch8oC/RpiwqRAEBpGeuhzAPBgNVHRMBAf8EBTADAQH/MAoGCCqGSM49
+BAMCA0gAMEUCICgTw9frlQLXbAvhAXlMwBH6gCkV3ypx4U93yaMHghBDAiEAi4tZ
+fIEYbSNa76Ox9es7E5q8U7/XDqkEOn/kC4eSA5Q=
+-----END CERTIFICATE-----
+";
+
     #[test]
     fn missing_ca_file_and_empty_bundle_fail_closed() {
         let temp = tempfile::tempdir().expect("tempdir");
@@ -409,11 +554,21 @@ mod tests {
         let empty = temp.path().join("empty.pem");
         std::fs::write(&empty, "").expect("write");
         assert!(TlsSettings::from_config(Some(&empty)).is_err());
-        assert!(
-            TlsSettings::from_config(None)
-                .expect("none")
-                .connector
-                .is_none()
-        );
+    }
+
+    /// Both trust configurations hand the WebSocket client an explicit
+    /// rustls connector. This is what keeps a workspace build, which links
+    /// two crypto providers, from reaching tungstenite's default connector
+    /// and panicking on the first dial.
+    #[test]
+    fn every_trust_configuration_carries_an_explicit_connector() {
+        let bundled = TlsSettings::from_config(None).expect("bundled roots");
+        assert!(matches!(bundled.connector(), Connector::Rustls(_)));
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let ca_file = temp.path().join("ca.pem");
+        std::fs::write(&ca_file, TEST_CA_PEM).expect("write");
+        let extended = TlsSettings::from_config(Some(&ca_file)).expect("operator roots");
+        assert!(matches!(extended.connector(), Connector::Rustls(_)));
     }
 }

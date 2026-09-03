@@ -1346,7 +1346,7 @@ function seedAssistant(store: DemoStore, universe: UniverseState): void {
     updatedAtMs: ago(4 * DAY_MS),
   });
 
-  const toAda = { route: { policy: "perKey" as const, key: "ada" }, deliver: { whenBusy: "queue" as const }, sessionTtlMs: 0 };
+  const toAda = { route: { policy: "perKey" as const, key: "ada" }, deliver: { whenBusy: "queue" as const }, sessionCloseAfterMs: 0 };
   const triggers = new Map([
     [
       "telegram",
@@ -1945,7 +1945,7 @@ function seedResearch(store: DemoStore, universe: UniverseState): void {
     brief: RESEARCH_BRIEF,
     runsPerDay: 40,
     breaker: { fires: 10, windowMs: 10 * MINUTE_MS },
-    routedSessionTtlMs: 2 * DAY_MS,
+    routedSessionCloseAfterMs: 2 * DAY_MS,
     emit: true,
     createdAtMs: ago(30 * DAY_MS),
     updatedAtMs: ago(9 * DAY_MS),

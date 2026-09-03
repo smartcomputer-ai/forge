@@ -14,6 +14,13 @@ grep -F "pub const REQUIRED_SCHEMA_REVISION: i64 = $LIGHTSPEED_SCHEMA_REVISION;"
   crates/store-pg/src/migrations.rs >/dev/null
 grep -F "pub const PROTOCOL_VERSION: &str = \"$LIGHTSPEED_API_PROTOCOL_VERSION\";" \
   crates/api/src/constants.rs >/dev/null
+grep -F "pub const CURRENT_PROTOCOL_VERSION: u32 = $LIGHTSPEED_ENVIRONMENT_PROTOCOL_VERSION;" \
+  crates/environment-protocol/src/shared.rs >/dev/null
+if [[ ! "$LIGHTSPEED_ENVD_TARGET" =~ -linux-musl$ ]]; then
+  echo "LIGHTSPEED_ENVD_TARGET must be a static musl target" >&2
+  exit 1
+fi
+grep -F "rustup target add $LIGHTSPEED_ENVD_TARGET" release/build-env.Dockerfile >/dev/null
 grep -F "$LIGHTSPEED_RELEASE_BUILD_BASE_IMAGE" release/build-env.Dockerfile >/dev/null
 node -e '
   const fs = require("node:fs");

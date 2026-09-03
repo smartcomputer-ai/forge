@@ -150,6 +150,7 @@ impl GatewayAgentApi {
             let environments = EnvironmentStore::list_environments(
                 self.store.as_ref(),
                 ListEnvironments {
+                    metadata: Default::default(),
                     registration_key_id: Some(registration_key_id.clone()),
                     ..ListEnvironments::default()
                 },
@@ -231,6 +232,7 @@ impl GatewayAgentApi {
                             environment_id: environment.environment_id.clone(),
                             observation: RegisteredConnectionObservation::Disconnected,
                             observed_at_ms: now,
+                            metadata: BTreeMap::new(),
                         },
                     )
                     .await

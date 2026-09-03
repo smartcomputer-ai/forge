@@ -1992,6 +1992,23 @@
         ],
         "type": "object"
       },
+      "AgentApiOutcomeOfSessionMetadataPutResponse": {
+        "properties": {
+          "notifications": {
+            "items": {
+              "$ref": "#/components/schemas/AgentNotification"
+            },
+            "type": "array"
+          },
+          "result": {
+            "$ref": "#/components/schemas/SessionMetadataPutResponse"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "type": "object"
+      },
       "AgentApiOutcomeOfSessionReadResponse": {
         "properties": {
           "notifications": {
@@ -2019,6 +2036,23 @@
           },
           "result": {
             "$ref": "#/components/schemas/SessionRenameResponse"
+          }
+        },
+        "required": [
+          "result"
+        ],
+        "type": "object"
+      },
+      "AgentApiOutcomeOfSessionRetentionPutResponse": {
+        "properties": {
+          "notifications": {
+            "items": {
+              "$ref": "#/components/schemas/AgentNotification"
+            },
+            "type": "array"
+          },
+          "result": {
+            "$ref": "#/components/schemas/SessionRetentionPutResponse"
           }
         },
         "required": [
@@ -4788,8 +4822,8 @@
           "profileId": {
             "$ref": "#/components/schemas/ProfileId"
           },
-          "routedSessionTtlMs": {
-            "description": "Close routed (`perKey` / `perEvent`) sessions idle longer than this;\nabsent keeps them open. A trigger's `sessionTtlMs` overrides it.",
+          "routedSessionCloseAfterMs": {
+            "description": "Close routed (`perKey` / `perEvent`) sessions idle longer than this;\nabsent keeps them open. A trigger's `sessionCloseAfterMs` overrides it.",
             "format": "uint64",
             "minimum": 0,
             "type": [
@@ -4914,8 +4948,8 @@
             "minimum": 0,
             "type": "integer"
           },
-          "routedSessionTtlMs": {
-            "description": "Close routed (`perKey` / `perEvent`) sessions idle longer than this;\nabsent keeps them open. A trigger's `sessionTtlMs` overrides it.",
+          "routedSessionCloseAfterMs": {
+            "description": "Close routed (`perKey` / `perEvent`) sessions idle longer than this;\nabsent keeps them open. A trigger's `sessionCloseAfterMs` overrides it.",
             "format": "uint64",
             "minimum": 0,
             "type": [
@@ -5519,8 +5553,8 @@
               }
             ]
           },
-          "sessionTtlMs": {
-            "description": "Retention of the sessions this trigger routes to: absent inherits the\nbot's `routedSessionTtlMs`, `0` keeps them open indefinitely (the\nchat default).",
+          "sessionCloseAfterMs": {
+            "description": "Idle-close policy for sessions this trigger routes to: absent inherits the\nbot's `routedSessionCloseAfterMs`, `0` keeps them open indefinitely (the\nchat default).",
             "format": "uint64",
             "minimum": 0,
             "type": [
@@ -5968,8 +6002,8 @@
               }
             ]
           },
-          "sessionTtlMs": {
-            "description": "Retention of the sessions this trigger routes to: absent inherits the\nbot's `routedSessionTtlMs`, `0` keeps them open indefinitely (the\nchat default).",
+          "sessionCloseAfterMs": {
+            "description": "Idle-close policy for sessions this trigger routes to: absent inherits the\nbot's `routedSessionCloseAfterMs`, `0` keeps them open indefinitely (the\nchat default).",
             "format": "uint64",
             "minimum": 0,
             "type": [
@@ -6074,8 +6108,8 @@
             "minimum": 0,
             "type": "integer"
           },
-          "routedSessionTtlMs": {
-            "description": "Close routed (`perKey` / `perEvent`) sessions idle longer than this;\nabsent keeps them open. A trigger's `sessionTtlMs` overrides it.",
+          "routedSessionCloseAfterMs": {
+            "description": "Close routed (`perKey` / `perEvent`) sessions idle longer than this;\nabsent keeps them open. A trigger's `sessionCloseAfterMs` overrides it.",
             "format": "uint64",
             "minimum": 0,
             "type": [
@@ -8019,6 +8053,37 @@
         ],
         "type": "object"
       },
+      "EnvironmentDaemonInfo": {
+        "description": "The environment daemon (`lightspeed-envd`) that belongs to a server\nrelease. Download locations and checksums are not here: the deployment\npublishes them in its discovery document, outside the authenticated API.",
+        "properties": {
+          "gitSha": {
+            "type": "string"
+          },
+          "protocolVersion": {
+            "description": "Environment protocol version the gateway speaks. A daemon registers\nonly when it reports exactly this number.",
+            "format": "uint32",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "targets": {
+            "description": "Rust target triples the daemon is published for.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "version": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "version",
+          "gitSha",
+          "protocolVersion",
+          "targets"
+        ],
+        "type": "object"
+      },
       "EnvironmentExternalCreateParams": {
         "properties": {
           "connection": {
@@ -8386,6 +8451,13 @@
               "string",
               "null"
             ]
+          },
+          "metadata": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Only environments carrying every listed metadata pair (AND\nsemantics); the same filter `session/list` accepts.",
+            "type": "object"
           },
           "originSessionId": {
             "description": "Only environments a profile provisioned for this session.",
@@ -9713,11 +9785,27 @@
               }
             ]
           },
+          "deleteAfterCloseMs": {
+            "description": "Root-owned automatic deletion measured from close. Absent keeps the\nsession tree until manual deletion.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
           "displayName": {
             "type": [
               "string",
               "null"
             ]
+          },
+          "metadata": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Descriptive key/value metadata with the same bounds as\n`session/start`; applied only when the session is first created.",
+            "type": "object"
           },
           "profile": {
             "anyOf": [
@@ -10541,7 +10629,7 @@
         "type": "object"
       },
       "ModelListParams": {
-        "description": "Direct provider model discovery. Each invocation asks the supported\nprovider APIs again; clients refresh by calling this method.",
+        "description": "Direct provider model discovery. Results may be served from a brief\nprocess-local cache; clients refresh by calling this method.",
         "properties": {
           "selectableOnly": {
             "description": "Apply Lightspeed's small, conservative selectable-model policy. It\nremoves OpenAI model-id families that are clearly not text-generation\nroutes (embeddings, moderation, image/video, speech, and realtime).\nIt is an ID policy, not a provider capability claim.",
@@ -12350,6 +12438,18 @@
         ],
         "type": "object"
       },
+      "RunFailureKindView": {
+        "description": "Why a run failed, as the engine classified it.",
+        "enum": [
+          "model_failure",
+          "tool_failure",
+          "context_failure",
+          "limit_exceeded",
+          "cancelled",
+          "internal"
+        ],
+        "type": "string"
+      },
       "RunLimitsConfig": {
         "properties": {
           "maxToolRounds": {
@@ -12828,16 +12928,31 @@
       },
       "ServerInfo": {
         "properties": {
+          "envd": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/EnvironmentDaemonInfo"
+              }
+            ],
+            "description": "The environment daemon build this release ships. Descriptive: the\ngateway admits any daemon that speaks `envd.protocolVersion`,\nwhatever commit it was built from."
+          },
+          "gitSha": {
+            "description": "Full git commit this server was built from.",
+            "type": "string"
+          },
           "name": {
             "type": "string"
           },
           "version": {
+            "description": "Release version with the git commit as SemVer build metadata, for\nexample `0.1.0+2093b949…`.",
             "type": "string"
           }
         },
         "required": [
           "name",
-          "version"
+          "version",
+          "gitSha",
+          "envd"
         ],
         "type": "object"
       },
@@ -12964,6 +13079,10 @@
       },
       "SessionDeleteParams": {
         "properties": {
+          "cascade": {
+            "description": "Delete history forks and delegated descendants too. False requires the\ntarget to be a closed retention-tree leaf.",
+            "type": "boolean"
+          },
           "sessionId": {
             "type": "string"
           }
@@ -12975,12 +13094,18 @@
       },
       "SessionDeleteResponse": {
         "properties": {
+          "deletedSessionCount": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
           "session": {
             "$ref": "#/components/schemas/SessionSummaryView"
           }
         },
         "required": [
-          "session"
+          "session",
+          "deletedSessionCount"
         ],
         "type": "object"
       },
@@ -13526,7 +13651,11 @@
             "type": "object"
           },
           {
+            "description": "The run ended in failure. `kind` is the engine's classification;\n`message` is free text for display.",
             "properties": {
+              "kind": {
+                "$ref": "#/components/schemas/RunFailureKindView"
+              },
               "message": {
                 "type": "string"
               },
@@ -13541,6 +13670,7 @@
             "required": [
               "type",
               "runId",
+              "kind",
               "message"
             ],
             "type": "object"
@@ -14195,6 +14325,7 @@
             "type": "object"
           },
           {
+            "description": "One tool call finished. `output_bytes` is the size of the\nmodel-visible text the tool produced before the runtime's projection\nbudget was applied, absent for synthetic results; `truncated` is true\nwhen that budget cut it.",
             "properties": {
               "batchId": {
                 "type": "string"
@@ -14208,11 +14339,23 @@
                 },
                 "type": "array"
               },
+              "outputBytes": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
               "runId": {
                 "type": "string"
               },
               "status": {
                 "$ref": "#/components/schemas/ToolItemStatus"
+              },
+              "truncated": {
+                "default": false,
+                "type": "boolean"
               },
               "turnId": {
                 "type": "string"
@@ -14855,6 +14998,13 @@
               "null"
             ]
           },
+          "metadata": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Only sessions carrying every listed key/value pair (AND semantics).\nCombines with the lineage filters.",
+            "type": "object"
+          },
           "parentSessionId": {
             "description": "Only sub-agent sessions delegated directly by this session.",
             "type": [
@@ -14889,6 +15039,36 @@
             "type": "array"
           }
         },
+        "type": "object"
+      },
+      "SessionMetadataPutParams": {
+        "description": "Replace a session's metadata with a complete map (the same bounds as\n`session/start`). Record-only: it does not touch the event log or\n`updatedAtMs`. There is no merge form; read, edit, and put.",
+        "properties": {
+          "metadata": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "The complete new map; empty clears it.",
+            "type": "object"
+          },
+          "sessionId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "sessionId"
+        ],
+        "type": "object"
+      },
+      "SessionMetadataPutResponse": {
+        "properties": {
+          "session": {
+            "$ref": "#/components/schemas/SessionSummaryView"
+          }
+        },
+        "required": [
+          "session"
+        ],
         "type": "object"
       },
       "SessionMutationView": {
@@ -15051,6 +15231,67 @@
         ],
         "type": "object"
       },
+      "SessionRetentionPutParams": {
+        "additionalProperties": false,
+        "properties": {
+          "deleteAfterCloseMs": {
+            "description": "Positive duration enables automatic tree deletion; null disables it.",
+            "format": "uint64",
+            "minimum": 1,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "sessionId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "sessionId",
+          "deleteAfterCloseMs"
+        ],
+        "type": "object"
+      },
+      "SessionRetentionPutResponse": {
+        "properties": {
+          "session": {
+            "$ref": "#/components/schemas/SessionSummaryView"
+          }
+        },
+        "required": [
+          "session"
+        ],
+        "type": "object"
+      },
+      "SessionRetentionView": {
+        "description": "Effective tree-owned retention for a session. Forks and delegated children\nname their owning root and project that root's policy and deadline.",
+        "properties": {
+          "deleteAfterCloseMs": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "deleteAtMs": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "rootSessionId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "rootSessionId"
+        ],
+        "type": "object"
+      },
       "SessionStartParams": {
         "additionalProperties": false,
         "properties": {
@@ -15064,11 +15305,27 @@
               }
             ]
           },
+          "deleteAfterCloseMs": {
+            "description": "Root-owned automatic deletion measured from close. Absent keeps the\nsession tree until manual deletion.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
           "displayName": {
             "type": [
               "string",
               "null"
             ]
+          },
+          "metadata": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Descriptive key/value metadata, applied only when the session is\nfirst created: at most 32 entries, keys 1..=64 bytes, values 1..=256\nbytes, no control characters, no `lightspeed.` prefix. It never\naffects routing, authority, or selection; filter on it with\n`session/list`.",
+            "type": "object"
           },
           "profile": {
             "anyOf": [
@@ -15112,6 +15369,14 @@
       },
       "SessionSummaryView": {
         "properties": {
+          "closedAtMs": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
           "createdAtMs": {
             "format": "uint64",
             "minimum": 0,
@@ -15133,6 +15398,13 @@
             "description": "True only when immutable lifecycle ownership was admitted with a\nlifecycle controller at managed-session creation.",
             "type": "boolean"
           },
+          "metadata": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Descriptive key/value metadata; empty when none was set.",
+            "type": "object"
+          },
           "origin": {
             "anyOf": [
               {
@@ -15144,6 +15416,9 @@
             ],
             "description": "Sub-agent lineage; absent for root sessions."
           },
+          "retention": {
+            "$ref": "#/components/schemas/SessionRetentionView"
+          },
           "updatedAtMs": {
             "format": "uint64",
             "minimum": 0,
@@ -15153,6 +15428,7 @@
         "required": [
           "id",
           "lifecycleStatus",
+          "retention",
           "managed",
           "createdAtMs",
           "updatedAtMs"
@@ -15192,6 +15468,14 @@
               "revision": 0,
               "tools": []
             }
+          },
+          "closedAtMs": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
           },
           "config": {
             "anyOf": [
@@ -15238,6 +15522,13 @@
             ],
             "description": "Immutable workflow-backed tool declaration. A lifecycle controller\nindicates external session ownership; tool-only declarations do not."
           },
+          "metadata": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Descriptive key/value metadata; empty when none was set.",
+            "type": "object"
+          },
           "origin": {
             "anyOf": [
               {
@@ -15248,6 +15539,9 @@
               }
             ],
             "description": "Sub-agent lineage; absent for root sessions."
+          },
+          "retention": {
+            "$ref": "#/components/schemas/SessionRetentionView"
           },
           "runs": {
             "default": [],
@@ -15268,6 +15562,7 @@
         "required": [
           "id",
           "status",
+          "retention",
           "managed",
           "configRevision",
           "createdAtMs",
@@ -17154,6 +17449,48 @@
       "summary": "Rename a session"
     },
     {
+      "description": "Replaces the complete descriptive key/value map (bounded like session/start); an omitted or empty map clears it. Record-only: the event log and updatedAtMs are untouched.",
+      "name": "session/metadata/put",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "params",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/SessionMetadataPutParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/AgentApiOutcomeOfSessionMetadataPutResponse"
+        }
+      },
+      "summary": "Replace session metadata"
+    },
+    {
+      "description": "Sets the positive close-relative automatic-deletion duration on a retention root, or clears it with null. Forks and delegated children inherit the root policy and cannot override it.",
+      "name": "session/retention/put",
+      "paramStructure": "by-name",
+      "params": [
+        {
+          "name": "params",
+          "required": true,
+          "schema": {
+            "$ref": "#/components/schemas/SessionRetentionPutParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/AgentApiOutcomeOfSessionRetentionPutResponse"
+        }
+      },
+      "summary": "Replace session retention"
+    },
+    {
       "description": "Closes an idle session and detaches its environment bindings. Force mode cancels active work, drops queued runs, and can recover a session whose workflow is unavailable.",
       "name": "session/close",
       "paramStructure": "by-name",
@@ -17175,7 +17512,7 @@
       "summary": "Close a session"
     },
     {
-      "description": "Permanently removes session storage after the session has been closed; close active/open sessions first.",
+      "description": "Permanently removes a closed retention-tree leaf, or its closed history-fork and delegated-child subtree when cascade is true. Config-only clones are never included.",
       "name": "session/delete",
       "paramStructure": "by-name",
       "params": [
@@ -17193,7 +17530,7 @@
           "$ref": "#/components/schemas/AgentApiOutcomeOfSessionDeleteResponse"
         }
       },
-      "summary": "Delete a closed session"
+      "summary": "Delete closed sessions"
     },
     {
       "description": "Reads events after a cursor and optionally long-polls when caught up. Continue from nextCursor/headCursor and inspect complete/gap rather than assuming an uninterrupted page.",
@@ -18015,7 +18352,7 @@
       "summary": "Revoke an environment registration key"
     },
     {
-      "description": "Queries supported providers directly on every call and returns best-effort selectable routes. One provider failure does not discard successful results from others.",
+      "description": "Queries supported providers directly, with a brief process-local burst cache, and returns best-effort selectable routes. One provider failure does not discard successful results from others.",
       "name": "models/list",
       "paramStructure": "by-name",
       "params": [

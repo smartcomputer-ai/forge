@@ -589,9 +589,11 @@ impl EvalRuntime {
     async fn start_session(&self, session_id: &SessionId) -> Result<()> {
         self.sessions
             .create_session(CreateSession {
+                metadata: Default::default(),
                 session_id: session_id.clone(),
                 display_name: None,
                 origin: None,
+                delete_after_close_ms: None,
                 created_at_ms: 1,
             })
             .await
@@ -1125,7 +1127,7 @@ fn builtin_operation_for_id(id: &str) -> Option<BuiltinToolOperation> {
         "env.glob" => BuiltinToolOperation::Glob,
         "env.list_dir" => BuiltinToolOperation::ListDir,
         "env.run_process" => BuiltinToolOperation::RunProcess,
-        "env.write_process_stdin" => BuiltinToolOperation::WriteProcessStdin,
+        "env.continue_process" => BuiltinToolOperation::ContinueProcess,
         _ => return None,
     })
 }

@@ -139,9 +139,11 @@ async fn run_profile_provision_live_client(
     // session exists.
     let rejected = api
         .start_session(SessionStartParams {
+            metadata: Default::default(),
             session_id: Some(format!("{}_rejected", session_id.as_str())),
             display_name: None,
             config: None,
+            delete_after_close_ms: None,
             profile: Some(ProfileSource::Inline {
                 profile: Box::new(api::InlineAgentProfile {
                     display_name: None,
@@ -180,9 +182,11 @@ async fn run_profile_provision_live_client(
     // provisioning (no reconciler has run yet).
     let start = |session_id: String| {
         api.start_session(SessionStartParams {
+            metadata: Default::default(),
             session_id: Some(session_id),
             display_name: None,
             config: None,
+            delete_after_close_ms: None,
             profile: Some(ProfileSource::Named {
                 profile_id: profile_id.clone(),
             }),
@@ -196,6 +200,7 @@ async fn run_profile_provision_live_client(
         .expect("profile provisioning activates the new environment");
     let listed = api
         .list_environments(api::EnvironmentListParams {
+            metadata: Default::default(),
             origin_session_id: Some(session_id.as_str().to_owned()),
             ..api::EnvironmentListParams::default()
         })
@@ -248,6 +253,7 @@ async fn run_profile_provision_live_client(
     assert!(!applied.result.applied.active_environment_changed);
     assert_eq!(
         api.list_environments(api::EnvironmentListParams {
+            metadata: Default::default(),
             origin_session_id: Some(session_id.as_str().to_owned()),
             ..api::EnvironmentListParams::default()
         })
@@ -303,9 +309,11 @@ async fn run_profile_provision_live_client(
     // `retain`: the environment outlives its session.
     let retained_session = format!("{}_retain", session_id.as_str());
     api.start_session(SessionStartParams {
+        metadata: Default::default(),
         session_id: Some(retained_session.clone()),
         display_name: None,
         config: None,
+        delete_after_close_ms: None,
         profile: Some(ProfileSource::Inline {
             profile: Box::new(api::InlineAgentProfile {
                 display_name: None,
@@ -482,12 +490,14 @@ async fn run_profiles_live_client(
     );
 
     api.start_session(SessionStartParams {
+        metadata: Default::default(),
         session_id: Some(session_id.as_str().to_owned()),
         display_name: None,
         config: Some(SessionConfig {
             model: Some(model_to_api(&model)),
             ..SessionConfig::default()
         }),
+        delete_after_close_ms: None,
         profile: Some(ProfileSource::Named {
             profile_id: profile_id.clone(),
         }),

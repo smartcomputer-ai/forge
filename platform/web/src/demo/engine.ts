@@ -156,6 +156,8 @@ export async function waitForEvents(
 // ---------------------------------------------------------------------------
 
 export interface NewSessionInit {
+  /// Descriptive key/value metadata stamped at creation.
+  metadata?: Record<string, string>;
   id?: string;
   displayName?: string | null;
   config?: Record<string, unknown>;
@@ -165,6 +167,7 @@ export interface NewSessionInit {
   activeEnvironmentId?: string | null;
   instructions?: string | null;
   createdAtMs?: number;
+  deleteAfterCloseMs?: number | null;
   responder?: DemoResponder;
 }
 
@@ -176,12 +179,24 @@ export function newSession(
   const at = init.createdAtMs ?? Date.now();
   const id = init.id ?? store.nextId("session");
   const config = init.config ?? { model: { ...DEFAULT_MODEL } };
+  const retentionRootSessionId = init.origin
+    ? universe.sessions.get(init.origin.parentSessionId)?.view.retention.rootSessionId ?? id
+    : id;
   const view: SessionView = {
     id,
     displayName: init.displayName ?? null,
+    metadata: init.metadata ?? {},
     createdAtMs: at,
     updatedAtMs: at,
+    closedAtMs: null,
     status: "idle",
+    retention: {
+      rootSessionId: retentionRootSessionId,
+      deleteAfterCloseMs: retentionRootSessionId === id
+        ? init.deleteAfterCloseMs ?? null
+        : universe.sessions.get(retentionRootSessionId)?.view.retention.deleteAfterCloseMs ?? null,
+      deleteAtMs: null,
+    },
     managed: init.managed ?? false,
     activeEnvironmentId: init.activeEnvironmentId ?? null,
     config,
@@ -402,7 +417,12 @@ export function finishRun(
   } else if (status === "cancelled") {
     pushEvent(session, { type: "runCancelled", runId: run.id }, joins, at);
   } else {
-    pushEvent(session, { type: "runFailed", runId: run.id, message: "demo run failed" }, joins, at);
+    pushEvent(
+      session,
+      { type: "runFailed", runId: run.id, kind: "internal", message: "demo run failed" },
+      joins,
+      at,
+    );
   }
   if (session.view.status !== "closed") session.view.status = "idle";
   const next = session.queue.shift();
@@ -473,6 +493,11 @@ export function closeSession(session: SessionRecord, force: boolean, at = Date.n
   session.queue = [];
   if (active) finishRun(session, active, "cancelled", at);
   session.view.status = "closed";
+  session.view.closedAtMs = at;
+  if (session.view.retention.rootSessionId === session.view.id) {
+    const duration = session.view.retention.deleteAfterCloseMs;
+    session.view.retention.deleteAtMs = duration == null ? null : at + duration;
+  }
   pushEvent(session, { type: "sessionClosed" } as SessionEventKindView, {}, at);
   return true;
 }
@@ -881,7 +906,12 @@ export function appendScriptedRun(store: DemoStore, session: SessionRecord, scri
   run.completedAtMs = clock;
   if (script.failure) {
     run.status = "failed";
-    pushEvent(session, { type: "runFailed", runId: run.id, message: script.failure }, runJoins, clock);
+    pushEvent(
+      session,
+      { type: "runFailed", runId: run.id, kind: "internal", message: script.failure },
+      runJoins,
+      clock,
+    );
   } else {
     run.status = "completed";
     pushEvent(session, { type: "runCompleted", runId: run.id, outputRef: null }, runJoins, clock);

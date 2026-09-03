@@ -3,7 +3,7 @@
 //!
 //! Signals only mutate state and wake the loop; every decision that needs
 //! no I/O lives in [`state`]. The loop runs one pass per wake — teardown
-//! check, emissions, rotations, ripe buffers, retention sweep, descendant
+//! check, emissions, rotations, ripe buffers, idle-close sweep, descendant
 //! budget, rename, main-session reconcile, dispatch, continue-as-new — then
 //! parks on a wait condition raced against the earliest deadline. Deliveries
 //! run as lanes: boxed futures polled beside whatever the loop awaits, one
@@ -267,7 +267,7 @@ async fn run_controller(ctx: &mut Ctx) -> WorkflowResult<()> {
 }
 
 /// Wait for the earliest of: state the loop must act on, or the earliest
-/// time-driven deadline (buffer flush, retention expiry, rotation retry,
+/// time-driven deadline (buffer flush, idle-close deadline, rotation retry,
 /// UTC day boundary while budget-parked, descendant refresh). Lanes keep
 /// running underneath.
 async fn park(ctx: &Ctx, lanes: &mut Vec<LaneFuture>) {
@@ -675,7 +675,7 @@ async fn rotate_requested_sessions(ctx: &Ctx) {
     ctx.state_mut(|state| state.rotation_retry_at_ms = retry_at);
 }
 
-/// Close routed sessions idle past their retention window. A session that
+/// Close routed sessions idle past their close window. A session that
 /// will not close (busy, unreachable) has its expiry pushed out.
 async fn sweep_routed_sessions(ctx: &Ctx) {
     let now = now_ms(ctx);
@@ -851,7 +851,7 @@ mod tests {
                 profile_id: ProfileId::new("triager"),
                 brief: None,
                 runs_per_day: None,
-                routed_session_ttl_ms: None,
+                routed_session_close_after_ms: None,
                 self_config: false,
                 emit: false,
                 enabled: true,

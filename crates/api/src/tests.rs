@@ -4,6 +4,25 @@ use serde_json::{Value, json};
 use super::*;
 
 #[test]
+fn session_retention_put_requires_an_explicit_nullable_policy() {
+    assert!(
+        serde_json::from_value::<SessionRetentionPutParams>(json!({
+            "sessionId": "session_1"
+        }))
+        .is_err()
+    );
+    assert_eq!(
+        serde_json::from_value::<SessionRetentionPutParams>(json!({
+            "sessionId": "session_1",
+            "deleteAfterCloseMs": null
+        }))
+        .expect("explicit null clears retention")
+        .delete_after_close_ms,
+        None
+    );
+}
+
+#[test]
 fn notification_serializes_as_json_rpc_lite_shape() {
     let notification = AgentNotification::RunCompleted {
         session_id: "session_1".to_owned(),
@@ -1775,7 +1794,14 @@ impl AgentApiService for TestService {
             protocol_version: PROTOCOL_VERSION.to_owned(),
             server_info: ServerInfo {
                 name: "test-service".to_owned(),
-                version: "0".to_owned(),
+                version: "0+0000000".to_owned(),
+                git_sha: "0000000".to_owned(),
+                envd: EnvironmentDaemonInfo {
+                    version: "0".to_owned(),
+                    git_sha: "0000000".to_owned(),
+                    protocol_version: 0,
+                    targets: Vec::new(),
+                },
             },
             capabilities: ServerCapabilities {
                 notifications: false,
@@ -1889,9 +1915,12 @@ impl AgentApiService for TestService {
     ) -> Result<AgentApiOutcome<SessionListResponse>, AgentApiError> {
         Ok(AgentApiOutcome::new(SessionListResponse {
             sessions: vec![SessionSummaryView {
+                metadata: Default::default(),
                 id: "session_test".to_owned(),
                 display_name: Some("Test session".to_owned()),
                 lifecycle_status: SessionLifecycleStatus::Open,
+                closed_at_ms: None,
+                retention: test_session_retention("session_test"),
                 managed: false,
                 origin: None,
                 created_at_ms: 1,
@@ -1907,9 +1936,32 @@ impl AgentApiService for TestService {
     ) -> Result<AgentApiOutcome<SessionRenameResponse>, AgentApiError> {
         Ok(AgentApiOutcome::new(SessionRenameResponse {
             session: SessionSummaryView {
+                metadata: Default::default(),
+                retention: test_session_retention(&params.session_id),
                 id: params.session_id,
                 display_name: params.display_name,
                 lifecycle_status: SessionLifecycleStatus::Open,
+                closed_at_ms: None,
+                managed: false,
+                origin: None,
+                created_at_ms: 1,
+                updated_at_ms: 2,
+            },
+        }))
+    }
+
+    async fn put_session_metadata(
+        &self,
+        params: SessionMetadataPutParams,
+    ) -> Result<AgentApiOutcome<SessionMetadataPutResponse>, AgentApiError> {
+        Ok(AgentApiOutcome::new(SessionMetadataPutResponse {
+            session: SessionSummaryView {
+                retention: test_session_retention(&params.session_id),
+                id: params.session_id,
+                display_name: None,
+                metadata: params.metadata,
+                lifecycle_status: SessionLifecycleStatus::Open,
+                closed_at_ms: None,
                 managed: false,
                 origin: None,
                 created_at_ms: 1,
@@ -1940,14 +1992,18 @@ impl AgentApiService for TestService {
     ) -> Result<AgentApiOutcome<SessionDeleteResponse>, AgentApiError> {
         Ok(AgentApiOutcome::new(SessionDeleteResponse {
             session: SessionSummaryView {
+                metadata: Default::default(),
+                retention: test_session_retention(&params.session_id),
                 id: params.session_id,
                 display_name: None,
                 lifecycle_status: SessionLifecycleStatus::Closed,
+                closed_at_ms: Some(2),
                 managed: false,
                 origin: None,
                 created_at_ms: 1,
                 updated_at_ms: 2,
             },
+            deleted_session_count: 1,
         }))
     }
 
@@ -3081,10 +3137,14 @@ fn test_workspace(workspace_id: String, revision: u64) -> VfsWorkspaceView {
 }
 
 fn test_session(id: SessionId, status: SessionStatus) -> SessionView {
+    let retention = test_session_retention(&id);
     SessionView {
+        metadata: Default::default(),
         id,
         display_name: Some("Test session".to_owned()),
         status,
+        closed_at_ms: None,
+        retention,
         active_run: None,
         managed: false,
         config_revision: 0,
@@ -3097,6 +3157,14 @@ fn test_session(id: SessionId, status: SessionStatus) -> SessionView {
         active_tools: ActiveToolsView::default(),
         management: None,
         origin: None,
+    }
+}
+
+fn test_session_retention(root_session_id: &str) -> SessionRetentionView {
+    SessionRetentionView {
+        root_session_id: root_session_id.to_owned(),
+        delete_after_close_ms: None,
+        delete_at_ms: None,
     }
 }
 

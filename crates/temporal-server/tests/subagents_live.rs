@@ -545,6 +545,7 @@ async fn start_subagent_parent_with_features(
     script: &str,
 ) -> anyhow::Result<String> {
     api.start_session(SessionStartParams {
+        metadata: Default::default(),
         session_id: Some(session_id.as_str().to_owned()),
         display_name: None,
         config: Some(SessionConfig {
@@ -553,6 +554,7 @@ async fn start_subagent_parent_with_features(
             ..SessionConfig::default()
         }),
         profile: None,
+        delete_after_close_ms: None,
     })
     .await?;
     let run = api
@@ -577,6 +579,7 @@ async fn list_children(
 ) -> anyhow::Result<Vec<engine::storage::SessionRecord>> {
     Ok(sessions
         .list_sessions(engine::storage::ListSessions {
+            metadata: Default::default(),
             cursor: None,
             limit: 50,
             root_session_id: None,
@@ -688,6 +691,7 @@ async fn run_agent_run_inline_live_client(
     assert_eq!(child_view.status, api::SessionStatus::Closed);
     let listed = api
         .list_sessions(api::SessionListParams {
+            metadata: Default::default(),
             cursor: None,
             limit: None,
             root_session_id: Some(session_id.as_str().to_owned()),
@@ -966,9 +970,11 @@ async fn run_agent_run_inherit_environment_live_client(
 
     // Parent: provisions its own environment and may run the child.
     api.start_session(SessionStartParams {
+        metadata: Default::default(),
         session_id: Some(session_id.as_str().to_owned()),
         display_name: None,
         config: None,
+        delete_after_close_ms: None,
         profile: Some(ProfileSource::Inline {
             profile: Box::new(api::InlineAgentProfile {
                 display_name: None,

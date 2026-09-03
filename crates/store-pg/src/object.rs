@@ -1,5 +1,7 @@
 use engine::{BlobRef, storage::BlobStoreError};
-use object_store::{ObjectStoreExt, PutPayload, path::Path as ObjectPath};
+use futures_util::TryStreamExt as _;
+use object_store::{ObjectStore, ObjectStoreExt, PutPayload, path::Path as ObjectPath};
+use uuid::Uuid;
 
 use crate::{
     PgStore, PgStoreConfig,
@@ -70,7 +72,11 @@ pub(crate) fn direct_blob_key(
 }
 
 fn prefixed_key(config: &PgStoreConfig, suffix: &str) -> String {
-    let prefix = config.object_prefix.trim_matches('/');
+    prefix_key(&config.object_prefix, suffix)
+}
+
+fn prefix_key(object_prefix: &str, suffix: &str) -> String {
+    let prefix = object_prefix.trim_matches('/');
     if prefix.is_empty() {
         suffix.to_owned()
     } else {
@@ -78,11 +84,52 @@ fn prefixed_key(config: &PgStoreConfig, suffix: &str) -> String {
     }
 }
 
+/// Object-store prefix under which every CAS object of one universe lives,
+/// including the deployment's configured object prefix. Universe deletion
+/// clears it wholesale so objects whose rows were already swept, or whose
+/// deletion failed after the row went, do not outlive the universe.
+pub fn universe_cas_object_prefix(object_prefix: &str, universe_id: Uuid) -> String {
+    prefix_key(object_prefix, &format!("universes/{universe_id}/cas/"))
+}
+
+/// Delete every object under `prefix`; returns how many were removed.
+pub async fn delete_objects_under_prefix(
+    object_store: &dyn ObjectStore,
+    prefix: &str,
+) -> Result<u64, object_store::Error> {
+    let prefix = ObjectPath::from(prefix.trim_end_matches('/'));
+    let mut listing = object_store.list(Some(&prefix));
+    let mut deleted = 0u64;
+    while let Some(meta) = listing.try_next().await? {
+        match object_store.delete(&meta.location).await {
+            Ok(()) | Err(object_store::Error::NotFound { .. }) => deleted += 1,
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(deleted)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::PgStoreConfig;
     use uuid::Uuid;
+
+    #[test]
+    fn universe_cas_prefix_contains_every_direct_blob_key() {
+        let universe_id = Uuid::new_v4();
+        let config = PgStoreConfig::new(universe_id)
+            .with_inline_threshold_bytes(8)
+            .with_object_prefix("/prefix/");
+        let key = direct_blob_key(&config, &BlobRef::from_bytes(b"hello")).expect("blob key");
+        let prefix = universe_cas_object_prefix("/prefix/", universe_id);
+        assert_eq!(prefix, format!("prefix/universes/{universe_id}/cas/"));
+        assert!(key.starts_with(&prefix));
+        assert_eq!(
+            universe_cas_object_prefix("", universe_id),
+            format!("universes/{universe_id}/cas/")
+        );
+    }
 
     #[test]
     fn direct_blob_keys_are_scoped_by_universe() {

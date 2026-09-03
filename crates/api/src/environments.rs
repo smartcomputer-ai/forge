@@ -75,6 +75,10 @@ pub struct EnvironmentListParams {
     /// Only registered environments admitted by this registration key.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub registration_key_id: Option<EnvironmentRegistrationKeyId>,
+    /// Only environments carrying every listed metadata pair (AND
+    /// semantics); the same filter `session/list` accepts.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub metadata: BTreeMap<String, String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

@@ -68,10 +68,12 @@ async fn run_llm_timeout_live_client(
         .build();
 
     api.start_session(SessionStartParams {
+        metadata: Default::default(),
         session_id: Some(session_id.as_str().to_owned()),
         display_name: None,
         config: None,
         profile: None,
+        delete_after_close_ms: None,
     })
     .await?;
     let handle = live_workflow_handle(&client, &session_id)?;

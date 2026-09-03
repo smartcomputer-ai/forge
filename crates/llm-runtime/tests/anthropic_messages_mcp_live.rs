@@ -96,9 +96,11 @@ async fn anthropic_messages_live_core_session_uses_public_remote_mcp() {
     let session_id = SessionId::new("session-live-anthropic-mcp-playground");
     sessions
         .create_session(CreateSession {
+            metadata: Default::default(),
             session_id: session_id.clone(),
             display_name: None,
             origin: None,
+            delete_after_close_ms: None,
             created_at_ms: 1,
         })
         .await

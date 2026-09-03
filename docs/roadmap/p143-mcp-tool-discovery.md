@@ -37,6 +37,11 @@
   acceptance and a later dedicated low-privilege external OAuth acceptance
   remain; no external account is required by the implementation or routine
   tests.
+- Hardened 2026-09-03 after an external Streamable HTTP server rejected the
+  sessionless `server/discover` compatibility probe with HTTP 400 instead of a
+  JSON-RPC legacy signal. Discovery and native execution now retry once with a
+  fresh `initialize` lifecycle for compatibility-shaped probe rejections;
+  authentication, rate-limit, and ordinary server failures remain terminal.
 
 ## Decision
 

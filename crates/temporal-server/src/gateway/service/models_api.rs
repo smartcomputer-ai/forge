@@ -1,6 +1,11 @@
 use std::{
-    sync::Arc,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    collections::HashMap,
+    future::Future,
+    sync::{
+        Arc, Mutex as StdMutex,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use auth::{
@@ -20,6 +25,8 @@ const OPENAI_RESPONSES_API_KIND: &str = "openai:responses";
 const OPENAI_COMPLETIONS_API_KIND: &str = "openai:completions";
 const ANTHROPIC_MESSAGES_API_KIND: &str = "anthropic:messages";
 const MODEL_DISCOVERY_TIMEOUT: Duration = Duration::from_secs(15);
+const MODEL_DISCOVERY_CACHE_TTL: Duration = Duration::from_secs(10);
+const MODEL_DISCOVERY_FAILURE_CACHE_TTL: Duration = Duration::from_secs(2);
 /// Keep the normal picker focused on roughly the last eighteen months of
 /// OpenAI models. Older account-visible ids remain usable through manual model
 /// entry and through models/list with selectableOnly=false.
@@ -32,6 +39,95 @@ pub(super) struct ModelDiscoveryService {
     anthropic: Arc<anthropic::Client>,
     provider_keys: Arc<dyn ModelProviderResolver>,
     providers: Arc<dyn AuthProviderStore>,
+    cache: ModelDiscoveryCache,
+}
+
+type ProviderDiscoveryResult = (Vec<ModelView>, ModelProviderDiscoveryView);
+
+#[derive(Clone)]
+struct ModelDiscoveryCache {
+    slots: Arc<StdMutex<HashMap<String, Arc<ModelDiscoveryCacheSlot>>>>,
+    success_ttl: Duration,
+    failure_ttl: Duration,
+}
+
+struct ModelDiscoveryCacheSlot {
+    generation: AtomicU64,
+    entry: tokio::sync::Mutex<Option<CachedProviderDiscovery>>,
+}
+
+#[derive(Clone)]
+struct CachedProviderDiscovery {
+    value: ProviderDiscoveryResult,
+    inserted_at: Instant,
+    generation: u64,
+}
+
+impl ModelDiscoveryCache {
+    fn new(success_ttl: Duration, failure_ttl: Duration) -> Self {
+        Self {
+            slots: Arc::new(StdMutex::new(HashMap::new())),
+            success_ttl,
+            failure_ttl,
+        }
+    }
+
+    fn slot(&self, provider_id: &str) -> Arc<ModelDiscoveryCacheSlot> {
+        self.slots
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entry(provider_id.to_owned())
+            .or_insert_with(|| {
+                Arc::new(ModelDiscoveryCacheSlot {
+                    generation: AtomicU64::new(0),
+                    entry: tokio::sync::Mutex::new(None),
+                })
+            })
+            .clone()
+    }
+
+    fn invalidate(&self, provider_id: &str) {
+        self.slot(provider_id)
+            .generation
+            .fetch_add(1, Ordering::SeqCst);
+    }
+
+    async fn get_or_fetch<F, Fut>(&self, provider_id: &str, fetch: F) -> ProviderDiscoveryResult
+    where
+        F: FnOnce() -> Fut,
+        Fut: Future<Output = ProviderDiscoveryResult>,
+    {
+        let slot = self.slot(provider_id);
+        // Holding this provider-local lock across the request is intentional:
+        // callers for the same provider share one fetch, while other providers
+        // retain independent locks and continue concurrently.
+        let mut entry = slot.entry.lock().await;
+        let generation = slot.generation.load(Ordering::SeqCst);
+        if let Some(cached) = entry.as_ref()
+            && cached.generation == generation
+            && cached.inserted_at.elapsed() < self.ttl_for(&cached.value)
+        {
+            return cached.value.clone();
+        }
+
+        let value = fetch().await;
+        if slot.generation.load(Ordering::SeqCst) == generation {
+            *entry = Some(CachedProviderDiscovery {
+                value: value.clone(),
+                inserted_at: Instant::now(),
+                generation,
+            });
+        }
+        value
+    }
+
+    fn ttl_for(&self, value: &ProviderDiscoveryResult) -> Duration {
+        if value.1.error.is_some() {
+            self.failure_ttl
+        } else {
+            self.success_ttl
+        }
+    }
 }
 
 impl ModelDiscoveryService {
@@ -46,6 +142,18 @@ impl ModelDiscoveryService {
             anthropic,
             provider_keys,
             providers,
+            cache: ModelDiscoveryCache::new(
+                MODEL_DISCOVERY_CACHE_TTL,
+                MODEL_DISCOVERY_FAILURE_CACHE_TTL,
+            ),
+        }
+    }
+
+    pub(super) fn invalidate_auth_provider(&self, auth_provider_id: &str) {
+        if let Some(provider_id) = auth_provider_id.strip_prefix("model:")
+            && !provider_id.is_empty()
+        {
+            self.cache.invalidate(provider_id);
         }
     }
 
@@ -86,6 +194,12 @@ impl ModelDiscoveryService {
     }
 
     async fn list_openai(&self) -> (Vec<ModelView>, ModelProviderDiscoveryView) {
+        self.cache
+            .get_or_fetch(OPENAI_PROVIDER_ID, || self.list_openai_uncached())
+            .await
+    }
+
+    async fn list_openai_uncached(&self) -> ProviderDiscoveryResult {
         let mut source = ModelProviderCredentialSource::Deployment;
         let mut credential = ModelProviderCredentialStatus::Configured;
         let result = tokio::time::timeout(MODEL_DISCOVERY_TIMEOUT, async {
@@ -150,6 +264,12 @@ impl ModelDiscoveryService {
     }
 
     async fn list_anthropic(&self) -> (Vec<ModelView>, ModelProviderDiscoveryView) {
+        self.cache
+            .get_or_fetch(ANTHROPIC_PROVIDER_ID, || self.list_anthropic_uncached())
+            .await
+    }
+
+    async fn list_anthropic_uncached(&self) -> ProviderDiscoveryResult {
         let mut source = ModelProviderCredentialSource::Deployment;
         let mut credential = ModelProviderCredentialStatus::Configured;
         let result = tokio::time::timeout(MODEL_DISCOVERY_TIMEOUT, async {
@@ -270,6 +390,20 @@ impl ModelDiscoveryService {
         api_kinds: Vec<String>,
         anonymous: bool,
     ) -> (Vec<ModelView>, ModelProviderDiscoveryView) {
+        let cache_key = provider_id.clone();
+        self.cache
+            .get_or_fetch(&cache_key, || {
+                self.list_custom_provider_uncached(provider_id, api_kinds, anonymous)
+            })
+            .await
+    }
+
+    async fn list_custom_provider_uncached(
+        &self,
+        provider_id: String,
+        api_kinds: Vec<String>,
+        anonymous: bool,
+    ) -> ProviderDiscoveryResult {
         let result = tokio::time::timeout(MODEL_DISCOVERY_TIMEOUT, async {
             let provider = self
                 .provider_keys
@@ -634,7 +768,13 @@ pub(super) fn stored_provider_key_resolver(
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::BTreeMap, sync::Arc};
+    use std::{
+        collections::BTreeMap,
+        sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        },
+    };
 
     use auth::{
         AuthProviderConfig, AuthProviderId, AuthProviderStatus, CreateAuthProviderRecord,
@@ -644,9 +784,24 @@ mod tests {
     use tokio::{
         io::{AsyncReadExt as _, AsyncWriteExt as _},
         net::TcpListener,
+        sync::Notify,
     };
 
     use super::*;
+
+    fn cached_discovery(provider_id: &str, error: Option<&str>) -> ProviderDiscoveryResult {
+        (
+            Vec::new(),
+            ModelProviderDiscoveryView {
+                provider_id: provider_id.to_owned(),
+                api_kinds: vec![OPENAI_RESPONSES_API_KIND.to_owned()],
+                fetched_at_ms: error.is_none().then_some(1),
+                error: error.map(str::to_owned),
+                credential: ModelProviderCredentialStatus::Configured,
+                credential_source: ModelProviderCredentialSource::Universe,
+            },
+        )
+    }
 
     async fn model_list_server() -> (String, tokio::task::JoinHandle<String>) {
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind");
@@ -675,6 +830,124 @@ mod tests {
             String::from_utf8(bytes).expect("request")
         });
         (format!("http://{address}/v1"), task)
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn discovery_cache_singleflights_concurrent_provider_requests() {
+        let cache = Arc::new(ModelDiscoveryCache::new(
+            Duration::from_secs(60),
+            Duration::from_secs(60),
+        ));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut tasks = Vec::new();
+        for _ in 0..12 {
+            let cache = cache.clone();
+            let calls = calls.clone();
+            tasks.push(tokio::spawn(async move {
+                cache
+                    .get_or_fetch("openai", || async move {
+                        calls.fetch_add(1, Ordering::SeqCst);
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                        cached_discovery("openai", None)
+                    })
+                    .await
+            }));
+        }
+
+        for task in tasks {
+            assert!(task.await.expect("join").1.error.is_none());
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn discovery_cache_retries_failures_after_the_negative_ttl() {
+        let cache = ModelDiscoveryCache::new(Duration::from_secs(60), Duration::from_millis(20));
+        let calls = AtomicUsize::new(0);
+
+        for _ in 0..2 {
+            cache
+                .get_or_fetch("openai", || async {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    cached_discovery("openai", Some("failed"))
+                })
+                .await;
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        cache
+            .get_or_fetch("openai", || async {
+                calls.fetch_add(1, Ordering::SeqCst);
+                cached_discovery("openai", Some("failed again"))
+            })
+            .await;
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn discovery_cache_refreshes_successes_after_the_positive_ttl() {
+        let cache = ModelDiscoveryCache::new(Duration::from_millis(20), Duration::from_secs(60));
+        let calls = AtomicUsize::new(0);
+
+        for _ in 0..2 {
+            cache
+                .get_or_fetch("openai", || async {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                    cached_discovery("openai", None)
+                })
+                .await;
+        }
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        cache
+            .get_or_fetch("openai", || async {
+                calls.fetch_add(1, Ordering::SeqCst);
+                cached_discovery("openai", None)
+            })
+            .await;
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn invalidation_prevents_an_old_inflight_result_from_being_cached() {
+        let cache = Arc::new(ModelDiscoveryCache::new(
+            Duration::from_secs(60),
+            Duration::from_secs(60),
+        ));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let started = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        let task = {
+            let cache = cache.clone();
+            let calls = calls.clone();
+            let started = started.clone();
+            let release = release.clone();
+            tokio::spawn(async move {
+                cache
+                    .get_or_fetch("openai", || async move {
+                        calls.fetch_add(1, Ordering::SeqCst);
+                        started.notify_one();
+                        release.notified().await;
+                        cached_discovery("openai", None)
+                    })
+                    .await
+            })
+        };
+
+        started.notified().await;
+        cache.invalidate("openai");
+        release.notify_one();
+        task.await.expect("join");
+
+        cache
+            .get_or_fetch("openai", || async {
+                calls.fetch_add(1, Ordering::SeqCst);
+                cached_discovery("openai", None)
+            })
+            .await;
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
     }
 
     #[test]
@@ -912,6 +1185,7 @@ mod tests {
         );
 
         let (models, statuses) = service.list_custom_providers().await;
+        let cached = service.list_custom_providers().await;
 
         assert_eq!(models.len(), 1);
         assert_eq!(models[0].provider_id, "ollama");
@@ -922,6 +1196,7 @@ mod tests {
             statuses[0].credential,
             ModelProviderCredentialStatus::NotRequired
         );
+        assert_eq!(cached, (models, statuses));
         let request = server.await.expect("server").to_ascii_lowercase();
         assert!(request.starts_with("get /v1/models http/1.1"));
         assert!(request.contains("x-client: lightspeed"));

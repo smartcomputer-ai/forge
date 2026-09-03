@@ -267,8 +267,8 @@ pub trait BotTriggerStore: Send + Sync {
 /// Retention of a routed session, decided at admission from the trigger.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "kind")]
-pub enum RoutedSessionTtl {
-    /// Inherit the bot's `routedSessionTtlMs`.
+pub enum RoutedSessionClosePolicy {
+    /// Inherit the bot's `routedSessionCloseAfterMs`.
     #[default]
     Inherit,
     /// Never close (chat).
@@ -285,7 +285,7 @@ pub struct RoutedSession {
     pub session_id: String,
     pub label: String,
     #[serde(default)]
-    pub ttl: RoutedSessionTtl,
+    pub close_policy: RoutedSessionClosePolicy,
 }
 
 impl RoutedSession {

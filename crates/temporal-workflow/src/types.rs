@@ -19,6 +19,14 @@ pub struct AgentSessionArgs {
     /// Human-readable session name persisted as store metadata at creation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
+    /// Descriptive key/value metadata persisted on the session row at
+    /// creation (validated at the API boundary); ignored when the row exists.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub metadata: BTreeMap<String, String>,
+    /// Root-only automatic deletion duration, applied only when the session
+    /// row is first created.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delete_after_close_ms: Option<u64>,
     pub session_config: SessionConfig,
     /// Present only for the trusted managed-session creation path. The
     /// declaration is validated against `universe_id` and recorded as an
@@ -610,6 +618,12 @@ pub struct CreateOrLoadSessionRequest {
     /// Applied only when the session is created; ignored on load.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
+    /// Applied only when the session is created; ignored on load.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub metadata: BTreeMap<String, String>,
+    /// Applied only when the session is created; ignored on load.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delete_after_close_ms: Option<u64>,
     pub observed_at_ms: u64,
 }
 

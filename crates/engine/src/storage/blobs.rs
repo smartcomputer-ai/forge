@@ -1,11 +1,8 @@
 //! Content-addressed blob storage contract.
 
-use crate::{
-    BlobRef,
-    session::{EventSeq, SessionId},
-};
+use crate::BlobRef;
 use async_trait::async_trait;
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::sync::{Arc, RwLock};
 use thiserror::Error;
 
@@ -24,73 +21,78 @@ pub struct BlobInfo {
     pub byte_len: u64,
 }
 
-/// Stores the well-known constant blobs the deterministic core references by
-/// hash without being able to write them itself (for example
+/// Contents of the well-known constant blobs the deterministic core
+/// references by hash without being able to write them itself (for example
 /// [`crate::UNAVAILABLE_TOOL_RESULT_CONTENT`]).
+pub const ENGINE_BLOB_CONTENTS: [&str; 4] = [
+    crate::UNAVAILABLE_TOOL_RESULT_CONTENT,
+    crate::TOOL_RUNTIME_BOUNDARY_FAILURE_CONTENT,
+    crate::LLM_RUNTIME_BOUNDARY_FAILURE_CONTENT,
+    crate::CANCELLED_TOOL_RESULT_CONTENT,
+];
+
+/// Refs of [`ENGINE_BLOB_CONTENTS`]. A long-running process may reference any
+/// of them at any moment, so blob collection pins them: they are never
+/// candidates for a sweep regardless of holders or age.
+pub fn engine_blob_refs() -> Vec<BlobRef> {
+    ENGINE_BLOB_CONTENTS
+        .iter()
+        .map(|content| BlobRef::from_bytes(content.as_bytes()))
+        .collect()
+}
+
+/// Stores the well-known constant blobs of [`ENGINE_BLOB_CONTENTS`].
 ///
 /// Runtimes that fulfill core actions must call this before driving sessions;
 /// content-addressed puts make repeated calls idempotent.
 pub async fn ensure_engine_blobs(blobs: &dyn BlobStore) -> Result<(), BlobStoreError> {
-    let blob_ref = blobs
-        .put_bytes(crate::UNAVAILABLE_TOOL_RESULT_CONTENT.as_bytes().to_vec())
-        .await?;
-    debug_assert_eq!(blob_ref, crate::unavailable_tool_result_ref());
-    let blob_ref = blobs
-        .put_bytes(
-            crate::TOOL_RUNTIME_BOUNDARY_FAILURE_CONTENT
-                .as_bytes()
-                .to_vec(),
-        )
-        .await?;
-    debug_assert_eq!(blob_ref, crate::tool_runtime_boundary_failure_ref());
-    let blob_ref = blobs
-        .put_bytes(
-            crate::LLM_RUNTIME_BOUNDARY_FAILURE_CONTENT
-                .as_bytes()
-                .to_vec(),
-        )
-        .await?;
-    debug_assert_eq!(blob_ref, crate::llm_runtime_boundary_failure_ref());
-    let blob_ref = blobs
-        .put_bytes(crate::CANCELLED_TOOL_RESULT_CONTENT.as_bytes().to_vec())
-        .await?;
-    debug_assert_eq!(blob_ref, crate::cancelled_tool_result_ref());
+    for content in ENGINE_BLOB_CONTENTS {
+        let blob_ref = blobs.put_bytes(content.as_bytes().to_vec()).await?;
+        debug_assert_eq!(blob_ref, BlobRef::from_bytes(content.as_bytes()));
+    }
+    debug_assert_eq!(
+        engine_blob_refs(),
+        vec![
+            crate::unavailable_tool_result_ref(),
+            crate::tool_runtime_boundary_failure_ref(),
+            crate::llm_runtime_boundary_failure_ref(),
+            crate::cancelled_tool_result_ref(),
+        ]
+    );
     Ok(())
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SessionBlobRoot {
-    pub session_id: SessionId,
-    pub blob_ref: BlobRef,
-    pub root_kind: String,
-    pub first_seq: Option<EventSeq>,
-    pub last_seq: Option<EventSeq>,
+/// Every blob ref embedded in a JSON document: each string value that is
+/// exactly a canonical `sha256:<64 lowercase hex>` ref, at any depth.
+///
+/// This is the one definition of "a stored document references a blob" that
+/// the session store uses to derive collection roots from appended entries,
+/// and that format tests use to check a writer recorded every nested edge.
+/// Refs inside longer strings (previews, prose) are deliberately not refs.
+pub fn collect_blob_refs(value: &serde_json::Value) -> BTreeSet<BlobRef> {
+    let mut refs = BTreeSet::new();
+    collect_blob_refs_into(value, &mut refs);
+    refs
 }
 
-impl SessionBlobRoot {
-    pub fn new(session_id: SessionId, blob_ref: BlobRef, root_kind: impl Into<String>) -> Self {
-        Self {
-            session_id,
-            blob_ref,
-            root_kind: root_kind.into(),
-            first_seq: None,
-            last_seq: None,
+fn collect_blob_refs_into(value: &serde_json::Value, refs: &mut BTreeSet<BlobRef>) {
+    match value {
+        serde_json::Value::String(text) => {
+            if let Ok(blob_ref) = BlobRef::parse(text.as_str()) {
+                refs.insert(blob_ref);
+            }
         }
-    }
-
-    pub fn for_seq(
-        session_id: SessionId,
-        blob_ref: BlobRef,
-        root_kind: impl Into<String>,
-        seq: EventSeq,
-    ) -> Self {
-        Self {
-            session_id,
-            blob_ref,
-            root_kind: root_kind.into(),
-            first_seq: Some(seq),
-            last_seq: Some(seq),
+        serde_json::Value::Array(values) => {
+            for value in values {
+                collect_blob_refs_into(value, refs);
+            }
         }
+        serde_json::Value::Object(object) => {
+            for value in object.values() {
+                collect_blob_refs_into(value, refs);
+            }
+        }
+        serde_json::Value::Null | serde_json::Value::Bool(_) | serde_json::Value::Number(_) => {}
     }
 }
 
@@ -147,19 +149,48 @@ pub trait BlobStore: Send + Sync {
     }
 }
 
-/// Best-effort reachability metadata for future CAS garbage collection.
+/// Parent-to-child reachability edges between blobs whose bytes embed refs
+/// to other blobs (a VFS manifest and its files, a tool output and its
+/// attached assets).
 ///
-/// Implementations should treat this as metadata recorded by code that already
-/// understands why a blob exists. It is not part of canonical content hashing,
-/// and blob stores should not try to infer edges from opaque bytes.
+/// Edges are recorded by the code that already understands why a blob embeds
+/// another ref. They are not part of canonical content hashing, and blob
+/// stores never infer edges from opaque bytes: a child with an incoming edge
+/// from a live parent stays live until the parent is collected. Session-level
+/// roots are not recorded here; the session store derives them from the
+/// entries it appends.
 #[async_trait]
 pub trait BlobGraphStore: Send + Sync {
-    async fn record_session_blob_roots(
-        &self,
-        roots: Vec<SessionBlobRoot>,
-    ) -> Result<(), BlobStoreError>;
-
     async fn record_blob_edges(&self, edges: Vec<BlobEdge>) -> Result<(), BlobStoreError>;
+}
+
+/// Record one `contains` edge from `parent` to every distinct child ref a
+/// writer just embedded in the parent's bytes. A missing graph store (local
+/// runners, tests without a catalog) records nothing; self-references and
+/// duplicates are dropped.
+pub async fn record_contains_edges(
+    blob_graph: Option<&dyn BlobGraphStore>,
+    parent: &BlobRef,
+    children: impl IntoIterator<Item = BlobRef>,
+) -> Result<(), BlobStoreError> {
+    let Some(blob_graph) = blob_graph else {
+        return Ok(());
+    };
+    let children: BTreeSet<BlobRef> = children
+        .into_iter()
+        .filter(|child| child != parent)
+        .collect();
+    if children.is_empty() {
+        return Ok(());
+    }
+    blob_graph
+        .record_blob_edges(
+            children
+                .into_iter()
+                .map(|child| BlobEdge::contains(parent.clone(), child))
+                .collect(),
+        )
+        .await
 }
 
 #[async_trait]
@@ -193,13 +224,6 @@ impl<T> BlobGraphStore for Arc<T>
 where
     T: BlobGraphStore + ?Sized,
 {
-    async fn record_session_blob_roots(
-        &self,
-        roots: Vec<SessionBlobRoot>,
-    ) -> Result<(), BlobStoreError> {
-        self.as_ref().record_session_blob_roots(roots).await
-    }
-
     async fn record_blob_edges(&self, edges: Vec<BlobEdge>) -> Result<(), BlobStoreError> {
         self.as_ref().record_blob_edges(edges).await
     }
@@ -537,20 +561,45 @@ where
     }
 }
 
-#[derive(Clone, Default)]
+/// In-memory blob store for local runners and tests.
+///
+/// Besides the [`BlobStore`] contract it mirrors the catalog behaviour a
+/// collecting backend needs: every put stamps a touch time from an injectable
+/// clock, blobs can be listed by last touch and deleted, and recorded
+/// [`BlobEdge`]s are kept for inspection. Liveness itself is not modelled
+/// here; callers that test collection decide which refs are live.
+#[derive(Clone)]
 pub struct InMemoryBlobStore {
     inner: Arc<RwLock<InMemoryBlobStoreInner>>,
+    clock: Arc<dyn Fn() -> u64 + Send + Sync>,
+}
+
+impl Default for InMemoryBlobStore {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[derive(Default)]
 struct InMemoryBlobStoreInner {
     bytes_by_ref: BTreeMap<BlobRef, Vec<u8>>,
     info_by_ref: BTreeMap<BlobRef, BlobInfo>,
+    touched_at_ms: BTreeMap<BlobRef, u64>,
+    edges: Vec<BlobEdge>,
 }
 
 impl InMemoryBlobStore {
     pub fn new() -> Self {
-        Self::default()
+        Self::with_clock(Arc::new(unix_now_ms))
+    }
+
+    /// A store whose touch timestamps come from `clock` instead of the system
+    /// time, so tests can age blobs deterministically.
+    pub fn with_clock(clock: Arc<dyn Fn() -> u64 + Send + Sync>) -> Self {
+        Self {
+            inner: Arc::new(RwLock::new(InMemoryBlobStoreInner::default())),
+            clock,
+        }
     }
 
     pub async fn insert_text(&self, text: impl Into<String>) -> BlobRef {
@@ -558,6 +607,84 @@ impl InMemoryBlobStore {
             .await
             .expect("in-memory blob write should not fail")
     }
+
+    /// Unix milliseconds of the most recent put of `blob_ref`.
+    pub fn touched_at_ms(&self, blob_ref: &BlobRef) -> Option<u64> {
+        self.inner
+            .read()
+            .expect("blob store lock poisoned")
+            .touched_at_ms
+            .get(blob_ref)
+            .copied()
+    }
+
+    /// Refs whose most recent put is strictly older than `cutoff_ms`, oldest
+    /// first: the age-eligible sweep candidates before liveness is applied.
+    pub fn blobs_touched_before(&self, cutoff_ms: u64) -> Vec<BlobInfo> {
+        let inner = self.inner.read().expect("blob store lock poisoned");
+        let mut eligible = inner
+            .touched_at_ms
+            .iter()
+            .filter(|(_, touched_at_ms)| **touched_at_ms < cutoff_ms)
+            .filter_map(|(blob_ref, touched_at_ms)| {
+                inner
+                    .info_by_ref
+                    .get(blob_ref)
+                    .map(|info| (*touched_at_ms, info.clone()))
+            })
+            .collect::<Vec<_>>();
+        eligible.sort_by(|left, right| {
+            left.0
+                .cmp(&right.0)
+                .then(left.1.blob_ref.cmp(&right.1.blob_ref))
+        });
+        eligible.into_iter().map(|(_, info)| info).collect()
+    }
+
+    /// Removes the blobs and every edge that names one of them as parent;
+    /// returns how many blobs existed. Edges pointing at a deleted child are
+    /// left in place, mirroring the catalog's `RESTRICT` on children: a
+    /// caller that deletes a child with an incoming edge has a bug.
+    pub fn delete_blobs(&self, blob_refs: &[BlobRef]) -> usize {
+        let mut inner = self.inner.write().expect("blob store lock poisoned");
+        let mut deleted = 0;
+        for blob_ref in blob_refs {
+            if inner.bytes_by_ref.remove(blob_ref).is_some() {
+                deleted += 1;
+            }
+            inner.info_by_ref.remove(blob_ref);
+            inner.touched_at_ms.remove(blob_ref);
+            inner.edges.retain(|edge| &edge.parent != blob_ref);
+        }
+        deleted
+    }
+
+    /// Every edge recorded through [`BlobGraphStore`], in recording order.
+    pub fn edges(&self) -> Vec<BlobEdge> {
+        self.inner
+            .read()
+            .expect("blob store lock poisoned")
+            .edges
+            .clone()
+    }
+
+    /// Refs of every stored blob.
+    pub fn blob_refs(&self) -> Vec<BlobRef> {
+        self.inner
+            .read()
+            .expect("blob store lock poisoned")
+            .bytes_by_ref
+            .keys()
+            .cloned()
+            .collect()
+    }
+}
+
+fn unix_now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 #[async_trait]
@@ -568,9 +695,17 @@ impl BlobStore for InMemoryBlobStore {
             blob_ref: blob_ref.clone(),
             byte_len: bytes.len() as u64,
         };
+        let now_ms = (self.clock)();
         let mut inner = self.inner.write().expect("blob store lock poisoned");
         inner.bytes_by_ref.entry(blob_ref.clone()).or_insert(bytes);
         inner.info_by_ref.entry(blob_ref.clone()).or_insert(info);
+        // Touch-or-insert: existing content keeps its bytes and moves its
+        // touch time forward, exactly like the catalog-backed store.
+        let touched = inner
+            .touched_at_ms
+            .entry(blob_ref.clone())
+            .or_insert(now_ms);
+        *touched = (*touched).max(now_ms);
         Ok(blob_ref)
     }
 
@@ -616,6 +751,31 @@ impl BlobStore for InMemoryBlobStore {
     }
 }
 
+#[async_trait]
+impl BlobGraphStore for InMemoryBlobStore {
+    async fn record_blob_edges(&self, edges: Vec<BlobEdge>) -> Result<(), BlobStoreError> {
+        let mut inner = self.inner.write().expect("blob store lock poisoned");
+        for edge in edges {
+            if edge.edge_kind.is_empty() {
+                return Err(BlobStoreError::Store {
+                    message: "blob edge kind must not be empty".into(),
+                });
+            }
+            for blob_ref in [&edge.parent, &edge.child] {
+                if !inner.bytes_by_ref.contains_key(blob_ref) {
+                    return Err(BlobStoreError::NotFound {
+                        blob_ref: blob_ref.clone(),
+                    });
+                }
+            }
+            if !inner.edges.contains(&edge) {
+                inner.edges.push(edge);
+            }
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -638,6 +798,98 @@ mod tests {
         assert_eq!(
             store.stat_blob(&first).await.expect("stat blob").byte_len,
             5
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn in_memory_blob_store_touches_existing_content_and_deletes() {
+        let now = Arc::new(std::sync::atomic::AtomicU64::new(100));
+        let clock_now = now.clone();
+        let store =
+            InMemoryBlobStore::with_clock(Arc::new(move || clock_now.load(Ordering::SeqCst)));
+        let old = store.put_bytes(b"old".to_vec()).await.expect("write");
+        now.store(200, Ordering::SeqCst);
+        let fresh = store.put_bytes(b"fresh".to_vec()).await.expect("write");
+        assert_eq!(store.touched_at_ms(&old), Some(100));
+        assert_eq!(
+            store
+                .blobs_touched_before(150)
+                .into_iter()
+                .map(|info| info.blob_ref)
+                .collect::<Vec<_>>(),
+            vec![old.clone()]
+        );
+
+        // A put of existing content moves the touch forward without
+        // rewriting bytes.
+        now.store(300, Ordering::SeqCst);
+        store.put_bytes(b"old".to_vec()).await.expect("re-put");
+        assert_eq!(store.touched_at_ms(&old), Some(300));
+        assert_eq!(
+            store
+                .blobs_touched_before(250)
+                .into_iter()
+                .map(|info| info.blob_ref)
+                .collect::<Vec<_>>(),
+            vec![fresh.clone()],
+            "only the blob last put before the cutoff is eligible"
+        );
+
+        store
+            .record_blob_edges(vec![BlobEdge::contains(old.clone(), fresh.clone())])
+            .await
+            .expect("record edge");
+        assert_eq!(store.edges().len(), 1);
+        assert_eq!(store.delete_blobs(std::slice::from_ref(&old)), 1);
+        assert!(store.edges().is_empty(), "a deleted parent drops its edges");
+        assert!(matches!(
+            store.read_bytes(&old).await,
+            Err(BlobStoreError::NotFound { .. })
+        ));
+        assert_eq!(store.delete_blobs(&[old]), 0);
+        assert!(store.has_blob(&fresh).await.expect("has"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn in_memory_blob_graph_rejects_edges_to_missing_blobs() {
+        let store = InMemoryBlobStore::new();
+        let parent = store.put_bytes(b"parent".to_vec()).await.expect("write");
+        let missing = BlobRef::from_bytes(b"missing");
+        assert!(matches!(
+            store
+                .record_blob_edges(vec![BlobEdge::contains(parent, missing.clone())])
+                .await,
+            Err(BlobStoreError::NotFound { blob_ref }) if blob_ref == missing
+        ));
+    }
+
+    #[test]
+    fn collect_blob_refs_finds_exact_ref_strings_at_any_depth() {
+        let a = BlobRef::from_bytes(b"a");
+        let b = BlobRef::from_bytes(b"b");
+        let value = serde_json::json!({
+            "content_ref": a.as_str(),
+            "nested": [{ "deeper": { "child": b.as_str() } }, a.as_str()],
+            "preview": format!("see {a} for details"),
+            "upper": a.as_str().to_uppercase(),
+            "count": 3,
+            "flag": true,
+            "none": null
+        });
+        let refs = collect_blob_refs(&value);
+        assert_eq!(refs, BTreeSet::from([a, b]));
+    }
+
+    #[test]
+    fn engine_blob_refs_match_the_core_constants() {
+        assert_eq!(
+            engine_blob_refs(),
+            vec![
+                crate::unavailable_tool_result_ref(),
+                crate::tool_runtime_boundary_failure_ref(),
+                crate::llm_runtime_boundary_failure_ref(),
+                crate::cancelled_tool_result_ref(),
+            ]
         );
     }
 

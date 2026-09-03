@@ -1,10 +1,11 @@
 //! Unix process-group lifecycle shared by job and process execution.
 //!
 //! Job and process commands start in their own process group so that
-//! descendants a script leaves behind can be terminated as a unit when the
-//! root process exits, is cancelled, or times out. A descendant can still
-//! escape the group (`setsid`), so callers must never make completion depend
-//! on the group being fully swept.
+//! descendants a script leaves behind can be signalled as a unit. Jobs sweep
+//! the group when the root exits; processes sweep it only on timeout, kill,
+//! or cancellation, and otherwise let leftovers live with the environment. A
+//! descendant can still escape the group (`setsid`), so callers must never
+//! make completion depend on the group being fully swept.
 
 use std::time::Duration;
 
@@ -73,4 +74,13 @@ fn signal_group(pgid: u32, signal: i32) -> bool {
 #[cfg(not(unix))]
 fn signal_group(_pgid: u32, _signal: i32) -> bool {
     false
+}
+
+/// Sends `SIGINT` to every process left in the group. Returns true when the
+/// group had at least one member to signal.
+pub(crate) fn interrupt_group(pgid: u32) -> bool {
+    #[cfg(unix)]
+    return signal_group(pgid, libc::SIGINT);
+    #[cfg(not(unix))]
+    return signal_group(pgid, 0);
 }

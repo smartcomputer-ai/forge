@@ -153,6 +153,10 @@ pub fn signed_registration_message(nonce: &[u8]) -> Vec<u8> {
 
 /// Check the bounds on caller-supplied correlation metadata and display
 /// name. Metadata is descriptive only; it never selects or authenticates.
+/// Caller-supplied maps may not use the reserved prefix; stored records
+/// may, because Lightspeed annotates them itself (see
+/// [`validate_metadata_bounds`]). Sessions share this validator so a
+/// session and the environment it ran in accept the same keys.
 pub fn validate_registration_metadata(
     display_name: Option<&str>,
     metadata: &BTreeMap<String, String>,
@@ -166,31 +170,48 @@ pub fn validate_registration_metadata(
             "display name must be 1..={MAX_DISPLAY_NAME_BYTES} bytes without control characters"
         ));
     }
+    validate_metadata_bounds(metadata)?;
+    if let Some(key) = metadata
+        .keys()
+        .find(|key| key.starts_with(RESERVED_METADATA_PREFIX))
+    {
+        return Err(format!(
+            "metadata key {key:?} uses the reserved {RESERVED_METADATA_PREFIX} prefix"
+        ));
+    }
+    Ok(())
+}
+
+/// Entry count, key and value bytes, and control characters: the bounds
+/// every stored metadata map obeys, including the keys under the reserved
+/// prefix that Lightspeed writes itself.
+pub fn validate_metadata_bounds(metadata: &BTreeMap<String, String>) -> Result<(), String> {
     if metadata.len() > MAX_METADATA_ENTRIES {
         return Err(format!(
             "metadata has more than {MAX_METADATA_ENTRIES} entries"
         ));
     }
     for (key, value) in metadata {
-        if key.is_empty() || key.len() > MAX_METADATA_KEY_BYTES || key.chars().any(char::is_control)
-        {
-            return Err(format!(
-                "metadata key {key:?} must be 1..={MAX_METADATA_KEY_BYTES} bytes without control characters"
-            ));
-        }
-        if key.starts_with(RESERVED_METADATA_PREFIX) {
-            return Err(format!(
-                "metadata key {key:?} uses the reserved {RESERVED_METADATA_PREFIX} prefix"
-            ));
-        }
-        if value.is_empty()
-            || value.len() > MAX_METADATA_VALUE_BYTES
-            || value.chars().any(char::is_control)
-        {
-            return Err(format!(
-                "metadata value for {key:?} must be 1..={MAX_METADATA_VALUE_BYTES} bytes without control characters"
-            ));
-        }
+        validate_metadata_entry(key, value)?;
+    }
+    Ok(())
+}
+
+/// Key and value bytes and control characters for one entry, independent of
+/// how many entries a map may hold.
+pub fn validate_metadata_entry(key: &str, value: &str) -> Result<(), String> {
+    if key.is_empty() || key.len() > MAX_METADATA_KEY_BYTES || key.chars().any(char::is_control) {
+        return Err(format!(
+            "metadata key {key:?} must be 1..={MAX_METADATA_KEY_BYTES} bytes without control characters"
+        ));
+    }
+    if value.is_empty()
+        || value.len() > MAX_METADATA_VALUE_BYTES
+        || value.chars().any(char::is_control)
+    {
+        return Err(format!(
+            "metadata value for {key:?} must be 1..={MAX_METADATA_VALUE_BYTES} bytes without control characters"
+        ));
     }
     Ok(())
 }

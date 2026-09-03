@@ -769,6 +769,9 @@ impl EnvironmentStore for PgStore {
                     WHEN status IN ('closing', 'closed') THEN last_seen_at_ms
                     WHEN $3 IN ('connected', 'heartbeat') THEN $4
                     ELSE last_seen_at_ms END,
+                metadata_json = CASE
+                    WHEN status IN ('closing', 'closed') THEN metadata_json
+                    ELSE metadata_json || $5::jsonb END,
                 updated_at_ms = CASE
                     WHEN status IN ('closing', 'closed') THEN updated_at_ms
                     ELSE GREATEST(updated_at_ms, $4) END
@@ -779,6 +782,10 @@ impl EnvironmentStore for PgStore {
         .bind(request.environment_id.as_str())
         .bind(observation)
         .bind(request.observed_at_ms)
+        .bind(json_value(
+            "encode daemon build metadata",
+            &request.metadata,
+        )?)
         .execute(&self.pool)
         .await
         .map_err(|error| sql_error("observe registered environment", error))?;
@@ -852,6 +859,11 @@ impl EnvironmentStore for PgStore {
         }
         if request.registration_key_id.is_some() {
             query.push_str(&format!(" AND e.registration_key_id = ${next}"));
+            next += 1;
+        }
+        // Appended only when present so containment can use the GIN index.
+        if !request.metadata.is_empty() {
+            query.push_str(&format!(" AND e.metadata_json @> ${next}"));
         }
         query.push_str(" ORDER BY e.environment_id");
         let mut sql = sqlx::query(&query).bind(self.config.universe_id);
@@ -869,6 +881,9 @@ impl EnvironmentStore for PgStore {
         }
         if let Some(id) = request.registration_key_id {
             sql = sql.bind(id.to_string());
+        }
+        if !request.metadata.is_empty() {
+            sql = sql.bind(metadata_filter_json(&request.metadata));
         }
         let rows = sql
             .fetch_all(&self.pool)
@@ -1598,3 +1613,16 @@ fn map_provider_delete_error(error: sqlx::Error) -> EnvironmentRegistryError {
 
 #[allow(dead_code)]
 async fn _transaction_marker(_: &mut Transaction<'_, Postgres>) {}
+
+/// A string map as the jsonb object the `@>` containment filter compares
+/// against; building the value directly cannot fail.
+fn metadata_filter_json(
+    metadata: &std::collections::BTreeMap<String, String>,
+) -> serde_json::Value {
+    serde_json::Value::Object(
+        metadata
+            .iter()
+            .map(|(key, value)| (key.clone(), serde_json::Value::String(value.clone())))
+            .collect(),
+    )
+}

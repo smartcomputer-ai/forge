@@ -197,6 +197,35 @@ impl HttpAgentApi {
         self.request(METHOD_SESSION_LIST, params).await
     }
 
+    pub(crate) async fn put_session_metadata(
+        &self,
+        params: api::SessionMetadataPutParams,
+    ) -> Result<AgentApiOutcome<api::SessionMetadataPutResponse>, AgentApiError> {
+        self.request(api::METHOD_SESSION_METADATA_PUT, params).await
+    }
+
+    pub(crate) async fn put_session_retention(
+        &self,
+        params: api::SessionRetentionPutParams,
+    ) -> Result<AgentApiOutcome<api::SessionRetentionPutResponse>, AgentApiError> {
+        self.request(api::METHOD_SESSION_RETENTION_PUT, params)
+            .await
+    }
+
+    pub(crate) async fn close_session(
+        &self,
+        params: api::SessionCloseParams,
+    ) -> Result<AgentApiOutcome<api::SessionCloseResponse>, AgentApiError> {
+        self.request(api::METHOD_SESSION_CLOSE, params).await
+    }
+
+    pub(crate) async fn delete_session(
+        &self,
+        params: api::SessionDeleteParams,
+    ) -> Result<AgentApiOutcome<api::SessionDeleteResponse>, AgentApiError> {
+        self.request(api::METHOD_SESSION_DELETE, params).await
+    }
+
     pub(crate) async fn read_session_events(
         &self,
         params: SessionEventsReadParams,

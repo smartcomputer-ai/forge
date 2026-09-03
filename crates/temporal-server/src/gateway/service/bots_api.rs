@@ -481,6 +481,7 @@ impl GatewayAgentApi {
             match self
                 .delete_session(SessionDeleteParams {
                     session_id: session_id.clone(),
+                    cascade: true,
                 })
                 .await
             {
@@ -516,6 +517,7 @@ impl GatewayAgentApi {
             for session in &snapshot.sessions {
                 let listed = self
                     .list_sessions(SessionListParams {
+                        metadata: Default::default(),
                         cursor: None,
                         limit: Some(MAX_SESSION_LIST_LIMIT as u32),
                         root_session_id: Some(session.session_id.clone()),

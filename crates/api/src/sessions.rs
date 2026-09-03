@@ -6,10 +6,21 @@ pub struct SessionStartParams {
     pub session_id: Option<SessionId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
+    /// Descriptive key/value metadata, applied only when the session is
+    /// first created: at most 32 entries, keys 1..=64 bytes, values 1..=256
+    /// bytes, no control characters, no `lightspeed.` prefix. It never
+    /// affects routing, authority, or selection; filter on it with
+    /// `session/list`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub metadata: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config: Option<SessionConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub profile: Option<ProfileSource>,
+    /// Root-owned automatic deletion measured from close. Absent keeps the
+    /// session tree until manual deletion.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delete_after_close_ms: Option<u64>,
 }
 
 /// Creation request for a session with immutable workflow ownership and
@@ -20,10 +31,18 @@ pub struct ManagedSessionStartParams {
     pub session_id: Option<SessionId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
+    /// Descriptive key/value metadata with the same bounds as
+    /// `session/start`; applied only when the session is first created.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub metadata: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config: Option<SessionConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub profile: Option<ProfileSource>,
+    /// Root-owned automatic deletion measured from close. Absent keeps the
+    /// session tree until manual deletion.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delete_after_close_ms: Option<u64>,
     /// Immutable workflow tools admitted only when the session is first
     /// created. This document is not part of `SessionConfig` and cannot be
     /// changed through `session/config/put`.
@@ -778,6 +797,10 @@ pub struct SessionListParams {
     /// Only sub-agent sessions delegated directly by this session.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_session_id: Option<SessionId>,
+    /// Only sessions carrying every listed key/value pair (AND semantics).
+    /// Combines with the lineage filters.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub metadata: BTreeMap<String, String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -797,7 +820,13 @@ pub struct SessionSummaryView {
     pub id: SessionId,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
+    /// Descriptive key/value metadata; empty when none was set.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub metadata: BTreeMap<String, String>,
     pub lifecycle_status: SessionLifecycleStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub closed_at_ms: Option<u64>,
+    pub retention: SessionRetentionView,
     /// True only when immutable lifecycle ownership was admitted with a
     /// lifecycle controller at managed-session creation.
     pub managed: bool,
@@ -806,6 +835,18 @@ pub struct SessionSummaryView {
     pub origin: Option<SessionOriginView>,
     pub created_at_ms: u64,
     pub updated_at_ms: u64,
+}
+
+/// Effective tree-owned retention for a session. Forks and delegated children
+/// name their owning root and project that root's policy and deadline.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionRetentionView {
+    pub root_session_id: SessionId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delete_after_close_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delete_at_ms: Option<u64>,
 }
 
 /// Typed provenance of a delegated (sub-agent) session: who created it,
@@ -874,16 +915,77 @@ pub struct SessionRenameResponse {
     pub session: SessionSummaryView,
 }
 
+/// Replace a session's metadata with a complete map (the same bounds as
+/// `session/start`). Record-only: it does not touch the event log or
+/// `updatedAtMs`. There is no merge form; read, edit, and put.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionMetadataPutParams {
+    pub session_id: SessionId,
+    /// The complete new map; empty clears it.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub metadata: BTreeMap<String, String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionMetadataPutResponse {
+    pub session: SessionSummaryView,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SessionRetentionPutParams {
+    pub session_id: SessionId,
+    /// Positive duration enables automatic tree deletion; null disables it.
+    #[serde(deserialize_with = "deserialize_required_delete_after_close_ms")]
+    #[schemars(
+        required,
+        schema_with = "required_nullable_delete_after_close_ms_schema"
+    )]
+    pub delete_after_close_ms: Option<u64>,
+}
+
+fn deserialize_required_delete_after_close_ms<'de, D>(
+    deserializer: D,
+) -> Result<Option<u64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::<u64>::deserialize(deserializer)
+}
+
+fn required_nullable_delete_after_close_ms_schema(
+    _: &mut schemars::SchemaGenerator,
+) -> schemars::Schema {
+    schemars::json_schema!({
+        "type": ["integer", "null"],
+        "format": "uint64",
+        "minimum": 1
+    })
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionRetentionPutResponse {
+    pub session: SessionSummaryView,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionDeleteParams {
     pub session_id: SessionId,
+    /// Delete history forks and delegated descendants too. False requires the
+    /// target to be a closed retention-tree leaf.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub cascade: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionDeleteResponse {
     pub session: SessionSummaryView,
+    pub deleted_session_count: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -1096,8 +1198,11 @@ pub enum SessionEventKindView {
         run_id: RunId,
         output_ref: Option<String>,
     },
+    /// The run ended in failure. `kind` is the engine's classification;
+    /// `message` is free text for display.
     RunFailed {
         run_id: RunId,
+        kind: RunFailureKindView,
         message: String,
     },
     RunCancelled {
@@ -1222,6 +1327,10 @@ pub enum SessionEventKindView {
         batch_id: String,
         call_id: String,
     },
+    /// One tool call finished. `output_bytes` is the size of the
+    /// model-visible text the tool produced before the runtime's projection
+    /// budget was applied, absent for synthetic results; `truncated` is true
+    /// when that budget cut it.
     ToolCallCompleted {
         run_id: RunId,
         turn_id: String,
@@ -1230,6 +1339,10 @@ pub enum SessionEventKindView {
         status: ToolItemStatus,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         effects: Vec<ToolEffectView>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        output_bytes: Option<u64>,
+        #[serde(default)]
+        truncated: bool,
     },
     ToolBatchDeferred {
         run_id: RunId,
@@ -1246,6 +1359,18 @@ pub enum SessionEventKindView {
         turn_id: String,
         batch_id: String,
     },
+}
+
+/// Why a run failed, as the engine classified it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum RunFailureKindView {
+    ModelFailure,
+    ToolFailure,
+    ContextFailure,
+    LimitExceeded,
+    Cancelled,
+    Internal,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

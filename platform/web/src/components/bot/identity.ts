@@ -28,7 +28,7 @@ export function botInputOf(bot: BotView): BotInput {
     brief: bot.brief ?? null,
     runsPerDay: bot.runsPerDay ?? null,
     breaker: bot.breaker ?? null,
-    routedSessionTtlMs: bot.routedSessionTtlMs ?? null,
+    routedSessionCloseAfterMs: bot.routedSessionCloseAfterMs ?? null,
     selfConfig: bot.selfConfig ?? false,
     emit: bot.emit ?? false,
     enabled: bot.enabled ?? true,

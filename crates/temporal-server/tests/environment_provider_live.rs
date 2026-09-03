@@ -455,6 +455,7 @@ async fn run_environment_power_live_client(
     // Paused is a filterable lifecycle status.
     assert!(
         api.list_environments(api::EnvironmentListParams {
+            metadata: Default::default(),
             status: Some(api::EnvironmentLifecycleStatusView::Paused),
             ..api::EnvironmentListParams::default()
         })
@@ -469,6 +470,7 @@ async fn run_environment_power_live_client(
     // as intent and flips desired power back to running; the reconciler then
     // brings it to ready.
     api.start_session(SessionStartParams {
+        metadata: Default::default(),
         session_id: Some(session_id.as_str().to_owned()),
         display_name: None,
         config: Some(SessionConfig {
@@ -486,6 +488,7 @@ async fn run_environment_power_live_client(
             ..SessionConfig::default()
         }),
         profile: None,
+        delete_after_close_ms: None,
     })
     .await?;
     let started_view = read_session_view(&api, &session_id).await?;

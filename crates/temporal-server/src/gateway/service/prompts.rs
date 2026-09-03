@@ -77,6 +77,7 @@ impl GatewayAgentApi {
         if specs.is_empty() {
             let publication = tools::prompts::prepare_prompt_instructions_publication(
                 self.store.as_ref(),
+                Some(self.store.as_ref()),
                 &[],
                 tools::prompts::PromptAssemblyLimits::default(),
             )
@@ -97,6 +98,7 @@ impl GatewayAgentApi {
             .map_err(|error| AgentApiError::internal(error.to_string()))?;
         let publication = tools::prompts::prepare_prompt_instructions_publication_with_warnings(
             self.store.as_ref(),
+            Some(self.store.as_ref()),
             &inputs,
             tools::prompts::PromptAssemblyLimits::default(),
             resolved.warnings().to_vec(),

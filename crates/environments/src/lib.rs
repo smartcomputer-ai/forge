@@ -1074,6 +1074,60 @@ pub struct ObserveRegisteredEnvironment {
     pub environment_id: EnvironmentId,
     pub observation: RegisteredConnectionObservation,
     pub observed_at_ms: i64,
+    /// Reserved-prefix entries the gateway learned about the daemon at this
+    /// admission, merged into the row so a replaced daemon shows its new
+    /// build. Empty for heartbeats and disconnects. Ignored once the
+    /// environment is closing or closed.
+    #[serde(default)]
+    pub metadata: BTreeMap<String, String>,
+}
+
+/// Metadata keys the gateway writes about the daemon serving a registered
+/// environment. They carry the reserved prefix, so a daemon cannot set them.
+pub const ENVD_VERSION_METADATA_KEY: &str = "lightspeed.envd.version";
+pub const ENVD_GIT_SHA_METADATA_KEY: &str = "lightspeed.envd.gitSha";
+pub const ENVD_PROTOCOL_VERSION_METADATA_KEY: &str = "lightspeed.envd.protocolVersion";
+
+/// What the gateway learned about a daemon's build when it registered or
+/// reconnected. Recorded on the environment row at every admission so an
+/// operator sees which build serves the environment. Never consulted for
+/// admission: the protocol version alone decides that, and this only
+/// records which number the admitted daemon spoke.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RegisteredDaemonBuild {
+    pub version: Option<String>,
+    pub git_sha: Option<String>,
+    pub protocol_version: u32,
+}
+
+impl RegisteredDaemonBuild {
+    pub fn from_registration(
+        implementation: &environment_protocol::shared::ImplementationInfo,
+        protocol_version: u32,
+    ) -> Self {
+        Self {
+            version: implementation.version.clone(),
+            git_sha: implementation.git_sha.clone(),
+            protocol_version,
+        }
+    }
+
+    /// The reserved entries for this build. A fact the daemon did not report
+    /// is left out, so the row keeps that key's last value.
+    pub fn metadata(&self) -> BTreeMap<String, String> {
+        let mut metadata = BTreeMap::new();
+        if let Some(version) = &self.version {
+            metadata.insert(ENVD_VERSION_METADATA_KEY.to_owned(), version.clone());
+        }
+        if let Some(git_sha) = &self.git_sha {
+            metadata.insert(ENVD_GIT_SHA_METADATA_KEY.to_owned(), git_sha.clone());
+        }
+        metadata.insert(
+            ENVD_PROTOCOL_VERSION_METADATA_KEY.to_owned(),
+            self.protocol_version.to_string(),
+        );
+        metadata
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1121,6 +1175,9 @@ pub struct ListEnvironments {
     pub origin_session_id: Option<SessionId>,
     /// Only environments admitted by this registration key.
     pub registration_key_id: Option<EnvironmentRegistrationKeyId>,
+    /// Only environments carrying every listed metadata pair (containment).
+    #[serde(default)]
+    pub metadata: BTreeMap<String, String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1467,10 +1524,27 @@ fn invalid_error(message: impl Into<String>) -> EnvironmentRegistryError {
     }
 }
 
+/// Stored records obey the registration handshake's bounds (entry count,
+/// key and value bytes, no control characters). The reserved-prefix check
+/// applies to caller input at the API boundary, not here: Lightspeed itself
+/// annotates records under that prefix, and those entries sit on top of a
+/// caller's full allowance rather than eating into it, so the entry count
+/// applies to the caller's keys alone.
 fn validate_metadata(value: &BTreeMap<String, String>) -> Result<(), EnvironmentRegistryError> {
-    for (key, value) in value {
-        validate_nonempty_string("metadata key", key)?;
-        validate_nonempty_string("metadata value", value)?;
+    use environment_protocol::registration::{
+        MAX_METADATA_ENTRIES, RESERVED_METADATA_PREFIX, validate_metadata_entry,
+    };
+    let caller_entries = value
+        .keys()
+        .filter(|key| !key.starts_with(RESERVED_METADATA_PREFIX))
+        .count();
+    if caller_entries > MAX_METADATA_ENTRIES {
+        return Err(invalid_error(format!(
+            "metadata has more than {MAX_METADATA_ENTRIES} caller entries"
+        )));
+    }
+    for (key, entry) in value {
+        validate_metadata_entry(key, entry).map_err(invalid_error)?;
     }
     Ok(())
 }

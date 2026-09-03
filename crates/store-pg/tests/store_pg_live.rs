@@ -8,15 +8,15 @@ use auth::{
     SecretStore, SecretValue, TokenEndpointAuthMethod, state_hash,
 };
 use engine::{
-    BlobRef,
+    BlobRef, CORE_AGENT_LIFECYCLE_CLOSED_EVENT_KIND,
     session::{
         EventSeq, SessionId, SessionPosition, StoredEvent, StoredJoins, UncommittedStoredEvent,
     },
     storage::{
         AdvanceSessionCheckpoint, AppendSessionEvents, BlobEdge, BlobGraphStore, BlobStore,
-        CreateClonedSession, CreateForkedSession, CreateSession, ListSessions,
-        ReadSessionEventRange, ReadSessionEvents, SessionBlobRoot, SessionCheckpoint,
-        SessionOrigin, SessionOriginKind, SessionStore, SessionStoreError,
+        CreateClonedSession, CreateForkedSession, CreateSession, DeleteClosedSessions,
+        ListSessions, ReadSessionEventRange, ReadSessionEvents, SessionCheckpoint, SessionOrigin,
+        SessionOriginKind, SessionStore, SessionStoreError, engine_blob_refs, ensure_engine_blobs,
     },
 };
 use environment_protocol::shared::{EnvironmentTransport, ProviderTargetId};
@@ -53,9 +53,11 @@ async fn pg_live_sessions_are_isolated_by_universe() {
     let session_id = SessionId::new("same-session");
 
     left.create_session(CreateSession {
+        metadata: Default::default(),
         session_id: session_id.clone(),
         display_name: None,
         origin: None,
+        delete_after_close_ms: None,
         created_at_ms: 1,
     })
     .await
@@ -84,9 +86,11 @@ async fn pg_live_sessions_are_isolated_by_universe() {
 
     right
         .create_session(CreateSession {
+            metadata: Default::default(),
             session_id: session_id.clone(),
             display_name: None,
             origin: None,
+            delete_after_close_ms: None,
             created_at_ms: 20,
         })
         .await
@@ -109,9 +113,11 @@ async fn pg_live_session_ranges_are_fenced_and_checkpoint_pointers_only_advance(
     let session_id = SessionId::new("checkpoint-session");
     store
         .create_session(CreateSession {
+            metadata: Default::default(),
             session_id: session_id.clone(),
             display_name: None,
             origin: None,
+            delete_after_close_ms: None,
             created_at_ms: 1,
         })
         .await
@@ -228,9 +234,11 @@ async fn pg_live_session_list_pages_newest_first_and_rename_persists() {
     let other = live_store("session-list-other", 64).await;
     other
         .create_session(CreateSession {
+            metadata: Default::default(),
             session_id: SessionId::new("other-universe"),
             display_name: None,
             origin: None,
+            delete_after_close_ms: None,
             created_at_ms: 999,
         })
         .await
@@ -239,9 +247,11 @@ async fn pg_live_session_list_pages_newest_first_and_rename_persists() {
     for (name, created_at_ms) in [("list-a", 10), ("list-b", 20), ("list-c", 30)] {
         store
             .create_session(CreateSession {
+                metadata: Default::default(),
                 session_id: SessionId::new(name),
                 display_name: Some(format!("Session {name}")),
                 origin: None,
+                delete_after_close_ms: None,
                 created_at_ms,
             })
             .await
@@ -259,6 +269,7 @@ async fn pg_live_session_list_pages_newest_first_and_rename_persists() {
 
     let first = store
         .list_sessions(ListSessions {
+            metadata: Default::default(),
             cursor: None,
             limit: 2,
             root_session_id: None,
@@ -282,6 +293,7 @@ async fn pg_live_session_list_pages_newest_first_and_rename_persists() {
 
     let second = store
         .list_sessions(ListSessions {
+            metadata: Default::default(),
             cursor: Some(cursor),
             limit: 2,
             root_session_id: None,
@@ -332,9 +344,11 @@ async fn pg_live_clone_copies_resources_and_links_sessions() {
     for session_id in [&source_id, &peer_id] {
         store
             .create_session(CreateSession {
+                metadata: Default::default(),
                 session_id: session_id.clone(),
                 display_name: None,
                 origin: None,
+                delete_after_close_ms: None,
                 created_at_ms: 1,
             })
             .await
@@ -417,9 +431,11 @@ async fn pg_live_clone_copies_resources_and_links_sessions() {
     };
     let child = store
         .create_session(CreateSession {
+            metadata: Default::default(),
             session_id: SessionId::new("child-1"),
             display_name: Some("reviewer: first".to_owned()),
             origin: Some(origin("inv-1", 1)),
+            delete_after_close_ms: None,
             created_at_ms: 40,
         })
         .await
@@ -435,6 +451,7 @@ async fn pg_live_clone_copies_resources_and_links_sessions() {
     );
     let listed = store
         .list_sessions(ListSessions {
+            metadata: Default::default(),
             cursor: None,
             limit: 10,
             root_session_id: Some(peer_id.clone()),
@@ -453,9 +470,11 @@ async fn pg_live_clone_copies_resources_and_links_sessions() {
     // max_concurrent = 1: a second open child is refused.
     let refused = store
         .create_session(CreateSession {
+            metadata: Default::default(),
             session_id: SessionId::new("child-2"),
             display_name: None,
             origin: Some(origin("inv-2", 1)),
+            delete_after_close_ms: None,
             created_at_ms: 41,
         })
         .await
@@ -470,9 +489,11 @@ async fn pg_live_clone_copies_resources_and_links_sessions() {
     // max_depth = 1: depth 2 is refused before any counting.
     let too_deep = store
         .create_session(CreateSession {
+            metadata: Default::default(),
             session_id: SessionId::new("child-3"),
             display_name: None,
             origin: Some(origin("inv-3", 2)),
+            delete_after_close_ms: None,
             created_at_ms: 42,
         })
         .await
@@ -493,9 +514,11 @@ async fn pg_live_fork_stitches_reads_and_clamps_parent_tail() {
     let root = SessionId::new("root-session");
     store
         .create_session(CreateSession {
+            metadata: Default::default(),
             session_id: root.clone(),
             display_name: None,
             origin: None,
+            delete_after_close_ms: None,
             created_at_ms: 1,
         })
         .await
@@ -637,9 +660,11 @@ async fn pg_live_operator_universe_lifecycle_stats_and_purge() {
     let session_id = SessionId::new("operator-session");
     store
         .create_session(CreateSession {
+            metadata: Default::default(),
             session_id: session_id.clone(),
             display_name: None,
             origin: None,
+            delete_after_close_ms: None,
             created_at_ms: 5,
         })
         .await
@@ -781,27 +806,127 @@ async fn pg_live_blobs_use_inline_and_object_storage() {
 
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "requires ./dev.sh infra or compatible Postgres + MinIO env"]
-async fn pg_live_records_session_roots_and_blob_edges() {
+async fn pg_live_event_appends_expose_blob_refs_and_reject_missing_blobs() {
     let store = live_store("graph", 1024).await;
     let session_id = SessionId::new("session-graph");
     store
         .create_session(CreateSession {
+            metadata: Default::default(),
             session_id: session_id.clone(),
             display_name: None,
             origin: None,
+            delete_after_close_ms: None,
             created_at_ms: 1,
         })
         .await
         .expect("create session");
+    let first = store
+        .put_bytes(b"first referenced payload".to_vec())
+        .await
+        .expect("put first");
+    let second = store
+        .put_bytes(b"second referenced payload".to_vec())
+        .await
+        .expect("put second");
+
+    // seq 1 names `first`; seq 2 names both, nested and inside an array;
+    // seq 3 names `second` again and mentions `first` only inside prose.
     store
         .append(AppendSessionEvents {
             session_id: session_id.clone(),
             expected_head: None,
-            events: vec![open_event(10), open_event(11)],
+            events: vec![
+                ref_event(10, serde_json::json!({ "content_ref": first.as_str() })),
+                ref_event(
+                    11,
+                    serde_json::json!({
+                        "nested": { "content_ref": first.as_str() },
+                        "items": [{ "ref": second.as_str() }]
+                    }),
+                ),
+                ref_event(
+                    12,
+                    serde_json::json!({
+                        "content_ref": second.as_str(),
+                        "preview": format!("mentions {first} in prose")
+                    }),
+                ),
+            ],
         })
         .await
         .expect("append events");
 
+    assert_eq!(
+        events_embedding(&store, &session_id, &first).await,
+        vec![1, 2],
+        "first is embedded by seq 1 and 2, not by the prose mention in seq 3"
+    );
+    assert_eq!(
+        events_embedding(&store, &session_id, &second).await,
+        vec![2, 3],
+        "second is embedded by seq 2 and 3"
+    );
+
+    // A later append shows up in the generated column like any other.
+    store
+        .append(AppendSessionEvents {
+            session_id: session_id.clone(),
+            expected_head: Some(SessionPosition {
+                seq: EventSeq::new(3),
+            }),
+            events: vec![ref_event(
+                13,
+                serde_json::json!({ "content_ref": first.as_str() }),
+            )],
+        })
+        .await
+        .expect("append widening event");
+    assert_eq!(
+        events_embedding(&store, &session_id, &first).await,
+        vec![1, 2, 4]
+    );
+
+    // A ref the catalog does not hold fails the whole append and writes
+    // nothing: the head stays where it was.
+    let missing = BlobRef::from_bytes(b"never stored");
+    let error = store
+        .append(AppendSessionEvents {
+            session_id: session_id.clone(),
+            expected_head: Some(SessionPosition {
+                seq: EventSeq::new(4),
+            }),
+            events: vec![
+                ref_event(14, serde_json::json!({ "content_ref": second.as_str() })),
+                ref_event(15, serde_json::json!({ "content_ref": missing.as_str() })),
+            ],
+        })
+        .await
+        .expect_err("dangling ref must fail the append");
+    match error {
+        SessionStoreError::MissingBlobs {
+            session_id: failed,
+            blob_refs,
+        } => {
+            assert_eq!(failed, session_id);
+            assert_eq!(blob_refs, vec![missing]);
+        }
+        other => panic!("expected MissingBlobs, got {other:?}"),
+    }
+    assert_eq!(
+        store
+            .head(&session_id)
+            .await
+            .expect("head")
+            .map(|head| head.seq.as_u64()),
+        Some(4),
+        "a rejected append leaves no events behind"
+    );
+    assert_eq!(
+        events_embedding(&store, &session_id, &second).await,
+        vec![2, 3]
+    );
+
+    // Edges are still the writer's job.
     let parent = store
         .put_bytes(b"parent manifest".to_vec())
         .await
@@ -810,51 +935,10 @@ async fn pg_live_records_session_roots_and_blob_edges() {
         .put_bytes(b"child payload".to_vec())
         .await
         .expect("put child");
-
-    store
-        .record_session_blob_roots(vec![
-            SessionBlobRoot::for_seq(
-                session_id.clone(),
-                parent.clone(),
-                "event",
-                EventSeq::new(2),
-            ),
-            SessionBlobRoot::for_seq(
-                session_id.clone(),
-                parent.clone(),
-                "event",
-                EventSeq::new(1),
-            ),
-        ])
-        .await
-        .expect("record roots");
     store
         .record_blob_edges(vec![BlobEdge::contains(parent.clone(), child.clone())])
         .await
         .expect("record edge");
-
-    let root_row = sqlx::query(
-        r#"
-        SELECT first_seq, last_seq
-        FROM cas_session_roots
-        WHERE universe_id = $1
-          AND session_id = $2
-          AND digest = $3
-          AND root_kind = 'event'
-        "#,
-    )
-    .bind(store.config().universe_id)
-    .bind(session_id.as_str())
-    .bind(digest(&parent))
-    .fetch_one(store.pool())
-    .await
-    .expect("load root row");
-    assert_eq!(
-        root_row.try_get::<i64, _>("first_seq").expect("first_seq"),
-        1
-    );
-    assert_eq!(root_row.try_get::<i64, _>("last_seq").expect("last_seq"), 2);
-
     let edge_count: i64 = sqlx::query_scalar(
         r#"
         SELECT count(*)
@@ -872,6 +956,583 @@ async fn pg_live_records_session_roots_and_blob_edges() {
     .await
     .expect("count edge rows");
     assert_eq!(edge_count, 1);
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires ./dev.sh infra or compatible Postgres + MinIO env"]
+async fn pg_live_put_of_existing_content_touches_without_rewriting() {
+    let store = live_store("touch", 8).await;
+    let inline_ref = store
+        .put_bytes(b"tiny".to_vec())
+        .await
+        .expect("put inline blob");
+    let object_ref = store
+        .put_bytes(b"large object payload".to_vec())
+        .await
+        .expect("put object blob");
+    for blob_ref in [&inline_ref, &object_ref] {
+        let (created_at_ms, touched_at_ms) = store
+            .blob_timestamps(blob_ref)
+            .await
+            .expect("timestamps")
+            .expect("blob exists");
+        assert!(created_at_ms > 0);
+        assert_eq!(created_at_ms, touched_at_ms, "a first put stamps both");
+    }
+    let object_etag_before = blob_object_etag(&store, &object_ref).await;
+
+    // Age both rows, then put the same content again: only the touch
+    // moves, creation time stays, and the object row keeps its upload.
+    age_all_blobs(&store, 1_000).await;
+    assert_eq!(
+        store
+            .put_bytes(b"tiny".to_vec())
+            .await
+            .expect("re-put inline"),
+        inline_ref
+    );
+    assert_eq!(
+        store
+            .put_bytes(b"large object payload".to_vec())
+            .await
+            .expect("re-put object"),
+        object_ref
+    );
+    for blob_ref in [&inline_ref, &object_ref] {
+        let (created_at_ms, touched_at_ms) = store
+            .blob_timestamps(blob_ref)
+            .await
+            .expect("timestamps")
+            .expect("blob exists");
+        assert_eq!(created_at_ms, 1_000, "creation time is never rewritten");
+        assert!(touched_at_ms > 1_000, "a repeated put touches the row");
+    }
+    assert_eq!(
+        blob_object_etag(&store, &object_ref).await,
+        object_etag_before,
+        "existing objects are not re-uploaded"
+    );
+    assert_eq!(
+        store.read_bytes(&object_ref).await.expect("read object"),
+        b"large object payload".to_vec()
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires ./dev.sh infra or compatible Postgres + MinIO env"]
+async fn pg_live_sweep_frees_only_unreachable_blobs_after_grace() {
+    let store = live_store("sweep", 8).await;
+    let universe_id = store.config().universe_id;
+    let pinned = engine_blob_refs();
+    ensure_engine_blobs(&store).await.expect("engine blobs");
+
+    // Holders of every kind. Payloads exceed the 8-byte inline threshold so
+    // the object phase is exercised too.
+    let put = |content: &'static str| put_blob(&store, content);
+    let only_doomed = put("referenced only by the doomed session").await;
+    let shared = put("referenced by the doomed and the surviving session").await;
+    let checkpoint_state = put("checkpoint state of the surviving session").await;
+    let snapshot_manifest = put("vfs snapshot manifest").await;
+    let workspace_head = put("vfs workspace head manifest").await;
+    let workspace_base = put("vfs workspace base manifest").await;
+    let bot_document = put("bot event document").await;
+    let bot_prompt = put("bot event prompt rendering").await;
+    let bot_media = put("bot event media attachment").await;
+    let parent = put("nested parent that embeds a child ref").await;
+    let child = put("nested child referenced by an edge only").await;
+    let unreferenced_object = put("unreferenced object-backed payload").await;
+    let unreferenced_inline = put("tiny").await;
+
+    let doomed = SessionId::new("doomed");
+    let survivor = SessionId::new("survivor");
+    for (session_id, refs) in [
+        (&doomed, vec![&only_doomed, &shared]),
+        (&survivor, vec![&shared]),
+    ] {
+        store
+            .create_session(CreateSession {
+                metadata: Default::default(),
+                session_id: session_id.clone(),
+                display_name: None,
+                origin: None,
+                delete_after_close_ms: None,
+                created_at_ms: 1,
+            })
+            .await
+            .expect("create session");
+        let mut events = refs
+            .into_iter()
+            .enumerate()
+            .map(|(index, blob_ref)| {
+                ref_event(
+                    10 + index as u64,
+                    serde_json::json!({ "content_ref": blob_ref.as_str() }),
+                )
+            })
+            .collect::<Vec<_>>();
+        events.push(lifecycle_event(20, CORE_AGENT_LIFECYCLE_CLOSED_EVENT_KIND));
+        store
+            .append(AppendSessionEvents {
+                session_id: session_id.clone(),
+                expected_head: None,
+                events,
+            })
+            .await
+            .expect("append session events");
+    }
+    assert!(
+        store
+            .advance_checkpoint(AdvanceSessionCheckpoint {
+                checkpoint: SessionCheckpoint {
+                    session_id: survivor.clone(),
+                    through_seq: EventSeq::new(1),
+                    format_version: 1,
+                    state_ref: checkpoint_state.clone(),
+                    lineage_source_session_id: None,
+                    lineage_source_seq: None,
+                    byte_len: 1,
+                    created_at_ms: 20,
+                },
+            })
+            .await
+            .expect("advance checkpoint")
+    );
+    sqlx::query(
+        r#"
+        INSERT INTO vfs_snapshots (universe_id, digest, source_json, created_at_ms)
+        VALUES ($1, $2, '{"kind":"test"}', 1)
+        "#,
+    )
+    .bind(universe_id)
+    .bind(digest(&snapshot_manifest))
+    .execute(store.pool())
+    .await
+    .expect("insert vfs snapshot");
+    sqlx::query(
+        r#"
+        INSERT INTO vfs_workspaces (
+            universe_id, workspace_id, base_snapshot_digest, head_snapshot_digest,
+            head_files, head_bytes, revision, created_at_ms, updated_at_ms
+        )
+        VALUES ($1, 'ws-sweep', $2, $3, 0, 0, 0, 1, 1)
+        "#,
+    )
+    .bind(universe_id)
+    .bind(digest(&workspace_base))
+    .bind(digest(&workspace_head))
+    .execute(store.pool())
+    .await
+    .expect("insert vfs workspace");
+    sqlx::query(
+        r#"
+        INSERT INTO bots (universe_id, bot_id, revision, document_json, created_at_ms, updated_at_ms)
+        VALUES ($1, 'sweep-bot', 1, '{}', 1, 1)
+        "#,
+    )
+    .bind(universe_id)
+    .execute(store.pool())
+    .await
+    .expect("insert bot");
+    sqlx::query(
+        r#"
+        INSERT INTO bot_events (
+            universe_id, bot_id, event_id, seq, kind, summary, occurred_at_ms, received_at_ms,
+            document_ref, prompt_ref, media_json
+        )
+        VALUES ($1, 'sweep-bot', 'evt-1', 1, 'test.event', 'holds blobs', 1, 1, $2, $3, $4)
+        "#,
+    )
+    .bind(universe_id)
+    .bind(bot_document.as_str())
+    .bind(bot_prompt.as_str())
+    .bind(serde_json::json!([{ "blobRef": bot_media.as_str(), "kind": "image", "mime": "image/png" }]))
+    .execute(store.pool())
+    .await
+    .expect("insert bot event");
+    store
+        .record_blob_edges(vec![BlobEdge::contains(parent.clone(), child.clone())])
+        .await
+        .expect("record edge");
+
+    // Everything is old; the cutoff is far in the future of the aged rows
+    // but before "now", so a fresh put stays inside the grace.
+    age_all_blobs(&store, 1_000).await;
+    let fresh = put("fresh unreferenced upload inside the grace").await;
+    let cutoff_ms = 2_000;
+
+    // With the doomed session still present nothing it references is
+    // collectable; only the truly unreferenced blobs and the parent are.
+    let before_delete = candidate_refs(&store, cutoff_ms, &pinned).await;
+    assert_eq!(
+        before_delete,
+        sorted([&parent, &unreferenced_object, &unreferenced_inline])
+    );
+
+    store
+        .delete_closed_sessions(DeleteClosedSessions {
+            session_id: doomed.clone(),
+            cascade: true,
+            due_at_or_before_ms: None,
+        })
+        .await
+        .expect("delete doomed session");
+    let candidates = store
+        .list_sweep_candidates(cutoff_ms, &pinned, 1024)
+        .await
+        .expect("list candidates");
+    let candidate_set = sorted(candidates.iter().map(|candidate| &candidate.blob_ref));
+    assert_eq!(
+        candidate_set,
+        sorted([
+            &only_doomed,
+            &parent,
+            &unreferenced_object,
+            &unreferenced_inline
+        ]),
+        "shared, held, pinned, fresh, and edge-protected blobs are not candidates"
+    );
+    let object_keys = candidates
+        .iter()
+        .filter_map(|candidate| candidate.object_key.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        object_keys.len(),
+        3,
+        "three candidates exceed the inline threshold"
+    );
+    let inline_candidate = candidates
+        .iter()
+        .find(|candidate| candidate.blob_ref == unreferenced_inline)
+        .expect("inline candidate");
+    assert!(inline_candidate.object_key.is_none());
+    assert_eq!(inline_candidate.byte_len, 4);
+
+    let deleted = store
+        .delete_dead_blobs(&candidate_set, cutoff_ms, &pinned)
+        .await
+        .expect("delete dead blobs");
+    assert_eq!(
+        sorted(deleted.iter().map(|candidate| &candidate.blob_ref)),
+        candidate_set,
+        "the guarded delete removes exactly the listed candidates"
+    );
+    let outcome = store.delete_blob_objects(&object_keys).await;
+    assert_eq!(outcome.deleted, 3);
+    assert!(outcome.failures.is_empty(), "{:?}", outcome.failures);
+    for key in &object_keys {
+        use object_store::ObjectStoreExt as _;
+        let head = store
+            .object_store()
+            .expect("live object store")
+            .head(&object_store::path::Path::from(key.as_str()))
+            .await;
+        assert!(
+            matches!(head, Err(object_store::Error::NotFound { .. })),
+            "object {key} must be gone, got {head:?}"
+        );
+    }
+    for gone in [
+        &only_doomed,
+        &parent,
+        &unreferenced_object,
+        &unreferenced_inline,
+    ] {
+        assert!(
+            !store.has_blob(gone).await.expect("has"),
+            "{gone} must be collected"
+        );
+    }
+    for kept in [
+        &shared,
+        &checkpoint_state,
+        &snapshot_manifest,
+        &workspace_head,
+        &workspace_base,
+        &bot_document,
+        &bot_prompt,
+        &bot_media,
+        &child,
+        &fresh,
+    ]
+    .into_iter()
+    .chain(pinned.iter())
+    {
+        assert!(
+            store.has_blob(kept).await.expect("has"),
+            "{kept} must survive"
+        );
+    }
+
+    // The deleted parent's edge cascaded, so the child drains next; then
+    // the sweep is a no-op.
+    assert_eq!(
+        candidate_refs(&store, cutoff_ms, &pinned).await,
+        vec![child.clone()]
+    );
+    let deleted = store
+        .delete_dead_blobs(std::slice::from_ref(&child), cutoff_ms, &pinned)
+        .await
+        .expect("delete child");
+    assert_eq!(deleted.len(), 1);
+    assert!(candidate_refs(&store, cutoff_ms, &pinned).await.is_empty());
+    assert!(
+        store
+            .delete_dead_blobs(&[shared.clone(), fresh.clone()], cutoff_ms, &pinned)
+            .await
+            .expect("guarded delete of live blobs")
+            .is_empty(),
+        "the delete statement re-checks liveness and age"
+    );
+
+    // Advancing the checkpoint releases the previous state blob.
+    let next_state = put("next checkpoint state of the surviving session").await;
+    assert!(
+        store
+            .advance_checkpoint(AdvanceSessionCheckpoint {
+                checkpoint: SessionCheckpoint {
+                    session_id: survivor.clone(),
+                    through_seq: EventSeq::new(2),
+                    format_version: 1,
+                    state_ref: next_state.clone(),
+                    lineage_source_session_id: None,
+                    lineage_source_seq: None,
+                    byte_len: 1,
+                    created_at_ms: 30,
+                },
+            })
+            .await
+            .expect("advance checkpoint again")
+    );
+    assert_eq!(
+        candidate_refs(&store, cutoff_ms, &pinned).await,
+        vec![checkpoint_state.clone()],
+        "the superseded state is collectable; the current one is fresh and held"
+    );
+
+    // Once the fresh upload ages past the grace it goes too.
+    age_all_blobs(&store, 1_000).await;
+    assert_eq!(
+        candidate_refs(&store, cutoff_ms, &pinned).await,
+        sorted([&checkpoint_state, &fresh])
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires ./dev.sh infra or compatible Postgres + MinIO env"]
+async fn pg_live_sweep_follows_fork_trees_and_clone_roots() {
+    let store = live_store("sweep-lineage", 8).await;
+    let pinned = engine_blob_refs();
+    let config_blob = store
+        .put_bytes(b"session config blob shared by lineage".to_vec())
+        .await
+        .expect("put config");
+    let fork_only = store
+        .put_bytes(b"blob only the fork references".to_vec())
+        .await
+        .expect("put fork blob");
+
+    let root = SessionId::new("lineage-root");
+    store
+        .create_session(CreateSession {
+            metadata: Default::default(),
+            session_id: root.clone(),
+            display_name: None,
+            origin: None,
+            delete_after_close_ms: None,
+            created_at_ms: 1,
+        })
+        .await
+        .expect("create root");
+    store
+        .append(AppendSessionEvents {
+            session_id: root.clone(),
+            expected_head: None,
+            events: vec![
+                ref_event(
+                    10,
+                    serde_json::json!({ "content_ref": config_blob.as_str() }),
+                ),
+                lifecycle_event(11, CORE_AGENT_LIFECYCLE_CLOSED_EVENT_KIND),
+            ],
+        })
+        .await
+        .expect("append root events");
+    // A history fork reads the root's events by reference and roots only
+    // what it appends itself.
+    let fork = SessionId::new("lineage-fork");
+    store
+        .create_forked_session(CreateForkedSession {
+            source_session_id: root.clone(),
+            session_id: fork.clone(),
+            source_seq: EventSeq::new(1),
+            created_at_ms: 20,
+        })
+        .await
+        .expect("fork root");
+    store
+        .append(AppendSessionEvents {
+            session_id: fork.clone(),
+            expected_head: Some(SessionPosition {
+                seq: EventSeq::new(1),
+            }),
+            events: vec![
+                ref_event(21, serde_json::json!({ "content_ref": fork_only.as_str() })),
+                lifecycle_event(22, CORE_AGENT_LIFECYCLE_CLOSED_EVENT_KIND),
+            ],
+        })
+        .await
+        .expect("append fork events");
+    assert!(
+        events_embedding(&store, &fork, &config_blob)
+            .await
+            .is_empty(),
+        "inherited events are the source's rows"
+    );
+    assert_eq!(events_embedding(&store, &fork, &fork_only).await, vec![2]);
+    // A config-only clone re-appends the config and so re-roots it.
+    let clone = SessionId::new("lineage-clone");
+    store
+        .create_cloned_session(CreateClonedSession {
+            source_session_id: root.clone(),
+            session_id: clone.clone(),
+            created_at_ms: 30,
+            opening_events: vec![
+                ref_event(
+                    31,
+                    serde_json::json!({ "content_ref": config_blob.as_str() }),
+                ),
+                lifecycle_event(32, CORE_AGENT_LIFECYCLE_CLOSED_EVENT_KIND),
+            ],
+        })
+        .await
+        .expect("clone root");
+    assert_eq!(
+        events_embedding(&store, &clone, &config_blob).await,
+        vec![1]
+    );
+
+    age_all_blobs(&store, 1_000).await;
+    let cutoff_ms = 2_000;
+    assert!(candidate_refs(&store, cutoff_ms, &pinned).await.is_empty());
+
+    // Deleting the fork tree (root + fork) frees what only the fork used;
+    // the clone keeps the config blob alive after its source is gone.
+    let deleted = store
+        .delete_closed_sessions(DeleteClosedSessions {
+            session_id: root.clone(),
+            cascade: true,
+            due_at_or_before_ms: None,
+        })
+        .await
+        .expect("delete fork tree");
+    assert_eq!(deleted.deleted_session_ids.len(), 2);
+    assert_eq!(
+        candidate_refs(&store, cutoff_ms, &pinned).await,
+        vec![fork_only.clone()]
+    );
+    store
+        .delete_closed_sessions(DeleteClosedSessions {
+            session_id: clone.clone(),
+            cascade: false,
+            due_at_or_before_ms: None,
+        })
+        .await
+        .expect("delete clone");
+    assert_eq!(
+        candidate_refs(&store, cutoff_ms, &pinned).await,
+        sorted([&config_blob, &fork_only])
+    );
+}
+
+async fn put_blob(store: &PgStore, content: &str) -> BlobRef {
+    store
+        .put_bytes(content.as_bytes().to_vec())
+        .await
+        .expect("put blob")
+}
+
+/// Sequence numbers of the session's own rows whose generated `blob_refs`
+/// column contains `blob_ref`: exactly what keeps the blob alive.
+async fn events_embedding(store: &PgStore, session_id: &SessionId, blob_ref: &BlobRef) -> Vec<i64> {
+    sqlx::query_scalar(
+        r#"
+        SELECT seq
+        FROM session_events
+        WHERE universe_id = $1
+          AND session_id = $2
+          AND blob_refs @> jsonb_build_array($3::text)
+        ORDER BY seq
+        "#,
+    )
+    .bind(store.config().universe_id)
+    .bind(session_id.as_str())
+    .bind(blob_ref.as_str())
+    .fetch_all(store.pool())
+    .await
+    .expect("load embedding events")
+}
+
+async fn candidate_refs(store: &PgStore, cutoff_ms: u64, pinned: &[BlobRef]) -> Vec<BlobRef> {
+    sorted(
+        store
+            .list_sweep_candidates(cutoff_ms, pinned, 1024)
+            .await
+            .expect("list sweep candidates")
+            .iter()
+            .map(|candidate| &candidate.blob_ref),
+    )
+}
+
+fn sorted<'a>(refs: impl IntoIterator<Item = &'a BlobRef>) -> Vec<BlobRef> {
+    let mut refs = refs.into_iter().cloned().collect::<Vec<_>>();
+    refs.sort();
+    refs
+}
+
+async fn age_all_blobs(store: &PgStore, at_ms: i64) {
+    sqlx::query(
+        r#"
+        UPDATE cas_blobs
+        SET created_at_ms = LEAST(created_at_ms, $2), touched_at_ms = $2
+        WHERE universe_id = $1
+        "#,
+    )
+    .bind(store.config().universe_id)
+    .bind(at_ms)
+    .execute(store.pool())
+    .await
+    .expect("age blobs");
+}
+
+async fn blob_object_etag(store: &PgStore, blob_ref: &BlobRef) -> Option<String> {
+    sqlx::query_scalar(
+        r#"
+        SELECT object_etag
+        FROM cas_blobs
+        WHERE universe_id = $1 AND digest = $2
+        "#,
+    )
+    .bind(store.config().universe_id)
+    .bind(digest(blob_ref))
+    .fetch_one(store.pool())
+    .await
+    .expect("load object etag")
+}
+
+fn ref_event(at_ms: u64, payload: serde_json::Value) -> UncommittedStoredEvent {
+    UncommittedStoredEvent {
+        observed_at_ms: at_ms,
+        joins: StoredJoins::default(),
+        event: StoredEvent::new("lightspeed.test.references", 1, payload),
+    }
+}
+
+fn lifecycle_event(at_ms: u64, kind: &'static str) -> UncommittedStoredEvent {
+    UncommittedStoredEvent {
+        observed_at_ms: at_ms,
+        joins: StoredJoins::default(),
+        event: StoredEvent::new(kind, 1, serde_json::Value::Object(Default::default())),
+    }
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -1403,6 +2064,7 @@ async fn pg_live_universe_environments_are_independent_of_sessions() {
     assert_eq!(
         store
             .list_environments(ListEnvironments {
+                metadata: Default::default(),
                 provider_id: Some(provider_id.clone()),
                 binding_id: Some(EnvironmentProviderBindingId::new("primary")),
                 status: Some(EnvironmentStatus::Offline),
@@ -1415,9 +2077,11 @@ async fn pg_live_universe_environments_are_independent_of_sessions() {
 
     store
         .create_session(CreateSession {
+            metadata: Default::default(),
             session_id: session_id.clone(),
             display_name: None,
             origin: None,
+            delete_after_close_ms: None,
             created_at_ms: 35,
         })
         .await
@@ -1464,6 +2128,7 @@ async fn pg_live_universe_environments_are_independent_of_sessions() {
     );
     let by_session = store
         .list_environments(ListEnvironments {
+            metadata: Default::default(),
             origin_session_id: Some(session_id.clone()),
             ..ListEnvironments::default()
         })
@@ -2217,6 +2882,126 @@ async fn pg_live_environment_credentials_round_trip() {
             .len(),
         1
     );
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires ./dev.sh infra or compatible Postgres + MinIO env"]
+async fn pg_live_session_metadata_filters_by_containment_and_put_replaces() {
+    use engine::storage::{ListSessions, SessionListPage};
+    use std::collections::BTreeMap;
+
+    let store = live_store("session-metadata", 64).await;
+    let pair = |key: &str, value: &str| (key.to_owned(), value.to_owned());
+    let harbor = BTreeMap::from([
+        pair("source", "harbor"),
+        pair("job", "nightly"),
+        pair("trial", "1"),
+    ]);
+    for (name, metadata, created_at_ms) in [
+        ("meta-harbor", harbor.clone(), 10),
+        (
+            "meta-bot",
+            BTreeMap::from([pair("source", "bot"), pair("bot", "triage")]),
+            20,
+        ),
+        ("meta-none", BTreeMap::new(), 30),
+    ] {
+        store
+            .create_session(CreateSession {
+                session_id: SessionId::new(name),
+                display_name: None,
+                metadata,
+                origin: None,
+                delete_after_close_ms: None,
+                created_at_ms,
+            })
+            .await
+            .expect("create session");
+    }
+    let list = |metadata: BTreeMap<String, String>| ListSessions {
+        cursor: None,
+        limit: 10,
+        root_session_id: None,
+        parent_session_id: None,
+        metadata,
+    };
+    let ids = |page: SessionListPage| {
+        page.sessions
+            .into_iter()
+            .map(|record| record.session_id.as_str().to_owned())
+            .collect::<Vec<_>>()
+    };
+
+    // The stored map comes back verbatim through load and list.
+    let loaded = store
+        .load_session(&SessionId::new("meta-harbor"))
+        .await
+        .expect("load")
+        .expect("exists");
+    assert_eq!(loaded.metadata, harbor);
+
+    // One pair, two pairs (AND), a mismatched value, a missing key, no filter.
+    for (filter, expected) in [
+        (
+            BTreeMap::from([pair("source", "harbor")]),
+            vec!["meta-harbor"],
+        ),
+        (
+            BTreeMap::from([pair("source", "harbor"), pair("job", "nightly")]),
+            vec!["meta-harbor"],
+        ),
+        (
+            BTreeMap::from([pair("source", "harbor"), pair("job", "weekly")]),
+            vec![],
+        ),
+        (BTreeMap::from([pair("task", "x")]), vec![]),
+        (
+            BTreeMap::new(),
+            vec!["meta-none", "meta-bot", "meta-harbor"],
+        ),
+    ] {
+        let page = store
+            .list_sessions(list(filter.clone()))
+            .await
+            .expect("list");
+        assert_eq!(ids(page), expected, "filter {filter:?}");
+    }
+
+    // Put replaces the whole map and leaves updated_at_ms alone.
+    let replaced = store
+        .set_session_metadata(
+            &SessionId::new("meta-harbor"),
+            BTreeMap::from([pair("owner", "lukas")]),
+        )
+        .await
+        .expect("set metadata");
+    assert_eq!(replaced.metadata, BTreeMap::from([pair("owner", "lukas")]));
+    assert_eq!(replaced.updated_at_ms, 10);
+    assert!(
+        ids(store
+            .list_sessions(list(BTreeMap::from([pair("job", "nightly")])))
+            .await
+            .expect("list after put"))
+        .is_empty()
+    );
+    assert_eq!(
+        ids(store
+            .list_sessions(list(BTreeMap::from([pair("owner", "lukas")])))
+            .await
+            .expect("list by new key")),
+        vec!["meta-harbor"]
+    );
+    let cleared = store
+        .set_session_metadata(&SessionId::new("meta-harbor"), BTreeMap::new())
+        .await
+        .expect("clear metadata");
+    assert!(cleared.metadata.is_empty());
+    assert!(matches!(
+        store
+            .set_session_metadata(&SessionId::new("meta-missing"), BTreeMap::new())
+            .await,
+        Err(SessionStoreError::SessionNotFound { .. })
+    ));
 }
 
 async fn live_store(test_name: &str, inline_threshold_bytes: usize) -> PgStore {

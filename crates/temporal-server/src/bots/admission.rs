@@ -4,7 +4,7 @@
 //! notification over it, never the system of record.
 //!
 //! Order of the trigger pipeline: filter (a miss stores nothing, so a strict
-//! filter on a firehose costs nothing) → route → retention → coalesce →
+//! filter on a firehose costs nothing) → route → idle-close policy → coalesce →
 //! delivery policy → store-then-wake. Callers have already checked that the
 //! trigger is enabled and the breaker has not tripped.
 
@@ -15,7 +15,7 @@ use api::{
 use bots::{
     BotCoalesceParams, BotControllerConfig, BotError, BotEvent, BotEventRecord, BotEventStore,
     BotRecord, BotRefusalCode, BotStore, BotTriggerRecord, BotTriggerStore, EventReceiver,
-    InsertBotEventOutcome, RoutedSession, RoutedSessionTtl,
+    InsertBotEventOutcome, RoutedSession, RoutedSessionClosePolicy,
     filter::{FilterContext, RoutePreset, compute_route_session, evaluate_filter},
     ids::{bot_controller_workflow_id, coalesce_key},
     records::{BotEventOutcomeWrite, BotEventRateScope},
@@ -273,7 +273,7 @@ impl GatewayAgentApi {
         self.start_bot_controller(config, options).await
     }
 
-    /// The trigger pipeline: filter, route, retention, coalesce, delivery
+    /// The trigger pipeline: filter, route, idle-close policy, coalesce, delivery
     /// policy, then store-then-wake.
     pub(crate) async fn admit_trigger_event(
         &self,
@@ -315,13 +315,13 @@ impl GatewayAgentApi {
         };
         let route = effective_route(&trigger.document);
         let routed = compute_route_session(&bot.bot_id, &route, preset, &input.event_id, &context);
-        // Per-trigger retention rides on the routed target: absent inherits
+        // Per-trigger idle-close policy rides on the routed target: absent inherits
         // the bot's setting, 0 keeps the session open indefinitely.
         let session = routed.map(|mut session| {
-            session.ttl = match trigger.document.session_ttl_ms {
-                None => RoutedSessionTtl::Inherit,
-                Some(0) => RoutedSessionTtl::Never,
-                Some(ms) => RoutedSessionTtl::After { ms },
+            session.close_policy = match trigger.document.session_close_after_ms {
+                None => RoutedSessionClosePolicy::Inherit,
+                Some(0) => RoutedSessionClosePolicy::Never,
+                Some(ms) => RoutedSessionClosePolicy::After { ms },
             };
             session
         });

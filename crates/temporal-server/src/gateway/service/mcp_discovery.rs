@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::net::IpAddr;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -14,8 +14,8 @@ use mcp::{
     McpToolDiscoveryFailureKind as FailureKind, McpToolDiscoveryLimits,
 };
 use rmcp::model::{
-    CallToolRequestParams, CallToolResult, ClientInfo, ClientJsonRpcMessage, Implementation,
-    PaginatedRequestParams, ProtocolVersion, ServerJsonRpcMessage, Tool,
+    CallToolRequestParams, CallToolResult, ClientInfo, ClientJsonRpcMessage, ClientRequest,
+    Implementation, PaginatedRequestParams, ProtocolVersion, ServerJsonRpcMessage, Tool,
 };
 use rmcp::transport::{
     StreamableHttpClientTransport,
@@ -24,7 +24,10 @@ use rmcp::transport::{
         StreamableHttpClientTransportConfig, StreamableHttpError, StreamableHttpPostResponse,
     },
 };
-use rmcp::{ClientLifecycleMode, ClientServiceExt, service::ClientInitializeError};
+use rmcp::{
+    ClientLifecycleMode, ClientServiceExt, RoleClient,
+    service::{ClientInitializeError, RunningService},
+};
 use serde_json::Value;
 use sse_stream::{Sse, SseStream};
 use url::Url;
@@ -207,6 +210,7 @@ impl ResponseOperation {
 #[derive(Clone, Default)]
 struct TransportDiagnostics {
     failure: Arc<Mutex<Option<McpToolDiscoveryFailure>>>,
+    legacy_bootstrap_rejected: Arc<AtomicBool>,
 }
 
 impl TransportDiagnostics {
@@ -220,6 +224,15 @@ impl TransportDiagnostics {
 
     fn current(&self) -> Option<McpToolDiscoveryFailure> {
         self.failure.lock().ok().and_then(|failure| failure.clone())
+    }
+
+    fn record_legacy_bootstrap_rejection(&self) {
+        self.legacy_bootstrap_rejected
+            .store(true, Ordering::Relaxed);
+    }
+
+    fn legacy_bootstrap_was_rejected(&self) -> bool {
+        self.legacy_bootstrap_rejected.load(Ordering::Relaxed)
     }
 }
 
@@ -439,6 +452,12 @@ impl StreamableHttpClient for BoundedReqwestClient {
         request = Self::authenticated(request, auth_header);
         request = Self::apply_headers(request, custom_headers);
         let session_was_attached = session_id.is_some();
+        let is_sessionless_discover = !session_was_attached
+            && matches!(
+                &message,
+                ClientJsonRpcMessage::Request(request)
+                    if matches!(&request.request, ClientRequest::DiscoverRequest(_))
+            );
         if let Some(session_id) = session_id {
             request = request.header(HEADER_SESSION_ID, session_id.as_ref());
         }
@@ -463,6 +482,9 @@ impl StreamableHttpClient for BoundedReqwestClient {
             return Err(StreamableHttpError::SessionExpired);
         }
         if !status.is_success() {
+            if is_sessionless_discover && is_legacy_bootstrap_rejection(status) {
+                self.diagnostics.record_legacy_bootstrap_rejection();
+            }
             self.diagnostics
                 .record(status_failure(status, self.operation));
             return Err(StreamableHttpError::Client(
@@ -617,6 +639,48 @@ impl HttpMcpToolDiscoverer {
         })
     }
 
+    async fn start_service(
+        &self,
+        client: &reqwest::Client,
+        endpoint: &Url,
+        bearer: Option<&SecretValue>,
+        trusted_universe: Option<uuid::Uuid>,
+        max_response_bytes: usize,
+        operation: ResponseOperation,
+    ) -> Result<(McpClientService, TransportDiagnostics), McpToolDiscoveryFailure> {
+        let first = start_service_once(
+            client,
+            endpoint,
+            bearer,
+            trusted_universe,
+            max_response_bytes,
+            operation,
+            client_lifecycle(),
+        )
+        .await;
+        match first {
+            Ok(started) => Ok(started),
+            Err(error) if error.retry_legacy => {
+                tracing::info!(
+                    operation = operation.label(),
+                    "MCP server rejected sessionless discovery bootstrap; retrying legacy initialize"
+                );
+                start_service_once(
+                    client,
+                    endpoint,
+                    bearer,
+                    trusted_universe,
+                    max_response_bytes,
+                    operation,
+                    ClientLifecycleMode::Initialize,
+                )
+                .await
+                .map_err(|error| error.failure)
+            }
+            Err(error) => Err(error.failure),
+        }
+    }
+
     pub(crate) async fn call_tool(
         &self,
         server_url: &str,
@@ -639,28 +703,16 @@ impl HttpMcpToolDiscoverer {
         }
         tokio::time::timeout(self.timeout, async {
             let client = self.pinned_client(&endpoint, allow_private_network).await?;
-            let mut config = StreamableHttpClientTransportConfig::with_uri(endpoint.as_str())
-                .max_sse_event_size(limits.max_tool_call_response_bytes)
-                .reinit_on_expired_session(false);
-            config = transport_auth(config, bearer, trusted_universe)?;
-            let client = BoundedReqwestClient::new(
-                client,
-                limits.max_tool_call_response_bytes,
-                ResponseOperation::ToolCall,
-            );
-            let diagnostics = client.diagnostics.clone();
-            let transport = StreamableHttpClientTransport::with_client(client, config);
-            let service = ClientInfo::new(
-                Default::default(),
-                Implementation::new("lightspeed", env!("CARGO_PKG_VERSION")),
-            )
-            .serve_with_lifecycle(transport, client_lifecycle())
-            .await
-            .map_err(|error| {
-                diagnostics
-                    .current()
-                    .unwrap_or_else(|| map_initialize_error(error, ResponseOperation::ToolCall))
-            })?;
+            let (service, diagnostics) = self
+                .start_service(
+                    &client,
+                    &endpoint,
+                    bearer,
+                    trusted_universe,
+                    limits.max_tool_call_response_bytes,
+                    ResponseOperation::ToolCall,
+                )
+                .await?;
             let result = service
                 .call_tool(
                     CallToolRequestParams::new(request.tool_name).with_arguments(request.arguments),
@@ -703,28 +755,16 @@ impl McpToolDiscoverer for HttpMcpToolDiscoverer {
 
         tokio::time::timeout(self.timeout, async {
             let client = self.pinned_client(&endpoint, allow_private_network).await?;
-            let mut config = StreamableHttpClientTransportConfig::with_uri(endpoint.as_str())
-                .max_sse_event_size(limits.max_response_bytes)
-                .reinit_on_expired_session(false);
-            config = transport_auth(config, bearer, trusted_universe)?;
-            let client = BoundedReqwestClient::new(
-                client,
-                limits.max_response_bytes,
-                ResponseOperation::Discovery,
-            );
-            let diagnostics = client.diagnostics.clone();
-            let transport = StreamableHttpClientTransport::with_client(client, config);
-            let service = ClientInfo::new(
-                Default::default(),
-                Implementation::new("lightspeed", env!("CARGO_PKG_VERSION")),
-            )
-            .serve_with_lifecycle(transport, client_lifecycle())
-            .await
-            .map_err(|error| {
-                diagnostics
-                    .current()
-                    .unwrap_or_else(|| map_initialize_error(error, ResponseOperation::Discovery))
-            })?;
+            let (service, diagnostics) = self
+                .start_service(
+                    &client,
+                    &endpoint,
+                    bearer,
+                    trusted_universe,
+                    limits.max_response_bytes,
+                    ResponseOperation::Discovery,
+                )
+                .await?;
 
             let tools_list_changed = service.peer_info().is_some_and(|info| {
                 info.capabilities
@@ -745,6 +785,51 @@ impl McpToolDiscoverer for HttpMcpToolDiscoverer {
         })
         .await
         .map_err(|_| failure(FailureKind::Unreachable, "MCP endpoint timed out"))?
+    }
+}
+
+type McpClientService = RunningService<RoleClient, ClientInfo>;
+
+struct StartServiceFailure {
+    failure: McpToolDiscoveryFailure,
+    retry_legacy: bool,
+}
+
+async fn start_service_once(
+    client: &reqwest::Client,
+    endpoint: &Url,
+    bearer: Option<&SecretValue>,
+    trusted_universe: Option<uuid::Uuid>,
+    max_response_bytes: usize,
+    operation: ResponseOperation,
+    lifecycle: ClientLifecycleMode,
+) -> Result<(McpClientService, TransportDiagnostics), StartServiceFailure> {
+    let mut config = StreamableHttpClientTransportConfig::with_uri(endpoint.as_str())
+        .max_sse_event_size(max_response_bytes)
+        .reinit_on_expired_session(false);
+    config = transport_auth(config, bearer, trusted_universe).map_err(|failure| {
+        StartServiceFailure {
+            failure,
+            retry_legacy: false,
+        }
+    })?;
+    let client = BoundedReqwestClient::new(client.clone(), max_response_bytes, operation);
+    let diagnostics = client.diagnostics.clone();
+    let transport = StreamableHttpClientTransport::with_client(client, config);
+    let result = ClientInfo::new(
+        Default::default(),
+        Implementation::new("lightspeed", env!("CARGO_PKG_VERSION")),
+    )
+    .serve_with_lifecycle(transport, lifecycle)
+    .await;
+    match result {
+        Ok(service) => Ok((service, diagnostics)),
+        Err(error) => Err(StartServiceFailure {
+            retry_legacy: diagnostics.legacy_bootstrap_was_rejected(),
+            failure: diagnostics
+                .current()
+                .unwrap_or_else(|| map_initialize_error(error, operation)),
+        }),
     }
 }
 
@@ -1075,8 +1160,25 @@ fn status_failure(
             FailureKind::RemoteRateLimited,
             format!("MCP endpoint rate limited the {}", operation.label()),
         ),
-        _ => failure(FailureKind::RemoteFailure, "MCP endpoint request failed"),
+        _ => failure(
+            FailureKind::RemoteFailure,
+            format!("MCP endpoint request failed with HTTP {status}"),
+        ),
     }
+}
+
+fn is_legacy_bootstrap_rejection(status: reqwest::StatusCode) -> bool {
+    matches!(
+        status,
+        reqwest::StatusCode::BAD_REQUEST
+            | reqwest::StatusCode::NOT_FOUND
+            | reqwest::StatusCode::METHOD_NOT_ALLOWED
+            | reqwest::StatusCode::NOT_ACCEPTABLE
+            | reqwest::StatusCode::CONFLICT
+            | reqwest::StatusCode::UNSUPPORTED_MEDIA_TYPE
+            | reqwest::StatusCode::UNPROCESSABLE_ENTITY
+            | reqwest::StatusCode::NOT_IMPLEMENTED
+    )
 }
 
 fn request_failure(
@@ -1118,9 +1220,12 @@ mod tests {
 
     #[derive(Default)]
     struct TestMcpState {
+        discover_count: usize,
         initialize_count: usize,
         initialized_count: usize,
+        tool_call_count: usize,
         authorizations: Vec<String>,
+        discover_http_status: Option<StatusCode>,
         oversized_inventory: bool,
         list_delay: Option<Duration>,
         oauth_challenge: Option<String>,
@@ -1150,12 +1255,31 @@ mod tests {
         }
         let id = request.get("id").cloned().unwrap_or(Value::Null);
         match request.get("method").and_then(Value::as_str) {
-            Some("server/discover") => Json(json!({
-                "jsonrpc": "2.0",
-                "id": id,
-                "error": {"code": -32601, "message": "Method not found"}
-            }))
-            .into_response(),
+            Some("server/discover") => {
+                state.discover_count += 1;
+                if let Some(status) = state.discover_http_status {
+                    let mut response = (
+                        status,
+                        Json(json!({
+                            "jsonrpc": "2.0",
+                            "id": "server-error",
+                            "error": {"code": -32600, "message": "Missing session ID"}
+                        })),
+                    )
+                        .into_response();
+                    response.headers_mut().insert(
+                        "mcp-session-id",
+                        HeaderValue::from_static("incorrect-probe-session"),
+                    );
+                    return response;
+                }
+                Json(json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "error": {"code": -32601, "message": "Method not found"}
+                }))
+                .into_response()
+            }
             Some("initialize") => {
                 state.initialize_count += 1;
                 let mut response = Json(json!({
@@ -1223,6 +1347,18 @@ mod tests {
                     })
                 };
                 Json(json!({"jsonrpc": "2.0", "id": id, "result": result})).into_response()
+            }
+            Some("tools/call") => {
+                state.tool_call_count += 1;
+                Json(json!({
+                    "jsonrpc": "2.0",
+                    "id": id,
+                    "result": {
+                        "content": [{"type": "text", "text": "called"}],
+                        "isError": false
+                    }
+                }))
+                .into_response()
             }
             _ => StatusCode::BAD_REQUEST.into_response(),
         }
@@ -1384,6 +1520,31 @@ mod tests {
     }
 
     #[test]
+    fn legacy_bootstrap_retry_statuses_exclude_auth_rate_limits_and_server_failures() {
+        for status in [
+            StatusCode::BAD_REQUEST,
+            StatusCode::NOT_FOUND,
+            StatusCode::METHOD_NOT_ALLOWED,
+            StatusCode::NOT_ACCEPTABLE,
+            StatusCode::CONFLICT,
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            StatusCode::NOT_IMPLEMENTED,
+        ] {
+            assert!(is_legacy_bootstrap_rejection(status), "{status}");
+        }
+        for status in [
+            StatusCode::UNAUTHORIZED,
+            StatusCode::FORBIDDEN,
+            StatusCode::TOO_MANY_REQUESTS,
+            StatusCode::INTERNAL_SERVER_ERROR,
+            StatusCode::SERVICE_UNAVAILABLE,
+        ] {
+            assert!(!is_legacy_bootstrap_rejection(status), "{status}");
+        }
+    }
+
+    #[test]
     fn duplicate_tools_are_rejected_across_pages() {
         let value = json!({"name": "search", "inputSchema": {"type": "object"}});
         let mut tools = Vec::new();
@@ -1472,6 +1633,118 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn streamable_discovery_retries_legacy_initialize_after_probe_rejection() {
+        let state = Arc::new(Mutex::new(TestMcpState {
+            discover_http_status: Some(StatusCode::BAD_REQUEST),
+            ..TestMcpState::default()
+        }));
+        let app = Router::new()
+            .route("/mcp", post(streamable_handler).delete(shutdown_handler))
+            .with_state(state.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind fixture");
+        let address = listener.local_addr().expect("fixture address");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.expect("serve fixture");
+        });
+
+        let inventory = HttpMcpToolDiscoverer::new()
+            .discover_tools(
+                &format!("http://{address}/mcp"),
+                None,
+                None,
+                true,
+                McpToolDiscoveryLimits::default(),
+            )
+            .await
+            .expect("legacy retry should discover tools");
+        assert_eq!(inventory.tools.len(), 2);
+
+        let state = state.lock().await;
+        assert_eq!(state.discover_count, 1);
+        assert_eq!(state.initialize_count, 1);
+        assert_eq!(state.initialized_count, 1);
+        server.abort();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn streamable_tool_call_retries_legacy_initialize_after_probe_rejection() {
+        let state = Arc::new(Mutex::new(TestMcpState {
+            discover_http_status: Some(StatusCode::BAD_REQUEST),
+            ..TestMcpState::default()
+        }));
+        let app = Router::new()
+            .route("/mcp", post(streamable_handler).delete(shutdown_handler))
+            .with_state(state.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind fixture");
+        let address = listener.local_addr().expect("fixture address");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.expect("serve fixture");
+        });
+
+        HttpMcpToolDiscoverer::new()
+            .call_tool(
+                &format!("http://{address}/mcp"),
+                None,
+                None,
+                true,
+                McpToolDiscoveryLimits::default(),
+                McpToolCallRequest {
+                    tool_name: "search".to_owned(),
+                    arguments: serde_json::Map::new(),
+                },
+            )
+            .await
+            .expect("legacy retry should call the tool");
+
+        let state = state.lock().await;
+        assert_eq!(state.discover_count, 1);
+        assert_eq!(state.initialize_count, 1);
+        assert_eq!(state.initialized_count, 1);
+        assert_eq!(state.tool_call_count, 1);
+        server.abort();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn streamable_discovery_does_not_retry_legacy_after_server_failure() {
+        let state = Arc::new(Mutex::new(TestMcpState {
+            discover_http_status: Some(StatusCode::INTERNAL_SERVER_ERROR),
+            ..TestMcpState::default()
+        }));
+        let app = Router::new()
+            .route("/mcp", post(streamable_handler).delete(shutdown_handler))
+            .with_state(state.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind fixture");
+        let address = listener.local_addr().expect("fixture address");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.expect("serve fixture");
+        });
+
+        let error = HttpMcpToolDiscoverer::new()
+            .discover_tools(
+                &format!("http://{address}/mcp"),
+                None,
+                None,
+                true,
+                McpToolDiscoveryLimits::default(),
+            )
+            .await
+            .expect_err("server failure must not trigger a legacy retry");
+        assert_eq!(error.kind, FailureKind::RemoteFailure);
+        assert!(error.message.contains("HTTP 500"));
+
+        let state = state.lock().await;
+        assert_eq!(state.discover_count, 1);
+        assert_eq!(state.initialize_count, 0);
+        server.abort();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn streamable_discovery_bounds_raw_response_bytes_before_parsing() {
         let state = Arc::new(Mutex::new(TestMcpState {
             oversized_inventory: true,
@@ -1515,7 +1788,7 @@ mod tests {
         }));
         let app = Router::new()
             .route("/mcp", post(streamable_handler).delete(shutdown_handler))
-            .with_state(state);
+            .with_state(state.clone());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind fixture");
@@ -1536,6 +1809,7 @@ mod tests {
             .expect_err("scope challenge must require explicit consent");
         assert_eq!(error.kind, FailureKind::AdditionalConsentRequired);
         assert_eq!(error.required_scopes, ["tools.read", "tools.write"]);
+        assert_eq!(state.lock().await.authorizations.len(), 1);
         server.abort();
     }
 

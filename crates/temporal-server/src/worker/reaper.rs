@@ -1,23 +1,28 @@
-//! Deployment-level promise/source repair loop.
+//! Deployment-level background loops of the sessions role: promise/source
+//! repair, session retention, and content-addressed blob collection.
 //!
 //! Workflow-local machinery handles the normal path: terminal runs notify
 //! holder workflows, and holder-side promise cancellation flushes source
-//! cancellation. This reaper is the backstop for the cases that no single
-//! workflow can repair by itself: missed signals, terminated workflows, or
-//! promise/source state that is only visible by scanning session logs.
+//! cancellation. The promise reaper is the backstop for the cases that no
+//! single workflow can repair by itself: missed signals, terminated
+//! workflows, or promise/source state that is only visible by scanning
+//! session logs. The retention reaper deletes closed session trees whose
+//! deadline passed, and the blob sweeper frees the blobs nothing references
+//! any more.
 
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 use api_projection::{MAX_EVENT_PAGE_LIMIT, read_all_session_entries, replay_core_agent_state};
 use async_trait::async_trait;
 use engine::{
-    CoreAgentAction, CoreAgentCommand, CoreAgentDrive, CoreAgentState, CoreAgentStatus, Promise,
-    PromiseId, PromiseResolution, PromiseScope, PromiseSource, SessionId,
+    BlobRef, CoreAgentAction, CoreAgentCommand, CoreAgentDrive, CoreAgentState, CoreAgentStatus,
+    Promise, PromiseId, PromiseResolution, PromiseScope, PromiseSource, SessionId,
     storage::{
-        AppendSessionEvents, ListSessions, SessionListCursor, SessionRecord, SessionStore,
-        SessionStoreError,
+        AppendSessionEvents, DeleteClosedSessions, ListSessions, SessionListCursor, SessionRecord,
+        SessionStore, SessionStoreError, engine_blob_refs,
     },
 };
+use store_pg::{CasObjectDeletion, CasSweepCandidate, CasSweepError, PgStore};
 use temporal_workflow::{AgentAdmission, AgentSessionWorkflow, compose_workflow_id};
 use temporalio_client::{
     Client, WorkflowDescribeOptions, WorkflowSignalOptions, errors::WorkflowInteractionError,
@@ -26,10 +31,382 @@ use temporalio_common::protos::temporal::api::enums::v1::WorkflowExecutionStatus
 use thiserror::Error;
 use uuid::Uuid;
 
-use crate::config::DeploymentStores;
+use crate::{
+    config::DeploymentStores,
+    session_deletion::{SessionDeletionCause, delete_session_subtree},
+};
 
 const DEFAULT_REAPER_INTERVAL: Duration = Duration::from_secs(5 * 60);
 const SESSION_PAGE_LIMIT: usize = 256;
+/// Blobs one sweep pass deletes per universe. A large backlog drains over
+/// passes instead of one transaction storm.
+const CAS_SWEEP_BATCH_LIMIT: usize = 1024;
+
+/// Periodic collector of content-addressed blobs nothing references.
+///
+/// A pass visits every universe once and deletes at most
+/// [`CAS_SWEEP_BATCH_LIMIT`] blobs there: those with no event root, no
+/// checkpoint, VFS, or bot holder, no incoming edge, not pinned, and
+/// untouched for longer than the grace. The store repeats every predicate in
+/// the delete statement, so anything that became live in between survives.
+/// Catalog rows go first and objects second; an object whose deletion fails
+/// is unreachable and merely leaks.
+#[derive(Clone)]
+pub struct CasBlobSweeper {
+    stores: DeploymentStores,
+    grace: Duration,
+    interval: Duration,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CasSweepStats {
+    pub universes_scanned: usize,
+    pub candidates: usize,
+    pub rows_deleted: usize,
+    pub bytes_freed: u64,
+    pub objects_deleted: usize,
+    pub object_errors: usize,
+    pub holder_conflicts: usize,
+    pub errors: usize,
+}
+
+impl CasSweepStats {
+    fn reportable(&self) -> bool {
+        self.candidates > 0 || self.holder_conflicts > 0 || self.errors > 0
+    }
+}
+
+impl CasBlobSweeper {
+    pub fn new(stores: DeploymentStores, grace: Duration) -> Self {
+        Self {
+            stores,
+            grace,
+            interval: DEFAULT_REAPER_INTERVAL,
+        }
+    }
+
+    pub fn grace(&self) -> Duration {
+        self.grace
+    }
+
+    pub async fn run_forever(self) {
+        loop {
+            match self.run_once(false).await {
+                Ok(stats) if stats.reportable() => tracing::info!(
+                    target: "temporal_server",
+                    universes_scanned = stats.universes_scanned,
+                    candidates = stats.candidates,
+                    rows_deleted = stats.rows_deleted,
+                    bytes_freed = stats.bytes_freed,
+                    objects_deleted = stats.objects_deleted,
+                    object_errors = stats.object_errors,
+                    holder_conflicts = stats.holder_conflicts,
+                    errors = stats.errors,
+                    "cas blob sweep pass complete"
+                ),
+                Ok(_) => {}
+                Err(error) => tracing::warn!(
+                    target: "temporal_server",
+                    %error,
+                    "cas blob sweep pass failed"
+                ),
+            }
+            tokio::time::sleep(self.interval).await;
+        }
+    }
+
+    /// One pass over every universe. A dry run reports the candidates and
+    /// bytes a real pass would delete right now and deletes nothing.
+    pub async fn run_once(&self, dry_run: bool) -> anyhow::Result<CasSweepStats> {
+        let universes = store_pg::list_universes(self.stores.pool()).await?;
+        let cutoff_ms = now_ms().saturating_sub(duration_ms(self.grace));
+        let pinned = engine_blob_refs();
+        let mut stats = CasSweepStats::default();
+        for (universe_id, _) in universes {
+            let store = self.stores.store_for(universe_id);
+            sweep_universe_once(
+                universe_id,
+                store.as_ref(),
+                cutoff_ms,
+                &pinned,
+                CAS_SWEEP_BATCH_LIMIT,
+                dry_run,
+                &mut stats,
+            )
+            .await;
+        }
+        Ok(stats)
+    }
+}
+
+fn duration_ms(duration: Duration) -> u64 {
+    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+}
+
+/// The store operations one sweep pass needs, so the pass logic is testable
+/// against an in-memory double. The Postgres store is the only production
+/// implementation.
+#[async_trait]
+pub(super) trait CasSweepStore: Send + Sync {
+    async fn list_sweep_candidates(
+        &self,
+        cutoff_ms: u64,
+        pinned: &[BlobRef],
+        limit: usize,
+    ) -> Result<Vec<CasSweepCandidate>, CasSweepError>;
+
+    async fn delete_dead_blobs(
+        &self,
+        candidates: &[BlobRef],
+        cutoff_ms: u64,
+        pinned: &[BlobRef],
+    ) -> Result<Vec<CasSweepCandidate>, CasSweepError>;
+
+    async fn delete_blob_objects(&self, keys: &[String]) -> CasObjectDeletion;
+}
+
+#[async_trait]
+impl CasSweepStore for PgStore {
+    async fn list_sweep_candidates(
+        &self,
+        cutoff_ms: u64,
+        pinned: &[BlobRef],
+        limit: usize,
+    ) -> Result<Vec<CasSweepCandidate>, CasSweepError> {
+        PgStore::list_sweep_candidates(self, cutoff_ms, pinned, limit).await
+    }
+
+    async fn delete_dead_blobs(
+        &self,
+        candidates: &[BlobRef],
+        cutoff_ms: u64,
+        pinned: &[BlobRef],
+    ) -> Result<Vec<CasSweepCandidate>, CasSweepError> {
+        PgStore::delete_dead_blobs(self, candidates, cutoff_ms, pinned).await
+    }
+
+    async fn delete_blob_objects(&self, keys: &[String]) -> CasObjectDeletion {
+        PgStore::delete_blob_objects(self, keys).await
+    }
+}
+
+pub(super) async fn sweep_universe_once(
+    universe_id: Uuid,
+    store: &dyn CasSweepStore,
+    cutoff_ms: u64,
+    pinned: &[BlobRef],
+    limit: usize,
+    dry_run: bool,
+    stats: &mut CasSweepStats,
+) {
+    stats.universes_scanned += 1;
+    let candidates = match store.list_sweep_candidates(cutoff_ms, pinned, limit).await {
+        Ok(candidates) => candidates,
+        Err(error) => {
+            stats.errors += 1;
+            tracing::warn!(
+                target: "temporal_server",
+                %universe_id,
+                %error,
+                "could not list cas sweep candidates"
+            );
+            return;
+        }
+    };
+    stats.candidates += candidates.len();
+    if dry_run {
+        stats.bytes_freed += candidates
+            .iter()
+            .map(|candidate| candidate.byte_len)
+            .sum::<u64>();
+        return;
+    }
+    if candidates.is_empty() {
+        return;
+    }
+    let candidate_refs = candidates
+        .iter()
+        .map(|candidate| candidate.blob_ref.clone())
+        .collect::<Vec<_>>();
+    let deleted = match store
+        .delete_dead_blobs(&candidate_refs, cutoff_ms, pinned)
+        .await
+    {
+        Ok(deleted) => deleted,
+        Err(CasSweepError::HolderConflict {
+            constraint,
+            message,
+        }) => {
+            // A holder table the liveness predicate does not cover: report
+            // it and leave the universe alone this pass; never retry in a
+            // loop.
+            stats.holder_conflicts += 1;
+            tracing::error!(
+                target: "temporal_server",
+                %universe_id,
+                constraint,
+                message,
+                "cas sweep skipped a universe: blob deletion hit an uncovered holder"
+            );
+            return;
+        }
+        Err(error) => {
+            stats.errors += 1;
+            tracing::warn!(
+                target: "temporal_server",
+                %universe_id,
+                %error,
+                "could not delete dead cas blobs"
+            );
+            return;
+        }
+    };
+    stats.rows_deleted += deleted.len();
+    stats.bytes_freed += deleted
+        .iter()
+        .map(|candidate| candidate.byte_len)
+        .sum::<u64>();
+    let object_keys = deleted
+        .into_iter()
+        .filter_map(|candidate| candidate.object_key)
+        .collect::<Vec<_>>();
+    if object_keys.is_empty() {
+        return;
+    }
+    let objects = store.delete_blob_objects(&object_keys).await;
+    stats.objects_deleted += objects.deleted;
+    stats.object_errors += objects.failures.len();
+    for (key, error) in objects.failures {
+        tracing::warn!(
+            target: "temporal_server",
+            %universe_id,
+            key,
+            error,
+            "could not delete swept blob object; the object is unreachable and leaks"
+        );
+    }
+}
+
+#[derive(Clone)]
+pub struct SessionRetentionReaper {
+    stores: DeploymentStores,
+    interval: Duration,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SessionRetentionReaperStats {
+    pub universes_scanned: usize,
+    pub due_roots_scanned: usize,
+    pub roots_deleted: usize,
+    pub sessions_deleted: usize,
+    pub open_tree_skips: usize,
+    pub conflicts: usize,
+    pub errors: usize,
+}
+
+impl SessionRetentionReaperStats {
+    fn reportable(&self) -> bool {
+        self.due_roots_scanned > 0 || self.errors > 0
+    }
+}
+
+impl SessionRetentionReaper {
+    pub fn new(stores: DeploymentStores) -> Self {
+        Self {
+            stores,
+            interval: DEFAULT_REAPER_INTERVAL,
+        }
+    }
+
+    pub async fn run_forever(self) {
+        loop {
+            match self.run_once().await {
+                Ok(stats) if stats.reportable() => tracing::info!(
+                    target: "temporal_server",
+                    universes_scanned = stats.universes_scanned,
+                    due_roots_scanned = stats.due_roots_scanned,
+                    roots_deleted = stats.roots_deleted,
+                    sessions_deleted = stats.sessions_deleted,
+                    open_tree_skips = stats.open_tree_skips,
+                    conflicts = stats.conflicts,
+                    errors = stats.errors,
+                    "session retention reaper pass complete"
+                ),
+                Ok(_) => {}
+                Err(error) => tracing::warn!(
+                    target: "temporal_server",
+                    %error,
+                    "session retention reaper pass failed"
+                ),
+            }
+            tokio::time::sleep(self.interval).await;
+        }
+    }
+
+    pub async fn run_once(&self) -> anyhow::Result<SessionRetentionReaperStats> {
+        let universes = store_pg::list_universes(self.stores.pool()).await?;
+        let mut stats = SessionRetentionReaperStats::default();
+        let now_ms = now_ms();
+        for (universe_id, _) in universes {
+            stats.universes_scanned += 1;
+            let store = self.stores.store_for(universe_id);
+            let due = match store
+                .list_retention_roots_due_for_deletion(now_ms, SESSION_PAGE_LIMIT)
+                .await
+            {
+                Ok(due) => due,
+                Err(error) => {
+                    stats.errors += 1;
+                    tracing::warn!(
+                        target: "temporal_server",
+                        %universe_id,
+                        %error,
+                        "could not list due session-retention roots"
+                    );
+                    continue;
+                }
+            };
+            stats.due_roots_scanned += due.len();
+            for root in due {
+                let result = delete_session_subtree(
+                    store.as_ref(),
+                    DeleteClosedSessions {
+                        session_id: root.session_id.clone(),
+                        cascade: true,
+                        due_at_or_before_ms: Some(now_ms),
+                    },
+                    SessionDeletionCause::Retention,
+                )
+                .await;
+                match result {
+                    Ok(deleted) => {
+                        stats.roots_deleted += 1;
+                        stats.sessions_deleted += deleted.deleted_session_ids.len();
+                    }
+                    Err(SessionStoreError::SessionTreeNotClosed { .. })
+                    | Err(SessionStoreError::SessionNotClosed { .. }) => {
+                        stats.open_tree_skips += 1;
+                    }
+                    Err(SessionStoreError::SessionRetentionNotDue { .. })
+                    | Err(SessionStoreError::SessionNotFound { .. }) => {
+                        stats.conflicts += 1;
+                    }
+                    Err(error) => {
+                        stats.errors += 1;
+                        tracing::warn!(
+                            target: "temporal_server",
+                            %universe_id,
+                            session_id = %root.session_id,
+                            %error,
+                            "could not delete due session-retention tree"
+                        );
+                    }
+                }
+            }
+        }
+        Ok(stats)
+    }
+}
 
 #[derive(Clone)]
 pub struct PromiseReaper {
@@ -485,6 +862,7 @@ async fn load_session_snapshots(
     loop {
         let page = sessions
             .list_sessions(ListSessions {
+                metadata: Default::default(),
                 cursor,
                 limit: SESSION_PAGE_LIMIT,
                 root_session_id: None,
@@ -600,7 +978,10 @@ mod tests {
     use std::collections::BTreeSet;
     use std::sync::Mutex;
 
-    use engine::{ActiveRun, ModelSelection, ProviderApiKind, RunId, RunSource, RunStatus};
+    use engine::{
+        ActiveRun, ModelSelection, ProviderApiKind, RunId, RunSource, RunStatus,
+        storage::{BlobGraphStore as _, BlobStore as _},
+    };
     use temporal_workflow::{DEFAULT_MODEL, default_run_config, default_session_config};
 
     use super::*;
@@ -718,6 +1099,301 @@ mod tests {
         }
     }
 
+    /// Sweep double over the in-memory blob store: `live` refs stand in for
+    /// every holder kind, recorded edges protect children exactly like the
+    /// catalog's incoming-edge check, and the object-backed set plus failure
+    /// list drive the object phase.
+    #[derive(Default)]
+    struct FakeSweepStore {
+        blobs: engine::storage::InMemoryBlobStore,
+        live: Mutex<BTreeSet<BlobRef>>,
+        object_backed: BTreeSet<BlobRef>,
+        failing_objects: BTreeSet<String>,
+        holder_conflict: bool,
+        deleted_objects: Mutex<Vec<String>>,
+    }
+
+    impl FakeSweepStore {
+        fn dead_candidates(
+            &self,
+            cutoff_ms: u64,
+            pinned: &[BlobRef],
+            only: Option<&[BlobRef]>,
+        ) -> Vec<CasSweepCandidate> {
+            let live = self.live.lock().expect("live lock");
+            let children: BTreeSet<BlobRef> = self
+                .blobs
+                .edges()
+                .into_iter()
+                .map(|edge| edge.child)
+                .collect();
+            self.blobs
+                .blobs_touched_before(cutoff_ms)
+                .into_iter()
+                .filter(|info| !pinned.contains(&info.blob_ref))
+                .filter(|info| !live.contains(&info.blob_ref))
+                .filter(|info| !children.contains(&info.blob_ref))
+                .filter(|info| only.is_none_or(|only| only.contains(&info.blob_ref)))
+                .map(|info| CasSweepCandidate {
+                    object_key: self
+                        .object_backed
+                        .contains(&info.blob_ref)
+                        .then(|| format!("objects/{}", info.blob_ref)),
+                    blob_ref: info.blob_ref,
+                    byte_len: info.byte_len,
+                })
+                .collect()
+        }
+    }
+
+    #[async_trait]
+    impl CasSweepStore for FakeSweepStore {
+        async fn list_sweep_candidates(
+            &self,
+            cutoff_ms: u64,
+            pinned: &[BlobRef],
+            limit: usize,
+        ) -> Result<Vec<CasSweepCandidate>, CasSweepError> {
+            let mut candidates = self.dead_candidates(cutoff_ms, pinned, None);
+            candidates.truncate(limit);
+            Ok(candidates)
+        }
+
+        async fn delete_dead_blobs(
+            &self,
+            candidates: &[BlobRef],
+            cutoff_ms: u64,
+            pinned: &[BlobRef],
+        ) -> Result<Vec<CasSweepCandidate>, CasSweepError> {
+            if self.holder_conflict {
+                return Err(CasSweepError::HolderConflict {
+                    constraint: "future_holder_digest_fkey".to_owned(),
+                    message: "violates foreign key".to_owned(),
+                });
+            }
+            let deleted = self.dead_candidates(cutoff_ms, pinned, Some(candidates));
+            let refs = deleted
+                .iter()
+                .map(|candidate| candidate.blob_ref.clone())
+                .collect::<Vec<_>>();
+            self.blobs.delete_blobs(&refs);
+            Ok(deleted)
+        }
+
+        async fn delete_blob_objects(&self, keys: &[String]) -> CasObjectDeletion {
+            let mut outcome = CasObjectDeletion::default();
+            for key in keys {
+                if self.failing_objects.contains(key) {
+                    outcome
+                        .failures
+                        .push((key.clone(), "service unavailable".to_owned()));
+                } else {
+                    outcome.deleted += 1;
+                    self.deleted_objects
+                        .lock()
+                        .expect("objects lock")
+                        .push(key.clone());
+                }
+            }
+            outcome
+        }
+    }
+
+    async fn aged_blob(store: &FakeSweepStore, content: &[u8]) -> BlobRef {
+        store.blobs.put_bytes(content.to_vec()).await.expect("put")
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn cas_sweep_deletes_only_dead_aged_blobs_and_drains_children_over_passes() {
+        let now = Arc::new(std::sync::atomic::AtomicU64::new(1_000));
+        let clock_now = now.clone();
+        let mut store = FakeSweepStore {
+            blobs: engine::storage::InMemoryBlobStore::with_clock(Arc::new(move || {
+                clock_now.load(std::sync::atomic::Ordering::SeqCst)
+            })),
+            ..FakeSweepStore::default()
+        };
+        let dead = aged_blob(&store, b"dead payload").await;
+        let dead_object = aged_blob(&store, b"dead object payload").await;
+        let live = aged_blob(&store, b"held by a session").await;
+        let parent = aged_blob(&store, b"manifest").await;
+        let child = aged_blob(&store, b"file inside the manifest").await;
+        let pinned = engine_blob_refs();
+        for content in engine::storage::ENGINE_BLOB_CONTENTS {
+            aged_blob(&store, content.as_bytes()).await;
+        }
+        store
+            .blobs
+            .record_blob_edges(vec![engine::storage::BlobEdge::contains(
+                parent.clone(),
+                child.clone(),
+            )])
+            .await
+            .expect("edge");
+        store.live.lock().expect("live lock").insert(live.clone());
+        store.object_backed.insert(dead_object.clone());
+        // Touched inside the grace: not a candidate however unreferenced.
+        now.store(5_000, std::sync::atomic::Ordering::SeqCst);
+        let fresh = aged_blob(&store, b"fresh upload").await;
+        let cutoff_ms = 2_000;
+        let universe_id = Uuid::new_v4();
+
+        let mut dry = CasSweepStats::default();
+        sweep_universe_once(
+            universe_id,
+            &store,
+            cutoff_ms,
+            &pinned,
+            1024,
+            true,
+            &mut dry,
+        )
+        .await;
+        assert_eq!(dry.candidates, 3, "dead, dead object, and the parent");
+        assert_eq!(dry.rows_deleted, 0);
+        assert_eq!(
+            dry.bytes_freed,
+            (b"dead payload".len() + b"dead object payload".len() + b"manifest".len()) as u64
+        );
+        assert!(
+            store.blobs.has_blob(&dead).await.expect("has"),
+            "dry run deletes nothing"
+        );
+
+        let mut first = CasSweepStats::default();
+        sweep_universe_once(
+            universe_id,
+            &store,
+            cutoff_ms,
+            &pinned,
+            1024,
+            false,
+            &mut first,
+        )
+        .await;
+        assert_eq!(first.candidates, 3);
+        assert_eq!(first.rows_deleted, 3);
+        assert_eq!(
+            first.bytes_freed, dry.bytes_freed,
+            "dry run and real pass agree"
+        );
+        assert_eq!(first.objects_deleted, 1);
+        assert_eq!(
+            store
+                .deleted_objects
+                .lock()
+                .expect("objects lock")
+                .as_slice(),
+            &[format!("objects/{dead_object}")]
+        );
+        assert!(!store.blobs.has_blob(&dead).await.expect("has"));
+        assert!(!store.blobs.has_blob(&parent).await.expect("has"));
+        assert!(store.blobs.has_blob(&live).await.expect("has"));
+        assert!(store.blobs.has_blob(&fresh).await.expect("has"));
+        assert!(
+            store.blobs.has_blob(&child).await.expect("has"),
+            "a child survives the pass that deletes its parent"
+        );
+        for pinned_ref in &pinned {
+            assert!(store.blobs.has_blob(pinned_ref).await.expect("has"));
+        }
+
+        let mut second = CasSweepStats::default();
+        sweep_universe_once(
+            universe_id,
+            &store,
+            cutoff_ms,
+            &pinned,
+            1024,
+            false,
+            &mut second,
+        )
+        .await;
+        assert_eq!(second.rows_deleted, 1, "the exposed child drains next");
+        assert!(!store.blobs.has_blob(&child).await.expect("has"));
+
+        let mut third = CasSweepStats::default();
+        sweep_universe_once(
+            universe_id,
+            &store,
+            cutoff_ms,
+            &pinned,
+            1024,
+            false,
+            &mut third,
+        )
+        .await;
+        assert_eq!(third.candidates, 0, "a repeated sweep is a no-op");
+        assert!(!third.reportable());
+
+        store.live.lock().expect("live lock").clear();
+        let mut released = CasSweepStats::default();
+        sweep_universe_once(
+            universe_id,
+            &store,
+            cutoff_ms,
+            &pinned,
+            1024,
+            false,
+            &mut released,
+        )
+        .await;
+        assert_eq!(
+            released.rows_deleted, 1,
+            "a blob whose last holder went is collected"
+        );
+        assert!(!store.blobs.has_blob(&live).await.expect("has"));
+        store.holder_conflict = false;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn cas_sweep_counts_holder_conflicts_and_object_failures_without_failing_the_pass() {
+        let store = FakeSweepStore {
+            blobs: engine::storage::InMemoryBlobStore::with_clock(Arc::new(|| 10)),
+            holder_conflict: true,
+            ..FakeSweepStore::default()
+        };
+        aged_blob(&store, b"would be deleted").await;
+        let mut stats = CasSweepStats::default();
+        sweep_universe_once(Uuid::new_v4(), &store, 100, &[], 1024, false, &mut stats).await;
+        assert_eq!(stats.candidates, 1);
+        assert_eq!(stats.holder_conflicts, 1);
+        assert_eq!(stats.rows_deleted, 0);
+        assert!(stats.reportable());
+
+        let mut store = FakeSweepStore {
+            blobs: engine::storage::InMemoryBlobStore::with_clock(Arc::new(|| 10)),
+            ..FakeSweepStore::default()
+        };
+        let failing = aged_blob(&store, b"object whose delete fails").await;
+        let fine = aged_blob(&store, b"object whose delete works").await;
+        store.object_backed.insert(failing.clone());
+        store.object_backed.insert(fine);
+        store.failing_objects.insert(format!("objects/{failing}"));
+        let mut stats = CasSweepStats::default();
+        sweep_universe_once(Uuid::new_v4(), &store, 100, &[], 1024, false, &mut stats).await;
+        assert_eq!(stats.rows_deleted, 2, "rows go before objects");
+        assert_eq!(stats.objects_deleted, 1);
+        assert_eq!(stats.object_errors, 1);
+        assert_eq!(stats.errors, 0);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn cas_sweep_respects_the_batch_limit() {
+        let store = FakeSweepStore {
+            blobs: engine::storage::InMemoryBlobStore::with_clock(Arc::new(|| 10)),
+            ..FakeSweepStore::default()
+        };
+        for index in 0..5u8 {
+            aged_blob(&store, &[index]).await;
+        }
+        let mut stats = CasSweepStats::default();
+        sweep_universe_once(Uuid::new_v4(), &store, 100, &[], 2, false, &mut stats).await;
+        assert_eq!(stats.candidates, 2);
+        assert_eq!(stats.rows_deleted, 2);
+        assert_eq!(store.blobs.blob_refs().len(), 3);
+    }
+
     fn snapshots(
         states: impl IntoIterator<Item = (SessionId, CoreAgentState)>,
     ) -> BTreeMap<SessionId, LoadedSessionSnapshot> {
@@ -728,10 +1404,15 @@ mod tests {
                     session_id.clone(),
                     LoadedSessionSnapshot {
                         record: SessionRecord {
-                            session_id,
+                            metadata: Default::default(),
+                            session_id: session_id.clone(),
                             display_name: None,
                             lifecycle_status: engine::storage::SessionLifecycleStatus::New,
                             closed_at_seq: None,
+                            closed_at_ms: None,
+                            retention_root_session_id: session_id,
+                            delete_after_close_ms: None,
+                            delete_at_ms: None,
                             managed: false,
                             head: None,
                             source_session_id: None,
