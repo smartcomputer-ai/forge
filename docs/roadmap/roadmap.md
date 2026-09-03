@@ -1,13 +1,26 @@
 # Lightspeed Roadmap
 
 ## Work
-- [ ] [P153](p153-session-labels.md) — session labels and retention: bounded
-  string labels set at start or later, `session/list` filtering, bulk close
-  and delete by filter, usage roll-up per label, chips plus filters in the
-  Platform sessions page, and a retention period after which closed
-  sessions are collected (universe default, per-label rules, pinning).
-  Motivated by evaluation jobs that create hundreds of sessions per
-  universe. Also notes a short TTL cache for `models/list`.
+- [ ] [P155](p155-models-list-cache.md) — `models/list` discovery cache:
+  a per-universe, per-provider result cache with a 10 to 30 second TTL and
+  a shorter negative TTL, so an evaluation job starting a dozen trials at
+  once issues one upstream catalog request instead of twelve.
+- [ ] [P154](p154-session-retention.md) — session retention: a nullable
+  universe default `closedSessionRetentionMs`, a per-session `keep` flag,
+  `closedAtMs` and derived `expiresAtMs` on views, and a worker-role reaper
+  pass that deletes expired closed sessions through the `session/delete`
+  path. Settles the vocabulary (TTL from creation, idle policy from
+  activity, retention from close) and records that the bot routed-session
+  "TTL" runs from creation instead of idle, with the fix and a rename to
+  `closeAfterMs`.
+- [ ] [P153](p153-session-metadata.md) — session metadata: the bounded
+  string map registered environments already carry, set at `session/start`
+  and replaced with `session/metadata/put`, a containment filter on
+  `session/list` and `environments/list`, chips and a filter bar with a
+  selection model in the Platform sessions page, and the Harbor adapter and
+  bots stamping the same keys on sessions and environments. No patch, no
+  bulk endpoints, no usage roll-up. Motivated by evaluation jobs that create
+  hundreds of sessions per universe.
 - [ ] [P152](p152-envd-release-and-distribution.md) — envd release and
   distribution: install the rustls provider at startup (the workspace
   release binary panics on its first TLS connection), publish static musl
