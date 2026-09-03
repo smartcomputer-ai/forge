@@ -161,6 +161,14 @@ impl OutputBuffer {
         let mut head_bytes = 0usize;
         let mut head_len = 0usize;
         for retained in &self.chunks {
+            // The head never grows past an omission: the chunk that follows
+            // dropped bytes stays the boundary, so every later drop extends
+            // the same gap instead of opening a second one. Pipe reads on
+            // Linux deliver uneven chunks, where a small survivor would
+            // otherwise be absorbed into the head.
+            if retained.omitted_before > 0 {
+                break;
+            }
             let len = retained.chunk.chunk.as_slice().len();
             if head_bytes + len > head_cap {
                 break;
@@ -1625,6 +1633,43 @@ mod tests {
             .expect("second read");
         assert!(again.chunks.is_empty());
         assert_eq!(again.omitted_bytes, 0, "the omission is reported once");
+    }
+
+    #[test]
+    fn cap_keeps_one_contiguous_gap_when_chunk_sizes_are_uneven() {
+        // 16 KiB test cap, 8 KiB head. Seven 1000-byte chunks fill the head;
+        // the 1500-byte chunk after them is the first to be dropped, which
+        // leaves a 500-byte survivor right behind the head. A head recomputed
+        // purely by bytes would absorb that survivor on the next drop and
+        // open a second gap behind it.
+        let mut buffer = OutputBuffer::default();
+        let mut push = |len: usize| buffer.push(ProcessOutputStream::Stdout, vec![b'x'; len]);
+        for _ in 0..7 {
+            push(1000);
+        }
+        push(1500);
+        push(500);
+        for _ in 0..5 {
+            push(1500);
+        }
+        push(1500);
+        let total = 7 * 1000 + 1500 + 500 + 5 * 1500 + 1500;
+
+        let (chunks, omitted) = buffer.deliver(None);
+
+        let delivered: usize = chunks
+            .iter()
+            .map(|chunk| chunk.chunk.as_slice().len())
+            .sum();
+        assert!(delivered <= RETAINED_OUTPUT_CAP, "{delivered}");
+        assert!(omitted > 0);
+        assert_eq!(delivered as u64 + omitted, total as u64);
+        let gaps = chunks
+            .windows(2)
+            .filter(|pair| pair[1].seq != pair[0].seq + 1)
+            .count();
+        assert_eq!(gaps, 1, "one contiguous gap after the head");
+        assert_eq!(chunks[6].seq, 6, "the whole head survives");
     }
 
     #[tokio::test(flavor = "current_thread")]

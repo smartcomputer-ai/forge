@@ -180,10 +180,14 @@ pub async fn install(request: UpgradeRequest) -> Result<InstalledBuild> {
         .as_file_mut()
         .sync_all()
         .context("sync candidate envd executable")?;
+    // Close the write handle before executing the candidate: Linux refuses
+    // to run a file that is still open for writing (ETXTBSY). The path stays
+    // reserved and is removed on every failure path.
+    let candidate = candidate.into_temp_path();
 
-    let build = inspect_candidate(candidate.path()).await?;
+    let build = inspect_candidate(&candidate).await?;
     verify_candidate(&build, &discovery, &request.target)?;
-    let installed_file = candidate.persist(&request.install_path).map_err(|error| {
+    candidate.persist(&request.install_path).map_err(|error| {
         anyhow!(
             "replace {} atomically: {}\n{}",
             request.install_path.display(),
@@ -195,8 +199,8 @@ pub async fn install(request: UpgradeRequest) -> Result<InstalledBuild> {
             )
         )
     })?;
-    installed_file
-        .sync_all()
+    std::fs::File::open(&request.install_path)
+        .and_then(|installed| installed.sync_all())
         .context("sync installed envd executable")?;
 
     Ok(InstalledBuild {
