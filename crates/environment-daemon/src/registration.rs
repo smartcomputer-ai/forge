@@ -106,7 +106,7 @@ async fn control_session(
         .as_str()
         .into_client_request()
         .context("gateway URL")?;
-    let (socket, _) = connect_async_tls_with_config(request, None, false, tls.connector())
+    let (socket, _) = connect_async_tls_with_config(request, None, false, Some(tls.connector()))
         .await
         .map_err(|error| describe_connect_error(&registration.gateway_url, error))?;
     let (mut writer, mut reader) = socket.split();
@@ -305,7 +305,7 @@ async fn serve_data_connection(
         AUTHORIZATION,
         HeaderValue::from_str(&format!("Bearer {}", token.expose())).context("token header")?,
     );
-    let (socket, _) = connect_async_tls_with_config(request, None, false, tls.connector())
+    let (socket, _) = connect_async_tls_with_config(request, None, false, Some(tls.connector()))
         .await
         .context("connect data route")?;
     run_data_connection(&runtime, socket).await
@@ -313,32 +313,36 @@ async fn serve_data_connection(
 
 /// TLS trust for the gateway: the bundled WebPKI roots, plus an operator
 /// supplied PEM bundle for gateways behind a private CA.
+///
+/// The client config always names its crypto provider. A workspace build
+/// links two rustls providers, so a config that relied on the process
+/// default would panic on the first dial; the daemon never hands the
+/// WebSocket client a `None` connector that would build such a config.
 #[derive(Clone)]
 struct TlsSettings {
-    connector: Option<Arc<rustls::ClientConfig>>,
+    config: Arc<rustls::ClientConfig>,
 }
 
 impl TlsSettings {
     fn from_config(ca_file: Option<&Path>) -> Result<Self> {
-        let Some(ca_file) = ca_file else {
-            return Ok(Self { connector: None });
-        };
         use rustls_pki_types::{CertificateDer, pem::PemObject as _};
         let mut roots = rustls::RootCertStore::empty();
         roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-        let mut added = 0usize;
-        for certificate in CertificateDer::pem_file_iter(ca_file)
-            .with_context(|| format!("read CA file {}", ca_file.display()))?
-        {
-            let certificate =
-                certificate.with_context(|| format!("parse CA file {}", ca_file.display()))?;
-            roots
-                .add(certificate)
-                .with_context(|| format!("add trust anchor from {}", ca_file.display()))?;
-            added += 1;
-        }
-        if added == 0 {
-            bail!("CA file {} holds no certificates", ca_file.display());
+        if let Some(ca_file) = ca_file {
+            let mut added = 0usize;
+            for certificate in CertificateDer::pem_file_iter(ca_file)
+                .with_context(|| format!("read CA file {}", ca_file.display()))?
+            {
+                let certificate =
+                    certificate.with_context(|| format!("parse CA file {}", ca_file.display()))?;
+                roots
+                    .add(certificate)
+                    .with_context(|| format!("add trust anchor from {}", ca_file.display()))?;
+                added += 1;
+            }
+            if added == 0 {
+                bail!("CA file {} holds no certificates", ca_file.display());
+            }
         }
         let config = rustls::ClientConfig::builder_with_provider(Arc::new(
             rustls::crypto::aws_lc_rs::default_provider(),
@@ -348,14 +352,12 @@ impl TlsSettings {
         .with_root_certificates(roots)
         .with_no_client_auth();
         Ok(Self {
-            connector: Some(Arc::new(config)),
+            config: Arc::new(config),
         })
     }
 
-    fn connector(&self) -> Option<Connector> {
-        self.connector
-            .as_ref()
-            .map(|config| Connector::Rustls(config.clone()))
+    fn connector(&self) -> Connector {
+        Connector::Rustls(self.config.clone())
     }
 }
 
@@ -402,6 +404,20 @@ mod tests {
         ));
     }
 
+    /// A self-signed EC certificate, valid 2026-2036, used only as PEM input.
+    const TEST_CA_PEM: &str = "-----BEGIN CERTIFICATE-----
+MIIBmTCCAT+gAwIBAgIUGlIKCYXc2/JUu1OUJBgh5a7gJ4cwCgYIKoZIzj0EAwIw
+IjEgMB4GA1UEAwwXbGlnaHRzcGVlZC1lbnZkLXRlc3QtY2EwHhcNMjYwOTAzMTA1
+MjUwWhcNMzYwODMxMTA1MjUwWjAiMSAwHgYDVQQDDBdsaWdodHNwZWVkLWVudmQt
+dGVzdC1jYTBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IABHdyQgLSBwg3QZhQHj3S
+AnnUyqMnO2ZIP80Q4un3Fns7yFLOhs6YD5qu8hVSutuxSAbCAlM3Uxujy83VYJNe
+cxajUzBRMB0GA1UdDgQWBBRs3ltP/Ch8oC/RpiwqRAEBpGeuhzAfBgNVHSMEGDAW
+gBRs3ltP/Ch8oC/RpiwqRAEBpGeuhzAPBgNVHRMBAf8EBTADAQH/MAoGCCqGSM49
+BAMCA0gAMEUCICgTw9frlQLXbAvhAXlMwBH6gCkV3ypx4U93yaMHghBDAiEAi4tZ
+fIEYbSNa76Ox9es7E5q8U7/XDqkEOn/kC4eSA5Q=
+-----END CERTIFICATE-----
+";
+
     #[test]
     fn missing_ca_file_and_empty_bundle_fail_closed() {
         let temp = tempfile::tempdir().expect("tempdir");
@@ -409,11 +425,21 @@ mod tests {
         let empty = temp.path().join("empty.pem");
         std::fs::write(&empty, "").expect("write");
         assert!(TlsSettings::from_config(Some(&empty)).is_err());
-        assert!(
-            TlsSettings::from_config(None)
-                .expect("none")
-                .connector
-                .is_none()
-        );
+    }
+
+    /// Both trust configurations hand the WebSocket client an explicit
+    /// rustls connector. This is what keeps a workspace build, which links
+    /// two crypto providers, from reaching tungstenite's default connector
+    /// and panicking on the first dial.
+    #[test]
+    fn every_trust_configuration_carries_an_explicit_connector() {
+        let bundled = TlsSettings::from_config(None).expect("bundled roots");
+        assert!(matches!(bundled.connector(), Connector::Rustls(_)));
+
+        let temp = tempfile::tempdir().expect("tempdir");
+        let ca_file = temp.path().join("ca.pem");
+        std::fs::write(&ca_file, TEST_CA_PEM).expect("write");
+        let extended = TlsSettings::from_config(Some(&ca_file)).expect("operator roots");
+        assert!(matches!(extended.connector(), Connector::Rustls(_)));
     }
 }

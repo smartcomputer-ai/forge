@@ -169,12 +169,23 @@ impl EnvironmentCapabilities {
     }
 }
 
+/// What an endpoint says about its own build. Descriptive only: the protocol
+/// version decides compatibility, and nothing here selects, authenticates,
+/// or gates. The gateway records these facts on the environment row so a
+/// deployment can see which build serves each environment.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ImplementationInfo {
     pub name: String,
+    /// Release version of the build, for example `0.1.0`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
+    /// Full git commit the build was made from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git_sha: Option<String>,
+    /// Rust target triple the build runs on.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

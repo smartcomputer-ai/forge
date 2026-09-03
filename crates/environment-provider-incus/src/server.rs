@@ -179,7 +179,9 @@ async fn dispatch<B: IncusBackend>(app: &App<B>, text: &str) -> Value {
                     },
                     implementation: ImplementationInfo {
                         name: "lightspeed-provider-incus".to_owned(),
-                        version: Some(env!("CARGO_PKG_VERSION").to_owned()),
+                        version: Some(release_info::VERSION.to_owned()),
+                        git_sha: Some(release_info::GIT_SHA.to_owned()),
+                        target: Some(release_info::TARGET.to_owned()),
                     },
                 })
             })

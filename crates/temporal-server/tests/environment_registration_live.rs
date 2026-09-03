@@ -231,10 +231,26 @@ async fn scenario(
             .map(String::as_str),
         Some("trial-1")
     );
-    assert!(
+    assert_eq!(
         environment_a
             .metadata
-            .contains_key("lightspeed.envd.version")
+            .get("lightspeed.envd.version")
+            .map(String::as_str),
+        Some(release_info::VERSION)
+    );
+    assert_eq!(
+        environment_a
+            .metadata
+            .get("lightspeed.envd.gitSha")
+            .map(String::as_str),
+        Some(release_info::GIT_SHA)
+    );
+    assert_eq!(
+        environment_a
+            .metadata
+            .get("lightspeed.envd.protocolVersion")
+            .map(String::as_str),
+        Some(CURRENT_PROTOCOL_VERSION.to_string().as_str())
     );
     let receipt: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&receipt_a)?)?;
     assert_eq!(receipt["environmentId"], environment_a.environment_id);

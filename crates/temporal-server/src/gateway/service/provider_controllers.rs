@@ -193,6 +193,7 @@ impl ProviderController for FakeProviderController {
             implementation: ImplementationInfo {
                 name: "lightspeed-fake-environment-provider".to_owned(),
                 version: Some(env!("CARGO_PKG_VERSION").to_owned()),
+                ..Default::default()
             },
         })
     }

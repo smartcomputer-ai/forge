@@ -68,8 +68,18 @@ impl Default for ActivityClock {
     }
 }
 
+/// Pick the process-level rustls provider once. The daemon's own gateway
+/// dials name their provider explicitly; this covers `reqwest`, which does
+/// not. A workspace build links both `ring` and `aws-lc-rs`, and without a
+/// chosen default rustls panics on first use. Idempotent: a second install
+/// is refused and ignored.
+pub fn install_crypto_provider() {
+    let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+}
+
 impl DaemonRuntime {
     pub fn new(config: DaemonConfig) -> anyhow::Result<Self> {
+        install_crypto_provider();
         let capabilities = environment_capabilities(&config);
         let filesystem = LocalFileSystem::new(
             config.fs_root.clone(),
@@ -132,10 +142,7 @@ impl DaemonRuntime {
     }
 
     pub fn implementation(&self) -> ImplementationInfo {
-        ImplementationInfo {
-            name: "lightspeed-envd".to_owned(),
-            version: Some(env!("CARGO_PKG_VERSION").to_owned()),
-        }
+        build_info().into()
     }
 
     pub fn capabilities(&self) -> EnvironmentCapabilities {
@@ -186,6 +193,41 @@ fn environment_capabilities(config: &DaemonConfig) -> EnvironmentCapabilities {
 
 pub fn protocol_version() -> u32 {
     CURRENT_PROTOCOL_VERSION
+}
+
+/// The facts this binary reports about itself: to the gateway in every
+/// handshake, and to an operator through `--print-build`. The protocol
+/// version is the one that decides whether a gateway admits the daemon; the
+/// rest is provenance.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BuildInfo {
+    pub name: &'static str,
+    pub version: &'static str,
+    pub git_sha: &'static str,
+    pub target: &'static str,
+    pub protocol_version: u32,
+}
+
+pub fn build_info() -> BuildInfo {
+    BuildInfo {
+        name: "lightspeed-envd",
+        version: release_info::VERSION,
+        git_sha: release_info::GIT_SHA,
+        target: release_info::TARGET,
+        protocol_version: CURRENT_PROTOCOL_VERSION,
+    }
+}
+
+impl From<BuildInfo> for ImplementationInfo {
+    fn from(build: BuildInfo) -> Self {
+        ImplementationInfo {
+            name: build.name.to_owned(),
+            version: Some(build.version.to_owned()),
+            git_sha: Some(build.git_sha.to_owned()),
+            target: Some(build.target.to_owned()),
+        }
+    }
 }
 
 #[cfg(test)]

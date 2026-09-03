@@ -8,6 +8,7 @@ source release/metadata.env
 version="${LIGHTSPEED_RELEASE_VERSION:-$LIGHTSPEED_PRODUCT_VERSION}"
 git_sha="${LIGHTSPEED_GIT_SHA:-$(git rev-parse HEAD)}"
 target="${LIGHTSPEED_RELEASE_TARGET}"
+envd_target="${LIGHTSPEED_ENVD_TARGET}"
 dist_dir="$repo_root/dist"
 
 if [[ "$(rustc --version | awk '{print $2}')" != "$LIGHTSPEED_RELEASE_RUST_VERSION" ]]; then
@@ -21,13 +22,20 @@ mkdir -p "$dist_dir/bin" "$dist_dir/npm" "$dist_dir/contracts" \
 
 export LIGHTSPEED_RELEASE_VERSION="$version"
 export LIGHTSPEED_GIT_SHA="$git_sha"
+# The server reports which daemon targets this release publishes.
+export LIGHTSPEED_ENVD_TARGETS="$envd_target"
 cargo build --release --locked --target "$target" \
-  -p temporal-server -p environment-provider-incus -p environment-daemon -p cli
+  -p temporal-server -p environment-provider-incus -p cli
+# The environment daemon alone is a static musl binary, so it runs on any
+# Linux image whatever glibc that image carries.
+cargo build --release --locked --target "$envd_target" -p environment-daemon
 
-for binary in lightspeed-server lightspeed-provider-incus lightspeed-envd lightspeed; do
+for binary in lightspeed-server lightspeed-provider-incus lightspeed; do
   install -m 0755 "target/$target/release/$binary" "$dist_dir/bin/$binary"
   strip "$dist_dir/bin/$binary"
 done
+install -m 0755 "target/$envd_target/release/lightspeed-envd" "$dist_dir/bin/lightspeed-envd"
+strip "$dist_dir/bin/lightspeed-envd"
 
 cp crates/api/contract/api.schema.json crates/api/contract/methods.json \
   crates/api/contract/openrpc.json crates/api/contract/api-reference.md "$dist_dir/contracts/"
@@ -63,13 +71,12 @@ node scripts/release/stage-package.mjs configurator "$dist_dir/configurator-mcp"
 scripts/release/stage-runtimes.sh "$dist_dir"
 
 for spec in \
-  "lightspeed-server:server" \
-  "lightspeed-provider-incus:provider-incus" \
-  "lightspeed-envd:envd" \
-  "lightspeed:cli"; do
-  binary="${spec%%:*}"
-  asset="${spec##*:}"
-  archive="lightspeed-${asset}-${version}-${target}.tar.gz"
+  "lightspeed-server:server:$target" \
+  "lightspeed-provider-incus:provider-incus:$target" \
+  "lightspeed-envd:envd:$envd_target" \
+  "lightspeed:cli:$target"; do
+  IFS=: read -r binary asset archive_target <<<"$spec"
+  archive="lightspeed-${asset}-${version}-${archive_target}.tar.gz"
   tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner \
     -C "$dist_dir/bin" -czf "$dist_dir/archives/$archive" "$binary"
 done

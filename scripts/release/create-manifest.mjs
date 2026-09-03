@@ -54,14 +54,64 @@ if (typeof rustVersion !== "string" || rustVersion.length === 0) {
   throw new Error("release manifest must identify the Rust toolchain used by the build environment");
 }
 
+// The environment daemon's discovery document. A deployment serves it at a
+// well-known path, next to the archives it names, so an orchestrator can pick
+// the daemon that matches a gateway without credentials or a checkout. The
+// protocol version is the number that decides admission; the rest is
+// provenance. `url` is a plain HTTPS download when one exists, which today is
+// only a tagged release's GitHub asset; a snapshot bundle carries null and the
+// serving deployment fills it in.
+const envdTarget = metadata.LIGHTSPEED_ENVD_TARGET;
+const environmentProtocolVersion = Number(metadata.LIGHTSPEED_ENVIRONMENT_PROTOCOL_VERSION);
+if (!envdTarget || !Number.isInteger(environmentProtocolVersion) || environmentProtocolVersion < 1) {
+  throw new Error("release metadata must name the envd target and the environment protocol version");
+}
+const channel = process.env.LIGHTSPEED_RELEASE_CHANNEL ?? "main";
+if (!["release", "main"].includes(channel)) {
+  throw new Error("LIGHTSPEED_RELEASE_CHANNEL must be release or main");
+}
+const publicUrlBase = process.env.LIGHTSPEED_ENVD_PUBLIC_URL_BASE || null;
+if (publicUrlBase !== null && !/^https:\/\/\S+[^/]$/.test(publicUrlBase)) {
+  throw new Error("LIGHTSPEED_ENVD_PUBLIC_URL_BASE must be an https URL without a trailing slash");
+}
+const builtAtMs = process.env.SOURCE_DATE_EPOCH
+  ? Number(process.env.SOURCE_DATE_EPOCH) * 1000
+  : Date.now();
+const envdPrefix = `lightspeed-envd-${version}-`;
+const envdArtifacts = Object.fromEntries(
+  fs.readdirSync("dist/archives")
+    .filter((entry) => entry.startsWith(envdPrefix) && entry.endsWith(".tar.gz"))
+    .sort()
+    .map((file) => [
+      file.slice(envdPrefix.length, -".tar.gz".length),
+      {
+        file,
+        sha256: sha256(path.join("dist/archives", file)),
+        url: publicUrlBase ? `${publicUrlBase}/${file}` : null,
+      },
+    ]),
+);
+if (!envdArtifacts[envdTarget]) throw new Error(`missing envd archive for ${envdTarget}`);
+const discovery = {
+  version,
+  gitSha,
+  channel,
+  protocolVersion: environmentProtocolVersion,
+  builtAtMs,
+  artifacts: envdArtifacts,
+};
+fs.writeFileSync("dist/envd.json", `${JSON.stringify(discovery, null, 2)}\n`);
+
 const manifest = {
   manifestVersion: 1,
   version,
   gitSha,
   rustVersion,
   target: metadata.LIGHTSPEED_RELEASE_TARGET,
+  envdTarget,
   buildImage,
   protocolVersion: metadata.LIGHTSPEED_API_PROTOCOL_VERSION,
+  environmentProtocolVersion,
   contractRevision: `sha256:${contractHash.digest("hex")}`,
   schemaRevision: Number(metadata.LIGHTSPEED_SCHEMA_REVISION),
   platformSchemaRevision: Number(metadata.LIGHTSPEED_PLATFORM_SCHEMA_REVISION),

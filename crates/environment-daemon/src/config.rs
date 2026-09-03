@@ -69,6 +69,13 @@ pub struct DaemonArgs {
 
     #[arg(long, default_value_t = false)]
     pub read_only_fs: bool,
+
+    /// Print this binary's build facts as one JSON object and exit: name,
+    /// version, git sha, target, and the environment protocol version it
+    /// speaks. For orchestrators checking a downloaded daemon against a
+    /// deployment's discovery document.
+    #[arg(long, default_value_t = false)]
+    pub print_build: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -303,6 +310,7 @@ mod tests {
             fs_root: Some(temp.path().to_path_buf()),
             state_dir: Some(temp.path().join("state")),
             read_only_fs: false,
+            print_build: false,
         }
     }
 

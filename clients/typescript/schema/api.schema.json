@@ -8036,6 +8036,37 @@
       ],
       "type": "object"
     },
+    "EnvironmentDaemonInfo": {
+      "description": "The environment daemon (`lightspeed-envd`) that belongs to a server\nrelease. Download locations and checksums are not here: the deployment\npublishes them in its discovery document, outside the authenticated API.",
+      "properties": {
+        "gitSha": {
+          "type": "string"
+        },
+        "protocolVersion": {
+          "description": "Environment protocol version the gateway speaks. A daemon registers\nonly when it reports exactly this number.",
+          "format": "uint32",
+          "minimum": 0,
+          "type": "integer"
+        },
+        "targets": {
+          "description": "Rust target triples the daemon is published for.",
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "version": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "version",
+        "gitSha",
+        "protocolVersion",
+        "targets"
+      ],
+      "type": "object"
+    },
     "EnvironmentExternalCreateParams": {
       "properties": {
         "connection": {
@@ -12871,16 +12902,31 @@
     },
     "ServerInfo": {
       "properties": {
+        "envd": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/EnvironmentDaemonInfo"
+            }
+          ],
+          "description": "The environment daemon build this release ships. Descriptive: the\ngateway admits any daemon that speaks `envd.protocolVersion`,\nwhatever commit it was built from."
+        },
+        "gitSha": {
+          "description": "Full git commit this server was built from.",
+          "type": "string"
+        },
         "name": {
           "type": "string"
         },
         "version": {
+          "description": "Release version with the git commit as SemVer build metadata, for\nexample `0.1.0+2093b949…`.",
           "type": "string"
         }
       },
       "required": [
         "name",
-        "version"
+        "version",
+        "gitSha",
+        "envd"
       ],
       "type": "object"
     },

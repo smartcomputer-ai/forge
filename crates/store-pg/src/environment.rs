@@ -769,6 +769,9 @@ impl EnvironmentStore for PgStore {
                     WHEN status IN ('closing', 'closed') THEN last_seen_at_ms
                     WHEN $3 IN ('connected', 'heartbeat') THEN $4
                     ELSE last_seen_at_ms END,
+                metadata_json = CASE
+                    WHEN status IN ('closing', 'closed') THEN metadata_json
+                    ELSE metadata_json || $5::jsonb END,
                 updated_at_ms = CASE
                     WHEN status IN ('closing', 'closed') THEN updated_at_ms
                     ELSE GREATEST(updated_at_ms, $4) END
@@ -779,6 +782,10 @@ impl EnvironmentStore for PgStore {
         .bind(request.environment_id.as_str())
         .bind(observation)
         .bind(request.observed_at_ms)
+        .bind(json_value(
+            "encode daemon build metadata",
+            &request.metadata,
+        )?)
         .execute(&self.pool)
         .await
         .map_err(|error| sql_error("observe registered environment", error))?;

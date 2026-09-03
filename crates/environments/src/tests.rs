@@ -808,6 +808,7 @@ async fn registered_admission_is_keyed_by_daemon_identity() {
             environment_id: created.environment_id.clone(),
             observation: RegisteredConnectionObservation::Disconnected,
             observed_at_ms: 3_000,
+            metadata: BTreeMap::new(),
         })
         .await
         .expect("disconnect");
@@ -815,16 +816,38 @@ async fn registered_admission_is_keyed_by_daemon_identity() {
     assert_eq!(offline.last_seen_at_ms, Some(2_000));
     assert!(offline.registered_daemon_absent(3_000, 60_000));
 
+    // A reconnecting daemon may be a newer build: the admission re-records
+    // its build facts on the row.
     let back = store
         .observe_registered_environment(ObserveRegisteredEnvironment {
             environment_id: created.environment_id.clone(),
             observation: RegisteredConnectionObservation::Connected,
             observed_at_ms: 4_000,
+            metadata: RegisteredDaemonBuild {
+                version: Some("0.2.0".to_owned()),
+                git_sha: Some("bbbb".to_owned()),
+                protocol_version: 3,
+            }
+            .metadata(),
         })
         .await
         .expect("reconnect");
     assert_eq!(back.status, EnvironmentStatus::Ready);
     assert_eq!(back.last_seen_at_ms, Some(4_000));
+    assert_eq!(
+        back.metadata.get(ENVD_VERSION_METADATA_KEY).map(String::as_str),
+        Some("0.2.0")
+    );
+    assert_eq!(
+        back.metadata.get(ENVD_GIT_SHA_METADATA_KEY).map(String::as_str),
+        Some("bbbb")
+    );
+    assert_eq!(
+        back.metadata
+            .get(ENVD_PROTOCOL_VERSION_METADATA_KEY)
+            .map(String::as_str),
+        Some("3")
+    );
     assert!(!back.registered_daemon_absent(4_500, 60_000));
     assert!(back.registered_daemon_absent(100_000, 60_000));
 
@@ -849,10 +872,18 @@ async fn registered_admission_is_keyed_by_daemon_identity() {
             environment_id: created.environment_id.clone(),
             observation: RegisteredConnectionObservation::Connected,
             observed_at_ms: 5_200,
+            metadata: BTreeMap::from([(ENVD_GIT_SHA_METADATA_KEY.to_owned(), "cccc".to_owned())]),
         })
         .await
         .expect("late heartbeat");
     assert_eq!(still_closed.status, EnvironmentStatus::Closed);
+    assert_eq!(
+        still_closed
+            .metadata
+            .get(ENVD_GIT_SHA_METADATA_KEY)
+            .map(String::as_str),
+        Some("bbbb")
+    );
 
     // The identity is spent: the same key with a fresh environment id is
     // refused, and a different registration key cannot move it either.
@@ -959,6 +990,7 @@ async fn registration_key_policy_gates_admission_without_touching_reconnects() {
             environment_id: EnvironmentId::new("env-2"),
             observation: RegisteredConnectionObservation::Connected,
             observed_at_ms: 5_500,
+            metadata: BTreeMap::new(),
         })
         .await
         .expect("reconnect after revoke");

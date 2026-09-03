@@ -1775,7 +1775,14 @@ impl AgentApiService for TestService {
             protocol_version: PROTOCOL_VERSION.to_owned(),
             server_info: ServerInfo {
                 name: "test-service".to_owned(),
-                version: "0".to_owned(),
+                version: "0+0000000".to_owned(),
+                git_sha: "0000000".to_owned(),
+                envd: EnvironmentDaemonInfo {
+                    version: "0".to_owned(),
+                    git_sha: "0000000".to_owned(),
+                    protocol_version: 0,
+                    targets: Vec::new(),
+                },
             },
             capabilities: ServerCapabilities {
                 notifications: false,

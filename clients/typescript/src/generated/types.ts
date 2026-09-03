@@ -4603,7 +4603,42 @@ export interface ServerCapabilities {
  * via the `definition` "ServerInfo".
  */
 export interface ServerInfo {
+  /**
+   * The environment daemon build this release ships. Descriptive: the
+   * gateway admits any daemon that speaks `envd.protocolVersion`,
+   * whatever commit it was built from.
+   */
+  envd: EnvironmentDaemonInfo;
+  /**
+   * Full git commit this server was built from.
+   */
+  gitSha: string;
   name: string;
+  /**
+   * Release version with the git commit as SemVer build metadata, for
+   * example `0.1.0+2093b949…`.
+   */
+  version: string;
+}
+/**
+ * The environment daemon (`lightspeed-envd`) that belongs to a server
+ * release. Download locations and checksums are not here: the deployment
+ * publishes them in its discovery document, outside the authenticated API.
+ *
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "EnvironmentDaemonInfo".
+ */
+export interface EnvironmentDaemonInfo {
+  gitSha: string;
+  /**
+   * Environment protocol version the gateway speaks. A daemon registers
+   * only when it reports exactly this number.
+   */
+  protocolVersion: number;
+  /**
+   * Rust target triples the daemon is published for.
+   */
+  targets: string[];
   version: string;
 }
 /**

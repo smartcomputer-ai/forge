@@ -400,6 +400,9 @@ them on services.
 | `LIGHTSPEED_BINARY_URL_ENVD` | Published environment-daemon archive URL. |
 | `LIGHTSPEED_BINARY_URL_CLI` | Published CLI archive URL. |
 | `LIGHTSPEED_ARTIFACT_URL_DEMO` | Published static demo archive URL recorded in the manifest. |
+| `LIGHTSPEED_RELEASE_CHANNEL` | `release` for a tagged build, `main` (default) for a snapshot; recorded in the envd discovery document (`envd.json`). |
+| `LIGHTSPEED_ENVD_PUBLIC_URL_BASE` | HTTPS base under which the envd archives are downloadable without credentials (a tag's GitHub release assets); unset for snapshots, whose discovery document then carries `null` URLs for the serving deployment to fill in. |
+| `LIGHTSPEED_ENVD_TARGETS` | Comma-separated envd targets this release publishes, baked into the server so `initialize` can report them; a local build reports its own target. |
 | `LIGHTSPEED_RUNTIME_IMAGE` | Digest-pinned runtime image recorded in the manifest. |
 | `LIGHTSPEED_PLATFORM_IMAGE` | Digest-pinned Platform image recorded in the manifest. |
 | `LIGHTSPEED_PLATFORM_WORKERS_IMAGE` | Digest-pinned connector-host image (still published as `platform-workers`) recorded in the manifest. |
@@ -410,11 +413,13 @@ consumed by build scripts and should not be used as deployment overrides.
 
 | Variable | Purpose |
 | --- | --- |
-| `LIGHTSPEED_RELEASE_TARGET` | Rust release target triple. |
+| `LIGHTSPEED_RELEASE_TARGET` | Rust release target triple for the server, provider, and CLI. |
+| `LIGHTSPEED_ENVD_TARGET` | Static musl target the environment daemon is published for, so it runs on any Linux image regardless of glibc. |
 | `LIGHTSPEED_PRODUCT_VERSION` | Product version used when no explicit release version is supplied. |
 | `LIGHTSPEED_RELEASE_RUST_VERSION` | Pinned release Rust toolchain. |
 | `LIGHTSPEED_RELEASE_BUILD_BASE_IMAGE` | Digest-pinned base used to construct the build environment. |
 | `LIGHTSPEED_API_PROTOCOL_VERSION` | API protocol identifier recorded in release metadata. |
+| `LIGHTSPEED_ENVIRONMENT_PROTOCOL_VERSION` | Environment protocol number the gateway and envd must match exactly; checked against the protocol crate and published in `envd.json`. Changing it is the release event that stops older daemons from registering. |
 | `LIGHTSPEED_SCHEMA_REVISION` | Required Rust runtime database revision. |
 | `LIGHTSPEED_PLATFORM_SCHEMA_REVISION` | Required Platform database revision. |
 | `LIGHTSPEED_PLATFORM_UPGRADE_FROM` | Oldest Platform migration baseline exercised by release checks. |

@@ -232,6 +232,7 @@ impl GatewayAgentApi {
                             environment_id: environment.environment_id.clone(),
                             observation: RegisteredConnectionObservation::Disconnected,
                             observed_at_ms: now,
+                            metadata: BTreeMap::new(),
                         },
                     )
                     .await

@@ -2542,7 +2542,14 @@ impl AgentApiService for GatewayAgentApi {
             protocol_version: api::PROTOCOL_VERSION.to_owned(),
             server_info: ServerInfo {
                 name: "lightspeed-agent".to_owned(),
-                version: env!("CARGO_PKG_VERSION").to_owned(),
+                version: format!("{}+{}", release_info::VERSION, release_info::GIT_SHA),
+                git_sha: release_info::GIT_SHA.to_owned(),
+                envd: EnvironmentDaemonInfo {
+                    version: release_info::VERSION.to_owned(),
+                    git_sha: release_info::GIT_SHA.to_owned(),
+                    protocol_version: environment_protocol::shared::CURRENT_PROTOCOL_VERSION,
+                    targets: release_info::envd_targets().map(str::to_owned).collect(),
+                },
             },
             capabilities: ServerCapabilities {
                 notifications: false,
