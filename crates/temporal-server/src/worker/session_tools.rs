@@ -355,6 +355,13 @@ impl SessionTools {
                     results: vec![result],
                 }));
             }
+            // Native MCP calls never reach this runtime; the activity
+            // wrapper dispatches them and owns approval gating.
+            ToolBatchOutcome::AwaitingApproval { .. } => {
+                return Err(io_error(
+                    "tool runtime reported an approval outcome for a batch without native MCP calls",
+                ));
+            }
         };
 
         let await_request = ToolInvocationBatchRequest {
@@ -387,6 +394,9 @@ impl SessionTools {
                     spec,
                 })
             }
+            ToolBatchOutcome::AwaitingApproval { .. } => Err(io_error(
+                "tool runtime reported an approval outcome for a batch without native MCP calls",
+            )),
         }
     }
 
@@ -1560,9 +1570,6 @@ impl CoreAgentTools for SessionTools {
                 )
                 .await
             }
-            ToolCallExecution::NeedsApproval { .. } => Err(CoreAgentIoError::Failed {
-                message: "native MCP approval cannot originate from SessionTools".to_owned(),
-            }),
         }
     }
 }
@@ -1578,9 +1585,6 @@ pub enum ToolCallExecution {
         call_id: engine::ToolCallId,
         environment_id: String,
         status: environments::EnvironmentStatus,
-    },
-    NeedsApproval {
-        subject: engine::ApprovalSubject,
     },
 }
 
@@ -2000,6 +2004,7 @@ mod tests {
                 arguments_ref: BlobRef::from_bytes(arguments),
                 workflow_tool: None,
                 promise_control: None,
+                remote_mcp: None,
             },
             sibling_calls: siblings
                 .iter()
@@ -2010,7 +2015,6 @@ mod tests {
                     arguments_ref: BlobRef::from_bytes(arguments),
                 })
                 .collect(),
-            remote_mcp: None,
             execution: engine::ToolExecutionSpec::default(),
         }
     }
@@ -2241,6 +2245,7 @@ mod tests {
                 prior_emission_count,
             )),
             promise_control: None,
+            remote_mcp: None,
         }];
         calls.push(engine::ToolInvocationRequest {
             call_id: ToolCallId::new("call-name-mismatch"),
@@ -2251,6 +2256,7 @@ mod tests {
                 prior_emission_count,
             )),
             promise_control: None,
+            remote_mcp: None,
         });
         calls.push(engine::ToolInvocationRequest {
             call_id: ToolCallId::new("call-fingerprint-mismatch"),
@@ -2261,6 +2267,7 @@ mod tests {
                 prior_emission_count,
             )),
             promise_control: None,
+            remote_mcp: None,
         });
         calls.push(engine::ToolInvocationRequest {
             call_id: ToolCallId::new("call-missing-runtime"),
@@ -2268,6 +2275,7 @@ mod tests {
             arguments_ref: valid_arguments.clone(),
             workflow_tool: None,
             promise_control: None,
+            remote_mcp: None,
         });
         calls.extend(
             (0..engine::MAX_WORKFLOW_TOOL_EMISSIONS_PER_RUN - prior_emission_count).map(|index| {
@@ -2280,6 +2288,7 @@ mod tests {
                         prior_emission_count,
                     )),
                     promise_control: None,
+                    remote_mcp: None,
                 }
             }),
         );
@@ -2292,6 +2301,7 @@ mod tests {
                 prior_emission_count,
             )),
             promise_control: None,
+            remote_mcp: None,
         });
         let request = ToolInvocationBatchRequest {
             session_id,
@@ -2456,6 +2466,7 @@ mod tests {
             arguments_ref: arguments_ref.clone(),
             workflow_tool: Some(engine::WorkflowToolCallRuntime::v1(binding.clone(), 0)),
             promise_control: None,
+            remote_mcp: None,
         };
         let request = ToolInvocationBatchRequest {
             session_id: SessionId::new("session-job-start"),
@@ -2625,6 +2636,7 @@ mod tests {
                 arguments_ref,
                 workflow_tool: Some(engine::WorkflowToolCallRuntime::v1(binding.clone(), 0)),
                 promise_control: None,
+                remote_mcp: None,
             }],
         }
     }
@@ -3103,10 +3115,10 @@ mod tests {
                 arguments_ref,
                 workflow_tool: None,
                 promise_control: None,
+                remote_mcp: None,
             },
             sibling_calls: Vec::new(),
             execution: engine::ToolExecutionSpec::default(),
-            remote_mcp: None,
         };
 
         let result = tools.invoke_call(request).await.expect("invoke call");
@@ -3172,10 +3184,10 @@ mod tests {
                 arguments_ref,
                 workflow_tool: None,
                 promise_control: None,
+                remote_mcp: None,
             },
             sibling_calls: Vec::new(),
             execution: engine::ToolExecutionSpec::default(),
-            remote_mcp: None,
         };
 
         // Hosted per-call path: the call does not run and reports not-ready.
@@ -3289,10 +3301,10 @@ mod tests {
                 arguments_ref,
                 workflow_tool: None,
                 promise_control: None,
+                remote_mcp: None,
             },
             sibling_calls: Vec::new(),
             execution: engine::ToolExecutionSpec::default(),
-            remote_mcp: None,
         };
 
         let result = tools.invoke_call(request).await.expect("invoke call");
@@ -3342,6 +3354,7 @@ mod tests {
                 arguments_ref,
                 workflow_tool: None,
                 promise_control: None,
+                remote_mcp: None,
             }],
         };
 
@@ -3421,6 +3434,7 @@ mod tests {
                     arguments_ref,
                     workflow_tool: None,
                     promise_control: None,
+                    remote_mcp: None,
                 }],
             })
             .await
@@ -3461,6 +3475,7 @@ mod tests {
                     arguments_ref,
                     workflow_tool: None,
                     promise_control: None,
+                    remote_mcp: None,
                 }],
             })
             .await
@@ -3508,6 +3523,7 @@ mod tests {
                         arguments_ref: read_args,
                         workflow_tool: None,
                         promise_control: None,
+                        remote_mcp: None,
                     },
                     engine::ToolInvocationRequest {
                         call_id: ToolCallId::new("call_process"),
@@ -3517,6 +3533,7 @@ mod tests {
                         arguments_ref: process_args,
                         workflow_tool: None,
                         promise_control: None,
+                        remote_mcp: None,
                     },
                 ],
             })
@@ -3637,6 +3654,7 @@ mod tests {
                         arguments_ref: wait_args,
                         workflow_tool: None,
                         promise_control: None,
+                        remote_mcp: None,
                     },
                     engine::ToolInvocationRequest {
                         call_id: ToolCallId::new("call_read"),
@@ -3644,6 +3662,7 @@ mod tests {
                         arguments_ref: read_args,
                         workflow_tool: None,
                         promise_control: None,
+                        remote_mcp: None,
                     },
                 ],
             })
@@ -3734,6 +3753,7 @@ mod tests {
                     arguments_ref: wait_args,
                     workflow_tool: None,
                     promise_control: None,
+                    remote_mcp: None,
                 }],
             })
             .await
@@ -3790,6 +3810,7 @@ mod tests {
                             },
                         },
                     ])),
+                    remote_mcp: None,
                 }],
             })
             .await
@@ -3844,6 +3865,7 @@ mod tests {
                             },
                         },
                     ])),
+                    remote_mcp: None,
                 }],
             })
             .await
@@ -3881,6 +3903,7 @@ mod tests {
             arguments_ref: sleep_args.clone(),
             workflow_tool: None,
             promise_control: None,
+            remote_mcp: None,
         };
 
         let result = tools
@@ -3984,6 +4007,7 @@ mod tests {
                     arguments_ref,
                     workflow_tool: None,
                     promise_control: None,
+                    remote_mcp: None,
                 }],
             })
             .await
@@ -4026,6 +4050,7 @@ mod tests {
                     arguments_ref,
                     workflow_tool: None,
                     promise_control: None,
+                    remote_mcp: None,
                 }],
             })
             .await

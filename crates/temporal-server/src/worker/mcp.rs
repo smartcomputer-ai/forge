@@ -288,6 +288,7 @@ impl NativeMcpRuntime {
         arguments: serde_json::Value,
     ) -> Result<NativeMcpExecutionOutcome, String> {
         let runtime = request
+            .call
             .remote_mcp
             .as_ref()
             .ok_or_else(|| "native MCP runtime facts are missing".to_owned())?;

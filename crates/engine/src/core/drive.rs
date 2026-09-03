@@ -19,11 +19,12 @@ use crate::{
     ContextEntryKind, ContextEntrySource, ContextEvent, ContextMessageRole, CoreAgentCodec,
     CoreAgentEntry, CoreAgentEvent, CoreAgentEventProposal, CoreAgentJoins, CoreAgentState,
     CoreAgentStatus, DomainError, LlmFinish, LlmGenerationRequest, LlmGenerationResult,
-    LlmGenerationStatus, LlmRequest, PlanningError, PromiseEvent, PromiseId, PromiseOwnership,
-    PromiseStatus, ResumeToolBatchCommand, RunEvent, SessionId, SessionPosition, ToolBatchId,
-    ToolBatchOutcome, ToolBatchResumeOutput, ToolBatchSuspension, ToolCallId, ToolCallResult,
-    ToolCallStatus, ToolEvent, ToolInvocationBatchRequest, ToolInvocationBatchResult,
-    ToolInvocationRequest, ToolInvocationResult, TurnEvent, TurnId, TurnOutcome, WakeReason,
+    LlmGenerationStatus, LlmRequest, NativeMcpApprovalRequest, PlanningError, PromiseEvent,
+    PromiseId, PromiseOwnership, PromiseStatus, ResumeToolBatchCommand, RunEvent, SessionId,
+    SessionPosition, ToolBatchId, ToolBatchOutcome, ToolBatchResumeOutput, ToolBatchSuspension,
+    ToolCallId, ToolCallResult, ToolCallStatus, ToolEvent, ToolInvocationBatchRequest,
+    ToolInvocationBatchResult, ToolInvocationRequest, ToolInvocationResult, TurnEvent, TurnId,
+    TurnOutcome, WakeReason,
     core::components::context::context_entries_from_inputs,
     session::{StoredSessionEntry, UncommittedStoredEvent},
 };
@@ -221,67 +222,93 @@ impl CoreAgentDrive {
         self.resume_tool_batch(result, observed_at_ms)
     }
 
-    pub fn request_native_mcp_approval(
+    /// Park the run on one or more native MCP calls of the active batch that
+    /// need a run-owned decision. All requests and the single park append as
+    /// one action: a run parks once per dispatch, however many calls are
+    /// gated, and unparks only when every decision has landed.
+    pub fn request_native_mcp_approvals(
         &mut self,
         batch_id: ToolBatchId,
-        call_id: ToolCallId,
-        subject: crate::ApprovalSubject,
+        approvals: Vec<NativeMcpApprovalRequest>,
         observed_at_ms: u64,
     ) -> Result<CoreAgentAction, CoreAgentDriveError> {
+        let proposals = self.native_mcp_approval_proposals(batch_id, approvals)?;
+        self.append_action(proposals, observed_at_ms)
+    }
+
+    fn native_mcp_approval_proposals(
+        &self,
+        batch_id: ToolBatchId,
+        approvals: Vec<NativeMcpApprovalRequest>,
+    ) -> Result<Vec<CoreAgentEventProposal>, CoreAgentDriveError> {
+        if approvals.is_empty() {
+            return Err(DomainError::InvariantViolation(
+                "native MCP approval park requires at least one gated call".into(),
+            )
+            .into());
+        }
         let active_run = self.state.runs.active.as_ref().ok_or_else(|| {
             DomainError::InvariantViolation("native MCP approval requires an active run".into())
         })?;
         let batch = active_run.tool_batches.get(&batch_id).ok_or_else(|| {
             DomainError::InvariantViolation(format!("tool batch {batch_id} is missing"))
         })?;
-        if active_run.active_tool_batch_id != Some(batch_id)
-            || !batch.calls.iter().any(|call| {
-                call.call.call_id == call_id && call.status == crate::ToolCallStatus::Pending
-            })
-        {
+        if active_run.active_tool_batch_id != Some(batch_id) {
             return Err(DomainError::InvariantViolation(
-                "native MCP approval does not match a pending active call".into(),
+                "native MCP approval does not match the active tool batch".into(),
             )
             .into());
         }
-        let next = self
-            .state
-            .id_cursors
-            .last_approval_id
-            .checked_add(1)
-            .ok_or_else(|| {
+        let mut seen = BTreeSet::new();
+        for approval in &approvals {
+            let pending = batch.calls.iter().any(|call| {
+                call.call.call_id == approval.call_id
+                    && call.status == crate::ToolCallStatus::Pending
+            });
+            if !pending || !seen.insert(approval.call_id.clone()) {
+                return Err(DomainError::InvariantViolation(
+                    "native MCP approval does not match a pending active call".into(),
+                )
+                .into());
+            }
+        }
+        let mut next = self.state.id_cursors.last_approval_id;
+        let mut proposals = Vec::with_capacity(approvals.len() + 1);
+        for NativeMcpApprovalRequest { call_id, subject } in approvals {
+            next = next.checked_add(1).ok_or_else(|| {
                 DomainError::InvariantViolation("approval id cursor exhausted".into())
             })?;
-        let approval_id = crate::ApprovalId::new(format!("approval_{next}"));
-        let joins = CoreAgentJoins {
-            run_id: Some(batch.run_id),
-            turn_id: Some(batch.turn_id),
-            tool_batch_id: Some(batch.batch_id),
-            tool_call_id: Some(call_id.clone()),
-            ..CoreAgentJoins::default()
-        };
-        self.append_action(
-            vec![
-                CoreAgentEventProposal::new(
-                    joins.clone(),
-                    CoreAgentEvent::Approval(crate::ApprovalEvent::Requested {
-                        approval: crate::ApprovalRequested {
-                            approval_id,
-                            run_id: batch.run_id,
-                            subject,
-                            continuation: crate::ApprovalContinuation::NativeMcp { call_id },
-                        },
-                    }),
-                ),
-                CoreAgentEventProposal::new(
-                    joins,
-                    CoreAgentEvent::Approval(crate::ApprovalEvent::RunParked {
+            let approval_id = crate::ApprovalId::new(format!("approval_{next}"));
+            proposals.push(CoreAgentEventProposal::new(
+                CoreAgentJoins {
+                    run_id: Some(batch.run_id),
+                    turn_id: Some(batch.turn_id),
+                    tool_batch_id: Some(batch.batch_id),
+                    tool_call_id: Some(call_id.clone()),
+                    ..CoreAgentJoins::default()
+                },
+                CoreAgentEvent::Approval(crate::ApprovalEvent::Requested {
+                    approval: crate::ApprovalRequested {
+                        approval_id,
                         run_id: batch.run_id,
-                    }),
-                ),
-            ],
-            observed_at_ms,
-        )
+                        subject,
+                        continuation: crate::ApprovalContinuation::NativeMcp { call_id },
+                    },
+                }),
+            ));
+        }
+        proposals.push(CoreAgentEventProposal::new(
+            CoreAgentJoins {
+                run_id: Some(batch.run_id),
+                turn_id: Some(batch.turn_id),
+                tool_batch_id: Some(batch.batch_id),
+                ..CoreAgentJoins::default()
+            },
+            CoreAgentEvent::Approval(crate::ApprovalEvent::RunParked {
+                run_id: batch.run_id,
+            }),
+        ));
+        Ok(proposals)
     }
 
     pub fn resume_tool_batch_outcome(
@@ -299,6 +326,38 @@ impl CoreAgentDrive {
                 completed_results,
                 spec,
             } => self.defer_tool_batch(batch_id, call_id, completed_results, spec, observed_at_ms),
+            ToolBatchOutcome::AwaitingApproval {
+                batch_id,
+                completed_results,
+                approvals,
+            } => {
+                // Ungated siblings complete durably in the same append that
+                // parks the run, so a re-dispatch after the decisions only
+                // ever carries the calls that are still pending.
+                let mut proposals = Vec::new();
+                if !completed_results.is_empty() {
+                    let active_run = self.state.runs.active.as_ref().ok_or_else(|| {
+                        DomainError::InvariantViolation(
+                            "tool batch result requires an active run".into(),
+                        )
+                    })?;
+                    let batch = active_run.tool_batches.get(&batch_id).ok_or_else(|| {
+                        DomainError::InvariantViolation(format!("tool batch {batch_id} is missing"))
+                    })?;
+                    proposals.extend(tool_batch_result_proposals_for_session(
+                        &self.session_id,
+                        &self.state,
+                        ToolInvocationBatchResult {
+                            run_id: batch.run_id,
+                            turn_id: batch.turn_id,
+                            batch_id: batch.batch_id,
+                            results: completed_results,
+                        },
+                    )?);
+                }
+                proposals.extend(self.native_mcp_approval_proposals(batch_id, approvals)?);
+                self.append_action(proposals, observed_at_ms)
+            }
         }
     }
 
@@ -770,12 +829,21 @@ pub fn next_tool_batch_request(
                             .emission_count(batch.run_id, &binding.definition.tool_id),
                     )
                 });
+            // Native MCP routing is decided here, once per dispatch, so the
+            // batch-unit and per-call execution paths see identical facts
+            // (including the run-owned approval decision, if any).
+            let remote_mcp = crate::remote_mcp_call_runtime(
+                state,
+                &call_state.call.tool_name,
+                &call_state.call.call_id,
+            );
             ToolInvocationRequest {
                 call_id: call_state.call.call_id.clone(),
                 tool_name: call_state.call.tool_name.clone(),
                 arguments_ref: call_state.call.arguments_ref.clone(),
                 workflow_tool,
                 promise_control: None,
+                remote_mcp,
             }
         })
         .collect::<Vec<_>>();
@@ -7301,6 +7369,7 @@ mod tests {
                     arguments_ref: BlobRef::from_bytes(b"cancel"),
                     workflow_tool: None,
                     promise_control: None,
+                    remote_mcp: None,
                 },
                 ToolInvocationRequest {
                     call_id: crate::ToolCallId::new("detach-invalid"),
@@ -7308,6 +7377,7 @@ mod tests {
                     arguments_ref: BlobRef::from_bytes(b"detach"),
                     workflow_tool: None,
                     promise_control: None,
+                    remote_mcp: None,
                 },
             ],
         };
@@ -7671,6 +7741,268 @@ mod tests {
             .expect_err("second selection effect in the same batch is rejected");
         assert!(matches!(
             error,
+            CoreAgentDriveError::Domain(DomainError::InvariantViolation(_))
+        ));
+    }
+
+    fn native_inject_mcp_tool(name: &str, approval: crate::RemoteMcpApprovalPolicy) -> ToolSpec {
+        ToolSpec {
+            name: ToolName::new(name),
+            execution: Default::default(),
+            kind: ToolKind::RemoteMcp(crate::RemoteMcpToolSpec {
+                server_id: "echo".to_owned(),
+                record_revision: 1,
+                server_label: "echo".to_owned(),
+                server_url: "https://echo.example.com/mcp".to_owned(),
+                description_ref: None,
+                allowed_tools: Some(vec!["hello".to_owned()]),
+                execution: crate::RemoteMcpExecution::Native,
+                exposure: crate::RemoteMcpExposure::Inject,
+                approval,
+                defer_loading: None,
+                auth_ref: None,
+                auth_required: false,
+                allow_private_network: false,
+            }),
+            parallelism: ToolParallelism::ParallelSafe,
+        }
+    }
+
+    fn observed_call(call_id: &str, tool_name: &str) -> ObservedToolCall {
+        ObservedToolCall {
+            call_id: crate::ToolCallId::new(call_id),
+            tool_name: ToolName::new(tool_name),
+            provider_kind: None,
+            arguments_ref: BlobRef::from_bytes(b"{}"),
+            native_call_ref: None,
+        }
+    }
+
+    /// One model turn mixing an ordinary tool with two injected native MCP
+    /// calls whose server requires approval for every call.
+    fn mixed_native_mcp_batch(drive: &mut CoreAgentDrive) -> ToolInvocationBatchRequest {
+        open_session(drive);
+        let tool_a = test_tool_spec("tool_a");
+        let mcp = native_inject_mcp_tool("mcp_echo", crate::RemoteMcpApprovalPolicy::Always);
+        let tools = BTreeMap::from([(tool_a.name.clone(), tool_a), (mcp.name.clone(), mcp)]);
+        let action = drive
+            .admit_command(
+                CoreAgentCommand::ReplaceTools {
+                    expected_revision: Some(drive.state().tooling.revision),
+                    tools,
+                },
+                15,
+            )
+            .expect("replace tools");
+        commit_action(drive, action);
+        request_run(drive, BlobRef::from_bytes(b"input"));
+        let generation = drive_until_generate(drive);
+        drive_until_tool_batch_request_with_calls(
+            drive,
+            generation,
+            vec![
+                observed_call("call_a", "tool_a"),
+                observed_call("call_m1", "mcp_echo__hello"),
+                observed_call("call_m2", "mcp_echo__hello"),
+            ],
+        )
+    }
+
+    fn native_mcp_approval(call_id: &crate::ToolCallId) -> crate::NativeMcpApprovalRequest {
+        crate::NativeMcpApprovalRequest {
+            call_id: call_id.clone(),
+            subject: crate::ApprovalSubject::McpToolCall {
+                server_id: "echo".to_owned(),
+                server_label: "echo".to_owned(),
+                tool_name: "hello".to_owned(),
+                arguments_ref: BlobRef::from_bytes(b"{}"),
+            },
+        }
+    }
+
+    fn decide_native_mcp_approval(
+        drive: &mut CoreAgentDrive,
+        run_id: RunId,
+        number: u64,
+        decision: crate::ApprovalDecision,
+        observed_at_ms: u64,
+    ) {
+        let action = drive
+            .admit_command(
+                CoreAgentCommand::DecideApproval(crate::ApprovalDecisionCommand {
+                    approval_id: crate::ApprovalId::new(format!("approval_{number}")),
+                    run_id,
+                    decision,
+                    note: None,
+                    decided_by: None,
+                    response: None,
+                }),
+                observed_at_ms,
+            )
+            .expect("decide approval");
+        commit_action(drive, action);
+    }
+
+    fn next_tool_batch_dispatch(
+        drive: &mut CoreAgentDrive,
+        from_ms: u64,
+    ) -> ToolInvocationBatchRequest {
+        for observed_at_ms in from_ms..from_ms + 20 {
+            match drive.next_action(observed_at_ms, 64).expect("next action") {
+                CoreAgentAction::InvokeTools { request } => return request,
+                action @ CoreAgentAction::AppendEvents { .. } => {
+                    commit_action(drive, action);
+                }
+                other => panic!("unexpected action before tool batch re-dispatch: {other:?}"),
+            }
+        }
+        panic!("drive did not re-dispatch the tool batch");
+    }
+
+    fn injected_decision(call: &ToolInvocationRequest) -> Option<bool> {
+        match &call.remote_mcp {
+            Some(crate::RemoteMcpCallRuntime::Injected {
+                target,
+                remote_tool_name,
+                approval_decision,
+            }) => {
+                assert_eq!(target.server_id, "echo");
+                assert_eq!(target.approval, crate::RemoteMcpApprovalPolicy::Always);
+                assert_eq!(remote_tool_name, "hello");
+                *approval_decision
+            }
+            other => panic!("injected call must carry native MCP routing, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn batch_requests_carry_native_mcp_routing_for_every_call_that_needs_it() {
+        let session_id = SessionId::new("session-mixed-native-mcp-routing");
+        let mut drive = CoreAgentDrive::from_replayed(session_id, CoreAgentState::new(), None);
+        let request = mixed_native_mcp_batch(&mut drive);
+
+        assert_eq!(request.calls.len(), 3);
+        assert!(request.calls[0].remote_mcp.is_none());
+        assert_eq!(injected_decision(&request.calls[1]), None);
+        assert_eq!(injected_decision(&request.calls[2]), None);
+    }
+
+    #[test]
+    fn awaiting_approval_outcome_completes_ungated_calls_and_parks_once_for_the_gated_set() {
+        let session_id = SessionId::new("session-mixed-native-mcp-approvals");
+        let mut drive = CoreAgentDrive::from_replayed(session_id, CoreAgentState::new(), None);
+        let request = mixed_native_mcp_batch(&mut drive);
+        let run_id = request.run_id;
+
+        // The batch activity ran the ungated sibling and reports both gated
+        // calls; everything appends as one action.
+        let parked = drive
+            .resume_tool_batch_outcome(
+                ToolBatchOutcome::AwaitingApproval {
+                    batch_id: request.batch_id,
+                    completed_results: vec![per_call_result(
+                        &request.calls[0].call_id,
+                        ToolCallStatus::Succeeded,
+                        Vec::new(),
+                    )],
+                    approvals: vec![
+                        native_mcp_approval(&request.calls[1].call_id),
+                        native_mcp_approval(&request.calls[2].call_id),
+                    ],
+                },
+                90,
+            )
+            .expect("park on approvals");
+        commit_action(&mut drive, parked);
+
+        let run = drive.state().runs.active.as_ref().expect("active run");
+        assert_eq!(run.status, RunStatus::Parked);
+        assert_eq!(run.pending_approvals().count(), 2);
+        let batch = run
+            .tool_batches
+            .get(&request.batch_id)
+            .expect("active batch");
+        assert_eq!(batch.calls[0].status, ToolCallStatus::Succeeded);
+        assert_eq!(batch.calls[1].status, ToolCallStatus::Pending);
+        assert_eq!(batch.calls[2].status, ToolCallStatus::Pending);
+        // A parked run asks the runtime for nothing.
+        assert!(matches!(
+            drive.next_action(91, 64).expect("next action"),
+            CoreAgentAction::Idle
+        ));
+
+        // Decisions land one at a time; the run unparks only once the set is
+        // complete.
+        decide_native_mcp_approval(&mut drive, run_id, 1, crate::ApprovalDecision::Approved, 92);
+        assert_eq!(
+            drive
+                .state()
+                .runs
+                .active
+                .as_ref()
+                .expect("active run")
+                .status,
+            RunStatus::Parked
+        );
+        assert!(matches!(
+            drive.next_action(93, 64).expect("next action"),
+            CoreAgentAction::Idle
+        ));
+        decide_native_mcp_approval(&mut drive, run_id, 2, crate::ApprovalDecision::Rejected, 94);
+
+        // The re-dispatch is the same batch, carries only the pending calls,
+        // and pins each decision onto its call's routing facts.
+        let redispatch = next_tool_batch_dispatch(&mut drive, 95);
+        assert_eq!(redispatch.batch_id, request.batch_id);
+        assert_eq!(redispatch.promise_id_base, request.promise_id_base);
+        assert_eq!(
+            redispatch
+                .calls
+                .iter()
+                .map(|call| call.call_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["call_m1", "call_m2"]
+        );
+        assert_eq!(injected_decision(&redispatch.calls[0]), Some(true));
+        assert_eq!(injected_decision(&redispatch.calls[1]), Some(false));
+    }
+
+    #[test]
+    fn native_mcp_approval_park_requires_pending_calls_of_the_active_batch() {
+        let session_id = SessionId::new("session-mixed-native-mcp-park-guards");
+        let mut drive = CoreAgentDrive::from_replayed(session_id, CoreAgentState::new(), None);
+        let request = mixed_native_mcp_batch(&mut drive);
+
+        let empty = drive
+            .request_native_mcp_approvals(request.batch_id, Vec::new(), 90)
+            .expect_err("an empty gated set must not park the run");
+        assert!(matches!(
+            empty,
+            CoreAgentDriveError::Domain(DomainError::InvariantViolation(_))
+        ));
+        let unknown = drive
+            .request_native_mcp_approvals(
+                request.batch_id,
+                vec![native_mcp_approval(&crate::ToolCallId::new("call_unknown"))],
+                90,
+            )
+            .expect_err("an unknown call must not park the run");
+        assert!(matches!(
+            unknown,
+            CoreAgentDriveError::Domain(DomainError::InvariantViolation(_))
+        ));
+        let duplicate = drive
+            .request_native_mcp_approvals(
+                request.batch_id,
+                vec![
+                    native_mcp_approval(&request.calls[1].call_id),
+                    native_mcp_approval(&request.calls[1].call_id),
+                ],
+                90,
+            )
+            .expect_err("a call may be gated once per park");
+        assert!(matches!(
+            duplicate,
             CoreAgentDriveError::Domain(DomainError::InvariantViolation(_))
         ));
     }

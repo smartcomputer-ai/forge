@@ -246,14 +246,15 @@ fn call_activity<'a>(
     index: usize,
 ) -> impl CancellableFuture<CallActivityOutcome> + use<'a> {
     let call = &request.calls[index];
-    let remote_mcp = engine::remote_mcp_call_runtime(state, &call.tool_name, &call.call_id);
-    let execution = if remote_mcp.is_some() {
+    // The engine materialized the native MCP routing facts on the call when
+    // it built this dispatch; the workflow only selects the execution class.
+    let execution = if call.remote_mcp.is_some() {
         ToolExecutionSpec::new(engine::ToolExecutionClass::RemoteInteractive, false)
     } else {
         call_execution_spec(state, &call.tool_name)
     };
     let call_request = request
-        .call_request(index, execution, remote_mcp)
+        .call_request(index, execution)
         .expect("group indices come from this batch request");
     activity_ctx.start_activity(
         WorkflowActivities::tool_invoke_call,
@@ -280,10 +281,12 @@ async fn resume_call(
     outcome: Result<ToolInvokeCallActivityResult, ActivityExecutionError>,
 ) -> anyhow::Result<()> {
     if let Ok(ToolInvokeCallActivityResult::NeedsApproval { subject }) = &outcome {
-        let action = drive.request_native_mcp_approval(
+        let action = drive.request_native_mcp_approvals(
             request.batch_id,
-            request.calls[index].call_id.clone(),
-            subject.clone(),
+            vec![engine::NativeMcpApprovalRequest {
+                call_id: request.calls[index].call_id.clone(),
+                subject: subject.clone(),
+            }],
             workflow_time_ms(ctx),
         )?;
         return match action {
@@ -526,6 +529,7 @@ mod tests {
             arguments_ref: BlobRef::from_bytes(b"{}"),
             workflow_tool: None,
             promise_control: None,
+            remote_mcp: None,
         }
     }
 

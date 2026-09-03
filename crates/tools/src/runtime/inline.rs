@@ -536,6 +536,7 @@ mod tests {
             arguments_ref,
             workflow_tool: None,
             promise_control: None,
+            remote_mcp: None,
         }
     }
 
@@ -817,6 +818,7 @@ mod tests {
                     arguments_ref: args_ref,
                     workflow_tool: None,
                     promise_control: None,
+                    remote_mcp: None,
                 }],
             },
         )
