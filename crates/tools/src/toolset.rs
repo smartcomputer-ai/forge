@@ -101,7 +101,7 @@ impl BuiltinToolsetConfig {
                 BuiltinToolOperation::Glob => config.vfs.glob = true,
                 BuiltinToolOperation::ListDir => config.vfs.list_dir = true,
                 BuiltinToolOperation::RunProcess
-                | BuiltinToolOperation::WriteProcessStdin
+                | BuiltinToolOperation::ContinueProcess
                 | BuiltinToolOperation::JobSubmit
                 | BuiltinToolOperation::JobRun
                 | BuiltinToolOperation::JobRead => {
@@ -125,7 +125,7 @@ impl BuiltinToolsetConfig {
             BuiltinToolOperation::Glob => self.environment.filesystem.glob = true,
             BuiltinToolOperation::ListDir => self.environment.filesystem.list_dir = true,
             BuiltinToolOperation::RunProcess => self.environment.run_process = true,
-            BuiltinToolOperation::WriteProcessStdin => self.environment.write_process_stdin = true,
+            BuiltinToolOperation::ContinueProcess => self.environment.continue_process = true,
             BuiltinToolOperation::JobSubmit => self.environment.job_submit = true,
             BuiltinToolOperation::JobRun => self.environment.job_run = true,
             BuiltinToolOperation::JobRead => self.environment.job_read = true,
@@ -153,13 +153,16 @@ pub enum BuiltinToolPresentation {
 }
 
 impl BuiltinToolPresentation {
+    /// The provider default gives OpenAI and Anthropic models the shapes
+    /// their harnesses trained them on. OpenAI Completions, the
+    /// compatibility API most other providers speak, gets the neutral
+    /// canonical surface.
     fn surface(self, target: &ToolTarget) -> BuiltinToolSurface {
         match self {
             Self::ProviderDefault => match target.api_kind {
                 ProviderApiKind::AnthropicMessages => BuiltinToolSurface::ClaudeCodeLike,
-                ProviderApiKind::OpenAiResponses | ProviderApiKind::OpenAiCompletions => {
-                    BuiltinToolSurface::Canonical
-                }
+                ProviderApiKind::OpenAiResponses => BuiltinToolSurface::CodexLike,
+                ProviderApiKind::OpenAiCompletions => BuiltinToolSurface::Canonical,
             },
             Self::Canonical => BuiltinToolSurface::Canonical,
             Self::CodexLike => BuiltinToolSurface::CodexLike,
@@ -244,7 +247,9 @@ impl FilesystemToolsetConfig {
 pub struct EnvironmentToolsetConfig {
     pub filesystem: FilesystemToolsetConfig,
     pub run_process: bool,
-    pub write_process_stdin: bool,
+    /// The handle path. When off, every surface renders its one-shot
+    /// process shape: the run tool waits to exit and no continue tool exists.
+    pub continue_process: bool,
     pub job_submit: bool,
     pub job_run: bool,
     pub job_read: bool,
@@ -259,7 +264,7 @@ impl EnvironmentToolsetConfig {
         Self {
             filesystem: FilesystemToolsetConfig::workspace_edit(),
             run_process: true,
-            write_process_stdin: true,
+            continue_process: true,
             ..Self::disabled()
         }
     }
@@ -281,7 +286,7 @@ impl EnvironmentToolsetConfig {
     pub fn enabled(&self) -> bool {
         self.filesystem.enabled()
             || self.run_process
-            || self.write_process_stdin
+            || self.continue_process
             || self.job_submit
             || self.job_run
             || self.job_read
@@ -296,8 +301,8 @@ impl EnvironmentToolsetConfig {
         if self.run_process {
             operations.push(BuiltinToolOperation::RunProcess);
         }
-        if self.write_process_stdin {
-            operations.push(BuiltinToolOperation::WriteProcessStdin);
+        if self.run_process && self.continue_process {
+            operations.push(BuiltinToolOperation::ContinueProcess);
         }
         if self.job_submit {
             operations.push(BuiltinToolOperation::JobSubmit);
@@ -499,16 +504,21 @@ impl ToolsetBuilder {
             self.add_bundle(bundle);
             self.catalog.insert(binding);
         }
+        let one_shot = !config.environment.continue_process;
         for operation in config.environment.operations() {
-            let tool = BuiltinTool::environment(operation, surface);
-            let bundle = match tool.spec_bundle(target, STATIC_SCOPED_FS_PATHS) {
-                Ok(bundle) => bundle,
-                Err(ToolError::UnsupportedCapability { .. }) if omit_unsupported => continue,
-                Err(error) => return Err(error),
-            };
-            let binding = tool.binding(target, config.dispatch.clone());
-            self.add_bundle(bundle);
-            self.catalog.insert(binding);
+            for tool in BuiltinTool::environment(operation, surface)
+                .with_one_shot(one_shot)
+                .variants()
+            {
+                let bundle = match tool.spec_bundle(target, STATIC_SCOPED_FS_PATHS) {
+                    Ok(bundle) => bundle,
+                    Err(ToolError::UnsupportedCapability { .. }) if omit_unsupported => continue,
+                    Err(error) => return Err(error),
+                };
+                let binding = tool.binding(target, config.dispatch.clone());
+                self.add_bundle(bundle);
+                self.catalog.insert(binding);
+            }
         }
         Ok(())
     }
@@ -589,6 +599,198 @@ mod tests {
             .keys()
             .map(|name| name.as_str().to_owned())
             .collect()
+    }
+
+    fn input_schema(toolset: &ResolvedToolset, name: &str) -> Value {
+        let spec = toolset
+            .tools
+            .get(&ToolName::new(name))
+            .unwrap_or_else(|| panic!("tool {name} is listed"));
+        let engine::ToolKind::Function(function) = &spec.kind else {
+            panic!("{name} is a function tool");
+        };
+        let document = toolset
+            .documents
+            .iter()
+            .find(|document| document.blob_ref == function.input_schema_ref)
+            .expect("schema document");
+        serde_json::from_slice(&document.bytes).expect("schema json")
+    }
+
+    fn property_names(schema: &Value) -> Vec<String> {
+        schema["properties"]
+            .as_object()
+            .expect("properties")
+            .keys()
+            .cloned()
+            .collect()
+    }
+
+    fn process_config() -> ToolsetConfig {
+        let mut config = ToolsetConfig::empty();
+        config.builtin.environment = EnvironmentToolsetConfig {
+            run_process: true,
+            continue_process: true,
+            ..EnvironmentToolsetConfig::disabled()
+        };
+        config
+    }
+
+    #[test]
+    fn provider_defaults_pick_codex_claude_and_canonical_process_surfaces() {
+        let config = process_config();
+
+        let responses = target(ProviderApiKind::OpenAiResponses);
+        let toolset =
+            resolve_toolset(ToolsetEnvironment { target: &responses }, &config).expect("toolset");
+        assert_eq!(visible_names(&toolset), vec!["exec_command", "write_stdin"]);
+        let exec = input_schema(&toolset, "exec_command");
+        assert_eq!(
+            property_names(&exec),
+            [
+                "cmd",
+                "login",
+                "max_output_tokens",
+                "tty",
+                "workdir",
+                "yield_time_ms"
+            ]
+        );
+        assert_eq!(exec["required"], json!(["cmd"]));
+        let write = input_schema(&toolset, "write_stdin");
+        assert_eq!(
+            property_names(&write),
+            ["chars", "max_output_tokens", "session_id", "yield_time_ms"]
+        );
+        assert_eq!(
+            toolset
+                .catalog
+                .get(&ToolName::new("write_stdin"))
+                .expect("binding")
+                .logical_id,
+            "env.continue_process"
+        );
+
+        let anthropic = target(ProviderApiKind::AnthropicMessages);
+        let toolset =
+            resolve_toolset(ToolsetEnvironment { target: &anthropic }, &config).expect("toolset");
+        assert_eq!(
+            visible_names(&toolset),
+            vec!["Bash", "BashOutput", "KillShell"]
+        );
+        assert_eq!(
+            property_names(&input_schema(&toolset, "Bash")),
+            [
+                "command",
+                "dangerouslyDisableSandbox",
+                "description",
+                "run_in_background",
+                "timeout"
+            ]
+        );
+        assert_eq!(
+            property_names(&input_schema(&toolset, "BashOutput")),
+            ["bash_id", "filter", "timeout"]
+        );
+        assert_eq!(
+            property_names(&input_schema(&toolset, "KillShell")),
+            ["shell_id"]
+        );
+        for name in ["BashOutput", "KillShell"] {
+            assert_eq!(
+                toolset
+                    .catalog
+                    .get(&ToolName::new(name))
+                    .expect("binding")
+                    .logical_id,
+                "env.continue_process"
+            );
+        }
+
+        let completions = target(ProviderApiKind::OpenAiCompletions);
+        let toolset = resolve_toolset(
+            ToolsetEnvironment {
+                target: &completions,
+            },
+            &config,
+        )
+        .expect("toolset");
+        assert_eq!(
+            visible_names(&toolset),
+            vec!["continue_process", "run_process"]
+        );
+        let run = input_schema(&toolset, "run_process");
+        assert_eq!(
+            property_names(&run),
+            [
+                "argv",
+                "cwd",
+                "env",
+                "max_output_bytes",
+                "stdin",
+                "timeout_ms",
+                "tty",
+                "yield_ms"
+            ]
+        );
+        assert_eq!(
+            property_names(&input_schema(&toolset, "continue_process")),
+            [
+                "close_stdin",
+                "handle",
+                "input",
+                "max_output_bytes",
+                "signal",
+                "wait_ms"
+            ]
+        );
+    }
+
+    #[test]
+    fn one_shot_policy_renders_the_restricted_shape_on_every_surface() {
+        let mut config = process_config();
+        config.builtin.environment.continue_process = false;
+
+        let responses = target(ProviderApiKind::OpenAiResponses);
+        let toolset =
+            resolve_toolset(ToolsetEnvironment { target: &responses }, &config).expect("toolset");
+        assert_eq!(visible_names(&toolset), vec!["exec_command"]);
+        assert_eq!(
+            property_names(&input_schema(&toolset, "exec_command")),
+            ["cmd", "login", "max_output_tokens", "timeout_ms", "workdir"]
+        );
+        assert_eq!(
+            toolset
+                .catalog
+                .get(&ToolName::new("exec_command"))
+                .expect("binding")
+                .adapter_id
+                .as_deref(),
+            Some("codex-oneshot")
+        );
+
+        let anthropic = target(ProviderApiKind::AnthropicMessages);
+        let toolset =
+            resolve_toolset(ToolsetEnvironment { target: &anthropic }, &config).expect("toolset");
+        assert_eq!(visible_names(&toolset), vec!["Bash"]);
+        assert!(
+            !property_names(&input_schema(&toolset, "Bash"))
+                .contains(&"run_in_background".to_owned())
+        );
+
+        let completions = target(ProviderApiKind::OpenAiCompletions);
+        let toolset = resolve_toolset(
+            ToolsetEnvironment {
+                target: &completions,
+            },
+            &config,
+        )
+        .expect("toolset");
+        assert_eq!(visible_names(&toolset), vec!["run_process"]);
+        assert!(
+            !property_names(&input_schema(&toolset, "run_process"))
+                .contains(&"yield_ms".to_owned())
+        );
     }
 
     #[test]

@@ -771,6 +771,15 @@ pub struct ToolCallResult {
     /// telemetry only — planning never branches on it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duration_ms: Option<u64>,
+    /// Bytes of model-visible text the tool produced before the runtime's
+    /// projection budget was applied. Absent for synthetic results and
+    /// executors that do not measure. Recorded telemetry only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_bytes: Option<u64>,
+    /// True when the projection cut the model-visible text to its budget.
+    /// Recorded telemetry only.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub truncated: bool,
 }
 
 pub(crate) fn tool_result_context_item_exists(
@@ -1529,6 +1538,8 @@ fn cancelled_tool_result(call: &ObservedToolCall) -> ToolCallResult {
         error_ref: Some(error_ref),
         effects: Vec::new(),
         duration_ms: None,
+        output_bytes: None,
+        truncated: false,
     }
 }
 
@@ -1554,6 +1565,8 @@ fn unavailable_tool_result(call: &ObservedToolCall) -> ToolCallResult {
         error_ref: Some(error_ref),
         effects: Vec::new(),
         duration_ms: None,
+        output_bytes: None,
+        truncated: false,
     }
 }
 

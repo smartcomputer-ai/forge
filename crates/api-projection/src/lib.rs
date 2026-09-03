@@ -12,15 +12,16 @@ use api::{
     ContextEntrySourceView, ContextEntryView, ContextMessageRoleView, ContextView, EventCursor,
     EventJoinsView, InputItem, LlmUsageView, ManagedSessionWorkflowToolsInput, MediaKind,
     ModelConfig, PendingApprovalView, PrincipalKind, PrincipalRefView, ProviderContextDisplayView,
-    ProviderNativeToolExecutionView, RunAcceptedSourceView, RunStatus as ApiRunStatus,
-    RunSummarySourceView, RunSummaryView, RunView, RunViewSource, SessionEventKindView,
-    SessionEventView, SessionManagementView, SessionStatus as ApiSessionStatus, SessionView,
-    TokenEstimateQualityView, TokenEstimateView, ToolBatchView, ToolCallDisplayGroup,
-    ToolCallDisplayView, ToolCallEventView, ToolCallView, ToolEffectView, ToolItemStatus,
-    ToolKindView, ToolParallelismView, ToolView, WorkflowEndpointInput, WorkflowStartRefInput,
-    WorkflowToolCompletionInput, WorkflowToolCompletionKeySourceInput,
-    WorkflowToolDeclarationInput, WorkflowToolDefinitionInput, WorkflowToolKindInput,
-    WorkflowToolSpecInput, WorkflowToolTargetInput,
+    ProviderNativeToolExecutionView, RunAcceptedSourceView, RunFailureKindView,
+    RunStatus as ApiRunStatus, RunSummarySourceView, RunSummaryView, RunView, RunViewSource,
+    SessionEventKindView, SessionEventView, SessionManagementView,
+    SessionStatus as ApiSessionStatus, SessionView, TokenEstimateQualityView, TokenEstimateView,
+    ToolBatchView, ToolCallDisplayGroup, ToolCallDisplayView, ToolCallEventView, ToolCallView,
+    ToolEffectView, ToolItemStatus, ToolKindView, ToolParallelismView, ToolView,
+    WorkflowEndpointInput, WorkflowStartRefInput, WorkflowToolCompletionInput,
+    WorkflowToolCompletionKeySourceInput, WorkflowToolDeclarationInput,
+    WorkflowToolDefinitionInput, WorkflowToolKindInput, WorkflowToolSpecInput,
+    WorkflowToolTargetInput,
 };
 use engine::{
     CompactionPolicy, ContextCompactionStatus, ContextCompactionTrigger, ContextEntry,
@@ -28,9 +29,9 @@ use engine::{
     ContextMessageRole, ContextRemovalReason, ContextRewriteReason, CoreAgentCodec, CoreAgentEntry,
     CoreAgentEvent, CoreAgentJoins, CoreAgentLifecycleEvent, CoreAgentState, CoreAgentStatus,
     EventSeq, LlmGenerationStatus, ModelSelection, OPENAI_RESPONSES_MCP_CALL_PROVIDER_KIND,
-    ObservedToolCall, ProviderApiKind, RunEvent, RunFailure, RunId, RunSource, RunStatus,
-    SessionConfig, SessionId, SteeringId, ToolBatchId, ToolCallStatus, ToolChoice, ToolConfigEvent,
-    ToolEvent, ToolKind, ToolParallelism, ToolSpec, TurnEvent, TurnId,
+    ObservedToolCall, ProviderApiKind, RunEvent, RunFailure, RunFailureKind, RunId, RunSource,
+    RunStatus, SessionConfig, SessionId, SteeringId, ToolBatchId, ToolCallStatus, ToolChoice,
+    ToolConfigEvent, ToolEvent, ToolKind, ToolParallelism, ToolSpec, TurnEvent, TurnId,
     storage::{
         BlobStore, BlobStoreError, ReadSessionEvents, SessionRecord, SessionStore,
         SessionStoreError, StoredSessionEntry,
@@ -672,6 +673,7 @@ impl<'a> CoreAgentProjector<'a> {
                 }
                 RunEvent::Failed { run_id, failure } => Ok(SessionEventKindView::RunFailed {
                     run_id: api_run_id(*run_id),
+                    kind: run_failure_kind_to_api(failure.kind.clone()),
                     message: self.run_failure_message(failure).await,
                 }),
                 RunEvent::Cancelled { run_id }
@@ -950,6 +952,8 @@ impl<'a> CoreAgentProjector<'a> {
                     call_id: result.call_id.as_str().to_owned(),
                     status: core_tool_status_to_api_status(result.status),
                     effects: tool_effects_to_api(&result.effects),
+                    output_bytes: result.output_bytes,
+                    truncated: result.truncated,
                 }),
                 ToolEvent::BatchDeferred {
                     run_id,
@@ -1184,6 +1188,17 @@ impl<'a> CoreAgentProjector<'a> {
             return message;
         }
         format!("{:?}", failure.kind)
+    }
+}
+
+fn run_failure_kind_to_api(kind: RunFailureKind) -> RunFailureKindView {
+    match kind {
+        RunFailureKind::ModelFailure => RunFailureKindView::ModelFailure,
+        RunFailureKind::ToolFailure => RunFailureKindView::ToolFailure,
+        RunFailureKind::ContextFailure => RunFailureKindView::ContextFailure,
+        RunFailureKind::LimitExceeded => RunFailureKindView::LimitExceeded,
+        RunFailureKind::Cancelled => RunFailureKindView::Cancelled,
+        RunFailureKind::Internal => RunFailureKindView::Internal,
     }
 }
 
@@ -2377,21 +2392,32 @@ fn tool_call_display(tool_name: &str, arguments: &str) -> Option<ToolCallDisplay
                 .and_then(|patch| patch_target(&patch)),
             detail: None,
         },
-        "exec_command" | "bash" | "run_process" => ToolCallDisplayView {
+        "exec_command" | "bash" | "Bash" | "run_process" => ToolCallDisplayView {
             group: ToolCallDisplayGroup::Execute,
             verb: "Run".to_owned(),
             target: json.as_ref().and_then(command_display),
             detail: json
                 .as_ref()
-                .and_then(|json| first_string(json, &["cwd"]))
+                .and_then(|json| first_string(json, &["cwd", "workdir"]))
                 .map(|cwd| format!("in {cwd}")),
         },
-        "write_stdin" | "write_process_stdin" => ToolCallDisplayView {
+        "write_stdin" | "continue_process" | "BashOutput" => ToolCallDisplayView {
             group: ToolCallDisplayGroup::Execute,
-            verb: "Send input".to_owned(),
+            verb: "Continue process".to_owned(),
+            target: json.as_ref().and_then(|json| {
+                first_string(
+                    json,
+                    &["session_id", "handle", "bash_id", "process_id", "id"],
+                )
+            }),
+            detail: None,
+        },
+        "KillShell" => ToolCallDisplayView {
+            group: ToolCallDisplayGroup::Execute,
+            verb: "Stop process".to_owned(),
             target: json
                 .as_ref()
-                .and_then(|json| first_string(json, &["process_id", "handle", "id"])),
+                .and_then(|json| first_string(json, &["shell_id", "handle", "id"])),
             detail: None,
         },
         "sleep" => ToolCallDisplayView {
@@ -2974,6 +3000,8 @@ mod tests {
                 batch_id: ToolBatchId::new(4),
                 result: engine::ToolCallResult {
                     duration_ms: None,
+                    output_bytes: None,
+                    truncated: false,
                     call_id: engine::ToolCallId::new("call-5"),
                     status: engine::ToolCallStatus::Succeeded,
                     output_ref: None,

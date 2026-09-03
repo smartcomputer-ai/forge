@@ -1,4 +1,9 @@
 //! Claude Code-like built-in tool surface.
+//!
+//! The process tools carry Claude Code's names and parameters: `Bash` with
+//! `run_in_background`, `BashOutput`, and `KillShell`. The wording is ours
+//! except the background start line. There is no stdin input and no `tty`
+//! on this surface: Claude Code has neither.
 
 use std::collections::BTreeMap;
 
@@ -6,7 +11,10 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::{
-    environment::tools::{RunProcessArgs, invoke_run_process},
+    environment::{
+        process::{ProcessHandle, ProcessSignal},
+        tools::{ContinueProcessArgs, RunProcessArgs, invoke_continue_process, invoke_run_process},
+    },
     error::{ToolError, ToolResult},
     fs::{
         FsPath,
@@ -15,49 +23,65 @@ use crate::{
             invoke_edit_file, invoke_glob, invoke_grep, invoke_read_file, invoke_write_file,
         },
     },
+    limits::ToolLimits,
     runtime::{ToolInvocationOutput, decode_args, encode_output},
 };
 
 use super::{
-    BuiltinToolContext, BuiltinToolOperation, canonical,
+    BuiltinTool, BuiltinToolContext, BuiltinToolOperation, BuiltinToolVariant, canonical,
     shared::{
-        invalid_request, nullable_integer, nullable_string, object, optional_boolean,
-        optional_enum, process_visible_output, string, visible_with_search_stop,
+        ProcessPresentation, invalid_request, nullable_integer, nullable_string, object,
+        optional_boolean, optional_enum, process_visible_output, string, visible_with_search_stop,
     },
 };
 
-pub(super) fn description(
-    operation: BuiltinToolOperation,
-    scoped_paths: bool,
-) -> ToolResult<String> {
+/// How long `KillShell` waits for the killed group's final output: the
+/// environment daemon's output drain grace.
+const KILL_SHELL_WAIT_MS: u64 = 2_000;
+
+pub(super) fn description(tool: BuiltinTool, scoped_paths: bool) -> ToolResult<String> {
     let path_guidance = if scoped_paths {
         " Paths are resolved within the configured filesystem scope."
     } else {
         ""
     };
-    let text = match operation {
-        BuiltinToolOperation::ReadFile => "Reads a file from the filesystem.",
-        BuiltinToolOperation::WriteFile => "Writes a file to the filesystem.",
-        BuiltinToolOperation::EditFile => "Performs exact string replacements in a file.",
-        BuiltinToolOperation::Grep => "Searches file contents with a regular expression.",
-        BuiltinToolOperation::Glob => "Finds files by glob pattern.",
-        BuiltinToolOperation::RunProcess => "Executes a shell command.",
-        BuiltinToolOperation::ListDir
-        | BuiltinToolOperation::JobSubmit
-        | BuiltinToolOperation::JobRun
-        | BuiltinToolOperation::JobRead => {
-            return Ok(canonical::description(operation, scoped_paths));
+    let text = match (tool.operation(), tool.variant()) {
+        (BuiltinToolOperation::ReadFile, _) => "Reads a file from the filesystem.",
+        (BuiltinToolOperation::WriteFile, _) => "Writes a file to the filesystem.",
+        (BuiltinToolOperation::EditFile, _) => "Performs exact string replacements in a file.",
+        (BuiltinToolOperation::Grep, _) => "Searches file contents with a regular expression.",
+        (BuiltinToolOperation::Glob, _) => "Finds files by glob pattern.",
+        (BuiltinToolOperation::RunProcess, _) if tool.one_shot() => {
+            "Executes a shell command and waits for it to finish, killing it at `timeout`. A command may leave services running; they keep running until stopped or the environment is closed."
         }
-        BuiltinToolOperation::ApplyPatch | BuiltinToolOperation::WriteProcessStdin => {
-            return Err(unsupported(operation));
+        (BuiltinToolOperation::RunProcess, _) => {
+            "Executes a shell command. Waits for it to finish, killing it at `timeout`, unless `run_in_background` is true, in which case it returns at once with an ID for BashOutput and KillShell. A command may leave services running; they keep running until stopped or the environment is closed."
+        }
+        (BuiltinToolOperation::ContinueProcess, BuiltinToolVariant::Primary) => {
+            "Wait up to `timeout` for a background command to finish and return the output produced since the last call. Returns at once if it has already exited, with its exit code."
+        }
+        (BuiltinToolOperation::ContinueProcess, BuiltinToolVariant::Kill) => {
+            "Kills a running background command by its ID and returns the output it produced since the last call."
+        }
+        (
+            BuiltinToolOperation::ListDir
+            | BuiltinToolOperation::JobSubmit
+            | BuiltinToolOperation::JobRun
+            | BuiltinToolOperation::JobRead,
+            _,
+        ) => {
+            return Ok(canonical::description(tool, scoped_paths));
+        }
+        (BuiltinToolOperation::ApplyPatch, _) => {
+            return Err(unsupported(tool.operation()));
         }
     };
     Ok(format!("{text}{path_guidance}"))
 }
 
-pub(super) fn input_schema(operation: BuiltinToolOperation) -> ToolResult<Value> {
-    let schema = match operation {
-        BuiltinToolOperation::ReadFile => object(
+pub(super) fn input_schema(tool: BuiltinTool) -> ToolResult<Value> {
+    let schema = match (tool.operation(), tool.variant()) {
+        (BuiltinToolOperation::ReadFile, _) => object(
             [
                 (
                     "file_path",
@@ -75,7 +99,7 @@ pub(super) fn input_schema(operation: BuiltinToolOperation) -> ToolResult<Value>
             ],
             ["file_path"],
         ),
-        BuiltinToolOperation::WriteFile => object(
+        (BuiltinToolOperation::WriteFile, _) => object(
             [
                 (
                     "file_path",
@@ -85,7 +109,7 @@ pub(super) fn input_schema(operation: BuiltinToolOperation) -> ToolResult<Value>
             ],
             ["file_path", "content"],
         ),
-        BuiltinToolOperation::EditFile => object(
+        (BuiltinToolOperation::EditFile, _) => object(
             [
                 (
                     "file_path",
@@ -103,7 +127,7 @@ pub(super) fn input_schema(operation: BuiltinToolOperation) -> ToolResult<Value>
             ],
             ["file_path", "old_string", "new_string"],
         ),
-        BuiltinToolOperation::Grep => object(
+        (BuiltinToolOperation::Grep, _) => object(
             [
                 (
                     "pattern",
@@ -172,7 +196,7 @@ pub(super) fn input_schema(operation: BuiltinToolOperation) -> ToolResult<Value>
             ],
             ["pattern"],
         ),
-        BuiltinToolOperation::Glob => object(
+        (BuiltinToolOperation::Glob, _) => object(
             [
                 (
                     "pattern",
@@ -185,12 +209,32 @@ pub(super) fn input_schema(operation: BuiltinToolOperation) -> ToolResult<Value>
             ],
             ["pattern"],
         ),
-        BuiltinToolOperation::RunProcess => object(
+        (BuiltinToolOperation::RunProcess, _) if tool.one_shot() => object(
             [
                 ("command", string("The command to execute.")),
                 (
                     "timeout",
-                    nullable_integer("Optional timeout in milliseconds."),
+                    nullable_integer("Optional kill deadline in milliseconds. Defaults to 60000."),
+                ),
+                (
+                    "description",
+                    nullable_string("Clear, concise description of what this command does."),
+                ),
+                (
+                    "dangerouslyDisableSandbox",
+                    optional_boolean("Parsed and ignored by Lightspeed tools."),
+                ),
+            ],
+            ["command"],
+        ),
+        (BuiltinToolOperation::RunProcess, _) => object(
+            [
+                ("command", string("The command to execute.")),
+                (
+                    "timeout",
+                    nullable_integer(
+                        "Optional kill deadline in milliseconds. Defaults to 60000. Ignored when run_in_background is true.",
+                    ),
                 ),
                 (
                     "description",
@@ -198,41 +242,72 @@ pub(super) fn input_schema(operation: BuiltinToolOperation) -> ToolResult<Value>
                 ),
                 (
                     "run_in_background",
-                    optional_boolean("Parsed but not supported by Lightspeed tools."),
+                    optional_boolean(
+                        "Run the command in the background and return its ID at once. Read its output with BashOutput and stop it with KillShell.",
+                    ),
                 ),
                 (
                     "dangerouslyDisableSandbox",
-                    optional_boolean("Parsed but not supported by Lightspeed tools."),
+                    optional_boolean("Parsed and ignored by Lightspeed tools."),
                 ),
             ],
             ["command"],
         ),
-        BuiltinToolOperation::ListDir
-        | BuiltinToolOperation::JobSubmit
-        | BuiltinToolOperation::JobRun
-        | BuiltinToolOperation::JobRead => {
-            return Ok(canonical::input_schema(operation));
+        (BuiltinToolOperation::ContinueProcess, BuiltinToolVariant::Primary) => object(
+            [
+                (
+                    "bash_id",
+                    string("The ID of the background command to read output from."),
+                ),
+                (
+                    "timeout",
+                    nullable_integer(
+                        "Milliseconds to wait for the command to finish before returning what it produced so far. Defaults to 60000.",
+                    ),
+                ),
+                (
+                    "filter",
+                    nullable_string("Optional regular expression. Parsed but not applied."),
+                ),
+            ],
+            ["bash_id"],
+        ),
+        (BuiltinToolOperation::ContinueProcess, BuiltinToolVariant::Kill) => object(
+            [(
+                "shell_id",
+                string("The ID of the background command to kill."),
+            )],
+            ["shell_id"],
+        ),
+        (
+            BuiltinToolOperation::ListDir
+            | BuiltinToolOperation::JobSubmit
+            | BuiltinToolOperation::JobRun
+            | BuiltinToolOperation::JobRead,
+            _,
+        ) => {
+            return Ok(canonical::input_schema(tool));
         }
-        BuiltinToolOperation::ApplyPatch | BuiltinToolOperation::WriteProcessStdin => {
-            return Err(unsupported(operation));
+        (BuiltinToolOperation::ApplyPatch, _) => {
+            return Err(unsupported(tool.operation()));
         }
     };
     Ok(schema)
 }
 
 pub(super) async fn invoke_json(
-    operation: BuiltinToolOperation,
+    tool: BuiltinTool,
     ctx: BuiltinToolContext<'_>,
     arguments: Value,
 ) -> ToolResult<ToolInvocationOutput> {
-    match operation {
-        BuiltinToolOperation::ReadFile => {
+    match (tool.operation(), tool.variant()) {
+        (BuiltinToolOperation::ReadFile, _) => {
             let args: ClaudeCodeReadArgs = decode_args(arguments)?;
             let fs_ctx = ctx.filesystem()?;
             let result = invoke_read_file(fs_ctx, args.try_into_read_file_args()?).await?;
             encode_output(&result, result.line_numbered_text.clone())
         }
-        BuiltinToolOperation::WriteFile => {
+        (BuiltinToolOperation::WriteFile, _) => {
             let args: ClaudeCodeWriteArgs = decode_args(arguments)?;
             let fs_ctx = ctx.filesystem()?;
             let result = invoke_write_file(fs_ctx, args.try_into_write_file_args()?).await?;
@@ -242,7 +317,7 @@ pub(super) async fn invoke_json(
             );
             encode_output(&result, visible)
         }
-        BuiltinToolOperation::EditFile => {
+        (BuiltinToolOperation::EditFile, _) => {
             let args: ClaudeCodeEditArgs = decode_args(arguments)?;
             let fs_ctx = ctx.filesystem()?;
             if args.old_string.is_empty() {
@@ -261,7 +336,7 @@ pub(super) async fn invoke_json(
             );
             encode_output(&result, visible)
         }
-        BuiltinToolOperation::Grep => {
+        (BuiltinToolOperation::Grep, _) => {
             let args: ClaudeCodeGrepArgs = decode_args(arguments)?;
             let output_mode = args.output_mode()?;
             let show_line_numbers = args.show_line_numbers();
@@ -278,7 +353,7 @@ pub(super) async fn invoke_json(
             );
             encode_output(&result, visible_with_search_stop(visible, result.stopped))
         }
-        BuiltinToolOperation::Glob => {
+        (BuiltinToolOperation::Glob, _) => {
             let args: ClaudeCodeGlobArgs = decode_args(arguments)?;
             let fs_ctx = ctx.filesystem()?;
             let result = invoke_glob(fs_ctx, args.try_into_glob_args()?).await?;
@@ -290,20 +365,44 @@ pub(super) async fn invoke_json(
                 .join("\n");
             encode_output(&result, visible_with_search_stop(visible, result.stopped))
         }
-        BuiltinToolOperation::RunProcess => {
+        (BuiltinToolOperation::RunProcess, _) => {
             let args: ClaudeCodeBashArgs = decode_args(arguments)?;
             let env_ctx = ctx.environment()?;
-            let result = invoke_run_process(env_ctx, args.into_run_process_args()).await?;
-            let visible = process_visible_output(&result);
+            let background = !tool.one_shot() && args.run_in_background.unwrap_or(false);
+            let result = invoke_run_process(
+                env_ctx,
+                args.into_run_process_args(background, &env_ctx.limits),
+            )
+            .await?;
+            let visible =
+                process_visible_output(&result, ProcessPresentation::ClaudeBash { background });
             encode_output(&result, visible)
         }
-        BuiltinToolOperation::ListDir
-        | BuiltinToolOperation::JobSubmit
-        | BuiltinToolOperation::JobRun
-        | BuiltinToolOperation::JobRead => canonical::invoke_json(operation, ctx, arguments).await,
-        BuiltinToolOperation::ApplyPatch | BuiltinToolOperation::WriteProcessStdin => {
-            Err(unsupported(operation))
+        (BuiltinToolOperation::ContinueProcess, BuiltinToolVariant::Primary) => {
+            let args: ClaudeCodeBashOutputArgs = decode_args(arguments)?;
+            let env_ctx = ctx.environment()?;
+            let result =
+                invoke_continue_process(env_ctx, args.into_continue_process_args(&env_ctx.limits))
+                    .await?;
+            let visible = process_visible_output(&result, ProcessPresentation::ClaudeBashOutput);
+            encode_output(&result, visible)
         }
+        (BuiltinToolOperation::ContinueProcess, BuiltinToolVariant::Kill) => {
+            let args: ClaudeCodeKillShellArgs = decode_args(arguments)?;
+            let env_ctx = ctx.environment()?;
+            let result =
+                invoke_continue_process(env_ctx, args.into_continue_process_args()).await?;
+            let visible = process_visible_output(&result, ProcessPresentation::ClaudeKillShell);
+            encode_output(&result, visible)
+        }
+        (
+            BuiltinToolOperation::ListDir
+            | BuiltinToolOperation::JobSubmit
+            | BuiltinToolOperation::JobRun
+            | BuiltinToolOperation::JobRead,
+            _,
+        ) => canonical::invoke_json(tool, ctx, arguments).await,
+        (BuiltinToolOperation::ApplyPatch, _) => Err(unsupported(tool.operation())),
     }
 }
 
@@ -471,7 +570,6 @@ struct ClaudeCodeBashArgs {
     timeout: Option<u64>,
     #[allow(dead_code)]
     description: Option<String>,
-    #[allow(dead_code)]
     run_in_background: Option<bool>,
     #[allow(dead_code)]
     #[serde(rename = "dangerouslyDisableSandbox")]
@@ -479,14 +577,61 @@ struct ClaudeCodeBashArgs {
 }
 
 impl ClaudeCodeBashArgs {
-    fn into_run_process_args(self) -> RunProcessArgs {
+    /// A background start is a zero yield with no kill deadline; a foreground
+    /// command waits to exit under `timeout` as a kill deadline, as in
+    /// Claude Code.
+    fn into_run_process_args(self, background: bool, limits: &ToolLimits) -> RunProcessArgs {
+        let (yield_ms, timeout_ms) = if background {
+            (Some(0), None)
+        } else {
+            (
+                None,
+                Some(self.timeout.unwrap_or(limits.default_process_timeout_ms)),
+            )
+        };
         RunProcessArgs {
             argv: vec!["bash".to_string(), "-lc".to_string(), self.command],
             cwd: None,
             env: BTreeMap::new(),
             stdin: None,
-            timeout_ms: self.timeout,
-            yield_time_ms: None,
+            tty: false,
+            yield_ms,
+            timeout_ms,
+            max_output_bytes: None,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct ClaudeCodeBashOutputArgs {
+    bash_id: String,
+    timeout: Option<u64>,
+    #[allow(dead_code)]
+    filter: Option<String>,
+}
+
+impl ClaudeCodeBashOutputArgs {
+    fn into_continue_process_args(self, limits: &ToolLimits) -> ContinueProcessArgs {
+        ContinueProcessArgs::wait(
+            ProcessHandle::new(self.bash_id),
+            Some(self.timeout.unwrap_or(limits.default_process_timeout_ms)),
+        )
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct ClaudeCodeKillShellArgs {
+    shell_id: String,
+}
+
+impl ClaudeCodeKillShellArgs {
+    fn into_continue_process_args(self) -> ContinueProcessArgs {
+        ContinueProcessArgs {
+            handle: ProcessHandle::new(self.shell_id),
+            input: None,
+            close_stdin: false,
+            signal: Some(ProcessSignal::Kill),
+            wait_ms: Some(KILL_SHELL_WAIT_MS),
             max_output_bytes: None,
         }
     }
@@ -554,5 +699,52 @@ fn select_visible_entries(
     match head_limit {
         Some(0) | None => entries.collect(),
         Some(limit) => entries.take(limit).collect(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn bash_maps_background_to_a_zero_yield_and_foreground_to_a_kill_deadline() {
+        let limits = ToolLimits::default();
+        let background: ClaudeCodeBashArgs =
+            decode_args(json!({ "command": "make", "run_in_background": true })).expect("args");
+        let args = background.into_run_process_args(true, &limits);
+        assert_eq!(args.argv, ["bash", "-lc", "make"]);
+        assert_eq!(args.yield_ms, Some(0));
+        assert_eq!(args.timeout_ms, None);
+
+        let foreground: ClaudeCodeBashArgs =
+            decode_args(json!({ "command": "make", "timeout": 5000 })).expect("args");
+        let args = foreground.into_run_process_args(false, &limits);
+        assert_eq!(args.yield_ms, None);
+        assert_eq!(args.timeout_ms, Some(5000));
+
+        let defaulted: ClaudeCodeBashArgs = decode_args(json!({ "command": "ls" })).expect("args");
+        let args = defaulted.into_run_process_args(false, &limits);
+        assert_eq!(args.timeout_ms, Some(limits.default_process_timeout_ms));
+        assert!(!args.tty);
+    }
+
+    #[test]
+    fn bash_output_and_kill_shell_map_onto_continue_process() {
+        let limits = ToolLimits::default();
+        let output: ClaudeCodeBashOutputArgs =
+            decode_args(json!({ "bash_id": "proc-3", "filter": "err" })).expect("args");
+        let args = output.into_continue_process_args(&limits);
+        assert_eq!(args.handle.as_str(), "proc-3");
+        assert_eq!(args.wait_ms, Some(limits.default_process_timeout_ms));
+        assert_eq!(args.signal, None);
+        assert_eq!(args.input, None);
+
+        let kill: ClaudeCodeKillShellArgs =
+            decode_args(json!({ "shell_id": "proc-3" })).expect("args");
+        let args = kill.into_continue_process_args();
+        assert_eq!(args.signal, Some(ProcessSignal::Kill));
+        assert_eq!(args.wait_ms, Some(KILL_SHELL_WAIT_MS));
     }
 }

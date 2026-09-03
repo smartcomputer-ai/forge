@@ -17,7 +17,7 @@ use api::{
     EnvironmentRegistrationKeyRevokeParams, EnvironmentSourceView, EnvironmentView,
     OperatorApiService, OperatorUniverseCreateParams,
 };
-use environment_client::EnvironmentDataClient;
+use environment_client::{EnvironmentDataClient, JsonRpcTransport};
 use environment_daemon::{
     DaemonRuntime,
     config::{DaemonConfig, RegistrationConfig},
@@ -26,8 +26,13 @@ use environment_protocol::{
     data::{
         fs::{ReadDirectoryParams, WriteFileParams},
         handshake::InitializeParams,
+        idle::IdleParams,
+        process::{
+            ProcessOutputChunk, ProcessSignal, ReadProcessParams, StartProcessParams,
+            TerminateProcessParams, WriteProcessParams,
+        },
     },
-    shared::{ByteChunk, CURRENT_PROTOCOL_VERSION, EnvironmentPath, SecretString},
+    shared::{ByteChunk, CURRENT_PROTOCOL_VERSION, EnvironmentPath, ProcessId, SecretString},
 };
 use environments::EnvironmentStore as _;
 use support::live::{LIVE_TEST_LOCK, require_storage_live_env};
@@ -39,6 +44,13 @@ use temporal_server::{
     },
 };
 use temporal_workflow::{DEFAULT_TEMPORAL_NAMESPACE, DEFAULT_TEMPORAL_TARGET, connect_temporal};
+use tools::{
+    environment::process::{
+        ContinueProcessRequest, ProcessExecutor, ProcessRequest, ProcessSignal as ExecutorSignal,
+        ProcessStatus,
+    },
+    environment_protocol::RemoteEnvironmentConnection,
+};
 use uuid::Uuid;
 
 const POLL: Duration = Duration::from_millis(200);
@@ -267,7 +279,13 @@ async fn scenario(
         gateway.connect_options("registration-live"),
     )
     .await?;
-    for client in [&mut first, &mut second] {
+    let mut third = EnvironmentDataClient::connect(
+        &connection.endpoint,
+        gateway.connect_options("registration-live"),
+    )
+    .await?;
+    let mut capabilities = None;
+    for client in [&mut first, &mut second, &mut third] {
         let initialized = client
             .initialize(&InitializeParams {
                 protocol_version: CURRENT_PROTOCOL_VERSION,
@@ -277,7 +295,9 @@ async fn scenario(
             })
             .await?;
         assert_eq!(initialized.protocol_version, CURRENT_PROTOCOL_VERSION);
+        capabilities = Some(initialized.capabilities);
     }
+    let capabilities = capabilities.expect("negotiated capabilities");
     first
         .write_file(&WriteFileParams {
             path: EnvironmentPath::new("registered.txt")?,
@@ -300,6 +320,8 @@ async fn scenario(
         std::fs::read_to_string(root_a.join("registered.txt"))?,
         "through the reverse dial"
     );
+    process_scenario(&mut first, &mut second, &root_a).await?;
+    executor_scenario(third, capabilities).await?;
     first.close().await?;
     second.close().await?;
 
@@ -455,6 +477,266 @@ async fn scenario(
     assert_eq!(short_view.active_environment_count, 0);
     assert_eq!(short_view.registered_environment_count, 1);
     Ok(())
+}
+
+/// The process path through the same reverse-dialed route, on two sockets
+/// at once: a normal exit leaves its background child running, reported
+/// and counted by the idle report and stoppable through the handle; the
+/// read cursor is the daemon's, so the second socket continues where the
+/// first stopped and an empty write is a wait; a PTY takes input; and an
+/// interrupt reaches the group.
+async fn process_scenario<T>(
+    first: &mut EnvironmentDataClient<T>,
+    second: &mut EnvironmentDataClient<T>,
+    root: &Path,
+) -> anyhow::Result<()>
+where
+    T: JsonRpcTransport + Send + 'static,
+{
+    // A service the command left behind survives its exit.
+    first
+        .start_process(&shell_process(
+            "live-leftover",
+            "nohup sleep 60 >/dev/null 2>&1 & echo $! > leftover.pid; echo started; exit 0",
+            false,
+        ))
+        .await?;
+    let leftover_pid = wait_for_pid_file(&root.join("leftover.pid")).await?;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let read = first
+        .read_process(&read_params("live-leftover", Some(10_000)))
+        .await?;
+    assert!(read.exited);
+    assert_eq!(read.exit_code, Some(0));
+    assert!(read.pid.is_some(), "the response names the root pid");
+    assert_eq!(chunk_text(&read.chunks), "started\n");
+    assert!(
+        read.leftover_processes
+            .iter()
+            .any(|member| i32::try_from(member.pid) == Ok(leftover_pid)),
+        "the leftover is reported with its pid: {:?}",
+        read.leftover_processes
+    );
+    assert!(
+        process_alive(leftover_pid),
+        "the leftover survives the call that started it"
+    );
+    let idle = second.idle(&IdleParams {}).await?;
+    assert_eq!(idle.running_processes, 0);
+    assert_eq!(idle.leftover_process_groups, 1);
+    assert!(idle.is_quiescent(), "a leftover is not running work");
+    second
+        .terminate_process(&TerminateProcessParams {
+            process_id: ProcessId::new("live-leftover"),
+            signal: ProcessSignal::Kill,
+        })
+        .await?;
+    wait_for_process_gone(leftover_pid).await?;
+    assert_eq!(first.idle(&IdleParams {}).await?.leftover_process_groups, 0);
+
+    // The daemon owns the cursor: the second socket reads only what the
+    // first did not, and an empty write after exit is a wait.
+    first
+        .start_process(&shell_process(
+            "live-cursor",
+            "echo one; sleep 0.4; echo two; sleep 0.4; echo three",
+            false,
+        ))
+        .await?;
+    let head = first
+        .read_process(&read_params("live-cursor", Some(150)))
+        .await?;
+    assert!(!head.exited);
+    assert_eq!(chunk_text(&head.chunks), "one\n");
+    let rest = second
+        .read_process(&read_params("live-cursor", Some(10_000)))
+        .await?;
+    assert!(rest.exited);
+    assert_eq!(chunk_text(&rest.chunks), "two\nthree\n");
+    let last_head_seq = head.chunks.last().expect("head chunk").seq;
+    assert!(rest.chunks.iter().all(|chunk| chunk.seq > last_head_seq));
+    let wait = first
+        .write_process(&WriteProcessParams {
+            process_id: ProcessId::new("live-cursor"),
+            chunk: None,
+            close_stdin: false,
+        })
+        .await?;
+    assert_eq!(
+        wait.status,
+        environment_protocol::data::process::WriteProcessStatus::Accepted
+    );
+
+    // A PTY takes input written from another socket.
+    first
+        .start_process(&shell_process(
+            "live-pty",
+            "read line; echo got:$line",
+            true,
+        ))
+        .await?;
+    let write = second
+        .write_process(&WriteProcessParams {
+            process_id: ProcessId::new("live-pty"),
+            chunk: Some(ByteChunk::new(b"hello\n".to_vec())),
+            close_stdin: false,
+        })
+        .await?;
+    assert_eq!(
+        write.status,
+        environment_protocol::data::process::WriteProcessStatus::Accepted
+    );
+    let pty = first
+        .read_process(&read_params("live-pty", Some(10_000)))
+        .await?;
+    assert!(pty.exited);
+    assert!(
+        chunk_text(&pty.chunks).contains("got:hello"),
+        "{:?}",
+        chunk_text(&pty.chunks)
+    );
+
+    // An interrupt reaches the group; the next read observes the trap.
+    second
+        .start_process(&shell_process(
+            "live-interrupt",
+            "trap 'echo caught; exit 3' INT; sleep 100 & wait $!",
+            false,
+        ))
+        .await?;
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let signalled = first
+        .terminate_process(&TerminateProcessParams {
+            process_id: ProcessId::new("live-interrupt"),
+            signal: ProcessSignal::Interrupt,
+        })
+        .await?;
+    assert!(signalled.running);
+    let caught = second
+        .read_process(&read_params("live-interrupt", Some(10_000)))
+        .await?;
+    assert!(caught.exited);
+    assert_eq!(caught.exit_code, Some(3));
+    assert_eq!(chunk_text(&caught.chunks), "caught\n");
+    Ok(())
+}
+
+/// The substrate executor over the real transport: a yielded run returns
+/// a handle and pid, a continue reads only new output, and a kill through
+/// the handle ends the group.
+async fn executor_scenario<T>(
+    client: EnvironmentDataClient<T>,
+    capabilities: environment_protocol::shared::EnvironmentCapabilities,
+) -> anyhow::Result<()>
+where
+    T: JsonRpcTransport + Send + 'static,
+{
+    let connection = RemoteEnvironmentConnection::new(client, capabilities);
+    let executor = connection
+        .process_executor()
+        .expect("the daemon negotiates process execution");
+    let mut request = ProcessRequest::argv(["/bin/sh", "-c", "echo hi; sleep 60"]);
+    request.yield_ms = Some(300);
+    request.max_output_bytes = Some(4096);
+    let running = executor.run_process(request).await?;
+    assert_eq!(running.status, ProcessStatus::Running);
+    assert!(running.pid.is_some());
+    assert_eq!(running.stdout.bytes, b"hi\n");
+    let handle = running.handle.expect("a running process has a handle");
+
+    let more = executor
+        .continue_process(ContinueProcessRequest::wait(handle.clone(), Some(200)))
+        .await?;
+    assert_eq!(more.status, ProcessStatus::Running);
+    assert!(
+        more.stdout.bytes.is_empty(),
+        "delivered output is never repeated: {:?}",
+        more.stdout.text_lossy()
+    );
+
+    let root_pid = running.pid.expect("pid") as i32;
+    let killed = executor
+        .continue_process(ContinueProcessRequest {
+            handle,
+            input: None,
+            close_stdin: false,
+            signal: Some(ExecutorSignal::Kill),
+            wait_ms: Some(2_000),
+            max_output_bytes: None,
+        })
+        .await?;
+    assert_eq!(killed.status, ProcessStatus::Killed);
+    assert_eq!(killed.handle, None);
+    wait_for_process_gone(root_pid).await?;
+    connection.close().await?;
+    Ok(())
+}
+
+fn shell_process(process_id: &str, script: &str, tty: bool) -> StartProcessParams {
+    StartProcessParams {
+        process_id: ProcessId::new(process_id),
+        argv: vec!["/bin/sh".to_owned(), "-c".to_owned(), script.to_owned()],
+        cwd: None,
+        env: BTreeMap::new(),
+        secret_env: BTreeMap::new(),
+        stdin: None,
+        timeout_ms: Some(60_000),
+        tty,
+    }
+}
+
+fn read_params(process_id: &str, wait_ms: Option<u64>) -> ReadProcessParams {
+    ReadProcessParams {
+        process_id: ProcessId::new(process_id),
+        after_seq: None,
+        max_bytes: None,
+        wait_ms,
+    }
+}
+
+fn chunk_text(chunks: &[ProcessOutputChunk]) -> String {
+    let bytes = chunks
+        .iter()
+        .flat_map(|chunk| chunk.chunk.as_slice().to_vec())
+        .collect::<Vec<_>>();
+    String::from_utf8_lossy(&bytes).into_owned()
+}
+
+fn process_alive(pid: i32) -> bool {
+    std::process::Command::new("kill")
+        .args(["-0", &pid.to_string()])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+async fn wait_for_pid_file(path: &Path) -> anyhow::Result<i32> {
+    let deadline = tokio::time::Instant::now() + SETTLE;
+    loop {
+        if let Ok(content) = std::fs::read_to_string(path)
+            && let Ok(pid) = content.trim().parse::<i32>()
+        {
+            return Ok(pid);
+        }
+        if tokio::time::Instant::now() > deadline {
+            anyhow::bail!("pid file {} was not written", path.display());
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+async fn wait_for_process_gone(pid: i32) -> anyhow::Result<()> {
+    let deadline = tokio::time::Instant::now() + SETTLE;
+    loop {
+        if !process_alive(pid) {
+            return Ok(());
+        }
+        if tokio::time::Instant::now() > deadline {
+            anyhow::bail!("process {pid} is still alive");
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
 }
 
 fn daemon_config(

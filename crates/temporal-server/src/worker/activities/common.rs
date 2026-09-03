@@ -175,6 +175,8 @@ pub(super) async fn failed_tool_batch_result(
         .await?;
         results.push(ToolInvocationResult {
             duration_ms: None,
+            output_bytes: None,
+            truncated: false,
             call_id: call.call_id.clone(),
             status: ToolCallStatus::Failed,
             output_ref: None,
@@ -215,6 +217,8 @@ pub(super) async fn failed_tool_call_result(
     .await?;
     Ok(ToolInvocationResult {
         duration_ms: None,
+        output_bytes: None,
+        truncated: false,
         call_id: request.call.call_id.clone(),
         status: ToolCallStatus::Failed,
         output_ref: None,

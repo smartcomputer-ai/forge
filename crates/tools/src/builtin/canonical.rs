@@ -1,4 +1,6 @@
-//! Canonical Lightspeed built-in tool surface.
+//! Canonical Lightspeed built-in tool surface: the substrate presented
+//! directly, with neutral names and descriptions written for a model that
+//! has seen neither Codex nor Claude Code.
 
 use serde_json::{Value, json};
 
@@ -9,7 +11,8 @@ use crate::{
             visible_job_read_output,
         },
         tools::{
-            invoke_job_read, invoke_job_submit, invoke_run_process, invoke_write_process_stdin,
+            RunProcessArgs, invoke_continue_process, invoke_job_read, invoke_job_submit,
+            invoke_run_process,
         },
     },
     error::ToolResult,
@@ -21,20 +24,20 @@ use crate::{
 };
 
 use super::{
-    BuiltinToolContext, BuiltinToolOperation,
+    BuiltinTool, BuiltinToolContext, BuiltinToolOperation,
     shared::{
-        array_of_strings, boolean, nullable_integer, nullable_string, object,
-        process_visible_output, string, string_map, visible_with_search_stop,
+        ProcessPresentation, array_of_strings, boolean, nullable_integer, nullable_string, object,
+        optional_enum, process_visible_output, string, string_map, visible_with_search_stop,
     },
 };
 
-pub(super) fn description(operation: BuiltinToolOperation, scoped_paths: bool) -> String {
+pub(super) fn description(tool: BuiltinTool, scoped_paths: bool) -> String {
     let path_guidance = if scoped_paths {
         " Paths are resolved within the configured filesystem scope."
     } else {
         ""
     };
-    let text = match operation {
+    let text = match tool.operation() {
         BuiltinToolOperation::ReadFile => {
             "Read a UTF-8 file with optional 1-based line offset and line limit."
         }
@@ -50,10 +53,15 @@ pub(super) fn description(operation: BuiltinToolOperation, scoped_paths: bool) -
         BuiltinToolOperation::Grep => "Search UTF-8 files recursively with a regular expression.",
         BuiltinToolOperation::Glob => "Find files recursively with a glob pattern.",
         BuiltinToolOperation::ListDir => "List one directory.",
-        BuiltinToolOperation::RunProcess => {
-            "Run a process through the configured process executor."
+        BuiltinToolOperation::RunProcess if tool.one_shot() => {
+            "Run a command and wait until it exits, returning its output. With `timeout_ms` the command is killed at that deadline. A command may leave services running; they keep running until stopped or the environment closes. Interactive programs need `tty: true`."
         }
-        BuiltinToolOperation::WriteProcessStdin => "Write input to an existing process handle.",
+        BuiltinToolOperation::RunProcess => {
+            "Run a command. Waits until it exits, or until `yield_ms` if set, and returns its output. If it is still running you get a handle for `continue_process`. With `timeout_ms` the command is killed at that deadline; without it a running command keeps running until stopped or the environment closes. Interactive programs need `tty: true`."
+        }
+        BuiltinToolOperation::ContinueProcess => {
+            "Continue with a running handle: optionally send input or a signal, then wait up to `wait_ms` and return the output produced since the last call. With nothing but the handle it only waits. Once the process has exited it returns the remaining output and the exit code."
+        }
         BuiltinToolOperation::JobSubmit => {
             "Start one or more durable environment jobs asynchronously. Returns one Promise per job; use await, cancel, or detach when appropriate."
         }
@@ -67,8 +75,8 @@ pub(super) fn description(operation: BuiltinToolOperation, scoped_paths: bool) -
     format!("{text}{path_guidance}")
 }
 
-pub(super) fn input_schema(operation: BuiltinToolOperation) -> Value {
-    match operation {
+pub(super) fn input_schema(tool: BuiltinTool) -> Value {
+    match tool.operation() {
         BuiltinToolOperation::ReadFile => object(
             [
                 ("path", string("File path to read.")),
@@ -156,53 +164,110 @@ pub(super) fn input_schema(operation: BuiltinToolOperation) -> Value {
             )],
             [],
         ),
-        BuiltinToolOperation::RunProcess => object(
+        BuiltinToolOperation::RunProcess if tool.one_shot() => object(
             [
-                ("argv", array_of_strings("Process argv.")),
+                ("argv", array_of_strings("Command and arguments.")),
                 (
                     "cwd",
-                    nullable_string("Optional process working directory."),
+                    nullable_string("Working directory. Defaults to the environment's."),
                 ),
                 (
                     "env",
-                    string_map("Environment variables. Defaults to empty."),
+                    string_map("Environment variables to add. Defaults to empty."),
                 ),
-                ("stdin", nullable_string("Optional standard input.")),
+                (
+                    "stdin",
+                    nullable_string("Standard input, written and closed at start."),
+                ),
+                (
+                    "tty",
+                    boolean("Allocate a pseudo-terminal. Defaults to false."),
+                ),
                 (
                     "timeout_ms",
                     nullable_integer(
-                        "Optional timeout in milliseconds. Defaults to 60 seconds; requests above the deployment ceiling (default 30 minutes) are clamped.",
+                        "Kill the command after this many milliseconds. Requests above the deployment ceiling (30 minutes) are clamped.",
                     ),
                 ),
                 (
-                    "yield_time_ms",
-                    nullable_integer("Optional yield interval in milliseconds."),
-                ),
-                (
                     "max_output_bytes",
-                    nullable_integer("Optional output byte limit."),
+                    nullable_integer("Output byte budget for this call."),
                 ),
             ],
             ["argv"],
         ),
-        BuiltinToolOperation::WriteProcessStdin => object(
+        BuiltinToolOperation::RunProcess => object(
             [
-                ("handle", string("Process handle.")),
-                ("input", string("Input to write.")),
+                ("argv", array_of_strings("Command and arguments.")),
                 (
-                    "close_stdin",
-                    boolean("Whether to close stdin after writing. Defaults to false."),
+                    "cwd",
+                    nullable_string("Working directory. Defaults to the environment's."),
                 ),
                 (
-                    "yield_time_ms",
-                    nullable_integer("Optional yield interval in milliseconds."),
+                    "env",
+                    string_map("Environment variables to add. Defaults to empty."),
+                ),
+                (
+                    "stdin",
+                    nullable_string("Standard input, written and closed at start."),
+                ),
+                (
+                    "tty",
+                    boolean(
+                        "Allocate a pseudo-terminal so `continue_process` can send input. Defaults to false.",
+                    ),
+                ),
+                (
+                    "yield_ms",
+                    nullable_integer(
+                        "Return after this many milliseconds with a handle if the command is still running. Defaults to waiting until it exits, up to 30 minutes.",
+                    ),
+                ),
+                (
+                    "timeout_ms",
+                    nullable_integer(
+                        "Kill the command after this many milliseconds. Absent means it is never killed by this call. Requests above the deployment ceiling (30 minutes) are clamped.",
+                    ),
                 ),
                 (
                     "max_output_bytes",
-                    nullable_integer("Optional output byte limit."),
+                    nullable_integer("Output byte budget for this call."),
                 ),
             ],
-            ["handle", "input"],
+            ["argv"],
+        ),
+        BuiltinToolOperation::ContinueProcess => object(
+            [
+                ("handle", string("Handle returned by `run_process`.")),
+                (
+                    "input",
+                    nullable_string(
+                        "Text to send to the process's input. Requires the command to have been started with `tty: true`.",
+                    ),
+                ),
+                (
+                    "close_stdin",
+                    boolean("Close the process's input after writing. Defaults to false."),
+                ),
+                (
+                    "signal",
+                    optional_enum(
+                        "Send a signal to the process group: `interrupt` (SIGINT) or `kill`.",
+                        ["interrupt", "kill"],
+                    ),
+                ),
+                (
+                    "wait_ms",
+                    nullable_integer(
+                        "Collect output for this many milliseconds, returning early if the process exits. Defaults to waiting until it exits, up to 30 minutes.",
+                    ),
+                ),
+                (
+                    "max_output_bytes",
+                    nullable_integer("Output byte budget for this call."),
+                ),
+            ],
+            ["handle"],
         ),
         BuiltinToolOperation::JobSubmit => job_submit_schema(),
         BuiltinToolOperation::JobRun => job_run_schema(),
@@ -211,11 +276,11 @@ pub(super) fn input_schema(operation: BuiltinToolOperation) -> Value {
 }
 
 pub(super) async fn invoke_json(
-    operation: BuiltinToolOperation,
+    tool: BuiltinTool,
     ctx: BuiltinToolContext<'_>,
     arguments: Value,
 ) -> ToolResult<ToolInvocationOutput> {
-    match operation {
+    match tool.operation() {
         BuiltinToolOperation::ReadFile => {
             let fs_ctx = ctx.filesystem()?;
             let result = invoke_read_file(fs_ctx, decode_args(arguments)?).await?;
@@ -282,14 +347,18 @@ pub(super) async fn invoke_json(
         }
         BuiltinToolOperation::RunProcess => {
             let env_ctx = ctx.environment()?;
-            let result = invoke_run_process(env_ctx, decode_args(arguments)?).await?;
-            let visible = process_visible_output(&result);
+            let mut args: RunProcessArgs = decode_args(arguments)?;
+            if tool.one_shot() {
+                args.yield_ms = None;
+            }
+            let result = invoke_run_process(env_ctx, args).await?;
+            let visible = process_visible_output(&result, ProcessPresentation::Canonical);
             encode_output(&result, visible)
         }
-        BuiltinToolOperation::WriteProcessStdin => {
+        BuiltinToolOperation::ContinueProcess => {
             let env_ctx = ctx.environment()?;
-            let result = invoke_write_process_stdin(env_ctx, decode_args(arguments)?).await?;
-            let visible = process_visible_output(&result);
+            let result = invoke_continue_process(env_ctx, decode_args(arguments)?).await?;
+            let visible = process_visible_output(&result, ProcessPresentation::Canonical);
             encode_output(&result, visible)
         }
         BuiltinToolOperation::JobSubmit => {

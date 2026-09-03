@@ -1125,7 +1125,7 @@ fn builtin_operation_for_id(id: &str) -> Option<BuiltinToolOperation> {
         "env.glob" => BuiltinToolOperation::Glob,
         "env.list_dir" => BuiltinToolOperation::ListDir,
         "env.run_process" => BuiltinToolOperation::RunProcess,
-        "env.write_process_stdin" => BuiltinToolOperation::WriteProcessStdin,
+        "env.continue_process" => BuiltinToolOperation::ContinueProcess,
         _ => return None,
     })
 }

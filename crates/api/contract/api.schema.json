@@ -12350,6 +12350,18 @@
       ],
       "type": "object"
     },
+    "RunFailureKindView": {
+      "description": "Why a run failed, as the engine classified it.",
+      "enum": [
+        "model_failure",
+        "tool_failure",
+        "context_failure",
+        "limit_exceeded",
+        "cancelled",
+        "internal"
+      ],
+      "type": "string"
+    },
     "RunLimitsConfig": {
       "properties": {
         "maxToolRounds": {
@@ -13526,7 +13538,11 @@
           "type": "object"
         },
         {
+          "description": "The run ended in failure. `kind` is the engine's classification;\n`message` is free text for display.",
           "properties": {
+            "kind": {
+              "$ref": "#/definitions/RunFailureKindView"
+            },
             "message": {
               "type": "string"
             },
@@ -13541,6 +13557,7 @@
           "required": [
             "type",
             "runId",
+            "kind",
             "message"
           ],
           "type": "object"
@@ -14195,6 +14212,7 @@
           "type": "object"
         },
         {
+          "description": "One tool call finished. `output_bytes` is the size of the\nmodel-visible text the tool produced before the runtime's projection\nbudget was applied, absent for synthetic results; `truncated` is true\nwhen that budget cut it.",
           "properties": {
             "batchId": {
               "type": "string"
@@ -14208,11 +14226,23 @@
               },
               "type": "array"
             },
+            "outputBytes": {
+              "format": "uint64",
+              "minimum": 0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
             "runId": {
               "type": "string"
             },
             "status": {
               "$ref": "#/definitions/ToolItemStatus"
+            },
+            "truncated": {
+              "default": false,
+              "type": "boolean"
             },
             "turnId": {
               "type": "string"

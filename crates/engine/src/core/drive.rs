@@ -1295,6 +1295,8 @@ fn await_resume_result(
         batch_id: batch.batch_id,
         results: vec![ToolInvocationResult {
             duration_ms: None,
+            output_bytes: None,
+            truncated: false,
             call_id: call_id.clone(),
             status: ToolCallStatus::Succeeded,
             output_ref: Some(result_ref),
@@ -1392,6 +1394,8 @@ fn joined_workflow_resume_result(
         };
         results.push(ToolInvocationResult {
             duration_ms: None,
+            output_bytes: None,
+            truncated: false,
             call_id: joined.call_id.clone(),
             status,
             output_ref,
@@ -1455,6 +1459,8 @@ fn invalid_await_tool_result(call_id: ToolCallId, _message: String) -> ToolInvoc
     let error_ref = crate::unavailable_tool_result_ref();
     ToolInvocationResult {
         duration_ms: None,
+        output_bytes: None,
+        truncated: false,
         call_id: call_id.clone(),
         status: ToolCallStatus::Failed,
         output_ref: None,
@@ -1922,6 +1928,8 @@ fn invocation_result_to_call_result(result: ToolInvocationResult) -> ToolCallRes
         error_ref: result.error_ref,
         effects: result.effects,
         duration_ms: result.duration_ms,
+        output_bytes: result.output_bytes,
+        truncated: result.truncated,
     }
 }
 
@@ -2319,6 +2327,8 @@ mod tests {
             batch_id: request.batch_id,
             results: vec![ToolInvocationResult {
                 duration_ms: None,
+                output_bytes: None,
+                truncated: false,
                 call_id: request.calls[0].call_id.clone(),
                 status: ToolCallStatus::Succeeded,
                 output_ref: Some(BlobRef::from_bytes(b"wait completed")),
@@ -6190,6 +6200,8 @@ mod tests {
                 batch_id: request.batch_id,
                 results: vec![ToolInvocationResult {
                     duration_ms: None,
+                    output_bytes: None,
+                    truncated: false,
                     call_id: call.call_id.clone(),
                     status: ToolCallStatus::Succeeded,
                     output_ref: None,
@@ -6396,6 +6408,8 @@ mod tests {
                 let content_ref = BlobRef::from_bytes(b"echo complete");
                 results.push(ToolInvocationResult {
                     duration_ms: None,
+                    output_bytes: None,
+                    truncated: false,
                     call_id: call.call_id.clone(),
                     status: ToolCallStatus::Succeeded,
                     output_ref: Some(content_ref.clone()),
@@ -6443,6 +6457,8 @@ mod tests {
             joined_ids.push((call.call_id.clone(), promise_id));
             results.push(ToolInvocationResult {
                 duration_ms: None,
+                output_bytes: None,
+                truncated: false,
                 call_id: call.call_id.clone(),
                 status: ToolCallStatus::Succeeded,
                 output_ref: None,
@@ -6653,6 +6669,8 @@ mod tests {
         };
         let completed_results = vec![ToolInvocationResult {
             duration_ms: None,
+            output_bytes: None,
+            truncated: false,
             call_id: workflow_call.call_id.clone(),
             status: ToolCallStatus::Succeeded,
             output_ref: None,
@@ -7468,6 +7486,8 @@ mod tests {
         let content_ref = BlobRef::from_bytes(call_id.as_str().as_bytes());
         ToolInvocationResult {
             duration_ms: None,
+            output_bytes: None,
+            truncated: false,
             call_id: call_id.clone(),
             status,
             output_ref: (status == ToolCallStatus::Succeeded).then(|| content_ref.clone()),

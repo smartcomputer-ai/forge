@@ -21,8 +21,8 @@ use tools::environment::{
     EnvironmentToolContext,
     jobs::{JobError, JobExecResult, JobExecutor},
     process::{
-        ProcessError, ProcessExecResult, ProcessExecutor, ProcessOutput, ProcessRequest,
-        WriteProcessStdinRequest,
+        ContinueProcessRequest, ProcessError, ProcessExecResult, ProcessExecutor, ProcessOutput,
+        ProcessRequest,
     },
 };
 
@@ -229,11 +229,11 @@ impl ProcessExecutor for CredentialInjectingProcessExecutor {
         self.inner.run_process(request).await
     }
 
-    async fn write_stdin(
+    async fn continue_process(
         &self,
-        request: WriteProcessStdinRequest,
+        request: ContinueProcessRequest,
     ) -> ProcessExecResult<ProcessOutput> {
-        self.inner.write_stdin(request).await
+        self.inner.continue_process(request).await
     }
 }
 

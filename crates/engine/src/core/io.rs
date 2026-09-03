@@ -505,6 +505,14 @@ pub struct ToolInvocationResult {
     /// `ToolCallResult` unchanged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub duration_ms: Option<u64>,
+    /// Bytes of model-visible text the tool produced before the runtime's
+    /// projection budget was applied. Absent for synthetic results and
+    /// executors that do not measure. Recorded telemetry only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_bytes: Option<u64>,
+    /// True when the projection cut the model-visible text to its budget.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub truncated: bool,
 }
 
 impl ToolInvocationResult {
@@ -626,6 +634,8 @@ mod tests {
                 .iter()
                 .map(|call| ToolInvocationResult {
                     duration_ms: None,
+                    output_bytes: None,
+                    truncated: false,
                     call_id: call.call_id.clone(),
                     status: ToolCallStatus::Succeeded,
                     output_ref: Some(call.arguments_ref.clone()),

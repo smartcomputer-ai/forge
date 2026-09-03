@@ -1,4 +1,11 @@
 //! Built-in filesystem and environment action tool definitions.
+//!
+//! A built-in tool is one substrate operation presented on one surface. The
+//! substrate is the same for every provider; a surface is a mapping table
+//! plus text, and never changes what the substrate does. A surface may
+//! present one operation as more than one tool (Claude Code's `BashOutput`
+//! and `KillShell` are both `continue_process`), and a toolset may restrict
+//! the process tools to a one-shot shape that omits the handle path.
 
 use engine::{
     FunctionToolSpec, ToolExecutionClass, ToolExecutionSpec, ToolKind, ToolName, ToolParallelism,
@@ -22,8 +29,8 @@ mod codex;
 mod shared;
 
 pub use crate::environment::tools::{
-    RunProcessArgs, WriteProcessStdinArgs, invoke_job_read, invoke_job_submit, invoke_run_process,
-    invoke_write_process_stdin,
+    ContinueProcessArgs, RunProcessArgs, invoke_continue_process, invoke_job_read,
+    invoke_job_submit, invoke_run_process,
 };
 pub use crate::fs::tools::{
     ApplyPatchArgs, ApplyPatchResult, EditFileArgs, EditFileResult, GlobArgs, GlobResult, GrepArgs,
@@ -42,7 +49,7 @@ pub enum BuiltinToolOperation {
     Glob,
     ListDir,
     RunProcess,
-    WriteProcessStdin,
+    ContinueProcess,
     JobSubmit,
     JobRun,
     JobRead,
@@ -61,11 +68,24 @@ pub enum BuiltinToolDomain {
     Environment,
 }
 
+/// Which of a surface's presentations of an operation this tool is. Only
+/// the Claude-Code-like `continue_process` has more than one.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
+pub enum BuiltinToolVariant {
+    Primary,
+    /// `KillShell`: `continue_process` with `signal: kill`.
+    Kill,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct BuiltinTool {
     domain: BuiltinToolDomain,
     operation: BuiltinToolOperation,
     surface: BuiltinToolSurface,
+    variant: BuiltinToolVariant,
+    /// The toolset omits the handle path: the run tool is rendered in its
+    /// restricted shape and the continue tool is absent.
+    one_shot: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -122,12 +142,19 @@ impl<'a> BuiltinToolContext<'a> {
     }
 }
 
+const ADAPTER_CANONICAL: &str = "canonical";
+const ADAPTER_CODEX: &str = "codex";
+const ADAPTER_CLAUDE: &str = "claude";
+const ADAPTER_ONE_SHOT_SUFFIX: &str = "-oneshot";
+
 impl BuiltinTool {
     pub const fn environment(operation: BuiltinToolOperation, surface: BuiltinToolSurface) -> Self {
         Self {
             domain: BuiltinToolDomain::Environment,
             operation,
             surface,
+            variant: BuiltinToolVariant::Primary,
+            one_shot: false,
         }
     }
 
@@ -150,7 +177,40 @@ impl BuiltinTool {
             domain: BuiltinToolDomain::Vfs,
             operation,
             surface,
+            variant: BuiltinToolVariant::Primary,
+            one_shot: false,
         }
+    }
+
+    pub const fn with_one_shot(mut self, one_shot: bool) -> Self {
+        self.one_shot = one_shot;
+        self
+    }
+
+    const fn kill_variant(mut self) -> Self {
+        self.variant = BuiltinToolVariant::Kill;
+        self
+    }
+
+    /// Every tool this surface renders for the operation: the primary one,
+    /// plus `KillShell` for the Claude-Code-like continue operation.
+    pub fn variants(self) -> Vec<Self> {
+        if self.has_kill_variant() {
+            vec![self, self.kill_variant()]
+        } else {
+            vec![self]
+        }
+    }
+
+    const fn has_kill_variant(self) -> bool {
+        matches!(
+            (self.domain, self.surface, self.operation),
+            (
+                BuiltinToolDomain::Environment,
+                BuiltinToolSurface::ClaudeCodeLike,
+                BuiltinToolOperation::ContinueProcess
+            )
+        )
     }
 
     pub const fn operation(self) -> BuiltinToolOperation {
@@ -163,6 +223,14 @@ impl BuiltinTool {
 
     pub const fn domain(self) -> BuiltinToolDomain {
         self.domain
+    }
+
+    pub const fn variant(self) -> BuiltinToolVariant {
+        self.variant
+    }
+
+    pub const fn one_shot(self) -> bool {
+        self.one_shot
     }
 
     pub const fn logical_id(self) -> &'static str {
@@ -182,8 +250,8 @@ impl BuiltinTool {
             (BuiltinToolDomain::Environment, BuiltinToolOperation::Glob) => "env.glob",
             (BuiltinToolDomain::Environment, BuiltinToolOperation::ListDir) => "env.list_dir",
             (BuiltinToolDomain::Environment, BuiltinToolOperation::RunProcess) => "env.run_process",
-            (BuiltinToolDomain::Environment, BuiltinToolOperation::WriteProcessStdin) => {
-                "env.write_process_stdin"
+            (BuiltinToolDomain::Environment, BuiltinToolOperation::ContinueProcess) => {
+                "env.continue_process"
             }
             (BuiltinToolDomain::Environment, BuiltinToolOperation::JobSubmit) => "env.job_submit",
             (BuiltinToolDomain::Environment, BuiltinToolOperation::JobRun) => "env.job_run",
@@ -191,7 +259,7 @@ impl BuiltinTool {
             (
                 BuiltinToolDomain::Vfs,
                 BuiltinToolOperation::RunProcess
-                | BuiltinToolOperation::WriteProcessStdin
+                | BuiltinToolOperation::ContinueProcess
                 | BuiltinToolOperation::JobSubmit
                 | BuiltinToolOperation::JobRun
                 | BuiltinToolOperation::JobRead,
@@ -242,79 +310,82 @@ impl BuiltinTool {
                 (
                     _,
                     BuiltinToolOperation::RunProcess
-                    | BuiltinToolOperation::WriteProcessStdin
+                    | BuiltinToolOperation::ContinueProcess
                     | BuiltinToolOperation::JobSubmit
                     | BuiltinToolOperation::JobRun
                     | BuiltinToolOperation::JobRead,
                 ) => unreachable!(),
             };
         }
-        match (self.surface, self.operation) {
+        match (self.surface, self.operation, self.variant) {
             (
                 BuiltinToolSurface::Canonical | BuiltinToolSurface::CodexLike,
                 BuiltinToolOperation::ReadFile,
+                _,
             ) => "read_file",
             (
                 BuiltinToolSurface::Canonical | BuiltinToolSurface::CodexLike,
                 BuiltinToolOperation::WriteFile,
+                _,
             ) => "write_file",
             (
                 BuiltinToolSurface::Canonical | BuiltinToolSurface::CodexLike,
                 BuiltinToolOperation::EditFile,
+                _,
             ) => "edit_file",
             (
                 BuiltinToolSurface::Canonical | BuiltinToolSurface::CodexLike,
                 BuiltinToolOperation::ApplyPatch,
+                _,
             ) => "apply_patch",
             (
                 BuiltinToolSurface::Canonical | BuiltinToolSurface::CodexLike,
                 BuiltinToolOperation::Grep,
+                _,
             ) => "grep",
             (
                 BuiltinToolSurface::Canonical | BuiltinToolSurface::CodexLike,
                 BuiltinToolOperation::Glob,
+                _,
             ) => "glob",
             (
                 BuiltinToolSurface::Canonical | BuiltinToolSurface::CodexLike,
                 BuiltinToolOperation::ListDir,
+                _,
             ) => "list_dir",
-            (
-                BuiltinToolSurface::Canonical | BuiltinToolSurface::CodexLike,
-                BuiltinToolOperation::RunProcess,
-            ) => "exec_command",
-            (
-                BuiltinToolSurface::Canonical | BuiltinToolSurface::CodexLike,
-                BuiltinToolOperation::WriteProcessStdin,
-            ) => "write_stdin",
-            (
-                BuiltinToolSurface::Canonical
-                | BuiltinToolSurface::CodexLike
-                | BuiltinToolSurface::ClaudeCodeLike,
-                BuiltinToolOperation::JobSubmit,
-            ) => crate::environment::jobs::JOB_SUBMIT_TOOL_NAME,
-            (
-                BuiltinToolSurface::Canonical
-                | BuiltinToolSurface::CodexLike
-                | BuiltinToolSurface::ClaudeCodeLike,
-                BuiltinToolOperation::JobRun,
-            ) => crate::environment::jobs::JOB_RUN_TOOL_NAME,
-            (
-                BuiltinToolSurface::Canonical
-                | BuiltinToolSurface::CodexLike
-                | BuiltinToolSurface::ClaudeCodeLike,
-                BuiltinToolOperation::JobRead,
-            ) => crate::environment::jobs::JOB_READ_TOOL_NAME,
-            (BuiltinToolSurface::ClaudeCodeLike, BuiltinToolOperation::ReadFile) => "Read",
-            (BuiltinToolSurface::ClaudeCodeLike, BuiltinToolOperation::WriteFile) => "Write",
-            (BuiltinToolSurface::ClaudeCodeLike, BuiltinToolOperation::EditFile) => "Edit",
-            (BuiltinToolSurface::ClaudeCodeLike, BuiltinToolOperation::Grep) => "Grep",
-            (BuiltinToolSurface::ClaudeCodeLike, BuiltinToolOperation::Glob) => "Glob",
-            (BuiltinToolSurface::ClaudeCodeLike, BuiltinToolOperation::RunProcess) => "Bash",
-            (BuiltinToolSurface::ClaudeCodeLike, BuiltinToolOperation::ApplyPatch) => "apply_patch",
-            (BuiltinToolSurface::ClaudeCodeLike, BuiltinToolOperation::ListDir) => "ListDir",
-            (BuiltinToolSurface::ClaudeCodeLike, BuiltinToolOperation::WriteProcessStdin) => {
+            (BuiltinToolSurface::Canonical, BuiltinToolOperation::RunProcess, _) => "run_process",
+            (BuiltinToolSurface::Canonical, BuiltinToolOperation::ContinueProcess, _) => {
+                "continue_process"
+            }
+            (BuiltinToolSurface::CodexLike, BuiltinToolOperation::RunProcess, _) => "exec_command",
+            (BuiltinToolSurface::CodexLike, BuiltinToolOperation::ContinueProcess, _) => {
                 "write_stdin"
             }
+            (_, BuiltinToolOperation::JobSubmit, _) => {
+                crate::environment::jobs::JOB_SUBMIT_TOOL_NAME
+            }
+            (_, BuiltinToolOperation::JobRun, _) => crate::environment::jobs::JOB_RUN_TOOL_NAME,
+            (_, BuiltinToolOperation::JobRead, _) => crate::environment::jobs::JOB_READ_TOOL_NAME,
+            (BuiltinToolSurface::ClaudeCodeLike, BuiltinToolOperation::ReadFile, _) => "Read",
+            (BuiltinToolSurface::ClaudeCodeLike, BuiltinToolOperation::WriteFile, _) => "Write",
+            (BuiltinToolSurface::ClaudeCodeLike, BuiltinToolOperation::EditFile, _) => "Edit",
+            (BuiltinToolSurface::ClaudeCodeLike, BuiltinToolOperation::Grep, _) => "Grep",
+            (BuiltinToolSurface::ClaudeCodeLike, BuiltinToolOperation::Glob, _) => "Glob",
+            (BuiltinToolSurface::ClaudeCodeLike, BuiltinToolOperation::RunProcess, _) => "Bash",
+            (BuiltinToolSurface::ClaudeCodeLike, BuiltinToolOperation::ApplyPatch, _) => {
+                "apply_patch"
+            }
+            (BuiltinToolSurface::ClaudeCodeLike, BuiltinToolOperation::ListDir, _) => "ListDir",
+            (
+                BuiltinToolSurface::ClaudeCodeLike,
+                BuiltinToolOperation::ContinueProcess,
+                BuiltinToolVariant::Primary,
+            ) => "BashOutput",
+            (
+                BuiltinToolSurface::ClaudeCodeLike,
+                BuiltinToolOperation::ContinueProcess,
+                BuiltinToolVariant::Kill,
+            ) => "KillShell",
         }
     }
 
@@ -374,8 +445,8 @@ impl BuiltinTool {
                 BuiltinToolOperation::RunProcess,
                 BuiltinToolSurface::Canonical,
             ),
-            "env.write_process_stdin" => Self::environment(
-                BuiltinToolOperation::WriteProcessStdin,
+            "env.continue_process" => Self::environment(
+                BuiltinToolOperation::ContinueProcess,
                 BuiltinToolSurface::Canonical,
             ),
             "env.job_submit" => Self::environment(
@@ -392,15 +463,44 @@ impl BuiltinTool {
         })
     }
 
-    pub fn from_binding(logical_id: &str, adapter_id: Option<&str>) -> Option<Self> {
+    /// Resolves a catalog binding back to the tool that rendered it. The
+    /// adapter id carries the surface and the one-shot policy; the tool name
+    /// picks the variant when a surface renders the operation twice.
+    pub fn from_binding(
+        logical_id: &str,
+        adapter_id: Option<&str>,
+        tool_name: &str,
+    ) -> Option<Self> {
         let mut tool = Self::from_logical_id(logical_id)?;
-        tool.surface = match adapter_id.unwrap_or("canonical") {
-            "canonical" => BuiltinToolSurface::Canonical,
-            "codex" => BuiltinToolSurface::CodexLike,
-            "claude" => BuiltinToolSurface::ClaudeCodeLike,
+        let adapter_id = adapter_id.unwrap_or(ADAPTER_CANONICAL);
+        let (surface_id, one_shot) = match adapter_id.strip_suffix(ADAPTER_ONE_SHOT_SUFFIX) {
+            Some(surface_id) => (surface_id, true),
+            None => (adapter_id, false),
+        };
+        tool.surface = match surface_id {
+            ADAPTER_CANONICAL => BuiltinToolSurface::Canonical,
+            ADAPTER_CODEX => BuiltinToolSurface::CodexLike,
+            ADAPTER_CLAUDE => BuiltinToolSurface::ClaudeCodeLike,
             _ => return None,
         };
+        tool.one_shot = one_shot;
+        if tool.has_kill_variant() && tool.kill_variant().name_str() == tool_name {
+            tool = tool.kill_variant();
+        }
         Some(tool)
+    }
+
+    fn adapter_id(self) -> String {
+        let surface = match self.surface {
+            BuiltinToolSurface::Canonical => ADAPTER_CANONICAL,
+            BuiltinToolSurface::CodexLike => ADAPTER_CODEX,
+            BuiltinToolSurface::ClaudeCodeLike => ADAPTER_CLAUDE,
+        };
+        if self.one_shot {
+            format!("{surface}{ADAPTER_ONE_SHOT_SUFFIX}")
+        } else {
+            surface.to_owned()
+        }
     }
 
     pub const fn requires_write(self) -> bool {
@@ -415,7 +515,7 @@ impl BuiltinTool {
     pub const fn requires_process(self) -> bool {
         matches!(
             self.operation,
-            BuiltinToolOperation::RunProcess | BuiltinToolOperation::WriteProcessStdin
+            BuiltinToolOperation::RunProcess | BuiltinToolOperation::ContinueProcess
         )
     }
 
@@ -442,7 +542,7 @@ impl BuiltinTool {
             | BuiltinToolOperation::EditFile
             | BuiltinToolOperation::ApplyPatch
             | BuiltinToolOperation::RunProcess
-            | BuiltinToolOperation::WriteProcessStdin
+            | BuiltinToolOperation::ContinueProcess
             | BuiltinToolOperation::JobSubmit
             | BuiltinToolOperation::JobRun => ToolParallelism::Exclusive,
             BuiltinToolOperation::JobRead => ToolParallelism::ParallelSafe,
@@ -464,7 +564,7 @@ impl BuiltinTool {
                 class: ToolExecutionClass::Interactive,
                 retry_safe: false,
             },
-            BuiltinToolOperation::RunProcess | BuiltinToolOperation::WriteProcessStdin => {
+            BuiltinToolOperation::RunProcess | BuiltinToolOperation::ContinueProcess => {
                 ToolExecutionSpec {
                     class: ToolExecutionClass::Process,
                     retry_safe: false,
@@ -488,11 +588,7 @@ impl BuiltinTool {
             dispatch,
             self.parallelism(),
         )
-        .with_adapter_id(match self.surface {
-            BuiltinToolSurface::Canonical => "canonical",
-            BuiltinToolSurface::CodexLike => "codex",
-            BuiltinToolSurface::ClaudeCodeLike => "claude",
-        })
+        .with_adapter_id(self.adapter_id())
     }
 
     pub fn spec_bundle(
@@ -529,11 +625,9 @@ impl BuiltinTool {
 
     fn description(self, scoped_paths: bool) -> ToolResult<String> {
         let description = match self.surface {
-            BuiltinToolSurface::Canonical => {
-                Ok(canonical::description(self.operation, scoped_paths))
-            }
-            BuiltinToolSurface::CodexLike => Ok(codex::description(self.operation, scoped_paths)),
-            BuiltinToolSurface::ClaudeCodeLike => claude::description(self.operation, scoped_paths),
+            BuiltinToolSurface::Canonical => Ok(canonical::description(self, scoped_paths)),
+            BuiltinToolSurface::CodexLike => Ok(codex::description(self, scoped_paths)),
+            BuiltinToolSurface::ClaudeCodeLike => claude::description(self, scoped_paths),
         }?;
         let boundary = match self.domain {
             BuiltinToolDomain::Vfs => {
@@ -551,9 +645,9 @@ impl BuiltinTool {
 
     fn input_schema(self, _target: &ToolTarget) -> ToolResult<Value> {
         match self.surface {
-            BuiltinToolSurface::Canonical => Ok(canonical::input_schema(self.operation)),
-            BuiltinToolSurface::CodexLike => Ok(codex::input_schema(self.operation)),
-            BuiltinToolSurface::ClaudeCodeLike => claude::input_schema(self.operation),
+            BuiltinToolSurface::Canonical => Ok(canonical::input_schema(self)),
+            BuiltinToolSurface::CodexLike => Ok(codex::input_schema(self)),
+            BuiltinToolSurface::ClaudeCodeLike => claude::input_schema(self),
         }
     }
 
@@ -563,15 +657,9 @@ impl BuiltinTool {
         arguments: Value,
     ) -> ToolResult<ToolInvocationOutput> {
         match self.surface {
-            BuiltinToolSurface::Canonical => {
-                canonical::invoke_json(self.operation, ctx, arguments).await
-            }
-            BuiltinToolSurface::CodexLike => {
-                codex::invoke_json(self.operation, ctx, arguments).await
-            }
-            BuiltinToolSurface::ClaudeCodeLike => {
-                claude::invoke_json(self.operation, ctx, arguments).await
-            }
+            BuiltinToolSurface::Canonical => canonical::invoke_json(self, ctx, arguments).await,
+            BuiltinToolSurface::CodexLike => codex::invoke_json(self, ctx, arguments).await,
+            BuiltinToolSurface::ClaudeCodeLike => claude::invoke_json(self, ctx, arguments).await,
         }
     }
 }
@@ -587,7 +675,7 @@ impl BuiltinToolOperation {
             Self::Glob => "glob",
             Self::ListDir => "list_dir",
             Self::RunProcess => "run_process",
-            Self::WriteProcessStdin => "write_process_stdin",
+            Self::ContinueProcess => "continue_process",
             Self::JobSubmit => "job_submit",
             Self::JobRun => "job_run",
             Self::JobRead => "job_read",
@@ -618,7 +706,7 @@ mod tests {
             BuiltinTool::environment_canonical(BuiltinToolOperation::Glob),
             BuiltinTool::environment_canonical(BuiltinToolOperation::ListDir),
             BuiltinTool::environment_canonical(BuiltinToolOperation::RunProcess),
-            BuiltinTool::environment_canonical(BuiltinToolOperation::WriteProcessStdin),
+            BuiltinTool::environment_canonical(BuiltinToolOperation::ContinueProcess),
             BuiltinTool::environment_canonical(BuiltinToolOperation::JobSubmit),
             BuiltinTool::environment_canonical(BuiltinToolOperation::JobRun),
         ] {
@@ -676,10 +764,97 @@ mod tests {
     }
 
     #[test]
-    fn process_tools_use_stable_environment_logical_ids() {
-        let tool = BuiltinTool::environment_canonical(BuiltinToolOperation::RunProcess);
-        assert_eq!(tool.domain(), BuiltinToolDomain::Environment);
-        assert_eq!(tool.logical_id(), "env.run_process");
+    fn process_tools_use_stable_environment_logical_ids_on_every_surface() {
+        for surface in [
+            BuiltinToolSurface::Canonical,
+            BuiltinToolSurface::CodexLike,
+            BuiltinToolSurface::ClaudeCodeLike,
+        ] {
+            let run = BuiltinTool::environment(BuiltinToolOperation::RunProcess, surface);
+            assert_eq!(run.domain(), BuiltinToolDomain::Environment);
+            assert_eq!(run.logical_id(), "env.run_process");
+            let cont = BuiltinTool::environment(BuiltinToolOperation::ContinueProcess, surface);
+            assert_eq!(cont.logical_id(), "env.continue_process");
+        }
+        assert!(BuiltinTool::from_logical_id("env.write_process_stdin").is_none());
+    }
+
+    #[test]
+    fn surface_names_for_process_tools() {
+        let names = |surface| {
+            BuiltinTool::environment(BuiltinToolOperation::ContinueProcess, surface)
+                .variants()
+                .into_iter()
+                .map(|tool| tool.name_str())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            BuiltinTool::environment(
+                BuiltinToolOperation::RunProcess,
+                BuiltinToolSurface::Canonical
+            )
+            .name_str(),
+            "run_process"
+        );
+        assert_eq!(
+            BuiltinTool::environment(
+                BuiltinToolOperation::RunProcess,
+                BuiltinToolSurface::CodexLike
+            )
+            .name_str(),
+            "exec_command"
+        );
+        assert_eq!(
+            BuiltinTool::environment(
+                BuiltinToolOperation::RunProcess,
+                BuiltinToolSurface::ClaudeCodeLike
+            )
+            .name_str(),
+            "Bash"
+        );
+        assert_eq!(names(BuiltinToolSurface::Canonical), ["continue_process"]);
+        assert_eq!(names(BuiltinToolSurface::CodexLike), ["write_stdin"]);
+        assert_eq!(
+            names(BuiltinToolSurface::ClaudeCodeLike),
+            ["BashOutput", "KillShell"]
+        );
+    }
+
+    #[test]
+    fn bindings_round_trip_surface_variant_and_one_shot_policy() {
+        let target = target();
+        let kill = BuiltinTool::environment(
+            BuiltinToolOperation::ContinueProcess,
+            BuiltinToolSurface::ClaudeCodeLike,
+        )
+        .kill_variant();
+        let binding = kill.binding(&target, ToolDispatchMode::Local);
+        assert_eq!(binding.tool_name.as_str(), "KillShell");
+        assert_eq!(binding.adapter_id.as_deref(), Some("claude"));
+        let resolved = BuiltinTool::from_binding(
+            &binding.logical_id,
+            binding.adapter_id.as_deref(),
+            binding.tool_name.as_str(),
+        )
+        .expect("binding resolves");
+        assert_eq!(resolved, kill);
+        assert_eq!(resolved.variant(), BuiltinToolVariant::Kill);
+
+        let one_shot = BuiltinTool::environment(
+            BuiltinToolOperation::RunProcess,
+            BuiltinToolSurface::CodexLike,
+        )
+        .with_one_shot(true);
+        let binding = one_shot.binding(&target, ToolDispatchMode::Local);
+        assert_eq!(binding.adapter_id.as_deref(), Some("codex-oneshot"));
+        let resolved = BuiltinTool::from_binding(
+            &binding.logical_id,
+            binding.adapter_id.as_deref(),
+            binding.tool_name.as_str(),
+        )
+        .expect("binding resolves");
+        assert!(resolved.one_shot());
+        assert_eq!(resolved.surface(), BuiltinToolSurface::CodexLike);
     }
 
     #[test]
@@ -745,10 +920,14 @@ mod tests {
         let run: RunProcessArgs =
             decode_args(json!({ "argv": ["cargo", "test"] })).expect("run args");
         assert!(run.env.is_empty());
+        assert!(!run.tty);
+        assert_eq!(run.timeout_ms, None);
 
-        let stdin: WriteProcessStdinArgs =
-            decode_args(json!({ "handle": "proc-1", "input": "q" })).expect("stdin args");
-        assert_eq!(stdin.handle.as_str(), "proc-1");
-        assert!(!stdin.close_stdin);
+        let cont: ContinueProcessArgs =
+            decode_args(json!({ "handle": "proc-1" })).expect("continue args");
+        assert_eq!(cont.handle.as_str(), "proc-1");
+        assert!(!cont.close_stdin);
+        assert_eq!(cont.input, None);
+        assert_eq!(cont.signal, None);
     }
 }

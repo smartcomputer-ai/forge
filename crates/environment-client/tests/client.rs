@@ -288,7 +288,7 @@ async fn controller_client_sends_typed_initialize_request() {
                 "name": "test-controller",
                 "version": "0.1.0"
             },
-            "protocolVersion": 1
+            "protocolVersion": 2
         }
     })]);
     let mut client = EnvironmentProviderClient::new(transport);

@@ -6,7 +6,7 @@ use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error as SerdeError};
 use thiserror::Error;
 
-pub const CURRENT_PROTOCOL_VERSION: u32 = 1;
+pub const CURRENT_PROTOCOL_VERSION: u32 = 2;
 
 macro_rules! string_id {
     ($name:ident) => {

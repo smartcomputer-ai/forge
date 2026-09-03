@@ -741,13 +741,17 @@ impl SessionTools {
             .put_bytes(serde_json::to_vec(output).map_err(io_error)?)
             .await
             .map_err(map_blob_error)?;
+        let visible = visible.into().into_bytes();
+        let output_bytes = visible.len() as u64;
         let visible_ref = self
             .blobs
-            .put_bytes(visible.into().into_bytes())
+            .put_bytes(visible)
             .await
             .map_err(map_blob_error)?;
         Ok(ToolInvocationResult {
             duration_ms: None,
+            output_bytes: Some(output_bytes),
+            truncated: false,
             call_id: call.call_id.clone(),
             status: ToolCallStatus::Succeeded,
             output_ref: Some(output_ref),
@@ -767,9 +771,11 @@ impl SessionTools {
         jobs: Vec<ModelJobResult>,
     ) -> Result<ToolInvocationResult, CoreAgentIoError> {
         let output = ModelJobResultSet { jobs };
+        let output_json = serde_json::to_vec(&output).map_err(io_error)?;
+        let output_bytes = output_json.len() as u64;
         let output_ref = self
             .blobs
-            .put_bytes(serde_json::to_vec(&output).map_err(io_error)?)
+            .put_bytes(output_json)
             .await
             .map_err(map_blob_error)?;
         let edges = output
@@ -793,6 +799,8 @@ impl SessionTools {
         }
         Ok(ToolInvocationResult {
             duration_ms: None,
+            output_bytes: Some(output_bytes),
+            truncated: false,
             call_id: call.call_id.clone(),
             status: ToolCallStatus::Succeeded,
             output_ref: Some(output_ref.clone()),
@@ -1872,6 +1880,8 @@ async fn failed_result_bytes(
     let error_ref = blobs.put_bytes(bytes).await.map_err(map_blob_error)?;
     Ok(ToolInvocationResult {
         duration_ms: None,
+        output_bytes: None,
+        truncated: false,
         call_id: call_id.clone(),
         status: ToolCallStatus::Failed,
         output_ref: None,
@@ -1946,8 +1956,8 @@ mod tests {
     use tools::environment::{
         EnvironmentToolContext,
         process::{
-            ProcessError, ProcessExecResult, ProcessExecutor, ProcessOutput, ProcessRequest,
-            ProcessStatus, StreamOutput, WriteProcessStdinRequest,
+            ContinueProcessRequest, ProcessError, ProcessExecResult, ProcessExecutor,
+            ProcessOutput, ProcessRequest, ProcessStatus, StreamOutput,
         },
     };
     use vfs::{
@@ -2784,19 +2794,22 @@ mod tests {
             Ok(ProcessOutput {
                 status: ProcessStatus::Succeeded,
                 handle: None,
+                pid: Some(1),
                 exit_code: Some(0),
+                failure: None,
                 stdout: StreamOutput {
                     bytes: b"process ok".to_vec(),
-                    truncated: false,
+                    omitted_at: None,
                 },
                 stderr: StreamOutput::default(),
-                orphaned_descendants: false,
+                omitted_bytes: 0,
+                leftover_processes: Vec::new(),
             })
         }
 
-        async fn write_stdin(
+        async fn continue_process(
             &self,
-            _request: WriteProcessStdinRequest,
+            _request: ContinueProcessRequest,
         ) -> ProcessExecResult<ProcessOutput> {
             Err(ProcessError::Unsupported {
                 message: "not needed".to_owned(),
@@ -3492,7 +3505,9 @@ mod tests {
                     },
                     engine::ToolInvocationRequest {
                         call_id: ToolCallId::new("call_process"),
-                        tool_name: ToolName::new("exec_command"),
+                        // The canonical surface takes argv; `exec_command` is
+                        // the Codex-like shape and takes a shell string.
+                        tool_name: ToolName::new("run_process"),
                         arguments_ref: process_args,
                         workflow_tool: None,
                         promise_control: None,

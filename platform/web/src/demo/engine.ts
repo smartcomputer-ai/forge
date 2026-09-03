@@ -402,7 +402,12 @@ export function finishRun(
   } else if (status === "cancelled") {
     pushEvent(session, { type: "runCancelled", runId: run.id }, joins, at);
   } else {
-    pushEvent(session, { type: "runFailed", runId: run.id, message: "demo run failed" }, joins, at);
+    pushEvent(
+      session,
+      { type: "runFailed", runId: run.id, kind: "internal", message: "demo run failed" },
+      joins,
+      at,
+    );
   }
   if (session.view.status !== "closed") session.view.status = "idle";
   const next = session.queue.shift();
@@ -881,7 +886,12 @@ export function appendScriptedRun(store: DemoStore, session: SessionRecord, scri
   run.completedAtMs = clock;
   if (script.failure) {
     run.status = "failed";
-    pushEvent(session, { type: "runFailed", runId: run.id, message: script.failure }, runJoins, clock);
+    pushEvent(
+      session,
+      { type: "runFailed", runId: run.id, kind: "internal", message: script.failure },
+      runJoins,
+      clock,
+    );
   } else {
     run.status = "completed";
     pushEvent(session, { type: "runCompleted", runId: run.id, outputRef: null }, runJoins, clock);

@@ -2961,6 +2961,8 @@ mod tests {
             .iter()
             .map(|invocation| ToolInvocationResult {
                 duration_ms: None,
+                output_bytes: None,
+                truncated: false,
                 call_id: invocation.tool_call_id.clone(),
                 status: ToolCallStatus::Succeeded,
                 output_ref: Some(BlobRef::from_bytes(b"accepted")),

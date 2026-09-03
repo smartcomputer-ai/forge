@@ -554,6 +554,7 @@ export type SessionEventKindView =
       type: "runCompleted";
     }
   | {
+      kind: RunFailureKindView;
       message: string;
       runId: string;
       type: "runFailed";
@@ -708,8 +709,10 @@ export type SessionEventKindView =
       batchId: string;
       callId: string;
       effects?: ToolEffectView[];
+      outputBytes?: number | null;
       runId: string;
       status: ToolItemStatus;
+      truncated?: boolean;
       turnId: string;
       type: "toolCallCompleted";
     }
@@ -749,6 +752,19 @@ export type PrincipalKind = "user" | "serviceAccount" | "universeDefault";
  * via the `definition` "ApprovalDecisionKind".
  */
 export type ApprovalDecisionKind = "approve" | "reject";
+/**
+ * Why a run failed, as the engine classified it.
+ *
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "RunFailureKindView".
+ */
+export type RunFailureKindView =
+  | "model_failure"
+  | "tool_failure"
+  | "context_failure"
+  | "limit_exceeded"
+  | "cancelled"
+  | "internal";
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "RunViewSource".

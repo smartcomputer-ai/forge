@@ -218,6 +218,7 @@ mod tests {
             idle_for_ms,
             running_processes,
             running_jobs,
+            leftover_process_groups: 0,
         }
     }
 

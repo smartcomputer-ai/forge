@@ -31,6 +31,58 @@
   readers: `orphaned_descendants`, `pipe_stdin`, `WriteProcessStdin`, and
   `env.write_process_stdin` are removed, and `envd` and the server release
   together ([P152](p152-envd-release-and-distribution.md)).
+- Implemented 2026-09-03, all three slices. Where the implementation had to
+  decide something the design left open, or found the design's wording did
+  not survive contact:
+  - The data-plane protocol version is 2. The wire changes are incompatible
+    in semantics even where the field shapes tolerate each other, and the
+    handshake rejects a mismatched daemon rather than dual-reading.
+  - `ReadProcessResponse` also carries `termination: timedOut | killed`, so
+    the runtime renders `[timed out]` and `[killed]` from a fact instead of
+    parsing the free-text `failure`. `ProcessStatus::Cancelled` became
+    `Killed`; `StreamOutput.truncated` is gone (the daemon applies
+    `max_bytes` and keeps the remainder at the cursor, so nothing is lost),
+    replaced by `omitted_at`, the byte offset where the retained buffer's
+    dropped middle sits.
+  - Leftovers are sampled when a read is answered, not once at exit: at the
+    instant the root exits a `nohup … &` child is often still the forked
+    shell mid-exec, and the model should see `sleep`, not `/bin/bash`. The
+    sample is `/proc` on Linux (pid, full command line) and libproc on macOS
+    (pid, executable path); empty elsewhere.
+  - `kill` and `interrupt` on a handle whose root already exited still reach
+    the group. That is how a handle stops the service its command left
+    behind without a shell round trip; the read that follows re-samples and
+    the note disappears once the group is gone.
+  - A read that observes a natural exit waits for the readers to reach end
+    of file, bounded by the drain grace, so the last bytes a command wrote
+    are in the same response as its exit code.
+  - Every substrate wait is bounded: `yield_ms` and `wait_ms` absent mean
+    the 30-minute ceiling, not an unbounded block, so a call always returns
+    with a handle before the process activity deadline would fail it.
+  - The one-shot policy is carried in the catalog binding's adapter id
+    (`codex-oneshot` and so on) so the runtime applies the restricted
+    defaults (Codex-like `timeout_ms` defaulting to 60 s) without a second
+    catalog.
+  - `outputBytes` counts the model-visible text before the projection
+    budget; `truncated` is that budget cutting it. Both are stamped by the
+    executing runtime on `ToolInvocationResult` and carried through the
+    durable `ToolCallResult` as telemetry, like `duration_ms`.
+  - Live coverage: `environment_registration_live` now drives the process
+    path through the real gateway and reverse-dialed data sockets against an
+    in-process `envd`: a leftover surviving its command's exit, reported by
+    pid and counted by the idle report without blocking quiescence, then
+    killed through the handle; the daemon cursor across two sockets; the
+    empty write as a wait; PTY input; interrupt reaching the group; and the
+    substrate executor's run, continue, and kill over the same transport.
+    `runs_live` asserts `toolCallCompleted.outputBytes` and `truncated` on
+    the parallel tool batch and `runFailed.kind` on the exhausted-retries
+    run, both read from the API event log.
+  - Not done: nothing kills an in-flight process when its activity is
+    cancelled and the connection drops; the daemon never had such a path
+    (the default 60 s `timeout_ms` was the only bound), and with
+    `timeout_ms` optional an abandoned in-flight run without one now simply
+    becomes a leftover of the environment. The Terminal-Bench rerun is
+    tracked in the adapter repository.
 - Scope is the `exec_command` process path of `lightspeed-envd`, the process
   operations and the three presentation surfaces in `crates/tools`, the
   daemon idle report, and the event fields an evaluator needs to account for
@@ -689,8 +741,3 @@ Server and benchmark:
   `toolCallCompleted`, regenerate the contract, and derive the adapter's
   measures from them. Independent of slices 1 and 2.
 
-### Slice 4 — Benchmark confirmation
-
-- Release and deploy `envd` and the server, rerun the affected Terminal-Bench
-  tasks through the `ls-benchmark` adapter, record the result in that
-  repository's `docs/next-steps.md`, and close this item.

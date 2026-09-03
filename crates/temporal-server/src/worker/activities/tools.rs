@@ -136,13 +136,13 @@ pub(super) async fn invoke_call(
                         .map_err(|error| engine::CoreAgentIoError::Failed {
                             message: format!("store native MCP result: {error}"),
                         })?;
-                    let visible_ref =
-                        deps.blobs
-                            .put_bytes(visible.into_bytes())
-                            .await
-                            .map_err(|error| engine::CoreAgentIoError::Failed {
-                                message: format!("store native MCP visible result: {error}"),
-                            })?;
+                    let visible = visible.into_bytes();
+                    let output_bytes = visible.len() as u64;
+                    let visible_ref = deps.blobs.put_bytes(visible).await.map_err(|error| {
+                        engine::CoreAgentIoError::Failed {
+                            message: format!("store native MCP visible result: {error}"),
+                        }
+                    })?;
                     let status = if is_error {
                         ToolCallStatus::Failed
                     } else {
@@ -150,6 +150,8 @@ pub(super) async fn invoke_call(
                     };
                     Ok(ToolCallExecution::Completed(ToolInvocationResult {
                         duration_ms: None,
+                        output_bytes: Some(output_bytes),
+                        truncated: false,
                         call_id: request.call.call_id.clone(),
                         status,
                         output_ref: Some(output_ref),

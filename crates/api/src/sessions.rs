@@ -1096,8 +1096,11 @@ pub enum SessionEventKindView {
         run_id: RunId,
         output_ref: Option<String>,
     },
+    /// The run ended in failure. `kind` is the engine's classification;
+    /// `message` is free text for display.
     RunFailed {
         run_id: RunId,
+        kind: RunFailureKindView,
         message: String,
     },
     RunCancelled {
@@ -1222,6 +1225,10 @@ pub enum SessionEventKindView {
         batch_id: String,
         call_id: String,
     },
+    /// One tool call finished. `output_bytes` is the size of the
+    /// model-visible text the tool produced before the runtime's projection
+    /// budget was applied, absent for synthetic results; `truncated` is true
+    /// when that budget cut it.
     ToolCallCompleted {
         run_id: RunId,
         turn_id: String,
@@ -1230,6 +1237,10 @@ pub enum SessionEventKindView {
         status: ToolItemStatus,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         effects: Vec<ToolEffectView>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        output_bytes: Option<u64>,
+        #[serde(default)]
+        truncated: bool,
     },
     ToolBatchDeferred {
         run_id: RunId,
@@ -1246,6 +1257,18 @@ pub enum SessionEventKindView {
         turn_id: String,
         batch_id: String,
     },
+}
+
+/// Why a run failed, as the engine classified it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum RunFailureKindView {
+    ModelFailure,
+    ToolFailure,
+    ContextFailure,
+    LimitExceeded,
+    Cancelled,
+    Internal,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

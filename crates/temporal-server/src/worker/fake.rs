@@ -417,6 +417,8 @@ impl CoreAgentTools for FakeTools {
                     .map_err(io_error)?;
                 results.push(ToolInvocationResult {
                     duration_ms: None,
+                    output_bytes: None,
+                    truncated: false,
                     call_id: call.call_id.clone(),
                     status: ToolCallStatus::Failed,
                     output_ref: None,
@@ -433,6 +435,7 @@ impl CoreAgentTools for FakeTools {
                 continue;
             }
             let output = format!("{}: {text}", call.tool_name);
+            let output_bytes = output.len() as u64;
             let output_ref = self
                 .blobs
                 .put_bytes(output.into_bytes())
@@ -440,6 +443,8 @@ impl CoreAgentTools for FakeTools {
                 .map_err(io_error)?;
             results.push(ToolInvocationResult {
                 duration_ms: None,
+                output_bytes: Some(output_bytes),
+                truncated: false,
                 call_id: call.call_id.clone(),
                 status: ToolCallStatus::Succeeded,
                 output_ref: Some(output_ref.clone()),

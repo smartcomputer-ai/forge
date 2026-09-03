@@ -796,6 +796,8 @@ async fn failed_tool_batch_result(
         .await?;
         results.push(ToolInvocationResult {
             duration_ms: None,
+            output_bytes: None,
+            truncated: false,
             call_id: call.call_id.clone(),
             status: ToolCallStatus::Failed,
             output_ref: None,
@@ -2364,6 +2366,8 @@ mod tests {
                 CoreAgentEvent::Tool(engine::ToolEvent::CallCompleted {
                     result: ToolCallResult {
                         duration_ms: None,
+                        output_bytes: None,
+                        truncated: false,
                         status: ToolCallStatus::Failed,
                         error_ref: Some(_),
                         ..

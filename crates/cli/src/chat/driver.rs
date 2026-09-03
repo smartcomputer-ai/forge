@@ -908,7 +908,9 @@ impl ChatSessionDriver {
                 )));
                 events.push(self.status_event("finishing"));
             }
-            SessionEventKindView::RunFailed { run_id, message } => {
+            SessionEventKindView::RunFailed {
+                run_id, message, ..
+            } => {
                 events.push(ChatEvent::RunChanged(self.run_view_from_status(
                     run_id,
                     api::RunStatus::Failed,

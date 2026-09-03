@@ -12,8 +12,14 @@
     }
   ],
   "closed": true,
-  "exited": true,
   "exitCode": 0,
+  "exited": true,
+  "leftoverProcesses": [
+    {
+      "command": "python -m http.server 8080",
+      "pid": 91
+    }
+  ],
   "nextSeq": 3,
-  "orphanedDescendants": true
+  "pid": 90
 }
