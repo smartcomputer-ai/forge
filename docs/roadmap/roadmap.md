@@ -1,6 +1,13 @@
 # Lightspeed Roadmap
 
 ## Work
+- [ ] [P156](p156-cas-blob-garbage-collection.md) — CAS blob garbage
+  collection (proposed 2026-09-03): session deletion leaves every blob
+  behind and the roots table has never been written. Store-derived roots at
+  event append, `touched_at_ms` on every put with a grace period instead of
+  put coordination, edges for nested formats, a bounded worker-role sweeper
+  with a dry-run CLI pass, and removal of the write-only raw provider
+  request/response dumps that are more than half of the bytes written today.
 - [x] [P155](p155-models-list-cache.md) — `models/list` discovery cache
   (implemented 2026-09-03): a process-local, per-universe and per-provider
   single-flight cache with a 10-second success TTL, 2-second failure TTL, and
