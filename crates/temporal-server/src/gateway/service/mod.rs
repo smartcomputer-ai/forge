@@ -138,8 +138,7 @@ use tools::{
         ResolvedToolset, ToolsetConfig, ToolsetEnvironment, enable_concurrency_for_workflow_tools,
         materialize_workflow_tools, resolve_toolset,
     },
-    web::fetch::WebFetchToolConfig,
-    web::search::OpenAiResponsesWebSearchConfig,
+    web::search::WebSearchToolConfig,
     workflow_tool::{
         validate_workflow_tool_definition_documents, validate_workflow_tool_reply_schema,
     },
@@ -899,13 +898,14 @@ impl GatewayAgentApi {
             Some(engine::VfsToolSurface::Edit) => tools::toolset::BuiltinToolsetConfig::workspace(),
         };
         if let Some(web) = features.web.as_ref() {
-            if web.search.is_some()
-                && session_config.model.api_kind == engine::ProviderApiKind::OpenAiResponses
-            {
-                config.openai_web_search = OpenAiResponsesWebSearchConfig::cached();
+            if let Some(search) = &web.search {
+                config.web.search = Some(WebSearchToolConfig::new(
+                    search.allowed_domains.clone().unwrap_or_default(),
+                    search.blocked_domains.clone(),
+                ));
             }
             if web.fetch.is_some() {
-                config.web_fetch = WebFetchToolConfig::enabled();
+                config.web.fetch = true;
             }
         }
         if features.timers.is_some() || features.subagents.is_some() {

@@ -466,7 +466,6 @@ mod tests {
         BuiltinToolPresentation, BuiltinToolsetConfig, FilesystemToolsetConfig, ToolsetConfig,
         ToolsetEnvironment, resolve_toolset,
     };
-    use crate::web::fetch::WebFetchToolConfig;
 
     #[derive(Default)]
     struct RecordingProcessExecutor {
@@ -594,7 +593,7 @@ mod tests {
     fn web_fetch_catalog() -> ToolCatalog {
         let target = ToolTarget::api_kind(engine::ProviderApiKind::OpenAiResponses);
         let mut config = ToolsetConfig::empty();
-        config.web_fetch = WebFetchToolConfig::enabled();
+        config.web.fetch = true;
         resolve_toolset(ToolsetEnvironment { target: &target }, &config)
             .expect("toolset")
             .catalog

@@ -48,7 +48,6 @@ use tools::{
     runtime::{ToolCatalog, ToolTarget},
     subagents::{AgentCallArgs, SubagentExecutionContextV1, SubagentToolKind},
     toolset::{EnvironmentToolsetConfig, ToolsetConfig, ToolsetEnvironment, resolve_toolset},
-    web::fetch::WebFetchToolConfig,
     workflow_tool::invoke_workflow_tool,
 };
 use vfs::{ResolvedWorkspaceLink, VfsCatalogError, VfsWorkspaceStore};
@@ -1359,7 +1358,7 @@ fn runtime_catalog(
         if include_job_tools {
             config.builtin.environment.job_read = true;
         }
-        config.web_fetch = WebFetchToolConfig::enabled();
+        config.web.fetch = true;
         let toolset = resolve_toolset(ToolsetEnvironment { target: &target }, &config)
             .map_err(|error| io_error(format!("build mounted vfs tool catalog: {error}")))?;
         for binding in toolset.catalog.bindings() {

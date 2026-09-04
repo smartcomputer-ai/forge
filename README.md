@@ -99,7 +99,9 @@ Lightspeed covers the table stakes of a modern agent harness. Everything below w
 
 - [x] **Virtual file system**: agents read and edit persistent files without an
   OS attached
-- [x] **Web access**: fetch, search, and extract tools
+- [x] **Web access**: provider-hosted search/fetch for Anthropic Messages,
+  hosted search for OpenAI Responses, and guarded local fetch/extraction on
+  non-Anthropic routes
 - [x] **Skills**, automatically discovered and loaded from the virtual filesystem
 - [x] **Hosted and native MCP**: connect local or remote servers with API keys
   or OAuth; Lightspeed handles tool discovery and approvals

@@ -1833,6 +1833,11 @@ export interface ContextView {
  * via the `definition` "ContextEntryView".
  */
 export interface ContextEntryView {
+  /**
+   * Sources this assistant message cites, derived from the provider-native
+   * cited entry that follows it. Empty for every other entry kind.
+   */
+  citations?: CitationView[];
   contentRef: string;
   display?: ProviderContextDisplayView | null;
   id: string;
@@ -1867,6 +1872,18 @@ export interface ContextEntryView {
    */
   textTruncated?: boolean;
   tokenEstimate?: TokenEstimateView | null;
+}
+/**
+ * A source the assistant cited, in the same shape for every provider. The
+ * exact provider output stays in a separate opaque context entry for replay.
+ *
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "CitationView".
+ */
+export interface CitationView {
+  citedText?: string | null;
+  title?: string | null;
+  url: string;
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
