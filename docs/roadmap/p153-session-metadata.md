@@ -174,8 +174,11 @@ sessions to its environments.
   that loop over the selection after a count confirmation. Selecting every
   match first fetches every filtered page so the scope is explicit. The map
   is inspectable and editable in session settings.
-- Platform profile editor: a Session metadata section edits creation defaults;
-  the new-session flow preserves them for named and customized inline profiles.
+- Platform setup editors place the full metadata map in an always-available,
+  collapsed Session metadata card after the capability list. Profile and bot
+  settings edit creation defaults, customized new sessions can override them,
+  and live-session settings edit the current map. This is only a UI grouping:
+  metadata remains separate from `SessionConfig` on the wire.
 
 ## Acceptance
 

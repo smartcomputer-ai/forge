@@ -238,6 +238,7 @@ describe("environment feature config", () => {
         },
       },
       onChange: () => {},
+      metadataSetup: createElement("p", null, "Metadata fields"),
     }));
     const labels = [
       "Environments",
@@ -246,12 +247,17 @@ describe("environment feature config", () => {
       "Virtual File System: Files, Instructions, Skills",
       "Web",
       "Timers",
+      "Session metadata",
     ];
     const positions = labels.map((label) => html.indexOf(label));
 
     expect(positions.every((position) => position >= 0)).toBe(true);
     expect(positions).toEqual([...positions].sort((left, right) => left - right));
-    expect(html.slice(html.indexOf('aria-label="Enable Timers"'))).not.toContain("aria-expanded");
+    const timersStart = html.indexOf('aria-label="Enable Timers"');
+    const timersEnd = html.indexOf("</button></div></div>", timersStart);
+    const timersHtml = html.slice(timersStart, timersEnd);
+    expect(timersHtml).not.toContain("aria-expanded");
+    expect(html).not.toContain("Metadata fields");
   });
 });
 

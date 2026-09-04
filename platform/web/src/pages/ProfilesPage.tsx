@@ -22,10 +22,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import {
-  MetadataEditor,
-  metadataToRows,
-  rowsToMetadata,
-  type MetadataRow,
+  MetadataMapEditor,
 } from "@/components/session/metadata-editor";
 import { ProfileEnvironmentEditor } from "@/components/session/profile-environment-editor";
 import { SessionConfigEditor } from "@/components/session/session-config-editor";
@@ -382,7 +379,6 @@ function ProfileEditor({
         ) : (
           <div className="mx-auto grid w-full max-w-5xl gap-8 px-4 py-6 md:px-8">
             <GeneralSection draft={draft} mutate={mutate} />
-            <MetadataSection draft={draft} mutate={mutate} />
             <InstructionsSection draft={draft} mutate={mutate} />
             <ConfigSection
               universeId={universeId}
@@ -465,38 +461,6 @@ function GeneralSection({ draft, mutate }: { draft: ProfileDocument; mutate: Mut
   );
 }
 
-function MetadataSection({ draft, mutate }: { draft: ProfileDocument; mutate: Mutate }) {
-  const source = JSON.stringify(draft.metadata ?? {});
-  const [rows, setRows] = useState<MetadataRow[]>(() => metadataToRows(draft.metadata));
-  const [syncedSource, setSyncedSource] = useState(source);
-
-  useEffect(() => {
-    if (source !== syncedSource) {
-      setRows(metadataToRows(draft.metadata));
-      setSyncedSource(source);
-    }
-  }, [draft.metadata, source, syncedSource]);
-
-  const changeRows = (next: MetadataRow[]) => {
-    const metadata = rowsToMetadata(next);
-    setRows(next);
-    setSyncedSource(JSON.stringify(metadata));
-    mutate((document) => {
-      if (Object.keys(metadata).length > 0) document.metadata = metadata;
-      else delete document.metadata;
-    });
-  };
-
-  return (
-    <Section
-      title="Session metadata"
-      description="Defaults copied when a session is created. Start-time metadata overrides matching keys; applying this profile later does not change metadata."
-    >
-      <MetadataEditor rows={rows} onChange={changeRows} />
-    </Section>
-  );
-}
-
 function InstructionsSection({
   draft,
   mutate,
@@ -571,6 +535,18 @@ function ConfigSection({
         profiles={options.profiles}
         environmentProviders={options.environmentProviders}
         featureDisableReasons={resourceFeatureDisableReasons(draft)}
+        metadataSetup={(
+          <MetadataMapEditor
+            value={draft.metadata}
+            onChange={(metadata) =>
+              mutate((document) => {
+                if (metadata) document.metadata = metadata;
+                else delete document.metadata;
+              })
+            }
+          />
+        )}
+        metadataDescription="Defaults copied when a session is created. Start-time metadata overrides matching keys."
         environmentSetup={(
           <ProfileEnvironmentEditor
             embedded

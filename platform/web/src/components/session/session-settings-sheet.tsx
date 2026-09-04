@@ -291,17 +291,6 @@ function LiveSessionSetup({
         <div className="grid gap-8">
           <section className="grid gap-3">
             <div className="grid gap-0.5">
-              <h2 className="text-sm font-semibold">Metadata</h2>
-              <p className="text-xs text-muted-foreground">
-                Descriptive key/value pairs for finding this session in the list; they never
-                affect how it runs. Keys up to 64 bytes, values up to 256, no{" "}
-                <code>lightspeed.</code> prefix.
-              </p>
-            </div>
-            <MetadataEditor rows={metadataRows} onChange={setMetadataRows} disabled={save.isPending} />
-          </section>
-          <section className="grid gap-3">
-            <div className="grid gap-0.5">
               <h2 className="text-sm font-semibold">Automatic deletion</h2>
               {session?.retention.rootSessionId === sessionId ? (
                 <p className="text-xs text-muted-foreground">
@@ -378,6 +367,14 @@ function LiveSessionSetup({
               featureDisableReasons={resourceFeatureDisableReasons({
                 config: configDraft,
               })}
+              metadataSetup={(
+                <MetadataEditor
+                  rows={metadataRows}
+                  onChange={setMetadataRows}
+                  disabled={save.isPending}
+                />
+              )}
+              metadataDescription="Descriptive key/value pairs for finding this session in the list. Keys are limited to 64 bytes, values to 256 bytes, and the lightspeed. prefix is reserved."
               environmentSetup={(
                 <ActiveEnvironmentEditor
                   embedded

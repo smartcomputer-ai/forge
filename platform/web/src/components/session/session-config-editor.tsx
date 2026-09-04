@@ -10,6 +10,7 @@ import {
   Plus,
   Server,
   SlidersHorizontal,
+  Tags,
   Trash2,
   Wrench,
 } from "lucide-react";
@@ -92,6 +93,8 @@ type Props = {
   featureDisableReasons?: Partial<Record<FeatureName, string>>;
   environmentSetup?: ReactNode;
   hideEnvironmentFeature?: boolean;
+  metadataSetup?: ReactNode;
+  metadataDescription?: string;
   pinnedApiKind?: string;
   className?: string;
 };
@@ -427,6 +430,8 @@ export function SessionConfigEditor({
   featureDisableReasons = {},
   environmentSetup,
   hideEnvironmentFeature = false,
+  metadataSetup,
+  metadataDescription = "Descriptive key/value pairs for finding sessions. Metadata never changes how a session runs.",
   pinnedApiKind,
   className,
 }: Props) {
@@ -527,8 +532,51 @@ export function SessionConfigEditor({
                 {name === "mcp" && <McpFields feature={record(features.mcp)} servers={mcpServers} patch={(fn) => patchFeature("mcp", fn)} />}
               </FeaturePanel>
             ))}
+          {metadataSetup && (
+            <ExpandableSetupPanel
+              title="Session metadata"
+              description={metadataDescription}
+              icon={Tags}
+            >
+              {metadataSetup}
+            </ExpandableSetupPanel>
+          )}
         </div>
       </section>
+    </div>
+  );
+}
+
+function ExpandableSetupPanel({
+  title,
+  description,
+  icon: Icon,
+  children,
+}: {
+  title: string;
+  description: string;
+  icon: typeof Tags;
+  children: ReactNode;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="rounded-lg border">
+      <button
+        type="button"
+        aria-expanded={open}
+        className="flex min-h-16 w-full cursor-pointer items-center gap-3 rounded-md px-4 py-3 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        onClick={() => setOpen((value) => !value)}
+      >
+        <Icon className="size-4 shrink-0 text-muted-foreground" />
+        <span className="min-w-0 flex-1">
+          <span className="block text-sm font-medium">{title}</span>
+          <span className="block text-xs text-muted-foreground">{description}</span>
+        </span>
+        <span className="flex size-8 shrink-0 items-center justify-center" aria-hidden="true">
+          {open ? <ChevronDown /> : <ChevronRight />}
+        </span>
+      </button>
+      {open && <div className="border-t px-4 py-4">{children}</div>}
     </div>
   );
 }

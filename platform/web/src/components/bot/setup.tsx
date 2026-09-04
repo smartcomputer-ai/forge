@@ -43,6 +43,7 @@ import {
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { ProfileEnvironmentEditor } from "@/components/session/profile-environment-editor";
+import { MetadataMapEditor } from "@/components/session/metadata-editor";
 import {
   EnvironmentFeatureEditor,
   SessionConfigEditor,
@@ -374,6 +375,7 @@ type SaveableFields = {
   config?: Record<string, unknown> | undefined;
   instructions?: { type: "text"; text: string } | undefined;
   environment?: ProfileEnvironment | undefined;
+  metadata?: Record<string, string> | undefined;
 };
 
 type ProfileSaveRequest = {
@@ -420,6 +422,7 @@ function ProfileSections({
   const [configDraft, setConfigDraft] = useState<Record<string, unknown> | undefined>();
   const [instructionsDraft, setInstructionsDraft] = useState("");
   const [environmentDraft, setEnvironmentDraft] = useState<ProfileEnvironment | undefined>();
+  const [metadataDraft, setMetadataDraft] = useState<Record<string, string> | undefined>();
   const [configError, setConfigError] = useState<string | null>(null);
   const revision = profile?.revision;
   useEffect(() => {
@@ -428,6 +431,7 @@ function ProfileSections({
     const instructions = profile.instructions as { type: "text"; text: string } | { type: "textRef" } | undefined;
     setInstructionsDraft(instructions?.type === "text" ? instructions.text : "");
     setEnvironmentDraft(profile.environment ?? undefined);
+    setMetadataDraft(profile.metadata ? structuredClone(profile.metadata) : undefined);
     // Re-sync on a new revision only; an unrelated refetch must not wipe edits.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [revision, bot.profileId]);
@@ -445,6 +449,8 @@ function ProfileSections({
   const instructionsDirty = profile !== undefined && instructionsDraft !== baseInstructions;
   const environmentDirty =
     profile !== undefined && JSON.stringify(environmentDraft ?? null) !== JSON.stringify(profile.environment ?? null);
+  const metadataDirty =
+    profile !== undefined && JSON.stringify(metadataDraft ?? null) !== JSON.stringify(profile.metadata ?? null);
 
   const save = useMutation({
     mutationFn: async ({ fields, configScope = "all" }: ProfileSaveRequest) => {
@@ -513,6 +519,10 @@ function ProfileSections({
               environmentProviders={options.environmentProviders}
               featureDisableReasons={resourceFeatureDisableReasons(merged)}
               hideEnvironmentFeature
+              metadataSetup={(
+                <MetadataMapEditor value={metadataDraft} onChange={setMetadataDraft} />
+              )}
+              metadataDescription="Defaults copied to every session this bot creates. Metadata helps with filtering and does not affect runtime behavior."
               onValidityChange={setConfigError}
               onChange={(config) => setConfigDraft(config as Record<string, unknown> | undefined)}
             />
@@ -530,7 +540,7 @@ function ProfileSections({
             </Field>
             {manage && (
               <SaveRow
-                dirty={capabilitiesConfigDirty || instructionsDirty}
+                dirty={capabilitiesConfigDirty || instructionsDirty || metadataDirty}
                 pending={save.isPending}
                 error={configError ? `Config: ${configError}` : save.error?.message}
                 disabled={closed || configError !== null}
@@ -546,6 +556,7 @@ function ProfileSections({
                               : undefined,
                           }
                         : {}),
+                      ...(metadataDirty ? { metadata: metadataDraft } : {}),
                     },
                   })
                 }

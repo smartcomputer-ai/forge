@@ -44,6 +44,7 @@ import {
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
 import { ProfileEnvironmentEditor } from "@/components/session/profile-environment-editor";
+import { MetadataMapEditor } from "@/components/session/metadata-editor";
 import { SessionConfigEditor } from "@/components/session/session-config-editor";
 import { SessionSettingsDialog } from "@/components/session/session-settings-sheet";
 import { SetupEditorSection } from "@/components/session/setup-editor-section";
@@ -1112,6 +1113,16 @@ function InlineSetupEditor({
           profiles={options.profiles}
           environmentProviders={options.environmentProviders}
           featureDisableReasons={resourceFeatureDisableReasons(value)}
+          metadataSetup={(
+            <MetadataMapEditor
+              value={value.metadata}
+              onChange={(metadata) => change((next) => {
+                if (metadata) next.metadata = metadata;
+                else delete next.metadata;
+              })}
+            />
+          )}
+          metadataDescription="Metadata copied onto the new session. It helps with filtering and does not affect how the session runs."
           environmentSetup={(
             <ProfileEnvironmentEditor
               embedded
