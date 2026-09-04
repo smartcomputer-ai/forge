@@ -547,7 +547,7 @@ function ServerDialog({
           status: nextStatus,
           displayName: displayName.trim(),
           ...(description.trim() ? { description: description.trim() } : {}),
-          ...(!allToolsAllowed ? { allowedTools: parsedTools } : {}),
+          allowedTools: null,
         });
       }
       return api<McpServer>(
@@ -610,7 +610,7 @@ function ServerDialog({
       setError(credentialError);
       return;
     }
-    if (!allToolsAllowed && parsedTools.length === 0) {
+    if (editing && !allToolsAllowed && parsedTools.length === 0) {
       setError("Select at least one tool, or allow every advertised tool.");
       return;
     }
@@ -792,16 +792,16 @@ function ServerDialog({
                 </Field>
               )}
 
-              <Field>
-                <div className="flex items-end justify-between gap-3">
-                  <div>
-                    <FieldLabel>Available tools</FieldLabel>
-                    <FieldDescription>
-                      Read live with the connected account's permissions and never cached.
-                      Server-provided descriptions and safety annotations are untrusted hints.
-                    </FieldDescription>
-                  </div>
-                  {editing && (
+              {editing ? (
+                <Field>
+                  <div className="flex items-end justify-between gap-3">
+                    <div>
+                      <FieldLabel>Available tools</FieldLabel>
+                      <FieldDescription>
+                        Read live with the connected account's permissions and never cached.
+                        Server-provided descriptions and safety annotations are untrusted hints.
+                      </FieldDescription>
+                    </div>
                     <Button
                       type="button"
                       variant="outline"
@@ -812,8 +812,7 @@ function ServerDialog({
                       <RotateCcw className={discoverTools.isPending ? "animate-spin" : ""} />
                       {toolDiscovery ? "Refresh" : "Load tools"}
                     </Button>
-                  )}
-                </div>
+                  </div>
                 <Select
                   value={allToolsAllowed ? "all" : "selected"}
                   onValueChange={(value) => setAllToolsAllowed(value === "all")}
@@ -826,12 +825,7 @@ function ServerDialog({
                     <SelectItem value="selected">Allow only selected tools</SelectItem>
                   </SelectContent>
                 </Select>
-                {!editing && (
-                  <FieldDescription>
-                    Add the server first, then edit it to load and select its live tool list.
-                  </FieldDescription>
-                )}
-                {editing && connectionSettingsDirty && (
+                {connectionSettingsDirty && (
                   <FieldDescription>
                     Save connection or credential changes before loading its tools.
                   </FieldDescription>
@@ -916,7 +910,16 @@ function ServerDialog({
                     )}
                   </div>
                 )}
-              </Field>
+                </Field>
+              ) : (
+                <div className="grid gap-1 rounded-md border bg-muted/15 p-3">
+                  <p className="text-sm font-medium">Tool selection after connection</p>
+                  <p className="text-xs text-muted-foreground">
+                    This server will initially allow every advertised tool. After adding it and completing any
+                    authentication, edit the server to load its live inventory and restrict access.
+                  </p>
+                </div>
+              )}
 
               <Field>
                 <FieldLabel>Authentication</FieldLabel>

@@ -378,9 +378,11 @@ default (public targets only) needs a deliberate, deployment-owned exception:
   wording for the data-path difference ("the model provider connects
   directly" vs "Lightspeed connects") and for exposure ("tools shown to the
   model up front" vs "the model searches on demand — recommended for large
-  servers"). Tool selection and live inventory sit directly below exposure in
-  both creation and editing rather than inside Advanced options. Changing
-  either is an ordinary put; sessions pick it up at the next config
+  servers"). During creation, the server starts with every advertised tool
+  allowed and the form explains that access can be refined after connection
+  and authentication. During editing, tool selection and live inventory sit
+  directly below exposure rather than inside Advanced options. Changing either
+  is an ordinary put; sessions pick it up at the next config
   admission/reconciliation.
 - Native calls need no new transcript surface: they render as the ordinary
   tool-call rows clients already have — an improvement over the opaque
