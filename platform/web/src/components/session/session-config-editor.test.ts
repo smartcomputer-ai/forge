@@ -199,7 +199,7 @@ describe("environment feature config", () => {
     });
   });
 
-  it("renders session environment setup inside the enabled capability panel", () => {
+  it("keeps setup collapsed for an initially enabled capability", () => {
     const marker = "Choose the session environment here";
     const html = renderToString(createElement(SessionConfigEditor, {
       value: { features: { environments: {} } },
@@ -208,10 +208,20 @@ describe("environment feature config", () => {
     }));
 
     expect(html).toContain("Environments");
-    expect(html).toContain("Allowed providers");
-    expect(html).toContain(marker);
-    expect(html).toContain('aria-expanded="true"');
-    expect(html.indexOf(marker)).toBeGreaterThan(html.indexOf("Allowed providers"));
+    expect(html).not.toContain("Allowed providers");
+    expect(html).not.toContain(marker);
+    expect(html).toContain('aria-expanded="false"');
+  });
+
+  it("keeps Advanced collapsed when advanced settings already exist", () => {
+    const html = renderToString(createElement(SessionConfigEditor, {
+      value: { generation: { parallelToolUse: true } },
+      onChange: () => {},
+    }));
+
+    expect(html).toContain("Advanced");
+    expect(html).toContain('aria-expanded="false"');
+    expect(html).not.toContain("Run limits");
   });
 
   it("can move the environment capability out of the general editor", () => {

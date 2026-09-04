@@ -963,10 +963,7 @@ function ModelCapabilities({ option }: { option: ModelOption }) {
 }
 
 function AdvancedFields({ config, change }: { config: RecordValue; change: (fn: (next: RecordValue) => void) => void }) {
-  const generation = record(config.generation);
-  const hasGenerationOverrides = Object.keys(generation).some((key) => key !== "reasoningEffort");
-  const hasAdvancedSettings = hasGenerationOverrides || Object.keys(record(config.limits)).length > 0 || Object.keys(record(config.context)).length > 0;
-  const [open, setOpen] = useState(hasAdvancedSettings);
+  const [open, setOpen] = useState(false);
   return (
     <div className="grid gap-3">
       <Button
@@ -1100,7 +1097,7 @@ function FeaturePanel({
   onEnabledChange: (enabled: boolean) => void;
   children?: React.ReactNode;
 }) {
-  const [open, setOpen] = useState(enabled);
+  const [open, setOpen] = useState(false);
   const info = featureInfo[name];
   const Icon = info.icon;
   const configurable = expandable ?? Boolean(children);
@@ -1114,7 +1111,11 @@ function FeaturePanel({
           <Switch
             checked={enabled}
             disabled={enabled && Boolean(disableReason)}
-            onCheckedChange={(checked) => onEnabledChange(checked === true)}
+            onCheckedChange={(checked) => {
+              const nextEnabled = checked === true;
+              setOpen(nextEnabled && configurable);
+              onEnabledChange(nextEnabled);
+            }}
             aria-label={`Enable ${info.title}`}
           />
         </div>
