@@ -1112,6 +1112,20 @@ function InlineSetupEditor({
           profiles={options.profiles}
           environmentProviders={options.environmentProviders}
           featureDisableReasons={resourceFeatureDisableReasons(value)}
+          environmentSetup={(
+            <ProfileEnvironmentEditor
+              embedded
+              value={value.environment}
+              environments={environments}
+              bindings={options.environmentBindings}
+              templates={options.environmentTemplates}
+              secrets={options.secrets}
+              onChange={(environment) => change((next) => {
+                if (environment) next.environment = environment;
+                else delete next.environment;
+              })}
+            />
+          )}
           onValidityChange={onValidityChange}
           onChange={(config) => change((next) => {
             if (config) next.config = config;
@@ -1119,18 +1133,6 @@ function InlineSetupEditor({
           })}
         />
       </SetupEditorSection>
-      <ProfileEnvironmentEditor
-        value={value.environment}
-        environments={environments}
-        bindings={options.environmentBindings}
-        templates={options.environmentTemplates}
-        secrets={options.secrets}
-        disabled={!hasSessionFeature(value.config, "environments")}
-        onChange={(environment) => change((next) => {
-          if (environment) next.environment = environment;
-          else delete next.environment;
-        })}
-      />
     </div>
   );
 }

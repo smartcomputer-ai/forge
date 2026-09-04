@@ -6,8 +6,6 @@ import { ChevronRight, Plus, Trash2 } from "lucide-react";
 import {
   api,
   type Environment,
-  type EnvironmentProviderBinding,
-  type EnvironmentTemplate,
   type ProfileDocument,
   type ProfileSummary,
 } from "@/api";
@@ -45,11 +43,9 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { LoadingNote, UniverseNotFound } from "@/components/page";
 import { useSessionConfigEditorOptions } from "@/lib/sessions/editor-options";
 import {
-  hasSessionFeature,
   resourceFeatureDisableReasons,
   setupResourceFeatureError,
 } from "@/lib/sessions/resource-features";
-import { useSecretsInventory } from "@/lib/environment-credentials";
 import { canManage, useActiveUniverse } from "@/lib/universes";
 import { cn } from "@/lib/utils";
 
@@ -394,7 +390,6 @@ function ProfileEditor({
               mutate={mutate}
               onValidityChange={setConfigError}
             />
-            <InitialEnvironmentSection universeId={universeId} draft={draft} mutate={mutate} />
           </div>
         )}
       </div>
@@ -557,6 +552,11 @@ function ConfigSection({
   onValidityChange: (message: string | null) => void;
 }) {
   const options = useSessionConfigEditorOptions(universeId);
+  const environments = useQuery({
+    queryKey: ["environments", universeId],
+    queryFn: () =>
+      api<Environment[]>("GET", `/api/v1/universes/${universeId}/environments`),
+  });
   return (
     <Section
       title="Session config"
@@ -571,6 +571,23 @@ function ConfigSection({
         profiles={options.profiles}
         environmentProviders={options.environmentProviders}
         featureDisableReasons={resourceFeatureDisableReasons(draft)}
+        environmentSetup={(
+          <ProfileEnvironmentEditor
+            embedded
+            value={draft.environment}
+            environments={environments.data}
+            bindings={options.environmentBindings}
+            templates={options.environmentTemplates}
+            secrets={options.secrets}
+            description="How a session obtains its active environment when this profile is applied. Absence leaves an existing session's selection unchanged."
+            onChange={(environment) =>
+              mutate((document) => {
+                if (environment) document.environment = environment;
+                else delete document.environment;
+              })
+            }
+          />
+        )}
         onValidityChange={onValidityChange}
         onChange={(config) =>
           mutate((document) => {
@@ -580,57 +597,6 @@ function ConfigSection({
         }
       />
     </Section>
-  );
-}
-
-function InitialEnvironmentSection({
-  universeId,
-  draft,
-  mutate,
-}: {
-  universeId: string;
-  draft: ProfileDocument;
-  mutate: Mutate;
-}) {
-  const environments = useQuery({
-    queryKey: ["environments", universeId],
-    queryFn: () =>
-      api<Environment[]>("GET", `/api/v1/universes/${universeId}/environments`),
-  });
-  const bindings = useQuery({
-    queryKey: ["environment-provider-bindings", universeId],
-    queryFn: () =>
-      api<EnvironmentProviderBinding[]>(
-        "GET",
-        `/api/v1/universes/${universeId}/environment-provider-bindings`,
-      ),
-  });
-  const templates = useQuery({
-    queryKey: ["environment-templates", universeId],
-    queryFn: () =>
-      api<EnvironmentTemplate[]>(
-        "GET",
-        `/api/v1/universes/${universeId}/environment-templates`,
-      ),
-  });
-  const secrets = useSecretsInventory(universeId);
-  return (
-    <ProfileEnvironmentEditor
-      value={draft.environment}
-      environments={environments.data}
-      bindings={bindings.data}
-      templates={templates.data}
-      secrets={secrets.data}
-      disabled={!hasSessionFeature(draft.config, "environments")}
-      title="Environment"
-      description="How a session obtains its active environment when this profile is applied. Absence leaves an existing session's selection unchanged."
-      onChange={(environment) =>
-        mutate((document) => {
-          if (environment) document.environment = environment;
-          else delete document.environment;
-        })
-      }
-    />
   );
 }
 function NewProfileDialog({

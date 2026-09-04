@@ -43,8 +43,10 @@ import {
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { ProfileEnvironmentEditor } from "@/components/session/profile-environment-editor";
-import { SessionConfigEditor } from "@/components/session/session-config-editor";
-import { useSecretsInventory } from "@/lib/environment-credentials";
+import {
+  EnvironmentFeatureEditor,
+  SessionConfigEditor,
+} from "@/components/session/session-config-editor";
 import { useSessionConfigEditorOptions } from "@/lib/sessions/editor-options";
 import {
   hasSessionFeature,
@@ -55,6 +57,7 @@ import { cn } from "@/lib/utils";
 import { BotEnvironmentCard } from "./environment-card";
 import { BotAvatar } from "./face";
 import { botInputOf } from "./identity";
+import { environmentFeatureSnapshot, withEnvironmentFeature } from "./profile-config-scope";
 import { briefSummary, capabilitySummary, environmentSummary, guardrailsSummary, otherBotsSummary } from "./setup-summary";
 import { triggerSummary } from "./trigger-summary";
 import {
@@ -373,6 +376,11 @@ type SaveableFields = {
   environment?: ProfileEnvironment | undefined;
 };
 
+type ProfileSaveRequest = {
+  fields: SaveableFields;
+  configScope?: "all" | "environment" | "nonEnvironment";
+};
+
 /**
  * Capabilities and Environment both live in the bot's profile, one
  * document with one revision. Each section saves only its own fields onto
@@ -401,7 +409,6 @@ function ProfileSections({
     queryKey: ["environments", universeId],
     queryFn: () => api<Environment[]>("GET", `/api/v1/universes/${universeId}/environments`),
   });
-  const secrets = useSecretsInventory(universeId);
   const bots = useQuery({
     queryKey: ["bots", universeId],
     queryFn: () => api<BotListResponse>("GET", `/api/v1/universes/${universeId}/bots`),
@@ -425,21 +432,33 @@ function ProfileSections({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [revision, bot.profileId]);
 
-  const baseConfig = JSON.stringify(profile?.config ?? null);
+  const profileConfig = profile?.config as Record<string, unknown> | undefined;
+  const capabilitiesConfigDirty = profile !== undefined
+    && JSON.stringify(withEnvironmentFeature(configDraft, undefined) ?? null)
+      !== JSON.stringify(withEnvironmentFeature(profileConfig, undefined) ?? null);
+  const environmentConfigDirty = profile !== undefined
+    && JSON.stringify(environmentFeatureSnapshot(configDraft) ?? null)
+      !== JSON.stringify(environmentFeatureSnapshot(profileConfig) ?? null);
   const baseInstructions = (profile?.instructions as { type?: string; text?: string } | undefined)?.type === "text"
     ? ((profile?.instructions as { text: string }).text ?? "")
     : "";
-  const configDirty = profile !== undefined && JSON.stringify(configDraft ?? null) !== baseConfig;
   const instructionsDirty = profile !== undefined && instructionsDraft !== baseInstructions;
   const environmentDirty =
     profile !== undefined && JSON.stringify(environmentDraft ?? null) !== JSON.stringify(profile.environment ?? null);
 
   const save = useMutation({
-    mutationFn: async (fields: SaveableFields) => {
+    mutationFn: async ({ fields, configScope = "all" }: ProfileSaveRequest) => {
       const latest = await api<ProfileDocument>("GET", profileUrl);
       const { createdAtMs: _created, updatedAtMs: _updated, ...document } = latest;
       const next: Record<string, unknown> = { ...document };
-      for (const [key, value] of Object.entries(fields)) {
+      const scopedFields = { ...fields };
+      if (Object.hasOwn(fields, "config") && configScope !== "all") {
+        const latestConfig = latest.config as Record<string, unknown> | undefined;
+        scopedFields.config = configScope === "environment"
+          ? withEnvironmentFeature(latestConfig, fields.config)
+          : withEnvironmentFeature(fields.config, latestConfig);
+      }
+      for (const [key, value] of Object.entries(scopedFields)) {
         if (value === undefined) delete next[key];
         else next[key] = value;
       }
@@ -461,7 +480,7 @@ function ProfileSections({
   );
   const closed = bot.closedAtMs != null;
   const readOnly = !manage || closed;
-  const capabilities = capabilitySummary(profile?.config as Record<string, unknown> | undefined);
+  const capabilities = capabilitySummary(withEnvironmentFeature(profileConfig, undefined));
   const textRef = (profile?.instructions as { type?: string } | undefined)?.type === "textRef";
 
   return (
@@ -493,6 +512,7 @@ function ProfileSections({
               profiles={options.profiles}
               environmentProviders={options.environmentProviders}
               featureDisableReasons={resourceFeatureDisableReasons(merged)}
+              hideEnvironmentFeature
               onValidityChange={setConfigError}
               onChange={(config) => setConfigDraft(config as Record<string, unknown> | undefined)}
             />
@@ -510,20 +530,23 @@ function ProfileSections({
             </Field>
             {manage && (
               <SaveRow
-                dirty={configDirty || instructionsDirty}
+                dirty={capabilitiesConfigDirty || instructionsDirty}
                 pending={save.isPending}
                 error={configError ? `Config: ${configError}` : save.error?.message}
                 disabled={closed || configError !== null}
                 onSave={() =>
                   save.mutate({
-                    config: configDraft,
-                    ...(instructionsDirty
-                      ? {
-                          instructions: instructionsDraft.trim()
-                            ? { type: "text", text: instructionsDraft }
-                            : undefined,
-                        }
-                      : {}),
+                    configScope: "nonEnvironment",
+                    fields: {
+                      config: configDraft,
+                      ...(instructionsDirty
+                        ? {
+                            instructions: instructionsDraft.trim()
+                              ? { type: "text", text: instructionsDraft }
+                              : undefined,
+                          }
+                        : {}),
+                    },
                   })
                 }
                 note="Applies to Main at its next idle moment; open threads keep their setup until they close."
@@ -537,28 +560,39 @@ function ProfileSections({
         id="environment"
         title="Environment"
         description="Where the bot works: an environment shared across its sessions, or a fresh one per session. Command polls need a lasting one."
-        summary={environmentSummary(profile?.environment, environments.data)}
+        summary={hasSessionFeature(profileConfig, "environments")
+          ? `Access on · ${environmentSummary(profile?.environment, environments.data)}`
+          : "Access off"}
       >
         {profile && (
-          <ProfileEnvironmentEditor
-            value={environmentDraft}
-            environments={environments.data}
-            bindings={options.environmentBindings}
-            templates={options.environmentTemplates}
-            secrets={secrets.data}
-            disabled={!hasSessionFeature(configDraft, "environments")}
-            title=""
-            description=""
-            onChange={setEnvironmentDraft}
-          />
+          <EnvironmentFeatureEditor
+            value={configDraft}
+            providers={options.environmentProviders}
+            disableReason={resourceFeatureDisableReasons(merged).environments}
+            onChange={(config) => setConfigDraft(config as Record<string, unknown> | undefined)}
+          >
+            <ProfileEnvironmentEditor
+              embedded
+              value={environmentDraft}
+              environments={environments.data}
+              bindings={options.environmentBindings}
+              templates={options.environmentTemplates}
+              secrets={options.secrets}
+              description="Choose the environment shared across this bot's sessions, or provision a fresh one for each session."
+              onChange={setEnvironmentDraft}
+            />
+          </EnvironmentFeatureEditor>
         )}
         {profile && manage && (
           <SaveRow
-            dirty={environmentDirty}
+            dirty={environmentConfigDirty || environmentDirty}
             pending={save.isPending}
             error={save.error?.message}
             disabled={closed}
-            onSave={() => save.mutate({ environment: environmentDraft })}
+            onSave={() => save.mutate({
+              configScope: "environment",
+              fields: { config: configDraft, environment: environmentDraft },
+            })}
           />
         )}
         {profile?.environment?.type === "existing" && (

@@ -198,6 +198,61 @@ describe("environment feature config", () => {
       },
     });
   });
+
+  it("renders session environment setup inside the enabled capability panel", () => {
+    const marker = "Choose the session environment here";
+    const html = renderToString(createElement(SessionConfigEditor, {
+      value: { features: { environments: {} } },
+      onChange: () => {},
+      environmentSetup: createElement("p", null, marker),
+    }));
+
+    expect(html).toContain("Environments");
+    expect(html).toContain("Allowed providers");
+    expect(html).toContain(marker);
+    expect(html).toContain('aria-expanded="true"');
+    expect(html.indexOf(marker)).toBeGreaterThan(html.indexOf("Allowed providers"));
+  });
+
+  it("can move the environment capability out of the general editor", () => {
+    const html = renderToString(createElement(SessionConfigEditor, {
+      value: { features: { environments: {} } },
+      onChange: () => {},
+      hideEnvironmentFeature: true,
+    }));
+
+    expect(html).not.toContain("Enable Environments");
+    expect(html).not.toContain("Allowed providers");
+  });
+
+  it("renders features in task-oriented order and keeps Timers non-expandable", () => {
+    const html = renderToString(createElement(SessionConfigEditor, {
+      value: {
+        features: {
+          environments: {},
+          mcp: { servers: [{ serverId: "demo" }] },
+          subagents: {},
+          vfs: {},
+          web: { search: {} },
+          timers: {},
+        },
+      },
+      onChange: () => {},
+    }));
+    const labels = [
+      "Environments",
+      "MCP Servers",
+      "Sub-agents",
+      "Virtual File System: Files, Instructions, Skills",
+      "Web",
+      "Timers",
+    ];
+    const positions = labels.map((label) => html.indexOf(label));
+
+    expect(positions.every((position) => position >= 0)).toBe(true);
+    expect(positions).toEqual([...positions].sort((left, right) => left - right));
+    expect(html.slice(html.indexOf('aria-label="Enable Timers"'))).not.toContain("aria-expanded");
+  });
 });
 
 describe("sub-agent feature config", () => {

@@ -378,16 +378,19 @@ function LiveSessionSetup({
               featureDisableReasons={resourceFeatureDisableReasons({
                 config: configDraft,
               })}
+              environmentSetup={(
+                <ActiveEnvironmentEditor
+                  embedded
+                  value={activeEnvironmentDraft}
+                  environments={environments.data ?? []}
+                  loading={environments.isLoading}
+                  disabled={!hasSessionFeature(configDraft, "environments")}
+                  onChange={setActiveEnvironmentDraft}
+                />
+              )}
               pinnedApiKind={pinnedApiKind || undefined}
             />
           </section>
-          <ActiveEnvironmentEditor
-            value={activeEnvironmentDraft}
-            environments={environments.data ?? []}
-            loading={environments.isLoading}
-            disabled={!hasSessionFeature(configDraft, "environments")}
-            onChange={setActiveEnvironmentDraft}
-          />
           {environments.error && <p className="text-sm text-destructive">{environments.error.message}</p>}
           {instructions.error && <p className="text-sm text-destructive">{instructions.error.message}</p>}
         </div>
@@ -455,12 +458,14 @@ function ActiveEnvironmentEditor({
   environments: allEnvironments,
   loading,
   disabled,
+  embedded = false,
   onChange,
 }: {
   value: string | null;
   environments: Environment[];
   loading: boolean;
   disabled: boolean;
+  embedded?: boolean;
   onChange: (environmentId: string | null) => void;
 }) {
   const none = "__no_active_environment__";
@@ -469,11 +474,8 @@ function ActiveEnvironmentEditor({
     ...environments.map((environment) => environment.environmentId),
     ...(value ? [value] : []),
   ])];
-  return (
-    <SetupEditorSection
-      title="Active environment"
-      description="The one universe environment used by process and environment-targeted tools. Selection does not transfer ownership."
-    >
+  const content = (
+    <>
       {disabled && (
         <p className="rounded-lg border border-dashed p-3 text-sm text-muted-foreground">
           Enable the Environments feature to select an active environment.
@@ -512,6 +514,29 @@ function ActiveEnvironmentEditor({
           })}
         </SelectContent>
       </Select>
+    </>
+  );
+
+  if (embedded) {
+    return (
+      <div className="grid gap-3">
+        <div className="grid gap-0.5">
+          <p className="text-sm font-medium">Active environment</p>
+          <p className="text-xs text-muted-foreground">
+            The one universe environment used by process and environment-targeted tools. Selection does not transfer ownership.
+          </p>
+        </div>
+        {content}
+      </div>
+    );
+  }
+
+  return (
+    <SetupEditorSection
+      title="Active environment"
+      description="The one universe environment used by process and environment-targeted tools. Selection does not transfer ownership."
+    >
+      {content}
     </SetupEditorSection>
   );
 }

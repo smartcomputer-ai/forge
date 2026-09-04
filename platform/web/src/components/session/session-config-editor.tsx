@@ -1,4 +1,4 @@
-import { useEffect, useId, useState } from "react";
+import { useEffect, useId, useState, type ReactNode } from "react";
 import type { WorkspaceLinkDraft } from "@/api";
 import {
   ChevronDown,
@@ -90,6 +90,8 @@ type Props = {
   profiles?: ProfileOption[];
   environmentProviders?: EnvironmentProviderOption[];
   featureDisableReasons?: Partial<Record<FeatureName, string>>;
+  environmentSetup?: ReactNode;
+  hideEnvironmentFeature?: boolean;
   pinnedApiKind?: string;
   className?: string;
 };
@@ -137,6 +139,15 @@ const featureInfo: Record<
     icon: Wrench,
   },
 };
+
+const featureDisplayOrder: FeatureName[] = [
+  "environments",
+  "mcp",
+  "subagents",
+  "vfs",
+  "web",
+  "timers",
+];
 
 function record(value: unknown): RecordValue {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -414,6 +425,8 @@ export function SessionConfigEditor({
   profiles = [],
   environmentProviders = [],
   featureDisableReasons = {},
+  environmentSetup,
+  hideEnvironmentFeature = false,
   pinnedApiKind,
   className,
 }: Props) {
@@ -479,32 +492,105 @@ export function SessionConfigEditor({
           </p>
         </div>
         <div className="grid gap-2">
-          {(Object.keys(featureInfo) as FeatureName[]).map((name) => (
-            <FeaturePanel
-              key={name}
-              name={name}
-              enabled={name in features}
-              feature={record(features[name])}
-              disableReason={featureDisableReasons[name]}
-              onEnabledChange={(enabled) => setFeature(name, enabled)}
-            >
-              {name === "vfs" && (
-                <VfsFields
-                  feature={record(features.vfs)}
-                  workspaces={workspaces}
-                  workspacesLoading={workspacesLoading}
-                  patch={(fn) => patchFeature("vfs", fn)}
-                />
-              )}
-              {name === "web" && <WebFields feature={record(features.web)} patch={(fn) => patchFeature("web", fn)} />}
-              {name === "subagents" && <SubagentFields feature={record(features.subagents)} profiles={profiles} patch={(fn) => patchFeature("subagents", fn)} />}
-              {name === "environments" && <EnvironmentFields feature={record(features.environments)} providers={environmentProviders} patch={(fn) => patchFeature("environments", fn)} />}
-              {name === "mcp" && <McpFields feature={record(features.mcp)} servers={mcpServers} patch={(fn) => patchFeature("mcp", fn)} />}
-            </FeaturePanel>
-          ))}
+          {featureDisplayOrder
+            .filter((name) => name !== "environments" || !hideEnvironmentFeature)
+            .map((name) => name === "environments" ? (
+              <EnvironmentFeatureEditor
+                key={name}
+                value={config}
+                providers={environmentProviders}
+                disableReason={featureDisableReasons.environments}
+                onChange={onChange}
+              >
+                {environmentSetup}
+              </EnvironmentFeatureEditor>
+            ) : (
+              <FeaturePanel
+                key={name}
+                name={name}
+                enabled={name in features}
+                feature={record(features[name])}
+                disableReason={featureDisableReasons[name]}
+                expandable={name !== "timers"}
+                onEnabledChange={(enabled) => setFeature(name, enabled)}
+              >
+                {name === "vfs" && (
+                  <VfsFields
+                    feature={record(features.vfs)}
+                    workspaces={workspaces}
+                    workspacesLoading={workspacesLoading}
+                    patch={(fn) => patchFeature("vfs", fn)}
+                  />
+                )}
+                {name === "web" && <WebFields feature={record(features.web)} patch={(fn) => patchFeature("web", fn)} />}
+                {name === "subagents" && <SubagentFields feature={record(features.subagents)} profiles={profiles} patch={(fn) => patchFeature("subagents", fn)} />}
+                {name === "mcp" && <McpFields feature={record(features.mcp)} servers={mcpServers} patch={(fn) => patchFeature("mcp", fn)} />}
+              </FeaturePanel>
+            ))}
         </div>
       </section>
     </div>
+  );
+}
+
+/**
+ * The environment capability and the environment a session should use are
+ * separate on the wire, but belong together in the editor. Exporting this
+ * panel lets bot settings place both under its dedicated Environment section.
+ */
+export function EnvironmentFeatureEditor({
+  value,
+  providers = [],
+  disableReason,
+  children,
+  onChange,
+}: {
+  value?: unknown;
+  providers?: EnvironmentProviderOption[];
+  disableReason?: string;
+  children?: ReactNode;
+  onChange: (config: SessionConfig | undefined) => void;
+}) {
+  const config = normalizeSessionConfig(value) ?? {};
+  const features = record(config.features);
+  const enabled = "environments" in features;
+  const change = (mutate: (next: RecordValue) => void) => {
+    const next = structuredClone(config) as RecordValue;
+    mutate(next);
+    onChange(normalizeSessionConfig(next));
+  };
+  const setEnabled = (nextEnabled: boolean) => change((next) => {
+    const nextFeatures = record(next.features);
+    if (nextEnabled) nextFeatures.environments = {};
+    else delete nextFeatures.environments;
+    if (Object.keys(nextFeatures).length) next.features = nextFeatures;
+    else delete next.features;
+  });
+  const patch = (mutate: (feature: RecordValue) => void) => change((next) => {
+    const nextFeatures = record(next.features);
+    const feature = record(nextFeatures.environments);
+    mutate(feature);
+    nextFeatures.environments = feature;
+    next.features = nextFeatures;
+  });
+
+  return (
+    <FeaturePanel
+      name="environments"
+      enabled={enabled}
+      feature={record(features.environments)}
+      disableReason={disableReason}
+      onEnabledChange={setEnabled}
+    >
+      <div className="grid gap-4">
+        <EnvironmentFields
+          feature={record(features.environments)}
+          providers={providers}
+          patch={patch}
+        />
+        {children && <div className="grid gap-3 border-t pt-4">{children}</div>}
+      </div>
+    </FeaturePanel>
   );
 }
 
@@ -940,6 +1026,7 @@ function FeaturePanel({
   enabled,
   feature,
   disableReason,
+  expandable,
   onEnabledChange,
   children,
 }: {
@@ -947,45 +1034,54 @@ function FeaturePanel({
   enabled: boolean;
   feature: RecordValue;
   disableReason?: string;
+  expandable?: boolean;
   onEnabledChange: (enabled: boolean) => void;
   children?: React.ReactNode;
 }) {
   const [open, setOpen] = useState(enabled);
   const info = featureInfo[name];
   const Icon = info.icon;
-  const configurable = Boolean(children);
+  const configurable = expandable ?? Boolean(children);
   useEffect(() => {
     if (!enabled) setOpen(false);
   }, [enabled]);
   return (
     <div className={cn("rounded-lg border", enabled ? "border-border" : "border-dashed")}>
-      <div className="flex min-h-16 items-center gap-3 px-4 py-3">
-        <Switch
-          checked={enabled}
-          disabled={enabled && Boolean(disableReason)}
-          onCheckedChange={(checked) => onEnabledChange(checked === true)}
-          aria-label={`Enable ${info.title}`}
-        />
-        <Icon className="size-4 text-muted-foreground" />
-        <div className="min-w-0 flex-1">
-          <p className="text-sm font-medium">{info.title}</p>
-          <p className="text-xs text-muted-foreground">{info.description}</p>
-          {enabled && disableReason && (
-            <p className="mt-1 text-xs text-amber-700 dark:text-amber-400">
-              {disableReason}
-            </p>
-          )}
+      <div className="flex min-h-16 items-stretch gap-3 px-4">
+        <div className="flex items-center">
+          <Switch
+            checked={enabled}
+            disabled={enabled && Boolean(disableReason)}
+            onCheckedChange={(checked) => onEnabledChange(checked === true)}
+            aria-label={`Enable ${info.title}`}
+          />
         </div>
-        {enabled && configurable && (
-          <Button
-            variant="ghost"
-            size="icon-sm"
-            aria-label={`Configure ${info.title}`}
-            onClick={() => setOpen((value) => !value)}
-          >
-            {open ? <ChevronDown /> : <ChevronRight />}
-          </Button>
-        )}
+        <button
+          type="button"
+          disabled={!enabled || !configurable}
+          aria-expanded={enabled && configurable ? open : undefined}
+          className={cn(
+            "-mr-2 flex min-w-0 flex-1 items-center gap-3 rounded-md px-2 py-3 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring",
+            enabled && configurable && "cursor-pointer",
+          )}
+          onClick={() => setOpen((value) => !value)}
+        >
+          <Icon className="size-4 shrink-0 text-muted-foreground" />
+          <div className="min-w-0 flex-1">
+            <p className="text-sm font-medium">{info.title}</p>
+            <p className="text-xs text-muted-foreground">{info.description}</p>
+            {enabled && disableReason && (
+              <p className="mt-1 text-xs text-amber-700 dark:text-amber-400">
+                {disableReason}
+              </p>
+            )}
+          </div>
+          {enabled && configurable && (
+            <span className="flex size-8 shrink-0 items-center justify-center" aria-hidden="true">
+              {open ? <ChevronDown /> : <ChevronRight />}
+            </span>
+          )}
+        </button>
       </div>
       {enabled && configurable && open && <div className="border-t px-4 py-4">{children}</div>}
     </div>

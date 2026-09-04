@@ -374,6 +374,11 @@ rules shared with `environments/create`).
   The basic new-session dialog also offers profile default, no environment,
   or an existing universe environment when the selected profile grants the
   environments feature; this does not convert the profile to inline JSON.
+  Profile editing, customized session creation, live-session editing, and bot
+  settings present the capability grant and the associated environment choice
+  or provisioning intent in one Environment panel. This is a presentation
+  grouping only: `config.features.environments`, profile `environment`, and a
+  live session's active environment remain separate fields and operations.
 - **Channels**: binding profiles can now provision one VM per conversation
   session with no Channels code change.
 - **Fleet**: `agent_spawn { base: profile }` with a `provision` +
@@ -417,6 +422,9 @@ rules shared with `environments/create`).
       editor (existing/provision chooser with provider, template, retention),
       `originSessionId` route passthrough, environments page provenance,
       stub gateway; CLI online `provision` validation; Foundry test fixture.
+- [x] Platform environment setup consolidated under the Environment capability
+      in profile, session-create, live-session, and bot editors without changing
+      the wire document or bot section-save isolation.
 - [x] Docs: `README.md`, `AGENTS.md`, P108 and `docs/spec/04-environments.md`
       amendments. The readiness wait is a workflow constant
       (`ENVIRONMENT_READY_WAIT`, 10 minutes), not a deployment variable.

@@ -65,6 +65,7 @@ export function ProfileEnvironmentEditor({
   templates = [],
   secrets,
   disabled = false,
+  embedded = false,
   title = "Environment",
   description = "How the session obtains its active environment when this profile is applied.",
   onChange,
@@ -76,6 +77,8 @@ export function ProfileEnvironmentEditor({
   /// Universe secrets inventory for the provision credentials picker.
   secrets?: SecretsInventory;
   disabled?: boolean;
+  /** Render inside the Environments capability panel instead of as its own section. */
+  embedded?: boolean;
   title?: string;
   description?: string;
   onChange: (environment: ProfileEnvironment | undefined) => void;
@@ -90,11 +93,11 @@ export function ProfileEnvironmentEditor({
     ...(value?.type === "provision" ? [value.providerId] : []),
   ])];
 
-  return (
-    <SetupEditorSection title={title} description={description}>
+  const content = (
+    <>
       {disabled ? (
         <p className="rounded-lg border border-dashed p-3 text-sm text-muted-foreground">
-          Enable the Environments feature in Session config to select or provision an environment.
+          Enable Environment access above to select or provision an environment.
         </p>
       ) : (
         <div className="space-y-3">
@@ -163,6 +166,24 @@ export function ProfileEnvironmentEditor({
           )}
         </div>
       )}
+    </>
+  );
+
+  if (embedded) {
+    return (
+      <div className="grid gap-3">
+        <div className="grid gap-0.5">
+          <p className="text-sm font-medium">Session environment</p>
+          <p className="text-xs text-muted-foreground">{description}</p>
+        </div>
+        {content}
+      </div>
+    );
+  }
+
+  return (
+    <SetupEditorSection title={title} description={description}>
+      {content}
     </SetupEditorSection>
   );
 }
