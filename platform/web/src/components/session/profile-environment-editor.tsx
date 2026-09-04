@@ -171,8 +171,8 @@ export function ProfileEnvironmentEditor({
 
   if (embedded) {
     return (
-      <div className="grid gap-3">
-        <div className="grid gap-0.5">
+      <div className="grid min-w-0 max-w-full gap-3">
+        <div className="grid min-w-0 gap-0.5">
           <p className="text-sm font-medium">Session environment</p>
           <p className="text-xs text-muted-foreground">{description}</p>
         </div>
@@ -474,8 +474,8 @@ function ProvisionCredentialsField({
           const invalidName =
             credential.envName !== "" && !/^[A-Za-z_][A-Za-z0-9_]{0,127}$/.test(credential.envName);
           return (
-            <div key={index} className="grid grid-cols-[1fr_1fr_auto] items-start gap-2">
-              <div className="grid gap-1">
+            <div key={index} className="grid min-w-0 grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] items-start gap-2">
+              <div className="grid min-w-0 gap-1">
                 <Input
                   value={credential.envName}
                   onChange={(event) => update(index, { envName: event.target.value })}

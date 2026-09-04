@@ -7,6 +7,7 @@ import {
   type BotCreateResponse,
   type BotListResponse,
   type Environment,
+  type ProfileDocument,
   type ProfileEnvironment,
   type ProfileSummary,
 } from "@/api";
@@ -31,7 +32,9 @@ import {
   type TriggerKind,
 } from "@/components/bot/triggers";
 import { ProviderReadinessBanner } from "@/components/provider-readiness-banner";
+import { MetadataMapEditor } from "@/components/session/metadata-editor";
 import { ProfileEnvironmentEditor } from "@/components/session/profile-environment-editor";
+import { ProfileRetentionEditor } from "@/components/session/profile-retention-editor";
 import { SessionConfigEditor } from "@/components/session/session-config-editor";
 import { Button } from "@/components/ui/button";
 import { Field, FieldDescription, FieldLabel } from "@/components/ui/field";
@@ -47,19 +50,18 @@ import {
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { LoadingNote, UniverseNotFound } from "@/components/page";
-import { useSecretsInventory } from "@/lib/environment-credentials";
 import { useSessionConfigEditorOptions } from "@/lib/sessions/editor-options";
-import { hasSessionFeature, setupResourceFeatureError } from "@/lib/sessions/resource-features";
+import { setupResourceFeatureError } from "@/lib/sessions/resource-features";
 import { canManage, useActiveUniverse } from "@/lib/universes";
 import { cn } from "@/lib/utils";
 
-type Step = "job" | "wakeups" | "bots" | "capabilities" | "guardrails";
+type Step = "job" | "wakeups" | "profile" | "bots" | "guardrails";
 /** The same sections as the bot's Setup tab, in the same order. */
 const STEPS: Array<{ id: Step; label: string }> = [
   { id: "job", label: "Job" },
   { id: "wakeups", label: "Triggers" },
+  { id: "profile", label: "Session profile" },
   { id: "bots", label: "Other bots" },
-  { id: "capabilities", label: "Capabilities" },
   { id: "guardrails", label: "Guardrails" },
 ];
 
@@ -71,6 +73,39 @@ interface WakeupDraft {
 }
 
 export { botIdFrom };
+
+export function botOwnedProfileDocument({
+  profileId,
+  displayName,
+  config,
+  baseInstructions,
+  environment,
+  metadata,
+  retention,
+}: {
+  profileId: string;
+  displayName: string;
+  config?: Record<string, unknown>;
+  baseInstructions: string;
+  environment?: ProfileEnvironment;
+  metadata?: Record<string, string>;
+  retention?: number;
+}): ProfileDocument {
+  return {
+    profileId,
+    displayName,
+    description: `Setup of bot ${profileId}`,
+    ...(config ? { config } : {}),
+    ...(baseInstructions.trim()
+      ? { instructions: { type: "text", text: baseInstructions } }
+      : {}),
+    ...(environment ? { environment } : {}),
+    ...(metadata ? { metadata } : {}),
+    ...(retention !== undefined
+      ? { retention: { deleteAfterCloseMs: retention } }
+      : {}),
+  };
+}
 
 export function uniqueTriggerName(base: string, taken: string[]): string {
   if (!taken.includes(base)) return base;
@@ -139,7 +174,7 @@ export function BotCreatePage({ admin }: { admin: boolean }) {
     );
   }
   return (
-    <div className="min-h-0 min-w-0 flex-1 overflow-y-auto">
+    <div className="min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto">
       <Wizard universeId={universe.id} slug={slug!} />
     </div>
   );
@@ -164,7 +199,11 @@ function Wizard({ universeId, slug }: { universeId: string; slug: string }) {
   const [sharedProfileId, setSharedProfileId] = useState("");
   const [config, setConfig] = useState<Record<string, unknown> | undefined>(undefined);
   const [configError, setConfigError] = useState<string | null>(null);
+  const [baseInstructions, setBaseInstructions] = useState("");
   const [environment, setEnvironment] = useState<ProfileEnvironment | undefined>(undefined);
+  const [metadata, setMetadata] = useState<Record<string, string> | undefined>();
+  const [retention, setRetention] = useState<number | undefined>();
+  const [retentionError, setRetentionError] = useState<string | null>(null);
   const [runsPerDay, setRunsPerDay] = useState("50");
   const [selfConfig, setSelfConfig] = useState(true);
   const [emit, setEmit] = useState(false);
@@ -199,13 +238,12 @@ function Wizard({ universeId, slug }: { universeId: string; slug: string }) {
     queryKey: ["bots", universeId],
     queryFn: () => api<BotListResponse>("GET", `/api/v1/universes/${universeId}/bots`),
   });
-  const options = useSessionConfigEditorOptions(universeId, step === "capabilities" || step === "wakeups");
+  const options = useSessionConfigEditorOptions(universeId, step === "profile" || step === "wakeups");
   const environments = useQuery({
     queryKey: ["environments", universeId],
     queryFn: () => api<Environment[]>("GET", `/api/v1/universes/${universeId}/environments`),
-    enabled: step === "capabilities" || step === "wakeups",
+    enabled: step === "profile" || step === "wakeups",
   });
-  const secrets = useSecretsInventory(universeId, step === "capabilities");
 
   const env: BotEnvStatus =
     setupMode === "shared"
@@ -264,7 +302,11 @@ function Wizard({ universeId, slug }: { universeId: string; slug: string }) {
   }));
   const setupProblem =
     setupMode === "own"
-      ? (configError ? `Capabilities: ${configError}` : setupResourceFeatureError({ config, environment }))
+      ? (configError
+          ? `Session profile: ${configError}`
+          : retentionError
+            ? `Session profile: ${retentionError}`
+            : setupResourceFeatureError({ config, environment }))
       : sharedProfileId
         ? null
         : "Pick the shared profile this bot applies.";
@@ -284,13 +326,19 @@ function Wizard({ universeId, slug }: { universeId: string; slug: string }) {
       let profileId = sharedProfileId;
       if (setupMode === "own") {
         profileId = id;
-        await api("PUT", `/api/v1/universes/${universeId}/profiles/${encodeURIComponent(profileId)}`, {
-          profileId,
-          displayName: displayName.trim() || id,
-          description: `Setup of bot ${id}`,
-          ...(config ? { config } : {}),
-          ...(environment ? { environment } : {}),
-        });
+        await api(
+          "PUT",
+          `/api/v1/universes/${universeId}/profiles/${encodeURIComponent(profileId)}`,
+          botOwnedProfileDocument({
+            profileId,
+            displayName: displayName.trim() || id,
+            config,
+            baseInstructions,
+            environment,
+            metadata,
+            retention,
+          }),
+        );
       }
       try {
         const { bot } = await api<BotCreateResponse>("POST", `/api/v1/universes/${universeId}/bots`, {
@@ -352,8 +400,8 @@ function Wizard({ universeId, slug }: { universeId: string; slug: string }) {
     setWakeups((current) => current.map((draft) => (draft.key === key ? mutate(draft) : draft)));
 
   return (
-    <div className="mx-auto grid w-full max-w-5xl gap-6 px-4 py-6 md:grid-cols-[minmax(0,1fr)_17rem] md:px-8">
-      <aside className="grid content-start gap-4 md:sticky md:top-6 md:order-2 md:self-start">
+    <div className="mx-auto grid w-full min-w-0 max-w-5xl gap-6 px-4 py-6 md:grid-cols-[minmax(0,1fr)_17rem] md:px-8">
+      <aside className="grid min-w-0 max-w-full content-start gap-4 md:sticky md:top-6 md:order-2 md:self-start">
         <NavLink to={`/u/${slug}/bots`} className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground">
           <ArrowLeft className="size-3.5" /> Bots
         </NavLink>
@@ -386,8 +434,8 @@ function Wizard({ universeId, slug }: { universeId: string; slug: string }) {
             );
           })}
         </ol>
-        <div className="grid gap-3 rounded-lg border bg-muted/30 p-4 text-xs">
-          <div className="flex items-center gap-2">
+        <div className="grid min-w-0 max-w-full gap-3 rounded-lg border bg-muted/30 p-4 text-xs">
+          <div className="flex min-w-0 items-center gap-2">
             <BotAvatar
               botId={botId.trim() || "new-bot"}
               size={32}
@@ -451,7 +499,7 @@ function Wizard({ universeId, slug }: { universeId: string; slug: string }) {
 
       <main className="grid min-w-0 content-start gap-6 md:order-1">
         {step === "job" && (
-          <section className="grid gap-5">
+          <section className="grid min-w-0 gap-5">
             <header className="grid gap-1">
               <h1 className="text-xl font-semibold tracking-tight">What is this bot's job?</h1>
               <p className="text-sm text-muted-foreground">Start from a template or from scratch; everything stays editable later.</p>
@@ -539,8 +587,8 @@ function Wizard({ universeId, slug }: { universeId: string; slug: string }) {
                   const problem = wakeupProblems.find((entry) => entry.key === draft.key)?.problem ?? null;
                   const open = openWakeup === draft.key;
                   return (
-                    <div key={draft.key} className={cn("rounded-md border", problem && "border-amber-500/60")}>
-                      <div className="flex items-center gap-2 px-3 py-2 text-sm">
+                    <div key={draft.key} className={cn("min-w-0 max-w-full rounded-md border", problem && "border-amber-500/60")}>
+                      <div className="flex min-w-0 items-center gap-2 px-3 py-2 text-sm">
                         <button
                           type="button"
                           className="flex min-w-0 flex-1 items-center gap-2 text-left"
@@ -606,8 +654,8 @@ function Wizard({ universeId, slug }: { universeId: string; slug: string }) {
               </p>
             </header>
             <div className="grid gap-2">
-              <div className="flex items-center justify-between gap-3 rounded-md border p-3">
-                <Label htmlFor="new-bot-emit" className="text-sm">
+              <div className="flex min-w-0 max-w-full items-center justify-between gap-3 rounded-md border p-3">
+                <Label htmlFor="new-bot-emit" className="min-w-0 text-sm">
                   Can message other bots
                   <span className="block text-xs font-normal text-muted-foreground">
                     Sees which bots accept it and addresses them by id; rate-capped. Turning this on also opens the inbox —
@@ -623,16 +671,16 @@ function Wizard({ universeId, slug }: { universeId: string; slug: string }) {
                   }}
                 />
               </div>
-              <div className="grid gap-2 rounded-md border p-3">
-                <div className="flex items-center justify-between gap-3">
-                  <Label htmlFor="new-bot-inbox" className="text-sm">
+              <div className="grid min-w-0 max-w-full gap-2 rounded-md border p-3">
+                <div className="flex min-w-0 items-center justify-between gap-3">
+                  <Label htmlFor="new-bot-inbox" className="min-w-0 text-sm">
                     Accepts messages from
                     <span className="block text-xs font-normal text-muted-foreground">
                       Which bots may address this one. Routing and batching can be tuned under Setup later.
                     </span>
                   </Label>
                   <Select value={inboxMode} onValueChange={(value) => value && setInbox(value as "off" | "any" | "selected")}>
-                    <SelectTrigger id="new-bot-inbox" size="sm" className="w-40">
+                    <SelectTrigger id="new-bot-inbox" size="sm" className="w-40 max-w-full shrink-0">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
@@ -655,20 +703,20 @@ function Wizard({ universeId, slug }: { universeId: string; slug: string }) {
           </section>
         )}
 
-        {step === "capabilities" && (
+        {step === "profile" && (
           <section className="grid gap-5">
             <header className="grid gap-1">
-              <h1 className="text-xl font-semibold tracking-tight">What can {label} use?</h1>
+              <h1 className="text-xl font-semibold tracking-tight">How should {label}&apos;s sessions run?</h1>
               <p className="text-sm text-muted-foreground">
-                The model, tools, and environment its sessions get. Saved as a profile named after the bot, editable from its Setup tab.
+                Choose the instructions, model, tools, environment, metadata, and retention saved in its session profile.
               </p>
             </header>
             <ProviderReadinessBanner universeId={universeId} slug={slug} />
             <div className="grid gap-2 sm:grid-cols-2">
               <SetupModeChoice
                 active={setupMode === "own"}
-                title="Its own setup"
-                description="A profile named after the bot; edit it from the bot's Setup tab."
+                title="Its own profile"
+                description="A session profile named after the bot; edit it from the bot's Setup tab."
                 onClick={() => setSetupMode("own")}
               />
               <SetupModeChoice
@@ -699,6 +747,16 @@ function Wizard({ universeId, slug }: { universeId: string; slug: string }) {
               </Field>
             ) : (
               <>
+                <Field>
+                  <FieldLabel htmlFor="new-bot-base-instructions">Base instructions</FieldLabel>
+                  <Textarea
+                    id="new-bot-base-instructions"
+                    value={baseInstructions}
+                    onChange={(event) => setBaseInstructions(event.target.value)}
+                    rows={4}
+                    placeholder="Usually empty: the brief already describes the bot's job. Use this for a system prompt its session profile should carry."
+                  />
+                </Field>
                 <SessionConfigEditor
                   value={config}
                   mcpServers={options.mcpServers}
@@ -707,29 +765,44 @@ function Wizard({ universeId, slug }: { universeId: string; slug: string }) {
                   models={options.models}
                   profiles={options.profiles}
                   environmentProviders={options.environmentProviders}
+                  environmentSetup={(
+                    <div className="grid gap-3">
+                      <ProfileEnvironmentEditor
+                        embedded
+                        value={environment}
+                        environments={environments.data}
+                        bindings={options.environmentBindings}
+                        templates={options.environmentTemplates}
+                        secrets={options.secrets}
+                        description="Choose an existing environment shared by this bot's sessions, or provision a fresh one for each session."
+                        onChange={setEnvironment}
+                      />
+                      {environments.data?.length === 0 && (
+                        <p className="text-xs text-muted-foreground">
+                          No environments yet — create one under{" "}
+                          <NavLink to={`/u/${slug}/settings/environments`} className="underline">
+                            Settings › Environments
+                          </NavLink>{" "}
+                          if the bot needs a machine.
+                        </p>
+                      )}
+                    </div>
+                  )}
+                  metadataSetup={(
+                    <MetadataMapEditor value={metadata} onChange={setMetadata} />
+                  )}
+                  metadataDescription="Defaults copied to every session this bot creates. Metadata helps with filtering and does not affect runtime behavior."
+                  retentionSetup={(
+                    <ProfileRetentionEditor
+                      value={retention}
+                      onChange={setRetention}
+                      onValidityChange={setRetentionError}
+                    />
+                  )}
+                  retentionDescription="Default automatic deletion for each new root session this bot creates."
                   onValidityChange={setConfigError}
                   onChange={(next) => setConfig(next as Record<string, unknown> | undefined)}
                 />
-                <ProfileEnvironmentEditor
-                  value={environment}
-                  environments={environments.data}
-                  bindings={options.environmentBindings}
-                  templates={options.environmentTemplates}
-                  secrets={secrets.data}
-                  disabled={!hasSessionFeature(config, "environments")}
-                  title="Environment"
-                  description="Where the bot works: an environment shared across its sessions, or a fresh one per session. Command polls need a lasting one."
-                  onChange={setEnvironment}
-                />
-                {environments.data?.length === 0 && (
-                  <p className="text-xs text-muted-foreground">
-                    No environments yet — create one under{" "}
-                    <NavLink to={`/u/${slug}/settings/environments`} className="underline">
-                      Settings › Environments
-                    </NavLink>{" "}
-                    if the bot needs a machine.
-                  </p>
-                )}
               </>
             )}
           </section>
@@ -754,8 +827,8 @@ function Wizard({ universeId, slug }: { universeId: string; slug: string }) {
               <FieldDescription>Runs and sub-agents count; events beyond it wait for the next UTC day.</FieldDescription>
             </Field>
             <div className="grid gap-2">
-              <div className="flex items-center justify-between gap-3 rounded-md border p-3">
-                <Label htmlFor="new-bot-self-config" className="text-sm">
+              <div className="flex min-w-0 max-w-full items-center justify-between gap-3 rounded-md border p-3">
+                <Label htmlFor="new-bot-self-config" className="min-w-0 text-sm">
                   Can change its own brief and triggers
                   <span className="block text-xs font-normal text-muted-foreground">
                     Ask it in Chat to add a schedule or rewrite its job. Off: it can only look.
@@ -811,12 +884,12 @@ function TemplateCard({
       onClick={onSelect}
       aria-pressed={selected}
       className={cn(
-        "grid min-h-32 content-start gap-2.5 rounded-xl border bg-card p-4 text-left shadow-sm transition-all",
+        "grid min-h-32 min-w-0 max-w-full content-start gap-2.5 rounded-xl border bg-card p-4 text-left shadow-sm transition-all",
         "hover:-translate-y-0.5 hover:shadow-md motion-reduce:transition-none motion-reduce:hover:translate-y-0",
         selected ? "border-primary ring-2 ring-primary/40" : "border-border",
       )}
     >
-      <span className="flex items-center gap-3">
+      <span className="flex min-w-0 items-center gap-3">
         <BotAvatar
           botId={faceId}
           size={36}
@@ -832,7 +905,7 @@ function TemplateCard({
           )}
         </span>
       </span>
-      <span className="text-xs leading-relaxed text-muted-foreground">{template.description}</span>
+      <span className="text-xs leading-relaxed text-muted-foreground wrap-anywhere">{template.description}</span>
       {highlights.length > 0 && (
         <span className="mt-auto flex flex-wrap gap-1 pt-1">
           {highlights.map((highlight) => (
@@ -851,9 +924,9 @@ function TemplateCard({
 
 function SummaryRow({ label, children }: { label: string; children: React.ReactNode }) {
   return (
-    <div className="grid gap-0.5">
+    <div className="grid min-w-0 gap-0.5">
       <span className="text-[10px] font-semibold tracking-wider text-muted-foreground uppercase">{label}</span>
-      <span className="min-w-0 text-foreground">{children}</span>
+      <span className="min-w-0 text-foreground wrap-anywhere">{children}</span>
     </div>
   );
 }
@@ -874,12 +947,12 @@ function SetupModeChoice({
       type="button"
       onClick={onClick}
       className={cn(
-        "grid content-start gap-1 rounded-lg border p-3 text-left transition-colors hover:bg-muted/40",
+        "grid min-w-0 max-w-full content-start gap-1 rounded-lg border p-3 text-left transition-colors hover:bg-muted/40",
         active && "border-primary bg-primary/5",
       )}
     >
       <span className="text-sm font-medium">{title}</span>
-      <span className="text-xs text-muted-foreground">{description}</span>
+      <span className="text-xs text-muted-foreground wrap-anywhere">{description}</span>
     </button>
   );
 }

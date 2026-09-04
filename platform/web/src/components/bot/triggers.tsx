@@ -1668,8 +1668,8 @@ export function DeliveryFields<T extends DeliveryFormState>({
 }) {
   const [open, setOpen] = useState(defaultOpen);
   return (
-    <Collapsible open={open} onOpenChange={setOpen} className="rounded-md border">
-      <CollapsibleTrigger className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm">
+    <Collapsible open={open} onOpenChange={setOpen} className="min-w-0 max-w-full rounded-md border">
+      <CollapsibleTrigger className="flex w-full min-w-0 items-center gap-2 px-3 py-2 text-left text-sm">
         <ChevronRight
           className={cn("size-4 shrink-0 text-muted-foreground transition-transform", open && "rotate-90")}
         />
@@ -2352,12 +2352,12 @@ export function TriggerKindChoice({
       type="button"
       onClick={onClick}
       disabled={disabled}
-      className="flex items-start gap-4 rounded-xl border p-4 text-left transition-colors hover:bg-muted/40 focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:bg-transparent"
+      className="flex min-w-0 max-w-full items-start gap-4 rounded-xl border p-4 text-left transition-colors hover:bg-muted/40 focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:bg-transparent"
     >
       <span className="rounded-lg bg-muted p-2 text-foreground">{icon}</span>
-      <span className="grid gap-1">
+      <span className="grid min-w-0 gap-1">
         <span className="font-medium">{title}</span>
-        <span className="text-xs text-muted-foreground">{description}</span>
+        <span className="text-xs text-muted-foreground wrap-anywhere">{description}</span>
         {disabled && disabledReason && (
           <span className="text-xs text-amber-700 dark:text-amber-400">{disabledReason}</span>
         )}

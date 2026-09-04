@@ -80,9 +80,9 @@ export function MetadataEditor({
   const update = (index: number, patch: Partial<MetadataRow>) =>
     onChange(rows.map((row, i) => (i === index ? { ...row, ...patch } : row)));
   return (
-    <div className="grid gap-2">
+    <div className="grid min-w-0 max-w-full gap-2">
       {rows.map((row, index) => (
-        <div key={index} className="flex items-center gap-2">
+        <div key={index} className="flex min-w-0 items-center gap-2">
           <Input
             value={row.key}
             onChange={(event) => update(index, { key: event.target.value })}

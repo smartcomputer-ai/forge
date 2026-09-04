@@ -250,17 +250,6 @@ describe("environment feature config", () => {
     expect(html).not.toContain("Run limits");
   });
 
-  it("can move the environment capability out of the general editor", () => {
-    const html = renderToString(createElement(SessionConfigEditor, {
-      value: { features: { environments: {} } },
-      onChange: () => {},
-      hideEnvironmentFeature: true,
-    }));
-
-    expect(html).not.toContain("Enable Environments");
-    expect(html).not.toContain("Allowed providers");
-  });
-
   it("renders features in task-oriented order and keeps Timers non-expandable", () => {
     const html = renderToString(createElement(SessionConfigEditor, {
       value: {

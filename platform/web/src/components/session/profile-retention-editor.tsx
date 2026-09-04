@@ -50,7 +50,7 @@ export function ProfileRetentionEditor({
   }, [onValidityChange, parsed.error]);
 
   return (
-    <Field className="max-w-sm">
+    <Field className="max-w-full sm:max-w-sm">
       <FieldLabel htmlFor={inputId}>Delete after close (days)</FieldLabel>
       <Input
         id={inputId}

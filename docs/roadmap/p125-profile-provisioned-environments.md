@@ -425,7 +425,8 @@ rules shared with `environments/create`).
       stub gateway; CLI online `provision` validation; Foundry test fixture.
 - [x] Platform environment setup consolidated under the Environment capability
       in profile, session-create, live-session, and bot editors without changing
-      the wire document or bot section-save isolation.
+      the wire document. Bot setup edits the complete session profile through
+      one section and one save boundary.
 - [x] Docs: `README.md`, `AGENTS.md`, P108 and `docs/spec/04-environments.md`
       amendments. The readiness wait is a workflow constant
       (`ENVIRONMENT_READY_WAIT`, 10 minutes), not a deployment variable.

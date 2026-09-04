@@ -136,15 +136,13 @@ of chrome and went. Every section saves on its own.
   when busy, thread retention) whose closed state shows a sentence: "One
   thread per pull request · waits up to 2 min to batch · queues when
   busy".
-- **Capabilities** — model and reasoning effort, then toggles over the
-  existing `SessionConfig` shape: Web (fetch, search), Files (workspace
-  links), Environment tools, MCP servers (multi-select from the universe
-  catalog), Sub-agents (profiles multi-select + limits), Timers. "Edit as
-  JSON" stays as the escape hatch. When the bot uses a shared profile the
-  section shows "Uses profile ⟨X⟩ — Open · Detach into own setup".
-- **Environment** — None / An existing environment (picker, then today's
-  environment card with power controls and idle policy) / A fresh one per
-  session (binding). Exec pollers explain themselves against this choice.
+- **Session profile** — the profile selector, base instructions, model and
+  reasoning effort, model run controls, capability toggles, environment
+  selection/provisioning, metadata, and automatic deletion. Environment
+  intent lives inside the Environment capability, with the selected
+  environment's power and idle-policy controls beside it. One save updates
+  the profile document; shared-profile warnings and the Profiles-page link
+  remain at the top.
 - **Other bots** — both directions of bot-to-bot messaging in one place,
   because that is one topic to a person even though it is a grant plus a
   trigger to the system: "Can message other bots" (`emit`) and "Accepts
@@ -161,10 +159,10 @@ of chrome and went. Every section saves on its own.
 
 ## 4. Creating a bot: the wizard
 
-A full page (`/bots/new`), four steps, a summary card on the right that
+A full page (`/bots/new`), five steps, a summary card on the right that
 fills in as you go, every step skippable with defaults. It creates the bot
 **and** its own setup in one go; "Use a shared profile" is an option on
-step 3.
+step 4.
 
 1. **Job** — Start from a template (Blank · Pull-request reviewer · Daily
    digest · Chat assistant · On-call responder · Repository watcher; each
@@ -174,10 +172,14 @@ step 3.
    preset; the URL appears after creation), Chat account, Poll, Other
    bots, "None yet" (you can always message it). Each pick adds a mini card with
    the kind's essentials; filter/route/coalesce take per-kind defaults.
-3. **Capabilities** — model, toggles, environment choice. Readiness
-   inline: no model credential → link to Integrations; no environment →
-   link to Environments; no messaging account → who to ask.
-4. **Guardrails** — daily run limit (default on), "can change its own
+3. **Session profile** — choose an own or shared profile. An own profile
+   exposes base instructions, model and run controls, toggles, environment
+   choice, metadata, and automatic deletion in the same editor used later.
+   Readiness remains inline: no model credential → link to Integrations; no
+   environment → link to Environments; no messaging account → who to ask.
+4. **Other bots** — choose whether it may send to other bots and which bots
+   may address it.
+5. **Guardrails** — daily run limit (default on), "can change its own
    brief and triggers" (default on: chat-to-configure is the point),
    "can message other bots" (off). Create.
 
@@ -232,10 +234,9 @@ The wizard writes a profile named after the bot (`profileId = botId`,
 description "Setup of bot ⟨id⟩") and the bot references it — nothing on the
 bot row records that, and nothing cleans it up: the point is that a bot can
 be created with its setup in one flow, not that the platform tracks
-ownership. Setup › Capabilities and › Environment edit whatever profile the
-bot references through the ordinary `PUT /profiles/:id` route, each
-section merging only its own fields onto the latest revision so the two
-never clobber each other; when other bots use the same profile the section
+ownership. Setup › Session profile edits whatever profile the bot references
+through the ordinary `PUT /profiles/:id` route, overlaying only changed fields
+onto the latest revision; when other bots use the same profile the section
 says so. "Use a shared profile" is the wizard's other path, and Setup can
 switch profiles later. A `bots.setup` document on the row (P130's original
 `inline` sketch) and an ownership column were both considered and dropped:
@@ -256,7 +257,7 @@ in flight), so no Temporal query per row.
 | --- | --- |
 | `idle` / `session_busy`, `delivering_event` / `budget_exhausted` / `degraded` / `initializing` | Idle / Working / Out of budget / Needs attention / Starting |
 | main session / keyed & per-event sessions | Main / Threads |
-| `runsPerDay` / `breaker` / `routedSessionCloseAfterMs` | Daily run limit / Flood protection / Thread retention |
+| `runsPerDay` / `breaker` / `routedSessionCloseAfterMs` | Daily run limit / Flood protection / Close inactive threads |
 | `selfConfig` / `emit` / inbox trigger | Can change its own brief and triggers / Can message other bots / Accepts messages from other bots |
 | Settings › Setups | Templates (frees "Setup" for the bot tab) |
 
@@ -283,12 +284,12 @@ Built 2026-08-27, in one pass:
   (`rosterLine`), `components/bot/detail.tsx` shell, `chat.tsx` (conversations
   + embedded `SessionDetail` with `embedded`/`sessionHref` props, the
   introduction message), `activity.tsx` (strip, filters, timeline, test
-  event, replay), `setup.tsx` (seven sections, per-section saves, profile
-  switcher, inbox as a guardrail), `triggers.tsx` (cards with
+  event, replay), `setup.tsx` (seven sections, per-section saves, unified
+  session-profile switcher, inbox as a guardrail), `triggers.tsx` (cards with
   `trigger-summary.ts` sentences, `DeliveryFields` behind an Advanced
   disclosure, `ScheduleFields`, `TriggerKindPicker`, `TriggerKindFields`,
   `triggerCreateBody` for the wizard, "Send sample"), `BotCreatePage.tsx`
-  (four steps, summary rail, `templates.ts`), `face.tsx` (deterministic
+  (five steps, summary rail, `templates.ts`), `face.tsx` (deterministic
   colour), `status.tsx` (person-facing status words). The create-bot and
   settings dialogs are gone; Settings › Setups is labelled Templates.
 - Not built: fire-now for schedules; an "Ask the bot" affordance; a

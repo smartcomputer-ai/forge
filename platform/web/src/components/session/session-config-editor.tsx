@@ -93,7 +93,6 @@ type Props = {
   environmentProviders?: EnvironmentProviderOption[];
   featureDisableReasons?: Partial<Record<FeatureName, string>>;
   environmentSetup?: ReactNode;
-  hideEnvironmentFeature?: boolean;
   metadataSetup?: ReactNode;
   metadataDescription?: string;
   retentionSetup?: ReactNode;
@@ -432,7 +431,6 @@ export function SessionConfigEditor({
   environmentProviders = [],
   featureDisableReasons = {},
   environmentSetup,
-  hideEnvironmentFeature = false,
   metadataSetup,
   metadataDescription = "Descriptive key/value pairs for finding sessions. Metadata never changes how a session runs.",
   retentionSetup,
@@ -479,8 +477,8 @@ export function SessionConfigEditor({
     });
 
   return (
-    <div className={cn("grid gap-8", className)}>
-      <section className="grid gap-5">
+    <div className={cn("grid min-w-0 max-w-full gap-8", className)}>
+      <section className="grid min-w-0 gap-5">
         <ModelFields
           config={config}
           models={models}
@@ -492,16 +490,15 @@ export function SessionConfigEditor({
         <AdvancedFields config={config} change={change} />
       </section>
 
-      <section className="grid gap-4">
+      <section className="grid min-w-0 gap-4">
         <div className="grid gap-0.5">
           <h2 className="text-sm font-semibold">Features</h2>
           <p className="text-xs text-muted-foreground">
             Features are capability grants. Disabled features are absent from the config.
           </p>
         </div>
-        <div className="grid gap-2">
+        <div className="grid min-w-0 gap-2">
           {featureDisplayOrder
-            .filter((name) => name !== "environments" || !hideEnvironmentFeature)
             .map((name) => name === "environments" ? (
               <EnvironmentFeatureEditor
                 key={name}
@@ -580,11 +577,11 @@ function ExpandableSetupPanel({
 }) {
   const [open, setOpen] = useState(false);
   return (
-    <div className="rounded-lg border">
+    <div className="min-w-0 max-w-full rounded-lg border">
       <button
         type="button"
         aria-expanded={open}
-        className="flex min-h-16 w-full cursor-pointer items-center gap-3 rounded-md px-4 py-3 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        className="flex min-h-16 w-full min-w-0 cursor-pointer items-center gap-3 rounded-md px-4 py-3 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring"
         onClick={() => setOpen((value) => !value)}
       >
         <Icon className="size-4 shrink-0 text-muted-foreground" />
@@ -596,17 +593,16 @@ function ExpandableSetupPanel({
           {open ? <ChevronDown /> : <ChevronRight />}
         </span>
       </button>
-      {open && <div className="border-t px-4 py-4">{children}</div>}
+      {open && <div className="min-w-0 border-t px-4 py-4">{children}</div>}
     </div>
   );
 }
 
 /**
  * The environment capability and the environment a session should use are
- * separate on the wire, but belong together in the editor. Exporting this
- * panel lets bot settings place both under its dedicated Environment section.
+ * separate on the wire, but belong together in the editor.
  */
-export function EnvironmentFeatureEditor({
+function EnvironmentFeatureEditor({
   value,
   providers = [],
   disableReason,
@@ -1097,8 +1093,8 @@ function FeaturePanel({
     if (!enabled) setOpen(false);
   }, [enabled]);
   return (
-    <div className={cn("rounded-lg border", enabled ? "border-border" : "border-dashed")}>
-      <div className="flex min-h-16 items-stretch gap-3 px-4">
+    <div className={cn("min-w-0 max-w-full rounded-lg border", enabled ? "border-border" : "border-dashed")}>
+      <div className="flex min-w-0 min-h-16 items-stretch gap-3 px-4">
         <div className="flex items-center">
           <Switch
             checked={enabled}
@@ -1138,7 +1134,7 @@ function FeaturePanel({
           )}
         </button>
       </div>
-      {enabled && configurable && open && <div className="border-t px-4 py-4">{children}</div>}
+      {enabled && configurable && open && <div className="min-w-0 border-t px-4 py-4">{children}</div>}
     </div>
   );
 }
@@ -1236,8 +1232,8 @@ function VfsFields({
       </div>
 
       <div className="grid gap-3 border-t pt-4">
-        <div className="flex items-center justify-between gap-3">
-          <div>
+        <div className="flex min-w-0 items-center justify-between gap-3">
+          <div className="min-w-0">
             <p className="text-sm font-medium">Workspace links</p>
             <p className="text-xs text-muted-foreground">
               Expose catalog workspaces or pinned snapshots at session paths.
@@ -1636,8 +1632,8 @@ function EnvironmentFields({
           Empty allows every registered provider. Selection resolves live universe environments.
         </FieldDescription>
       </Field>
-      <div className="flex items-start justify-between gap-4 rounded-lg border p-3">
-        <div className="grid gap-1">
+      <div className="flex min-w-0 max-w-full items-start justify-between gap-4 rounded-lg border p-3">
+        <div className="grid min-w-0 gap-1">
           <Label htmlFor={selectionToolsId}>Environment selection tools</Label>
           <p className="text-xs text-muted-foreground">
             Let the model list, activate, and deactivate allowed environments. Reading the active environment is always available.
@@ -1652,8 +1648,8 @@ function EnvironmentFields({
           })}
         />
       </div>
-      <div className="flex items-start justify-between gap-4 rounded-lg border p-3">
-        <div className="grid gap-1">
+      <div className="flex min-w-0 max-w-full items-start justify-between gap-4 rounded-lg border p-3">
+        <div className="grid min-w-0 gap-1">
           <Label htmlFor={jobsId}>Durable jobs</Label>
           <p className="text-xs text-muted-foreground">
             Allow the agent to use durable job tools on capable environments.
@@ -1713,8 +1709,8 @@ function McpFields({
 
   return (
     <div className="grid gap-3">
-      <div className="flex items-center justify-between gap-3">
-        <p className="text-xs text-muted-foreground">
+      <div className="flex min-w-0 items-center justify-between gap-3">
+        <p className="min-w-0 text-xs text-muted-foreground">
           Only declared servers can materialize remote tools.
         </p>
         <Button

@@ -3,7 +3,7 @@ import type { BotEventView, BotListItem } from "@/api";
 import { rosterLine } from "./BotsPage";
 import { BOT_TEMPLATES } from "@/components/bot/templates";
 import { capabilitySummary } from "@/components/bot/setup-summary";
-import { botIdFrom, templateHighlights, uniqueTriggerName } from "./BotCreatePage";
+import { botIdFrom, botOwnedProfileDocument, templateHighlights, uniqueTriggerName } from "./BotCreatePage";
 
 function event(partial: Partial<BotEventView>): BotEventView {
   return {
@@ -111,5 +111,25 @@ describe("wizard helpers", () => {
         features: { web: {}, mcp: { servers: [{ serverId: "a" }, { serverId: "b" }] }, subagents: { agents: [{ profileId: "r" }] } },
       }),
     ).toEqual(["claude-opus-5", "Web", "MCP servers (2)", "Sub-agents (1)"]);
+  });
+  it("builds the complete profile owned by a new bot", () => {
+    expect(botOwnedProfileDocument({
+      profileId: "triage",
+      displayName: "Triage",
+      config: { features: { environments: {} } },
+      baseInstructions: "Always cite the incident.",
+      environment: { type: "existing", environmentId: "ops-box" },
+      metadata: { team: "ops" },
+      retention: 604_800_000,
+    })).toEqual({
+      profileId: "triage",
+      displayName: "Triage",
+      description: "Setup of bot triage",
+      config: { features: { environments: {} } },
+      instructions: { type: "text", text: "Always cite the incident." },
+      environment: { type: "existing", environmentId: "ops-box" },
+      metadata: { team: "ops" },
+      retention: { deleteAfterCloseMs: 604_800_000 },
+    });
   });
 });

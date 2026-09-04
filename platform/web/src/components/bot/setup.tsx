@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowUpRight, ChevronRight, SlidersHorizontal } from "lucide-react";
 import { Link, useNavigate } from "react-router-dom";
@@ -16,7 +16,6 @@ import {
   type Environment,
   type ProfileDocument,
   type ProfileEnvironment,
-  type ProfileSessionRetention,
   type ProfileSummary,
 } from "@/api";
 import {
@@ -46,10 +45,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { ProfileEnvironmentEditor } from "@/components/session/profile-environment-editor";
 import { MetadataMapEditor } from "@/components/session/metadata-editor";
 import { ProfileRetentionEditor } from "@/components/session/profile-retention-editor";
-import {
-  EnvironmentFeatureEditor,
-  SessionConfigEditor,
-} from "@/components/session/session-config-editor";
+import { SessionConfigEditor } from "@/components/session/session-config-editor";
 import { useSessionConfigEditorOptions } from "@/lib/sessions/editor-options";
 import {
   hasSessionFeature,
@@ -60,7 +56,7 @@ import { cn } from "@/lib/utils";
 import { BotEnvironmentCard } from "./environment-card";
 import { BotAvatar } from "./face";
 import { botInputOf } from "./identity";
-import { environmentFeatureSnapshot, withEnvironmentFeature } from "./profile-config-scope";
+import { mergeSessionProfileFields, type SessionProfileFields } from "./session-profile";
 import { briefSummary, capabilitySummary, environmentSummary, guardrailsSummary, otherBotsSummary } from "./setup-summary";
 import { triggerSummary } from "./trigger-summary";
 import {
@@ -127,7 +123,7 @@ export function BotSetup({
 
   return (
     <div className="min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto">
-      <div className="mx-auto grid w-full min-w-0 max-w-4xl gap-3 px-4 py-5 text-sm md:px-8">
+      <div className="mx-auto grid w-full min-w-0 max-w-5xl gap-3 px-4 py-5 text-sm md:px-8">
         <IdentitySection universeId={universeId} bot={bot} manage={manage} />
         <BriefSection universeId={universeId} bot={bot} manage={manage} />
         <SetupSection
@@ -146,19 +142,19 @@ export function BotSetup({
             hideKinds={["bot"]}
           />
         </SetupSection>
-        <OtherBotsSection
-          universeId={universeId}
-          bot={bot}
-          manage={manage}
-          inbox={triggerList.find((trigger) => trigger.kind === "bot")}
-        />
-        <ProfileSections
+        <SessionProfileSection
           universeId={universeId}
           slug={slug}
           bot={bot}
           manage={manage}
           profile={profile.data}
           profileError={profile.error?.message}
+        />
+        <OtherBotsSection
+          universeId={universeId}
+          bot={bot}
+          manage={manage}
+          inbox={triggerList.find((trigger) => trigger.kind === "bot")}
         />
         <GuardrailsSection universeId={universeId} bot={bot} state={state} manage={manage} />
         <DangerSection universeId={universeId} slug={slug} bot={bot} manage={manage} />
@@ -196,9 +192,9 @@ function SetupSection({
   return (
     <section
       id={id}
-      className={cn("scroll-mt-4 rounded-lg border bg-card", tone === "danger" && "border-destructive/40")}
+      className={cn("min-w-0 max-w-full scroll-mt-4 rounded-lg border bg-card", tone === "danger" && "border-destructive/40")}
     >
-      <div className="flex items-center gap-2 pr-3">
+      <div className="flex min-w-0 items-center gap-2 pr-3">
         <button
           type="button"
           onClick={() => setOpen((value) => !value)}
@@ -217,7 +213,7 @@ function SetupSection({
         </button>
         {actions && <div className="flex shrink-0 items-center gap-2">{actions}</div>}
       </div>
-      {open && <div className="grid gap-4 border-t px-4 py-4">{children}</div>}
+      {open && <div className="grid min-w-0 gap-4 border-t px-4 py-4">{children}</div>}
     </section>
   );
 }
@@ -373,26 +369,16 @@ function BriefSection({ universeId, bot, manage }: { universeId: string; bot: Bo
   );
 }
 
-type SaveableFields = {
-  config?: Record<string, unknown> | undefined;
-  instructions?: { type: "text"; text: string } | undefined;
-  environment?: ProfileEnvironment | undefined;
-  metadata?: Record<string, string> | undefined;
-  retention?: ProfileSessionRetention | undefined;
-};
-
 type ProfileSaveRequest = {
-  fields: SaveableFields;
-  configScope?: "all" | "environment" | "nonEnvironment";
+  fields: SessionProfileFields;
 };
 
 /**
- * Capabilities and Environment both live in the bot's profile, one
- * document with one revision. Each section saves only its own fields onto
- * the latest revision, so saving one never clobbers the other. The core
- * reconciles bots onto the new profile revision on its own.
+ * All session setup lives in the bot's profile, one document with one
+ * revision. Saving overlays only edited fields onto the latest document;
+ * the core then reconciles bots onto the new profile revision on its own.
  */
-function ProfileSections({
+function SessionProfileSection({
   universeId,
   slug,
   bot,
@@ -443,12 +429,8 @@ function ProfileSections({
   }, [revision, bot.profileId]);
 
   const profileConfig = profile?.config as Record<string, unknown> | undefined;
-  const capabilitiesConfigDirty = profile !== undefined
-    && JSON.stringify(withEnvironmentFeature(configDraft, undefined) ?? null)
-      !== JSON.stringify(withEnvironmentFeature(profileConfig, undefined) ?? null);
-  const environmentConfigDirty = profile !== undefined
-    && JSON.stringify(environmentFeatureSnapshot(configDraft) ?? null)
-      !== JSON.stringify(environmentFeatureSnapshot(profileConfig) ?? null);
+  const configDirty = profile !== undefined
+    && JSON.stringify(configDraft ?? null) !== JSON.stringify(profileConfig ?? null);
   const baseInstructions = (profile?.instructions as { type?: string; text?: string } | undefined)?.type === "text"
     ? ((profile?.instructions as { text: string }).text ?? "")
     : "";
@@ -461,21 +443,9 @@ function ProfileSections({
     profile !== undefined && retentionDraft !== profile.retention?.deleteAfterCloseMs;
 
   const save = useMutation({
-    mutationFn: async ({ fields, configScope = "all" }: ProfileSaveRequest) => {
+    mutationFn: async ({ fields }: ProfileSaveRequest) => {
       const latest = await api<ProfileDocument>("GET", profileUrl);
-      const { createdAtMs: _created, updatedAtMs: _updated, ...document } = latest;
-      const next: Record<string, unknown> = { ...document };
-      const scopedFields = { ...fields };
-      if (Object.hasOwn(fields, "config") && configScope !== "all") {
-        const latestConfig = latest.config as Record<string, unknown> | undefined;
-        scopedFields.config = configScope === "environment"
-          ? withEnvironmentFeature(latestConfig, fields.config)
-          : withEnvironmentFeature(fields.config, latestConfig);
-      }
-      for (const [key, value] of Object.entries(scopedFields)) {
-        if (value === undefined) delete next[key];
-        else next[key] = value;
-      }
+      const next = mergeSessionProfileFields(latest, fields);
       const problem = setupResourceFeatureError(next);
       if (problem) throw new Error(problem);
       await api("PUT", profileUrl, next);
@@ -488,60 +458,36 @@ function ProfileSections({
       ]);
     },
   });
-  const merged = useMemo(
-    () => ({ ...(profile ?? {}), config: configDraft, environment: environmentDraft }),
-    [profile, configDraft, environmentDraft],
-  );
+  const merged = { ...(profile ?? {}), config: configDraft, environment: environmentDraft };
   const closed = bot.closedAtMs != null;
   const readOnly = !manage || closed;
-  const capabilities = capabilitySummary(withEnvironmentFeature(profileConfig, undefined));
+  const capabilities = capabilitySummary(profileConfig);
+  const environment = hasSessionFeature(profileConfig, "environments")
+    ? environmentSummary(profile?.environment, environments.data)
+    : null;
   const textRef = (profile?.instructions as { type?: string } | undefined)?.type === "textRef";
 
   return (
-    <>
-      <SetupSection
-        id="capabilities"
-        title="Capabilities"
-        description="The model and tools this bot's sessions get, from its profile."
-        summary={
-          profileError
-            ? `Profile ${bot.profileId} could not be read`
-            : `${capabilities.length > 0 ? capabilities.join(" · ") : "Default model, no tools"} · profile ${bot.profileId}`
-        }
-      >
-        <ProfileSwitcher universeId={universeId} bot={bot} slug={slug} manage={manage && !closed} sharedWith={sharedWith} />
-        {profileError && (
-          <p className="rounded-md bg-destructive/10 p-2 text-xs text-destructive">
-            Profile <code>{bot.profileId}</code> could not be read: {profileError}
-          </p>
-        )}
-        {profile && (
-          <>
-            <SessionConfigEditor
-              value={configDraft}
-              mcpServers={options.mcpServers}
-              workspaces={options.workspaces}
-              workspacesLoading={options.workspacesLoading}
-              models={options.models}
-              profiles={options.profiles}
-              environmentProviders={options.environmentProviders}
-              featureDisableReasons={resourceFeatureDisableReasons(merged)}
-              hideEnvironmentFeature
-              metadataSetup={(
-                <MetadataMapEditor value={metadataDraft} onChange={setMetadataDraft} />
-              )}
-              metadataDescription="Defaults copied to every session this bot creates. Metadata helps with filtering and does not affect runtime behavior."
-              retentionSetup={(
-                <ProfileRetentionEditor
-                  value={retentionDraft}
-                  onChange={setRetentionDraft}
-                  onValidityChange={setRetentionError}
-                />
-              )}
-              retentionDescription="Default automatic deletion for each new root session this bot creates."
-              onValidityChange={setConfigError}
-              onChange={(config) => setConfigDraft(config as Record<string, unknown> | undefined)}
-            />
+    <SetupSection
+      id="session-profile"
+      title="Session profile"
+      description="The model, instructions, tools, environment, metadata, and retention applied to this bot's sessions."
+      summary={profileError
+        ? `Profile ${bot.profileId} could not be read`
+        : [
+            capabilities.length > 0 ? capabilities.join(" · ") : "Default model, no tools",
+            environment,
+            `profile ${bot.profileId}`,
+          ].filter(Boolean).join(" · ")}
+    >
+      <ProfileSwitcher universeId={universeId} bot={bot} slug={slug} manage={manage && !closed} sharedWith={sharedWith} />
+      {profileError && (
+        <p className="rounded-md bg-destructive/10 p-2 text-xs text-destructive">
+          Profile <code>{bot.profileId}</code> could not be read: {profileError}
+        </p>
+      )}
+      {profile && (
+        <>
             <Field>
               <FieldLabel htmlFor="bot-base-instructions">Base instructions</FieldLabel>
               <Textarea
@@ -554,17 +500,64 @@ function ProfileSections({
               />
               {textRef && <FieldDescription>Stored as a blob reference; edit it on the Profiles page.</FieldDescription>}
             </Field>
+            <SessionConfigEditor
+              value={configDraft}
+              mcpServers={options.mcpServers}
+              workspaces={options.workspaces}
+              workspacesLoading={options.workspacesLoading}
+              models={options.models}
+              profiles={options.profiles}
+              environmentProviders={options.environmentProviders}
+              featureDisableReasons={resourceFeatureDisableReasons(merged)}
+              environmentSetup={(
+                <div className="grid gap-4">
+                  <ProfileEnvironmentEditor
+                    embedded
+                    value={environmentDraft}
+                    environments={environments.data}
+                    bindings={options.environmentBindings}
+                    templates={options.environmentTemplates}
+                    secrets={options.secrets}
+                    disabled={readOnly}
+                    description="Choose an existing environment shared by this bot's sessions, or provision a fresh one for each session."
+                    onChange={setEnvironmentDraft}
+                  />
+                  {environmentDraft?.type === "existing" && (
+                    <BotEnvironmentCard
+                      slug={slug}
+                      universeId={universeId}
+                      environmentId={environmentDraft.environmentId}
+                      manage={manage}
+                    />
+                  )}
+                </div>
+              )}
+              metadataSetup={(
+                <MetadataMapEditor value={metadataDraft} onChange={setMetadataDraft} disabled={readOnly} />
+              )}
+              metadataDescription="Defaults copied to every session this bot creates. Metadata helps with filtering and does not affect runtime behavior."
+              retentionSetup={(
+                <ProfileRetentionEditor
+                  value={retentionDraft}
+                  onChange={setRetentionDraft}
+                  onValidityChange={setRetentionError}
+                  disabled={readOnly}
+                />
+              )}
+              retentionDescription="Default automatic deletion for each new root session this bot creates."
+              onValidityChange={setConfigError}
+              onChange={(config) => setConfigDraft(config as Record<string, unknown> | undefined)}
+            />
             {manage && (
               <SaveRow
-                dirty={capabilitiesConfigDirty || instructionsDirty || metadataDirty || retentionDirty}
+                dirty={configDirty || instructionsDirty || environmentDirty || metadataDirty || retentionDirty}
                 pending={save.isPending}
                 error={configError ? `Config: ${configError}` : retentionError ? `Retention: ${retentionError}` : save.error?.message}
                 disabled={closed || configError !== null || retentionError !== null}
                 onSave={() =>
                   save.mutate({
-                    configScope: "nonEnvironment",
                     fields: {
-                      config: configDraft,
+                      ...(configDirty ? { config: configDraft } : {}),
                       ...(instructionsDirty
                         ? {
                             instructions: instructionsDraft.trim()
@@ -576,65 +569,16 @@ function ProfileSections({
                       ...(retentionDirty
                         ? { retention: retentionDraft === undefined ? undefined : { deleteAfterCloseMs: retentionDraft } }
                         : {}),
+                      ...(environmentDirty ? { environment: environmentDraft } : {}),
                     },
                   })
                 }
                 note="Applies to Main at its next idle moment; open threads keep their setup until they close."
               />
             )}
-          </>
-        )}
-      </SetupSection>
-
-      <SetupSection
-        id="environment"
-        title="Environment"
-        description="Where the bot works: an environment shared across its sessions, or a fresh one per session. Command polls need a lasting one."
-        summary={hasSessionFeature(profileConfig, "environments")
-          ? `Access on · ${environmentSummary(profile?.environment, environments.data)}`
-          : "Access off"}
-      >
-        {profile && (
-          <EnvironmentFeatureEditor
-            value={configDraft}
-            providers={options.environmentProviders}
-            disableReason={resourceFeatureDisableReasons(merged).environments}
-            onChange={(config) => setConfigDraft(config as Record<string, unknown> | undefined)}
-          >
-            <ProfileEnvironmentEditor
-              embedded
-              value={environmentDraft}
-              environments={environments.data}
-              bindings={options.environmentBindings}
-              templates={options.environmentTemplates}
-              secrets={options.secrets}
-              description="Choose the environment shared across this bot's sessions, or provision a fresh one for each session."
-              onChange={setEnvironmentDraft}
-            />
-          </EnvironmentFeatureEditor>
-        )}
-        {profile && manage && (
-          <SaveRow
-            dirty={environmentConfigDirty || environmentDirty}
-            pending={save.isPending}
-            error={save.error?.message}
-            disabled={closed}
-            onSave={() => save.mutate({
-              configScope: "environment",
-              fields: { config: configDraft, environment: environmentDraft },
-            })}
-          />
-        )}
-        {profile?.environment?.type === "existing" && (
-          <BotEnvironmentCard
-            slug={slug}
-            universeId={universeId}
-            environmentId={profile.environment.environmentId}
-            manage={manage}
-          />
-        )}
-      </SetupSection>
-    </>
+        </>
+      )}
+    </SetupSection>
   );
 }
 
@@ -705,7 +649,7 @@ function ProfileSwitcher({
             changes below reach {sharedWith.length === 1 ? "it" : "them"} as well.
           </>
         ) : (
-          "The model, tools, and environment below are this profile's; switching profiles swaps all of them at the bot's next idle moment."
+          "Everything below belongs to this profile; switching profiles swaps its instructions, model, tools, environment, metadata, and retention at the bot's next idle moment."
         )}
       </FieldDescription>
     </Field>
@@ -963,9 +907,9 @@ function OtherBotsSection({
         }}
         disabled={readOnly}
       />
-      <div className="grid gap-2 rounded-md border p-3">
-        <div className="flex items-center justify-between gap-3">
-          <Label htmlFor="bot-inbox-mode" className="text-sm">
+      <div className="grid min-w-0 max-w-full gap-2 rounded-md border p-3">
+        <div className="flex min-w-0 items-center justify-between gap-3">
+          <Label htmlFor="bot-inbox-mode" className="min-w-0 text-sm">
             Accepts messages from
             <span className="block text-xs font-normal text-muted-foreground">
               {others.length === 0
@@ -974,7 +918,7 @@ function OtherBotsSection({
             </span>
           </Label>
           <Select value={mode} onValueChange={(value) => value && setMode(value as InboxMode)} disabled={readOnly}>
-            <SelectTrigger id="bot-inbox-mode" size="sm" className="w-40">
+            <SelectTrigger id="bot-inbox-mode" size="sm" className="w-40 max-w-full shrink-0">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -1059,8 +1003,8 @@ function ToggleRow({
   disabled?: boolean;
 }) {
   return (
-    <div className="flex items-center justify-between gap-3 rounded-md border p-3">
-      <Label htmlFor={id} className="text-sm">
+    <div className="flex min-w-0 max-w-full items-center justify-between gap-3 rounded-md border p-3">
+      <Label htmlFor={id} className="min-w-0 text-sm">
         {label}
         <span className="block text-xs font-normal text-muted-foreground">{hint}</span>
       </Label>
@@ -1117,8 +1061,8 @@ function DangerSection({
           events are refused. The record and its history stay until the bot is deleted.
         </p>
       ) : (
-        <div className="flex items-start justify-between gap-3">
-          <p className="text-xs text-muted-foreground">
+        <div className="flex min-w-0 items-start justify-between gap-3">
+          <p className="min-w-0 text-xs text-muted-foreground">
             <b className="font-medium text-foreground">Close</b> is final: in-flight runs are cancelled, every
             conversation is closed, schedules are dropped, and new events are refused. The record, its history, the
             id, and its environment stay.
@@ -1144,8 +1088,8 @@ function DangerSection({
           </AlertDialog>
         </div>
       )}
-      <div className="flex items-start justify-between gap-3">
-        <p className="text-xs text-muted-foreground">
+      <div className="flex min-w-0 items-start justify-between gap-3">
+        <p className="min-w-0 text-xs text-muted-foreground">
           <b className="font-medium text-foreground">Delete</b> erases the bot, its triggers, its event history, and
           its conversations, and frees the id{closed ? "." : " — it closes the bot first."} Environments and
           profiles are never deleted with a bot.
