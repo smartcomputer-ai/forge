@@ -311,9 +311,9 @@ function LiveSessionSetup({
           </section>
           <section className="grid gap-3">
             <div className="grid gap-0.5">
-              <h2 className="text-sm font-semibold">Session config</h2>
+              <h2 className="text-sm font-semibold">Model configuration</h2>
               <p className="text-xs text-muted-foreground">
-                Sparse behavior and capability grants. Enable a resource capability before editing its setup.
+                Choose the model and its default reasoning behavior. Unset values inherit deployment or provider defaults.
               </p>
             </div>
             <SessionConfigEditor

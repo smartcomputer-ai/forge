@@ -1109,8 +1109,8 @@ function InlineSetupEditor({
         />
       </SetupEditorSection>
       <SetupEditorSection
-        title="Session config"
-        description="Sparse behavior and capability grants. Unset values inherit engine defaults."
+        title="Model configuration"
+        description="Choose the model and its default reasoning behavior. Unset values inherit deployment or provider defaults."
       >
         <SessionConfigEditor
           value={value.config}

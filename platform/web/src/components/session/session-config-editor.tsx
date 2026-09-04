@@ -480,18 +480,16 @@ export function SessionConfigEditor({
 
   return (
     <div className={cn("grid gap-8", className)}>
-      <section>
-        <div className="grid gap-5 rounded-lg border p-4">
-          <ModelFields
-            config={config}
-            models={models}
-            manualModel={manualModel}
-            onManualModelChange={setManualModel}
-            pinnedApiKind={pinnedApiKind}
-            change={change}
-          />
-          <AdvancedFields config={config} change={change} />
-        </div>
+      <section className="grid gap-5">
+        <ModelFields
+          config={config}
+          models={models}
+          manualModel={manualModel}
+          onManualModelChange={setManualModel}
+          pinnedApiKind={pinnedApiKind}
+          change={change}
+        />
+        <AdvancedFields config={config} change={change} />
       </section>
 
       <section className="grid gap-4">
@@ -537,6 +535,14 @@ export function SessionConfigEditor({
                 {name === "mcp" && <McpFields feature={record(features.mcp)} servers={mcpServers} patch={(fn) => patchFeature("mcp", fn)} />}
               </FeaturePanel>
             ))}
+          {(metadataSetup || retentionSetup) && (
+            <div className="grid gap-0.5 pb-1 pt-5">
+              <h2 className="text-sm font-semibold">Session data</h2>
+              <p className="text-xs text-muted-foreground">
+                Organize sessions with metadata and control how long retained data is kept.
+              </p>
+            </div>
+          )}
           {metadataSetup && (
             <ExpandableSetupPanel
               title="Session metadata"
@@ -722,8 +728,6 @@ function ModelFields({ config, models, manualModel, onManualModelChange, pinnedA
     ]),
   ];
   const reasoningOptionsId = useId();
-  const supportsProcessingTier = supportsOpenAiProcessingTier({ model });
-  const processingTier = string(generation.processingTier) || "providerDefault";
   const updateReasoningEffort = (value: string | undefined) =>
     change((next) => {
       const nextGeneration = record(next.generation);
@@ -732,17 +736,10 @@ function ModelFields({ config, models, manualModel, onManualModelChange, pinnedA
       if (Object.keys(nextGeneration).length) next.generation = nextGeneration;
       else delete next.generation;
     });
-  const updateProcessingTier = (value: string | null) =>
-    change((next) => {
-      const nextGeneration = record(next.generation);
-      if (value && value !== "providerDefault") nextGeneration.processingTier = value;
-      else delete nextGeneration.processingTier;
-      if (Object.keys(nextGeneration).length) next.generation = nextGeneration;
-      else delete next.generation;
-    });
   return (
-    <div className="grid gap-3 border-b pb-5">
-      <Field>
+    <div className="grid gap-3">
+      <div className="grid gap-3 md:grid-cols-2">
+        <Field>
         <FieldLabel>Model</FieldLabel>
         <Combobox
           items={choiceKeys}
@@ -829,45 +826,30 @@ function ModelFields({ config, models, manualModel, onManualModelChange, pinnedA
               ? "Choose a provider-discovered model, or enter a route manually."
               : "No models were discovered. You can still enter a route manually."}
         </FieldDescription>
-      </Field>
-      <Field>
-        <FieldLabel>Reasoning effort</FieldLabel>
-        <Input
-          value={reasoningEffort}
-          list={reasoningOptions.length ? reasoningOptionsId : undefined}
-          onChange={(e) => updateReasoningEffort(e.target.value || undefined)}
-          placeholder="Provider default"
-        />
-        {reasoningOptions.length > 0 && (
-          <datalist id={reasoningOptionsId}>
-            {reasoningOptions.map((effort) => (
-              <option key={effort} value={effort} />
-            ))}
-          </datalist>
-        )}
-        <FieldDescription>
-          {currentModel?.capabilities.reasoningEfforts?.length
-            ? "Choose a known tier or enter any provider-supported value."
-            : "No tiers are known. Enter a provider-supported value, or leave unset for its default."}
-        </FieldDescription>
-      </Field>
-      {supportsProcessingTier && (
+        {currentModel && <ModelCapabilities option={currentModel} />}
+        </Field>
         <Field>
-          <FieldLabel>Processing tier</FieldLabel>
-          <Select value={processingTier} onValueChange={updateProcessingTier}>
-            <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
-            <SelectContent>
-              <SelectItem value="providerDefault">Provider default</SelectItem>
-              <SelectItem value="standard">Standard</SelectItem>
-              <SelectItem value="fast">Fast</SelectItem>
-              <SelectItem value="flex">Flex</SelectItem>
-            </SelectContent>
-          </Select>
+          <FieldLabel>Reasoning effort</FieldLabel>
+          <Input
+            value={reasoningEffort}
+            list={reasoningOptions.length ? reasoningOptionsId : undefined}
+            onChange={(e) => updateReasoningEffort(e.target.value || undefined)}
+            placeholder="Provider default"
+          />
+          {reasoningOptions.length > 0 && (
+            <datalist id={reasoningOptionsId}>
+              {reasoningOptions.map((effort) => (
+                <option key={effort} value={effort} />
+              ))}
+            </datalist>
+          )}
           <FieldDescription>
-            Applied to every run in this session. Fast prioritizes latency; Flex uses lower-priority processing.
+            {currentModel?.capabilities.reasoningEfforts?.length
+              ? "Choose a known tier or enter any provider-supported value."
+              : "No tiers are known. Enter a provider-supported value, or leave unset for its default."}
           </FieldDescription>
         </Field>
-      )}
+      </div>
       {selected === "manual" && (
         <div className="grid gap-3 sm:grid-cols-3">
           <Field><FieldLabel>Provider id</FieldLabel><Input value={string(model.providerId)} onChange={(e) => update("providerId", e.target.value)} placeholder="openai" /></Field>
@@ -875,7 +857,6 @@ function ModelFields({ config, models, manualModel, onManualModelChange, pinnedA
           <Field><FieldLabel>Model</FieldLabel><Input value={string(model.model)} onChange={(e) => update("model", e.target.value)} placeholder="gpt-5.5" /></Field>
         </div>
       )}
-      {currentModel && <ModelCapabilities option={currentModel} />}
     </div>
   );
 }
@@ -963,37 +944,25 @@ function ModelCapabilities({ option }: { option: ModelOption }) {
 }
 
 function AdvancedFields({ config, change }: { config: RecordValue; change: (fn: (next: RecordValue) => void) => void }) {
-  const [open, setOpen] = useState(false);
   return (
-    <div className="grid gap-3">
-      <Button
-        variant="ghost"
-        className="h-auto justify-start gap-2 px-0 py-0 text-left hover:bg-transparent"
-        onClick={() => setOpen((value) => !value)}
-        aria-expanded={open}
-      >
-        <SlidersHorizontal className="size-4 text-muted-foreground" />
-        <span>
-          <span className="block text-sm font-medium">Advanced</span>
-          <span className="block text-xs font-normal text-muted-foreground">
-            Generation, run limits, and context compaction.
-          </span>
-        </span>
-        {open ? <ChevronDown className="ml-auto" /> : <ChevronRight className="ml-auto" />}
-      </Button>
-      {open && (
-        <div className="ml-2 grid gap-5 border-l border-border/70 py-1 pl-5">
-          <GenerationFields config={config} change={change} />
-          <LimitsFields config={config} change={change} />
-          <ContextFields config={config} change={change} />
-        </div>
-      )}
-    </div>
+    <ExpandableSetupPanel
+      title="Model run controls"
+      description="Optional generation controls, run limits, and context compaction."
+      icon={SlidersHorizontal}
+    >
+      <div className="grid gap-5">
+        <GenerationFields config={config} change={change} />
+        <LimitsFields config={config} change={change} />
+        <ContextFields config={config} change={change} />
+      </div>
+    </ExpandableSetupPanel>
   );
 }
 
 function GenerationFields({ config, change }: { config: RecordValue; change: (fn: (next: RecordValue) => void) => void }) {
   const generation = record(config.generation);
+  const supportsProcessingTier = supportsOpenAiProcessingTier({ model: record(config.model) });
+  const processingTier = string(generation.processingTier) || "providerDefault";
   const update = (key: string, value: unknown) => change((next) => {
     const item = record(next.generation);
     if (value === undefined || value === "") delete item[key]; else item[key] = value;
@@ -1027,6 +996,29 @@ function GenerationFields({ config, change }: { config: RecordValue; change: (fn
               </SelectContent>
             </Select>
           </Field>
+          {supportsProcessingTier && (
+            <Field>
+              <FieldLabel>Processing tier</FieldLabel>
+              <Select
+                value={processingTier}
+                onValueChange={(value) => update(
+                  "processingTier",
+                  value === "providerDefault" ? undefined : value,
+                )}
+              >
+                <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="providerDefault">Provider default</SelectItem>
+                  <SelectItem value="standard">Standard</SelectItem>
+                  <SelectItem value="fast">Fast</SelectItem>
+                  <SelectItem value="flex">Flex</SelectItem>
+                </SelectContent>
+              </Select>
+              <FieldDescription>
+                Applied to every run. Fast prioritizes latency; Flex uses lower-priority processing.
+              </FieldDescription>
+            </Field>
+          )}
           <Field>
             <FieldLabel>Tool choice</FieldLabel>
             <Select value={toolChoiceType} onValueChange={(value) => update("toolChoice", value === "default" ? undefined : { type: value })}>

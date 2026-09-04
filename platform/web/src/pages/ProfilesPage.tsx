@@ -530,8 +530,8 @@ function ConfigSection({
   });
   return (
     <Section
-      title="Session config"
-      description="Sparse session behavior and capability grants. Unset values inherit engine defaults."
+      title="Model configuration"
+      description="Choose the model and its default reasoning behavior. Unset values inherit deployment or provider defaults."
     >
       <SessionConfigEditor
         value={draft.config}

@@ -60,7 +60,7 @@ describe("model picker ordering", () => {
 });
 
 describe("OpenAI processing tier config", () => {
-  it("renders the selector for an OpenAI model in the shared config editor", () => {
+  it("keeps the selector inside the collapsed model run controls", () => {
     const model = {
       providerId: "openai",
       apiKind: "openai:responses",
@@ -74,8 +74,34 @@ describe("OpenAI processing tier config", () => {
       models: [model],
     }));
 
-    expect(html).toContain("Processing tier");
-    expect(html).toContain("Provider default");
+    expect(html).toContain("Model run controls");
+    expect(html).not.toContain("Processing tier");
+  });
+
+  it("shows model capabilities directly below the model identifier", () => {
+    const model = {
+      providerId: "anthropic",
+      apiKind: "anthropic:messages",
+      model: "claude-opus-5",
+      displayName: "Claude Opus 5",
+      capabilities: {
+        maxInputTokens: 1_000_000,
+        maxOutputTokens: 128_000,
+        parallelToolUse: true,
+      },
+    } satisfies ModelOption;
+    const html = renderToString(createElement(SessionConfigEditor, {
+      value: { model },
+      onChange: () => {},
+      models: [model],
+    }));
+    const modelId = html.indexOf("anthropic · anthropic:messages");
+    const capabilities = html.indexOf("1,000,000 input tokens");
+    const reasoning = html.indexOf("Reasoning effort");
+
+    expect(modelId).toBeGreaterThanOrEqual(0);
+    expect(capabilities).toBeGreaterThan(modelId);
+    expect(reasoning).toBeGreaterThan(capabilities);
   });
 
   it("persists the tier in generation defaults for built-in OpenAI", () => {
@@ -213,13 +239,13 @@ describe("environment feature config", () => {
     expect(html).toContain('aria-expanded="false"');
   });
 
-  it("keeps Advanced collapsed when advanced settings already exist", () => {
+  it("keeps Model run controls collapsed when optional settings already exist", () => {
     const html = renderToString(createElement(SessionConfigEditor, {
       value: { generation: { parallelToolUse: true } },
       onChange: () => {},
     }));
 
-    expect(html).toContain("Advanced");
+    expect(html).toContain("Model run controls");
     expect(html).toContain('aria-expanded="false"');
     expect(html).not.toContain("Run limits");
   });
@@ -258,6 +284,7 @@ describe("environment feature config", () => {
       "Virtual File System: Files, Instructions, Skills",
       "Web",
       "Timers",
+      "Session data",
       "Session metadata",
       "Automatic deletion",
     ];
