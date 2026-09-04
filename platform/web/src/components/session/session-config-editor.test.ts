@@ -239,6 +239,7 @@ describe("environment feature config", () => {
       },
       onChange: () => {},
       metadataSetup: createElement("p", null, "Metadata fields"),
+      retentionSetup: createElement("p", null, "Retention fields"),
     }));
     const labels = [
       "Environments",
@@ -248,6 +249,7 @@ describe("environment feature config", () => {
       "Web",
       "Timers",
       "Session metadata",
+      "Automatic deletion",
     ];
     const positions = labels.map((label) => html.indexOf(label));
 
@@ -258,6 +260,7 @@ describe("environment feature config", () => {
     const timersHtml = html.slice(timersStart, timersEnd);
     expect(timersHtml).not.toContain("aria-expanded");
     expect(html).not.toContain("Metadata fields");
+    expect(html).not.toContain("Retention fields");
   });
 });
 

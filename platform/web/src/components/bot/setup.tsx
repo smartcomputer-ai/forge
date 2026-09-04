@@ -16,6 +16,7 @@ import {
   type Environment,
   type ProfileDocument,
   type ProfileEnvironment,
+  type ProfileSessionRetention,
   type ProfileSummary,
 } from "@/api";
 import {
@@ -44,6 +45,7 @@ import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import { ProfileEnvironmentEditor } from "@/components/session/profile-environment-editor";
 import { MetadataMapEditor } from "@/components/session/metadata-editor";
+import { ProfileRetentionEditor } from "@/components/session/profile-retention-editor";
 import {
   EnvironmentFeatureEditor,
   SessionConfigEditor,
@@ -376,6 +378,7 @@ type SaveableFields = {
   instructions?: { type: "text"; text: string } | undefined;
   environment?: ProfileEnvironment | undefined;
   metadata?: Record<string, string> | undefined;
+  retention?: ProfileSessionRetention | undefined;
 };
 
 type ProfileSaveRequest = {
@@ -423,7 +426,9 @@ function ProfileSections({
   const [instructionsDraft, setInstructionsDraft] = useState("");
   const [environmentDraft, setEnvironmentDraft] = useState<ProfileEnvironment | undefined>();
   const [metadataDraft, setMetadataDraft] = useState<Record<string, string> | undefined>();
+  const [retentionDraft, setRetentionDraft] = useState<number | undefined>();
   const [configError, setConfigError] = useState<string | null>(null);
+  const [retentionError, setRetentionError] = useState<string | null>(null);
   const revision = profile?.revision;
   useEffect(() => {
     if (!profile) return;
@@ -432,6 +437,7 @@ function ProfileSections({
     setInstructionsDraft(instructions?.type === "text" ? instructions.text : "");
     setEnvironmentDraft(profile.environment ?? undefined);
     setMetadataDraft(profile.metadata ? structuredClone(profile.metadata) : undefined);
+    setRetentionDraft(profile.retention?.deleteAfterCloseMs);
     // Re-sync on a new revision only; an unrelated refetch must not wipe edits.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [revision, bot.profileId]);
@@ -451,6 +457,8 @@ function ProfileSections({
     profile !== undefined && JSON.stringify(environmentDraft ?? null) !== JSON.stringify(profile.environment ?? null);
   const metadataDirty =
     profile !== undefined && JSON.stringify(metadataDraft ?? null) !== JSON.stringify(profile.metadata ?? null);
+  const retentionDirty =
+    profile !== undefined && retentionDraft !== profile.retention?.deleteAfterCloseMs;
 
   const save = useMutation({
     mutationFn: async ({ fields, configScope = "all" }: ProfileSaveRequest) => {
@@ -523,6 +531,14 @@ function ProfileSections({
                 <MetadataMapEditor value={metadataDraft} onChange={setMetadataDraft} />
               )}
               metadataDescription="Defaults copied to every session this bot creates. Metadata helps with filtering and does not affect runtime behavior."
+              retentionSetup={(
+                <ProfileRetentionEditor
+                  value={retentionDraft}
+                  onChange={setRetentionDraft}
+                  onValidityChange={setRetentionError}
+                />
+              )}
+              retentionDescription="Default automatic deletion for each new root session this bot creates."
               onValidityChange={setConfigError}
               onChange={(config) => setConfigDraft(config as Record<string, unknown> | undefined)}
             />
@@ -540,10 +556,10 @@ function ProfileSections({
             </Field>
             {manage && (
               <SaveRow
-                dirty={capabilitiesConfigDirty || instructionsDirty || metadataDirty}
+                dirty={capabilitiesConfigDirty || instructionsDirty || metadataDirty || retentionDirty}
                 pending={save.isPending}
-                error={configError ? `Config: ${configError}` : save.error?.message}
-                disabled={closed || configError !== null}
+                error={configError ? `Config: ${configError}` : retentionError ? `Retention: ${retentionError}` : save.error?.message}
+                disabled={closed || configError !== null || retentionError !== null}
                 onSave={() =>
                   save.mutate({
                     configScope: "nonEnvironment",
@@ -557,6 +573,9 @@ function ProfileSections({
                           }
                         : {}),
                       ...(metadataDirty ? { metadata: metadataDraft } : {}),
+                      ...(retentionDirty
+                        ? { retention: retentionDraft === undefined ? undefined : { deleteAfterCloseMs: retentionDraft } }
+                        : {}),
                     },
                   })
                 }

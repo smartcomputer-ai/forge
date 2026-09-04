@@ -286,6 +286,23 @@ describe("demo router", () => {
     );
     expect(cleared.status).toBe(200);
     expect((cleared.json as { retention: { deleteAfterCloseMs: null } }).retention.deleteAfterCloseMs).toBeNull();
+
+    const inherited = await call("POST", `/api/v1/universes/${universe!.id}/sessions`, {
+      profile: {
+        kind: "inline",
+        profile: { retention: { deleteAfterCloseMs: 172_800_000 } },
+      },
+    });
+    expect((inherited.json as SessionView).retention.deleteAfterCloseMs).toBe(172_800_000);
+
+    const overriddenToKeep = await call("POST", `/api/v1/universes/${universe!.id}/sessions`, {
+      deleteAfterCloseMs: null,
+      profile: {
+        kind: "inline",
+        profile: { retention: { deleteAfterCloseMs: 172_800_000 } },
+      },
+    });
+    expect((overriddenToKeep.json as SessionView).retention.deleteAfterCloseMs).toBeNull();
   });
 
   it("admits a manual bot event and resolves its outcome", async () => {

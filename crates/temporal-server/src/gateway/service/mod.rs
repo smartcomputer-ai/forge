@@ -178,7 +178,6 @@ const MAX_RUN_DETAIL_LIMIT: usize = 512;
 const MAX_RUN_DETAIL_EVENTS: usize = 20_000;
 /// Resource bound for the opaque managed-controller run terminal token.
 const MAX_RUN_TERMINAL_NOTIFICATION_TOKEN_BYTES: usize = 512;
-const MAX_DELETE_AFTER_CLOSE_MS: u64 = 100 * 365 * 24 * 60 * 60 * 1_000;
 
 /// Default public base URL for the gateway-hosted OAuth callback; matches
 /// `DEFAULT_GATEWAY_BIND`. Hosted deployments must set the real public URL.
@@ -202,10 +201,10 @@ pub(super) fn validate_caller_metadata(
 
 fn validate_delete_after_close_ms(value: Option<u64>) -> Result<(), AgentApiError> {
     if let Some(value) = value
-        && !(1..=MAX_DELETE_AFTER_CLOSE_MS).contains(&value)
+        && !(1..=MAX_SESSION_DELETE_AFTER_CLOSE_MS).contains(&value)
     {
         return Err(AgentApiError::invalid_request(format!(
-            "deleteAfterCloseMs must be 1..={MAX_DELETE_AFTER_CLOSE_MS}"
+            "deleteAfterCloseMs must be 1..={MAX_SESSION_DELETE_AFTER_CLOSE_MS}"
         )));
     }
     Ok(())
@@ -969,7 +968,9 @@ impl GatewayAgentApi {
                 config: None,
                 profile: Some(profile),
                 environment: None,
-                delete_after_close_ms: None,
+                // Delegated children inherit their retention root and never
+                // apply a profile's root-session default.
+                delete_after_close_ms: Some(None),
             },
             false,
             true,
@@ -1151,7 +1152,6 @@ impl GatewayAgentApi {
             delete_after_close_ms,
         } = params;
         validate_caller_metadata(&metadata)?;
-        validate_delete_after_close_ms(delete_after_close_ms)?;
         let workflow_tools = trusted_workflow_tools;
         let client_supplied_id = session_id.is_some();
         let session_id = match session_id {
@@ -1236,6 +1236,14 @@ impl GatewayAgentApi {
             metadata,
         );
         validate_caller_metadata(&effective_metadata)?;
+        let effective_delete_after_close_ms = profiles::merge_profile_start_retention(
+            resolved_profile
+                .as_ref()
+                .and_then(|profile| profile.document.retention.as_ref())
+                .map(|retention| retention.delete_after_close_ms),
+            delete_after_close_ms,
+        );
+        validate_delete_after_close_ms(effective_delete_after_close_ms)?;
         let start_config = self.merge_profile_start_config(
             resolved_profile
                 .as_ref()
@@ -1285,7 +1293,7 @@ impl GatewayAgentApi {
                     session_id.clone(),
                     display_name,
                     effective_metadata,
-                    delete_after_close_ms,
+                    effective_delete_after_close_ms,
                     session_config,
                     workflow_tools.clone(),
                     close_on_terminal,

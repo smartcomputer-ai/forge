@@ -45,6 +45,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { ProfileEnvironmentEditor } from "@/components/session/profile-environment-editor";
 import { MetadataMapEditor } from "@/components/session/metadata-editor";
+import { ProfileRetentionEditor } from "@/components/session/profile-retention-editor";
 import { SessionConfigEditor } from "@/components/session/session-config-editor";
 import { SessionSettingsDialog } from "@/components/session/session-settings-sheet";
 import { SetupEditorSection } from "@/components/session/setup-editor-section";
@@ -806,6 +807,7 @@ function NewSessionDialog({
   const [inlineProfile, setInlineProfile] = useState<InlineProfile | null>(null);
   const [environmentOverride, setEnvironmentOverride] = useState<SessionEnvironmentOverride>();
   const [configError, setConfigError] = useState<string | null>(null);
+  const [retentionError, setRetentionError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const navigate = useNavigate();
   const queryClient = useQueryClient();
@@ -844,6 +846,7 @@ function NewSessionDialog({
       setInlineProfile(null);
       setEnvironmentOverride(undefined);
       setConfigError(null);
+      setRetentionError(null);
       setError(null);
       navigate(`/u/${slug}/sessions/${target}${search ? `?${search}` : ""}`);
     },
@@ -855,8 +858,8 @@ function NewSessionDialog({
     const resourceError = setupResourceFeatureError(
       inlineProfile ?? selectedProfile.data ?? {},
     );
-    if (configError || resourceError) {
-      setError(configError ? `Config: ${configError}` : resourceError);
+    if (configError || retentionError || resourceError) {
+      setError(configError ? `Config: ${configError}` : retentionError ? `Retention: ${retentionError}` : resourceError);
       return;
     }
     create.mutate();
@@ -871,6 +874,7 @@ function NewSessionDialog({
       setInlineProfile(null);
       setEnvironmentOverride(undefined);
       setConfigError(null);
+      setRetentionError(null);
       setError(null);
     }
   };
@@ -928,6 +932,7 @@ function NewSessionDialog({
                     setInlineProfile(null);
                     setEnvironmentOverride(undefined);
                     setConfigError(null);
+                    setRetentionError(null);
                     setError(null);
                   }}
                 >
@@ -1025,6 +1030,7 @@ function NewSessionDialog({
                 options={editorOptions}
                 environments={environments.data}
                 onValidityChange={setConfigError}
+                onRetentionValidityChange={setRetentionError}
                 onChange={setInlineProfile}
               />
             </div>
@@ -1048,7 +1054,7 @@ function NewSessionDialog({
                 )}
                 <Button
                   type="button"
-                  disabled={create.isPending || Boolean(configError || resourceFeatureError)}
+                  disabled={create.isPending || Boolean(configError || retentionError || resourceFeatureError)}
                   onClick={() => create.mutate()}
                 >
                   {create.isPending ? "Creating…" : "Create session"}
@@ -1067,12 +1073,14 @@ function InlineSetupEditor({
   options,
   environments,
   onValidityChange,
+  onRetentionValidityChange,
   onChange,
 }: {
   value: InlineProfile;
   options: ReturnType<typeof useSessionConfigEditorOptions>;
   environments: Environment[] | undefined;
   onValidityChange: (message: string | null) => void;
+  onRetentionValidityChange: (message: string | null) => void;
   onChange: (profile: InlineProfile) => void;
 }) {
   const change = (mutate: (next: InlineProfile) => void) => {
@@ -1123,6 +1131,17 @@ function InlineSetupEditor({
             />
           )}
           metadataDescription="Metadata copied onto the new session. It helps with filtering and does not affect how the session runs."
+          retentionSetup={(
+            <ProfileRetentionEditor
+              value={value.retention?.deleteAfterCloseMs}
+              onValidityChange={onRetentionValidityChange}
+              onChange={(deleteAfterCloseMs) => change((next) => {
+                if (deleteAfterCloseMs !== undefined) next.retention = { deleteAfterCloseMs };
+                else delete next.retention;
+              })}
+            />
+          )}
+          retentionDescription="Automatic deletion for this new root session after it closes."
           environmentSetup={(
             <ProfileEnvironmentEditor
               embedded
@@ -1151,6 +1170,7 @@ function InlineSetupEditor({
 function inlineProfileFromDocument(document: ProfileDocument): InlineProfile {
   const profile: InlineProfile = {};
   if (document.metadata) profile.metadata = structuredClone(document.metadata);
+  if (document.retention) profile.retention = structuredClone(document.retention);
   if (isRecord(document.config)) profile.config = structuredClone(document.config);
   if (isRecord(document.instructions)) profile.instructions = structuredClone(document.instructions) as InlineProfile["instructions"];
   if (document.environment) profile.environment = structuredClone(document.environment);

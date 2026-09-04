@@ -23,6 +23,21 @@ fn session_retention_put_requires_an_explicit_nullable_policy() {
 }
 
 #[test]
+fn session_start_retention_distinguishes_inherit_clear_and_override() {
+    let decode = |value| {
+        serde_json::from_value::<SessionStartParams>(value)
+            .expect("valid session start")
+            .delete_after_close_ms
+    };
+    assert_eq!(decode(json!({})), None);
+    assert_eq!(decode(json!({ "deleteAfterCloseMs": null })), Some(None));
+    assert_eq!(
+        decode(json!({ "deleteAfterCloseMs": 86_400_000 })),
+        Some(Some(86_400_000))
+    );
+}
+
+#[test]
 fn notification_serializes_as_json_rpc_lite_shape() {
     let notification = AgentNotification::RunCompleted {
         session_id: "session_1".to_owned(),
@@ -3120,6 +3135,7 @@ fn test_profile(profile_id: ProfileId) -> AgentProfile {
         revision: 1,
         document: ProfileDocument {
             metadata: Default::default(),
+            retention: None,
             config: Some(SessionConfig {
                 features: Some(FeaturesConfig {
                     subagents: Some(SubagentsFeature {

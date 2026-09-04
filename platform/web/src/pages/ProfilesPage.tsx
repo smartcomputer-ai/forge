@@ -25,6 +25,7 @@ import {
   MetadataMapEditor,
 } from "@/components/session/metadata-editor";
 import { ProfileEnvironmentEditor } from "@/components/session/profile-environment-editor";
+import { ProfileRetentionEditor } from "@/components/session/profile-retention-editor";
 import { SessionConfigEditor } from "@/components/session/session-config-editor";
 import {
   Dialog,
@@ -194,6 +195,7 @@ function ProfileEditor({
   const [tab, setTab] = useState<"form" | "json">("form");
   const [jsonText, setJsonText] = useState("");
   const [configError, setConfigError] = useState<string | null>(null);
+  const [retentionError, setRetentionError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   // Re-sync on every (re)load — including the refetch after a save, which
@@ -205,6 +207,7 @@ function ProfileEditor({
       setDraft(structuredClone(editable) as ProfileDocument);
       setJsonText(JSON.stringify(editable, null, 2));
       setConfigError(null);
+      setRetentionError(null);
       setError(null);
     }
   }, [doc.data]);
@@ -263,8 +266,8 @@ function ProfileEditor({
         return;
       }
       setDraft(document);
-    } else if (configError) {
-      setError(`Config: ${configError}`);
+    } else if (configError || retentionError) {
+      setError(configError ? `Config: ${configError}` : `Retention: ${retentionError}`);
       return;
     }
     if (document) {
@@ -294,6 +297,7 @@ function ProfileEditor({
       }
       setDraft(parsed);
       setConfigError(null);
+      setRetentionError(null);
       setError(null);
       setTab("form");
     } catch (parseError) {
@@ -385,6 +389,7 @@ function ProfileEditor({
               draft={draft}
               mutate={mutate}
               onValidityChange={setConfigError}
+              onRetentionValidityChange={setRetentionError}
             />
           </div>
         )}
@@ -509,11 +514,13 @@ function ConfigSection({
   draft,
   mutate,
   onValidityChange,
+  onRetentionValidityChange,
 }: {
   universeId: string;
   draft: ProfileDocument;
   mutate: Mutate;
   onValidityChange: (message: string | null) => void;
+  onRetentionValidityChange: (message: string | null) => void;
 }) {
   const options = useSessionConfigEditorOptions(universeId);
   const environments = useQuery({
@@ -547,6 +554,22 @@ function ConfigSection({
           />
         )}
         metadataDescription="Defaults copied when a session is created. Start-time metadata overrides matching keys."
+        retentionSetup={(
+          <ProfileRetentionEditor
+            value={draft.retention?.deleteAfterCloseMs}
+            onValidityChange={onRetentionValidityChange}
+            onChange={(deleteAfterCloseMs) =>
+              mutate((document) => {
+                if (deleteAfterCloseMs !== undefined) {
+                  document.retention = { deleteAfterCloseMs };
+                } else {
+                  delete document.retention;
+                }
+              })
+            }
+          />
+        )}
+        retentionDescription="Default automatic deletion for new root sessions created from this profile."
         environmentSetup={(
           <ProfileEnvironmentEditor
             embedded

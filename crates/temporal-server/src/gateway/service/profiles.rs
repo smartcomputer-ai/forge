@@ -21,6 +21,13 @@ pub(super) fn merge_profile_start_metadata(
     metadata
 }
 
+pub(super) fn merge_profile_start_retention(
+    profile_default: Option<u64>,
+    explicit: Option<Option<u64>>,
+) -> Option<u64> {
+    explicit.unwrap_or(profile_default)
+}
+
 impl GatewayAgentApi {
     pub(super) async fn create_profile_record(
         &self,
@@ -590,6 +597,16 @@ mod tests {
                 ("owner".to_owned(), "evaluation".to_owned()),
                 ("trial".to_owned(), "42".to_owned()),
             ])
+        );
+    }
+
+    #[test]
+    fn explicit_start_retention_overrides_or_clears_profile_default() {
+        assert_eq!(merge_profile_start_retention(Some(100), None), Some(100));
+        assert_eq!(merge_profile_start_retention(Some(100), Some(None)), None);
+        assert_eq!(
+            merge_profile_start_retention(Some(100), Some(Some(200))),
+            Some(200)
         );
     }
 }

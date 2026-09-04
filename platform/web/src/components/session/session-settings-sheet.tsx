@@ -291,41 +291,6 @@ function LiveSessionSetup({
         <div className="grid gap-8">
           <section className="grid gap-3">
             <div className="grid gap-0.5">
-              <h2 className="text-sm font-semibold">Automatic deletion</h2>
-              {session?.retention.rootSessionId === sessionId ? (
-                <p className="text-xs text-muted-foreground">
-                  Delete this session, its history forks, and delegated children after the root closes. Leave blank to keep the tree until manually deleted.
-                </p>
-              ) : (
-                <p className="text-xs text-muted-foreground">
-                  Retained with root session{" "}
-                  <a className="font-mono underline" href={`../${session?.retention.rootSessionId}`}>
-                    {session?.retention.rootSessionId}
-                  </a>. Change deletion from the root.
-                </p>
-              )}
-            </div>
-            {session?.retention.rootSessionId === sessionId && (
-              <div className="grid max-w-xs gap-1.5">
-                <label className="text-xs font-medium" htmlFor="session-retention-days">
-                  Delete after close (days)
-                </label>
-                <Input
-                  id="session-retention-days"
-                  type="number"
-                  min="0.000001"
-                  step="any"
-                  value={retentionDaysDraft}
-                  onChange={(event) => setRetentionDaysDraft(event.target.value)}
-                  placeholder="Keep until manually deleted"
-                  disabled={save.isPending}
-                />
-                {retentionError && <p className="text-xs text-destructive">{retentionError}</p>}
-              </div>
-            )}
-          </section>
-          <section className="grid gap-3">
-            <div className="grid gap-0.5">
               <h2 className="text-sm font-semibold">Custom instructions</h2>
               <p className="text-xs text-muted-foreground">
                 Session-local instructions reconciled with the product default and workspace-linked VFS prompts.
@@ -375,6 +340,35 @@ function LiveSessionSetup({
                 />
               )}
               metadataDescription="Descriptive key/value pairs for finding this session in the list. Keys are limited to 64 bytes, values to 256 bytes, and the lightspeed. prefix is reserved."
+              retentionSetup={session?.retention.rootSessionId === sessionId ? (
+                <div className="grid max-w-xs gap-1.5">
+                  <label className="text-xs font-medium" htmlFor="session-retention-days">
+                    Delete after close (days)
+                  </label>
+                  <Input
+                    id="session-retention-days"
+                    type="number"
+                    min="0.000001"
+                    step="any"
+                    value={retentionDaysDraft}
+                    onChange={(event) => setRetentionDaysDraft(event.target.value)}
+                    placeholder="Keep until manually deleted"
+                    disabled={save.isPending}
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Deletes this session, its history forks, and delegated children after the root closes. Leave blank to keep the tree.
+                  </p>
+                  {retentionError && <p className="text-xs text-destructive">{retentionError}</p>}
+                </div>
+              ) : (
+                <p className="text-sm text-muted-foreground">
+                  Retained with root session{" "}
+                  <a className="font-mono underline" href={`../${session?.retention.rootSessionId}`}>
+                    {session?.retention.rootSessionId}
+                  </a>. Change automatic deletion from the root.
+                </p>
+              )}
+              retentionDescription="Delete the retained session tree automatically after its root session closes."
               environmentSetup={(
                 <ActiveEnvironmentEditor
                   embedded

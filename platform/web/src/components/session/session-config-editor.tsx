@@ -3,6 +3,7 @@ import type { WorkspaceLinkDraft } from "@/api";
 import {
   ChevronDown,
   ChevronRight,
+  CalendarClock,
   Clock3,
   FolderOpen,
   Globe2,
@@ -95,6 +96,8 @@ type Props = {
   hideEnvironmentFeature?: boolean;
   metadataSetup?: ReactNode;
   metadataDescription?: string;
+  retentionSetup?: ReactNode;
+  retentionDescription?: string;
   pinnedApiKind?: string;
   className?: string;
 };
@@ -432,6 +435,8 @@ export function SessionConfigEditor({
   hideEnvironmentFeature = false,
   metadataSetup,
   metadataDescription = "Descriptive key/value pairs for finding sessions. Metadata never changes how a session runs.",
+  retentionSetup,
+  retentionDescription = "Delete the retained session tree automatically after its root session closes.",
   pinnedApiKind,
   className,
 }: Props) {
@@ -539,6 +544,15 @@ export function SessionConfigEditor({
               icon={Tags}
             >
               {metadataSetup}
+            </ExpandableSetupPanel>
+          )}
+          {retentionSetup && (
+            <ExpandableSetupPanel
+              title="Automatic deletion"
+              description={retentionDescription}
+              icon={CalendarClock}
+            >
+              {retentionSetup}
             </ExpandableSetupPanel>
           )}
         </div>

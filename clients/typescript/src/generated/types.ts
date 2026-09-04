@@ -5306,6 +5306,12 @@ export interface AgentProfile {
     [k: string]: string;
   };
   profileId: ProfileId;
+  /**
+   * Creation-time session retention default. Absence keeps the tree until
+   * manual deletion. Applying a profile to an existing session does not
+   * change retention.
+   */
+  retention?: ProfileSessionRetention | null;
   revision: number;
   updatedAtMs: number;
 }
@@ -5322,6 +5328,18 @@ export interface ProfileEnvironmentCredential {
    */
   envName: string;
   source: EnvironmentCredentialSourceView;
+}
+/**
+ * Root-session retention policy supplied by a profile at session creation.
+ *
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "ProfileSessionRetention".
+ */
+export interface ProfileSessionRetention {
+  /**
+   * Positive close-relative automatic-deletion duration.
+   */
+  deleteAfterCloseMs: number;
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
@@ -5964,6 +5982,12 @@ export interface AgentProfileInput {
     [k: string]: string;
   };
   profileId: ProfileId;
+  /**
+   * Creation-time session retention default. Absence keeps the tree until
+   * manual deletion. Applying a profile to an existing session does not
+   * change retention.
+   */
+  retention?: ProfileSessionRetention | null;
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
@@ -6905,6 +6929,12 @@ export interface InlineAgentProfile {
   metadata?: {
     [k: string]: string;
   };
+  /**
+   * Creation-time session retention default. Absence keeps the tree until
+   * manual deletion. Applying a profile to an existing session does not
+   * change retention.
+   */
+  retention?: ProfileSessionRetention | null;
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
@@ -6925,8 +6955,9 @@ export interface JsonRpcError {
 export interface ManagedSessionStartParams {
   config?: SessionConfig | null;
   /**
-   * Root-owned automatic deletion measured from close. Absent keeps the
-   * session tree until manual deletion.
+   * Root-owned automatic deletion measured from close. Absent inherits a
+   * profile default, explicit null keeps the tree, and a duration overrides
+   * the profile.
    */
   deleteAfterCloseMs?: number | null;
   displayName?: string | null;
@@ -7499,8 +7530,9 @@ export interface SessionRetentionPutParams {
 export interface SessionStartParams {
   config?: SessionConfig | null;
   /**
-   * Root-owned automatic deletion measured from close. Absent keeps the
-   * session tree until manual deletion.
+   * Root-owned automatic deletion measured from close. Absent inherits a
+   * profile default, explicit null keeps the tree, and a duration overrides
+   * the profile.
    */
   deleteAfterCloseMs?: number | null;
   displayName?: string | null;

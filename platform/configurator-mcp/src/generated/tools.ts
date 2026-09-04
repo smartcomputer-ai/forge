@@ -9,7 +9,7 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
     "name": "lightspeed_session_start",
     "method": "session/start",
     "summary": "Create or reopen a session",
-    "description": "Creates a session with optional config/profile setup. Profile metadata supplies defaults that explicit metadata overrides; an existing-or-none environment override can replace the profile intent. Retrying an existing session id returns that session; creation settings apply only when it is first created.",
+    "description": "Creates a session with optional config/profile setup. Profile metadata and retention supply creation defaults; explicit start values override them. An existing-or-none environment override can replace the profile intent. Retrying an existing session id returns that session.",
     "paramsType": "SessionStartParams",
     "resultType": "AgentApiOutcome<SessionStartResponse>",
     "inputSchema": {
@@ -29,9 +29,10 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
           ]
         },
         "deleteAfterCloseMs": {
-          "description": "Root-owned automatic deletion measured from close. Absent keeps the\nsession tree until manual deletion.",
+          "description": "Root-owned automatic deletion measured from close. Absent inherits a\nprofile default, explicit null keeps the tree, and a duration overrides\nthe profile.",
           "format": "uint64",
-          "minimum": 0,
+          "maximum": 3153600000000,
+          "minimum": 1,
           "type": [
             "integer",
             "null"
@@ -469,6 +470,17 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
               },
               "description": "Descriptive metadata defaults copied to a session when it is created\nfrom this profile. Explicit `session/start` metadata wins key by key.\nApplying the profile to an existing session does not change metadata.",
               "type": "object"
+            },
+            "retention": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/ProfileSessionRetention"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Creation-time session retention default. Absence keeps the tree until\nmanual deletion. Applying a profile to an existing session does not\nchange retention."
             }
           },
           "type": "object"
@@ -739,6 +751,25 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
               "type": "object"
             }
           ]
+        },
+        "ProfileSessionRetention": {
+          "additionalProperties": {
+            "not": {}
+          },
+          "description": "Root-session retention policy supplied by a profile at session creation.",
+          "properties": {
+            "deleteAfterCloseMs": {
+              "description": "Positive close-relative automatic-deletion duration.",
+              "format": "uint64",
+              "maximum": 3153600000000,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "deleteAfterCloseMs"
+          ],
+          "type": "object"
         },
         "ProfileSource": {
           "oneOf": [
@@ -3703,6 +3734,17 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
               },
               "description": "Descriptive metadata defaults copied to a session when it is created\nfrom this profile. Explicit `session/start` metadata wins key by key.\nApplying the profile to an existing session does not change metadata.",
               "type": "object"
+            },
+            "retention": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/ProfileSessionRetention"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Creation-time session retention default. Absence keeps the tree until\nmanual deletion. Applying a profile to an existing session does not\nchange retention."
             }
           },
           "type": "object"
@@ -3973,6 +4015,25 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
               "type": "object"
             }
           ]
+        },
+        "ProfileSessionRetention": {
+          "additionalProperties": {
+            "not": {}
+          },
+          "description": "Root-session retention policy supplied by a profile at session creation.",
+          "properties": {
+            "deleteAfterCloseMs": {
+              "description": "Positive close-relative automatic-deletion duration.",
+              "format": "uint64",
+              "maximum": 3153600000000,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "deleteAfterCloseMs"
+          ],
+          "type": "object"
         },
         "ProfileSource": {
           "oneOf": [
@@ -5245,6 +5306,17 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
             },
             "profileId": {
               "$ref": "#/definitions/ProfileId"
+            },
+            "retention": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/ProfileSessionRetention"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Creation-time session retention default. Absence keeps the tree until\nmanual deletion. Applying a profile to an existing session does not\nchange retention."
             }
           },
           "required": [
@@ -5856,6 +5928,25 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
               "type": "object"
             }
           ]
+        },
+        "ProfileSessionRetention": {
+          "additionalProperties": {
+            "not": {}
+          },
+          "description": "Root-session retention policy supplied by a profile at session creation.",
+          "properties": {
+            "deleteAfterCloseMs": {
+              "description": "Positive close-relative automatic-deletion duration.",
+              "format": "uint64",
+              "maximum": 3153600000000,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "deleteAfterCloseMs"
+          ],
+          "type": "object"
         },
         "SessionConfig": {
           "additionalProperties": {
@@ -6405,6 +6496,17 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
             },
             "profileId": {
               "$ref": "#/definitions/ProfileId"
+            },
+            "retention": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/ProfileSessionRetention"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Creation-time session retention default. Absence keeps the tree until\nmanual deletion. Applying a profile to an existing session does not\nchange retention."
             }
           },
           "required": [
@@ -7016,6 +7118,25 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
               "type": "object"
             }
           ]
+        },
+        "ProfileSessionRetention": {
+          "additionalProperties": {
+            "not": {}
+          },
+          "description": "Root-session retention policy supplied by a profile at session creation.",
+          "properties": {
+            "deleteAfterCloseMs": {
+              "description": "Positive close-relative automatic-deletion duration.",
+              "format": "uint64",
+              "maximum": 3153600000000,
+              "minimum": 1,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "deleteAfterCloseMs"
+          ],
+          "type": "object"
         },
         "SessionConfig": {
           "additionalProperties": {

@@ -3,7 +3,7 @@
 /// and status codes follow the platform server's gateway so the UI cannot
 /// tell the difference.
 import { Hono, type Context } from "hono";
-import type { Environment, ProfileSource, SessionView } from "@/api";
+import type { Environment, ProfileSessionRetention, ProfileSource, SessionView } from "@/api";
 import type { ProfileEnvironment, ProfileInstructions } from "@lightspeed-ai/agent-client";
 import {
   DEFAULT_MODEL,
@@ -28,6 +28,7 @@ import { closeEnvironment, provisionEnvironment } from "./environments";
 interface ResolvedProfile {
   profileId: string | null;
   metadata: Record<string, string>;
+  retention: ProfileSessionRetention | null;
   config: Record<string, unknown>;
   instructions: ProfileInstructions | null;
   environment: ProfileEnvironment | null;
@@ -106,7 +107,9 @@ export function sessionRoutes(store: DemoStore): Hono {
       id: sessionId,
       displayName: body.displayName?.trim() || null,
       metadata: { ...profile.metadata, ...(body.metadata ?? {}) },
-      deleteAfterCloseMs: body.deleteAfterCloseMs,
+      deleteAfterCloseMs: Object.hasOwn(body, "deleteAfterCloseMs")
+        ? body.deleteAfterCloseMs
+        : profile.retention?.deleteAfterCloseMs,
       config,
       activeEnvironmentId: resolved.environmentId,
       instructions: instructionText(store, profile.instructions),
@@ -414,6 +417,7 @@ function resolveProfile(universe: UniverseState, source: ProfileSource): Resolve
     return {
       profileId: null,
       metadata: isStringMap(profile.metadata) ? profile.metadata : {},
+      retention: profile.retention ?? null,
       config: isRecord(profile.config) ? profile.config : {},
       instructions: profile.instructions ?? null,
       environment: profile.environment ?? null,
@@ -425,6 +429,7 @@ function resolveProfile(universe: UniverseState, source: ProfileSource): Resolve
   return {
     profileId: document.profileId,
     metadata: isStringMap(document.metadata) ? document.metadata : {},
+    retention: document.retention ?? null,
     config: isRecord(document.config) ? document.config : {},
     instructions: isRecord(instructions) ? (instructions as unknown as ProfileInstructions) : null,
     environment: document.environment ?? null,

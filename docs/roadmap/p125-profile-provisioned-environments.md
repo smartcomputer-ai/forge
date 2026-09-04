@@ -73,6 +73,7 @@ Replace `activeEnvironmentId` with one tagged field:
 ```text
 ProfileDocument {
   metadata?      Map<String, String>  # creation-time session defaults
+  retention?     ProfileSessionRetention  # P154 creation default
   config?        SessionConfig
   instructions?  ProfileInstructions
   environment?   ProfileEnvironment

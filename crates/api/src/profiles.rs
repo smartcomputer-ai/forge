@@ -177,11 +177,6 @@ pub struct AgentProfileSummary {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ProfileDocument {
-    /// Descriptive metadata defaults copied to a session when it is created
-    /// from this profile. Explicit `session/start` metadata wins key by key.
-    /// Applying the profile to an existing session does not change metadata.
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub metadata: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config: Option<SessionConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -192,6 +187,25 @@ pub struct ProfileDocument {
     /// active environment unchanged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub environment: Option<ProfileEnvironment>,
+    /// Descriptive metadata defaults copied to a session when it is created
+    /// from this profile. Explicit `session/start` metadata wins key by key.
+    /// Applying the profile to an existing session does not change metadata.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub metadata: BTreeMap<String, String>,
+    /// Creation-time session retention default. Absence keeps the tree until
+    /// manual deletion. Applying a profile to an existing session does not
+    /// change retention.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retention: Option<ProfileSessionRetention>,
+}
+
+/// Root-session retention policy supplied by a profile at session creation.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ProfileSessionRetention {
+    /// Positive close-relative automatic-deletion duration.
+    #[schemars(range(min = 1, max = 3153600000000_u64))]
+    pub delete_after_close_ms: u64,
 }
 
 /// Environment intent carried by a profile document.

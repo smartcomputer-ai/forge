@@ -610,6 +610,7 @@ mod tests {
                     revision,
                     document: ProfileDocument {
                         metadata: Default::default(),
+                        retention: None,
                         config: None,
                         instructions: None,
                         environment: None,

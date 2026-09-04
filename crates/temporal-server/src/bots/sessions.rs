@@ -282,7 +282,7 @@ fn bot_session_metadata(bot_id: &bots::BotId) -> BTreeMap<String, String> {
     ])
 }
 
-/// The profile the bot's session runs: the catalog profile's metadata, config,
+/// The profile the bot's session runs: the catalog profile's creation defaults
 /// and environment, with the composed (profile + bot) instructions inline so
 /// the session pins exactly what the controller resolved.
 fn resolve_bot_profile(profile: &AgentProfile, instructions: String) -> InlineAgentProfile {
@@ -291,6 +291,7 @@ fn resolve_bot_profile(profile: &AgentProfile, instructions: String) -> InlineAg
         description: profile.description.clone(),
         document: ProfileDocument {
             metadata: profile.document.metadata.clone(),
+            retention: profile.document.retention.clone(),
             config: profile.document.config.clone(),
             instructions: Some(ProfileInstructions::Text { text: instructions }),
             environment: profile.document.environment.clone(),

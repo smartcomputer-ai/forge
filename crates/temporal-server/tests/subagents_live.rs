@@ -513,6 +513,7 @@ async fn create_child_profile(api: &GatewayAgentApi) -> anyhow::Result<ProfileId
                     text: "You are a scripted live sub-agent.".to_owned(),
                 }),
                 environment: None,
+                retention: None,
             },
         },
     })
@@ -966,6 +967,7 @@ async fn run_agent_run_inherit_environment_live_client(
                     text: "You are a scripted live sub-agent.".to_owned(),
                 }),
                 environment: Some(api::ProfileEnvironment::Inherit {}),
+                retention: None,
             },
         },
     })
@@ -1003,6 +1005,7 @@ async fn run_agent_run_inherit_environment_live_client(
                         idle_policy: None,
                         credentials: Vec::new(),
                     }),
+                    retention: None,
                 },
             }),
         }),

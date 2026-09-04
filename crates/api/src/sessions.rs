@@ -1,5 +1,28 @@
 use super::*;
 
+/// Longest admitted close-relative automatic-deletion duration: 100 years.
+pub const MAX_SESSION_DELETE_AFTER_CLOSE_MS: u64 = 100 * 365 * 24 * 60 * 60 * 1_000;
+
+fn deserialize_optional_nullable_delete_after_close_ms<'de, D>(
+    deserializer: D,
+) -> Result<Option<Option<u64>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::<u64>::deserialize(deserializer).map(Some)
+}
+
+fn optional_nullable_delete_after_close_ms_schema(
+    _: &mut schemars::SchemaGenerator,
+) -> schemars::Schema {
+    schemars::json_schema!({
+        "type": ["integer", "null"],
+        "format": "uint64",
+        "minimum": 1,
+        "maximum": 3153600000000_u64
+    })
+}
+
 /// Creation-time override for the environment intent carried by a profile.
 /// Absence uses the profile unchanged; `none` suppresses its environment
 /// intent, while `existing` activates the specified universe environment.
@@ -36,10 +59,16 @@ pub struct SessionStartParams {
     /// intent. Omit to use the profile's intent unchanged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub environment: Option<SessionEnvironmentOverride>,
-    /// Root-owned automatic deletion measured from close. Absent keeps the
-    /// session tree until manual deletion.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub delete_after_close_ms: Option<u64>,
+    /// Root-owned automatic deletion measured from close. Absent inherits a
+    /// profile default, explicit null keeps the tree, and a duration overrides
+    /// the profile.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_nullable_delete_after_close_ms",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[schemars(schema_with = "optional_nullable_delete_after_close_ms_schema")]
+    pub delete_after_close_ms: Option<Option<u64>>,
 }
 
 /// Creation request for a session with immutable workflow ownership and
@@ -62,10 +91,16 @@ pub struct ManagedSessionStartParams {
     /// intent. Omit to use the profile's intent unchanged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub environment: Option<SessionEnvironmentOverride>,
-    /// Root-owned automatic deletion measured from close. Absent keeps the
-    /// session tree until manual deletion.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub delete_after_close_ms: Option<u64>,
+    /// Root-owned automatic deletion measured from close. Absent inherits a
+    /// profile default, explicit null keeps the tree, and a duration overrides
+    /// the profile.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_nullable_delete_after_close_ms",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[schemars(schema_with = "optional_nullable_delete_after_close_ms_schema")]
+    pub delete_after_close_ms: Option<Option<u64>>,
     /// Immutable workflow tools admitted only when the session is first
     /// created. This document is not part of `SessionConfig` and cannot be
     /// changed through `session/config/put`.

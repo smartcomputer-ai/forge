@@ -125,6 +125,7 @@ async fn run_profile_provision_live_client(
             idle_policy: None,
             credentials: Vec::new(),
         }),
+        retention: None,
     };
     api.create_profile(ProfileCreateParams {
         profile: AgentProfileInput {
@@ -452,6 +453,7 @@ async fn run_profiles_live_client(
                         text: "Use the profile instructions in this live test.".to_owned(),
                     }),
                     environment: None,
+                    retention: None,
                 },
             },
         })

@@ -198,7 +198,7 @@ async fn start(args: StartArgs) -> Result<()> {
             config: None,
             profile,
             environment: None,
-            delete_after_close_ms: args.delete_after_close_ms,
+            delete_after_close_ms: args.delete_after_close_ms.map(Some),
         })
         .await
         .map_err(api_error)?
