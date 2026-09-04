@@ -370,12 +370,18 @@ default (public targets only) needs a deliberate, deployment-owned exception:
 
 ## Platform UI
 
+- The two-step Add MCP server flow uses the shared fixed progress header also
+  used by bot creation: numbered circles, completed/current states, and a
+  separately scrolling form body. Connection discovery still gates forward
+  navigation.
 - The server editor gains the execution and exposure choices, with plain
   wording for the data-path difference ("the model provider connects
   directly" vs "Lightspeed connects") and for exposure ("tools shown to the
   model up front" vs "the model searches on demand — recommended for large
-  servers"). Changing either is an ordinary put; sessions pick it up at the
-  next config admission/reconciliation.
+  servers"). Tool selection and live inventory sit directly below exposure in
+  both creation and editing rather than inside Advanced options. Changing
+  either is an ordinary put; sessions pick it up at the next config
+  admission/reconciliation.
 - Native calls need no new transcript surface: they render as the ordinary
   tool-call rows clients already have — an improvement over the opaque
   provider items of provider mode.

@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Check, Trash2 } from "lucide-react";
+import { Trash2 } from "lucide-react";
 import { NavLink, useNavigate } from "react-router-dom";
 import {
   api,
@@ -44,6 +44,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
+import { ProgressSteps } from "@/components/ui/progress-steps";
 import { useSessionConfigEditorOptions } from "@/lib/sessions/editor-options";
 import { setupResourceFeatureError } from "@/lib/sessions/resource-features";
 import { cn } from "@/lib/utils";
@@ -416,37 +417,13 @@ function Wizard({
       contentClassName="sm:max-w-4xl"
     >
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-        <div className="shrink-0 overflow-x-auto border-b px-5 py-3">
-          <ol className="flex min-w-max items-center gap-5">
-            {STEPS.map((entry, index) => {
-              const done = index < stepIndex;
-              const current = entry.id === step;
-              return (
-                <li key={entry.id}>
-                  <button
-                    type="button"
-                    onClick={() => setStep(entry.id)}
-                    className={cn(
-                      "flex items-center gap-2 text-sm",
-                      current ? "font-semibold text-foreground" : "text-muted-foreground hover:text-foreground",
-                    )}
-                  >
-                    <span
-                      className={cn(
-                        "grid size-5 place-items-center rounded-full border text-[10px] font-mono",
-                        done && "border-emerald-600 bg-emerald-600 text-white",
-                        current && "border-primary text-primary",
-                      )}
-                    >
-                      {done ? <Check className="size-3" /> : index + 1}
-                    </span>
-                    {entry.label}
-                  </button>
-                </li>
-              );
-            })}
-          </ol>
-        </div>
+        <ProgressSteps
+          steps={STEPS}
+          current={step}
+          onSelect={setStep}
+          canSelect={() => true}
+          label="Bot creation progress"
+        />
         <main className="min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain">
           <div className="grid w-full min-w-0 content-start gap-6 px-5 py-6 md:px-6">
             {step === "job" && (
