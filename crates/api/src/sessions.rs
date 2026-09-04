@@ -1,5 +1,20 @@
 use super::*;
 
+/// Creation-time override for the environment intent carried by a profile.
+/// Absence uses the profile unchanged; `none` suppresses its environment
+/// intent, while `existing` activates the specified universe environment.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum SessionEnvironmentOverride {
+    None {},
+    Existing { environment_id: EnvironmentId },
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SessionStartParams {
@@ -17,6 +32,10 @@ pub struct SessionStartParams {
     pub config: Option<SessionConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub profile: Option<ProfileSource>,
+    /// Optional creation-time override for the selected profile's environment
+    /// intent. Omit to use the profile's intent unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment: Option<SessionEnvironmentOverride>,
     /// Root-owned automatic deletion measured from close. Absent keeps the
     /// session tree until manual deletion.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -39,6 +58,10 @@ pub struct ManagedSessionStartParams {
     pub config: Option<SessionConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub profile: Option<ProfileSource>,
+    /// Optional creation-time override for the selected profile's environment
+    /// intent. Omit to use the profile's intent unchanged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment: Option<SessionEnvironmentOverride>,
     /// Root-owned automatic deletion measured from close. Absent keeps the
     /// session tree until manual deletion.
     #[serde(default, skip_serializing_if = "Option::is_none")]

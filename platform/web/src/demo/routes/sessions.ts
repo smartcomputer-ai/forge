@@ -27,6 +27,7 @@ import { closeEnvironment, provisionEnvironment } from "./environments";
 /// from. `profileId` is null for inline profiles.
 interface ResolvedProfile {
   profileId: string | null;
+  metadata: Record<string, string>;
   config: Record<string, unknown>;
   instructions: ProfileInstructions | null;
   environment: ProfileEnvironment | null;
@@ -89,10 +90,14 @@ export function sessionRoutes(store: DemoStore): Hono {
       metadata?: Record<string, string>;
       deleteAfterCloseMs?: number | null;
       profile?: ProfileSource;
+      environment?: { type: "none" } | { type: "existing"; environmentId: string };
     }>(c);
     if (!body.profile) return badRequest(c, "profile is required");
     const profile = resolveProfile(universe, body.profile);
     if (!profile) return notFound(c, "not found in engine");
+    if (body.environment) {
+      profile.environment = body.environment.type === "none" ? null : body.environment;
+    }
     const config = sessionConfig(profile.config);
     const sessionId = store.nextId("session");
     const resolved = resolveEnvironment(store, universe, profile, sessionId, config);
@@ -100,7 +105,7 @@ export function sessionRoutes(store: DemoStore): Hono {
     const session = newSession(store, universe, {
       id: sessionId,
       displayName: body.displayName?.trim() || null,
-      metadata: body.metadata ?? {},
+      metadata: { ...profile.metadata, ...(body.metadata ?? {}) },
       deleteAfterCloseMs: body.deleteAfterCloseMs,
       config,
       activeEnvironmentId: resolved.environmentId,
@@ -408,6 +413,7 @@ function resolveProfile(universe: UniverseState, source: ProfileSource): Resolve
     const profile = source.profile ?? {};
     return {
       profileId: null,
+      metadata: isStringMap(profile.metadata) ? profile.metadata : {},
       config: isRecord(profile.config) ? profile.config : {},
       instructions: profile.instructions ?? null,
       environment: profile.environment ?? null,
@@ -418,6 +424,7 @@ function resolveProfile(universe: UniverseState, source: ProfileSource): Resolve
   const instructions = document.instructions;
   return {
     profileId: document.profileId,
+    metadata: isStringMap(document.metadata) ? document.metadata : {},
     config: isRecord(document.config) ? document.config : {},
     instructions: isRecord(instructions) ? (instructions as unknown as ProfileInstructions) : null,
     environment: document.environment ?? null,
@@ -525,4 +532,8 @@ function grantsEnvironments(config: NonNullable<SessionView["config"]>): boolean
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function isStringMap(value: unknown): value is Record<string, string> {
+  return isRecord(value) && Object.values(value).every((entry) => typeof entry === "string");
 }

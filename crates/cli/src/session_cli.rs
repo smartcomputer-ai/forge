@@ -197,6 +197,7 @@ async fn start(args: StartArgs) -> Result<()> {
             metadata: args.metadata.map(),
             config: None,
             profile,
+            environment: None,
             delete_after_close_ms: args.delete_after_close_ms,
         })
         .await

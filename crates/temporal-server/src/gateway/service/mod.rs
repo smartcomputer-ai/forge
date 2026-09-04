@@ -968,6 +968,7 @@ impl GatewayAgentApi {
                 display_name: None,
                 config: None,
                 profile: Some(profile),
+                environment: None,
                 delete_after_close_ms: None,
             },
             false,
@@ -994,6 +995,7 @@ impl GatewayAgentApi {
                 display_name: None,
                 config: None,
                 profile,
+                environment: None,
                 delete_after_close_ms: None,
             },
             close_on_terminal,
@@ -1145,6 +1147,7 @@ impl GatewayAgentApi {
             metadata,
             config,
             profile,
+            environment,
             delete_after_close_ms,
         } = params;
         validate_caller_metadata(&metadata)?;
@@ -1198,10 +1201,41 @@ impl GatewayAgentApi {
                 Err(error) => return Err(error),
             }
         }
-        let resolved_profile = match profile {
+        let mut resolved_profile = match profile {
             Some(source) => Some(self.resolve_profile_source(source).await?),
             None => None,
         };
+        if let Some(environment) = environment {
+            let environment = match environment {
+                SessionEnvironmentOverride::None {} => None,
+                SessionEnvironmentOverride::Existing { environment_id } => {
+                    Some(ProfileEnvironment::Existing { environment_id })
+                }
+            };
+            ::profiles::validate_profile_document(&ProfileDocument {
+                environment: environment.clone(),
+                ..Default::default()
+            })
+            .map_err(profiles::map_profile_error)?;
+            if let Some(profile) = resolved_profile.as_mut() {
+                profile.document.environment = environment;
+            } else if environment.is_some() {
+                resolved_profile = Some(profiles::ResolvedAgentProfile {
+                    profile_id: None,
+                    document: ProfileDocument {
+                        environment,
+                        ..Default::default()
+                    },
+                });
+            }
+        }
+        let effective_metadata = profiles::merge_profile_start_metadata(
+            resolved_profile
+                .as_ref()
+                .map(|profile| &profile.document.metadata),
+            metadata,
+        );
+        validate_caller_metadata(&effective_metadata)?;
         let start_config = self.merge_profile_start_config(
             resolved_profile
                 .as_ref()
@@ -1250,7 +1284,7 @@ impl GatewayAgentApi {
                 self.workflow_args(
                     session_id.clone(),
                     display_name,
-                    metadata,
+                    effective_metadata,
                     delete_after_close_ms,
                     session_config,
                     workflow_tools.clone(),
@@ -2622,10 +2656,10 @@ impl AgentApiService for GatewayAgentApi {
     }
 
     /// Idempotent on a client-supplied session id: when the session already
-    /// exists, the existing session view is returned (any `config` in the
-    /// retried request is ignored; session config is applied only at
-    /// creation). This keeps a retried `session/start` + `session/runs/start` pair
-    /// safe end to end.
+    /// exists, the existing session view is returned (creation fields such as
+    /// config, metadata, profile, and environment override are ignored).
+    /// This keeps a retried `session/start` + `session/runs/start` pair safe
+    /// end to end.
     async fn start_session(
         &self,
         params: SessionStartParams,
@@ -2644,6 +2678,7 @@ impl AgentApiService for GatewayAgentApi {
             metadata,
             config,
             profile,
+            environment,
             delete_after_close_ms,
             workflow_tools,
         } = params;
@@ -2655,6 +2690,7 @@ impl AgentApiService for GatewayAgentApi {
                 metadata,
                 config,
                 profile,
+                environment,
                 delete_after_close_ms,
             },
             false,

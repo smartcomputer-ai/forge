@@ -1684,6 +1684,22 @@ export type SessionJobCancelScopeView = "job" | "dependents";
  */
 export type SessionJobDependencyPolicyView = "allSucceeded" | "allTerminal";
 /**
+ * Creation-time override for the environment intent carried by a profile.
+ * Absence uses the profile unchanged; `none` suppresses its environment
+ * intent, while `existing` activates the specified universe environment.
+ *
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "SessionEnvironmentOverride".
+ */
+export type SessionEnvironmentOverride =
+  | {
+      type: "none";
+    }
+  | {
+      environmentId: string;
+      type: "existing";
+    };
+/**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "ProfileSource".
  */
@@ -5281,6 +5297,14 @@ export interface AgentProfile {
    */
   environment?: ProfileEnvironment | null;
   instructions?: ProfileInstructions | null;
+  /**
+   * Descriptive metadata defaults copied to a session when it is created
+   * from this profile. Explicit `session/start` metadata wins key by key.
+   * Applying the profile to an existing session does not change metadata.
+   */
+  metadata?: {
+    [k: string]: string;
+  };
   profileId: ProfileId;
   revision: number;
   updatedAtMs: number;
@@ -5931,6 +5955,14 @@ export interface AgentProfileInput {
    */
   environment?: ProfileEnvironment | null;
   instructions?: ProfileInstructions | null;
+  /**
+   * Descriptive metadata defaults copied to a session when it is created
+   * from this profile. Explicit `session/start` metadata wins key by key.
+   * Applying the profile to an existing session does not change metadata.
+   */
+  metadata?: {
+    [k: string]: string;
+  };
   profileId: ProfileId;
 }
 /**
@@ -6865,6 +6897,14 @@ export interface InlineAgentProfile {
    */
   environment?: ProfileEnvironment | null;
   instructions?: ProfileInstructions | null;
+  /**
+   * Descriptive metadata defaults copied to a session when it is created
+   * from this profile. Explicit `session/start` metadata wins key by key.
+   * Applying the profile to an existing session does not change metadata.
+   */
+  metadata?: {
+    [k: string]: string;
+  };
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
@@ -6890,6 +6930,11 @@ export interface ManagedSessionStartParams {
    */
   deleteAfterCloseMs?: number | null;
   displayName?: string | null;
+  /**
+   * Optional creation-time override for the selected profile's environment
+   * intent. Omit to use the profile's intent unchanged.
+   */
+  environment?: SessionEnvironmentOverride | null;
   /**
    * Descriptive key/value metadata with the same bounds as
    * `session/start`; applied only when the session is first created.
@@ -7459,6 +7504,11 @@ export interface SessionStartParams {
    */
   deleteAfterCloseMs?: number | null;
   displayName?: string | null;
+  /**
+   * Optional creation-time override for the selected profile's environment
+   * intent. Omit to use the profile's intent unchanged.
+   */
+  environment?: SessionEnvironmentOverride | null;
   /**
    * Descriptive key/value metadata, applied only when the session is
    * first created: at most 32 entries, keys 1..=64 bytes, values 1..=256

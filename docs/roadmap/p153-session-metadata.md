@@ -26,6 +26,10 @@
   adapter passing its correlation map to `session/start`. Unit suites plus
   the Postgres and gateway live tests cover the round trip, containment,
   put, and rejection cases.
+- Extended 2026-09-04 so a profile can carry creation-time session metadata
+  defaults. Explicit start metadata wins key by key; the combined map is
+  validated, and applying a profile to an existing session never rewrites
+  its metadata.
 
 ## Goal
 
@@ -67,6 +71,10 @@ sessions to its environments.
    at creation. A client that wants to change one key reads, edits, and
    puts; the last writer wins. Metadata is part of the session record, not
    the event log, and, like `session/rename`, does not touch `updatedAtMs`.
+   `ProfileDocument.metadata` supplies creation-time defaults when a start
+   uses that profile; an explicit start map overrides matching keys. This is
+   intentionally not part of `profiles/apply`, so later profile edits or
+   reapplication do not mutate an existing session's descriptive identity.
 3. `session/list` filters by `metadata: {key: value}` with AND semantics:
    a session matches when it carries every listed pair. The filter combines
    with the existing `parentSessionId` and `rootSessionId` filters, and
@@ -133,6 +141,8 @@ sessions to its environments.
 - `SessionStartParams.metadata`, `ManagedSessionStartParams.metadata`,
   `SessionSummaryView.metadata`, `SessionView.metadata`: all
   `BTreeMap<String, String>`, omitted when empty.
+- `ProfileDocument.metadata`: the same bounded map, copied and merged only at
+  session creation. The merged result is checked against the same limits.
 - `session/metadata/put`: `SessionMetadataPutParams {sessionId, metadata}`
   returning `{session: SessionSummaryView}`, like `session/rename`.
 - `SessionListParams.metadata` and `EnvironmentListParams.metadata`.
@@ -156,10 +166,16 @@ sessions to its environments.
   `session list`, and `environment list`; `session metadata put` replaces
   the map; `session close` and `session delete` accept the same filter and
   loop over the matches.
-- Platform sessions page: metadata chips on each row, a filter bar that
-  builds the `metadata` query, and a selection model over the filtered list
-  with close and delete actions that loop over the selection after a count
-  confirmation. The map is editable on the session page.
+- Platform sessions page: the list-header filter popover builds the `metadata`
+  query and shows the active pairs without adding metadata to every list row
+  or the detail header. The query is URL-backed so it survives list/detail
+  navigation and can be bookmarked; visibility preferences are browser-local.
+  A selection model over the filtered list provides close and delete actions
+  that loop over the selection after a count confirmation. Selecting every
+  match first fetches every filtered page so the scope is explicit. The map
+  is inspectable and editable in session settings.
+- Platform profile editor: a Session metadata section edits creation defaults;
+  the new-session flow preserves them for named and customized inline profiles.
 
 ## Acceptance
 
@@ -168,6 +184,8 @@ sessions to its environments.
   session lacks returns nothing; a two-key filter requires both pairs.
 - Start and put reject more than 32 entries, an empty key or value, a
   control character, and a `lightspeed.` key.
+- Profile puts reject the same invalid metadata, and a start proves that
+  profile defaults are copied while explicit keys take precedence.
 - `environments/list` with the filter the Harbor adapter uses returns the
   environment registered for that trial.
 - A sub-agent spawned from a session with metadata appears under the
@@ -207,6 +225,6 @@ Reviewed and rejected; do not re-propose:
 
 ### Slice 3 — CLI
 
-### Slice 4 — Platform UI: chips, filter bar, selection, editing
+### Slice 4 — Platform UI: filter popover, persistent preferences, selection, editing
 
 ### Slice 5 — Harbor adapter and bots set metadata

@@ -377,6 +377,29 @@ fn ordinary_session_start_rejects_managed_creation_fields() {
 }
 
 #[test]
+fn session_start_decodes_creation_environment_overrides() {
+    let existing: SessionStartParams = serde_json::from_value(json!({
+        "profile": {"kind": "named", "profileId": "developer"},
+        "environment": {"type": "existing", "environmentId": "workstation"}
+    }))
+    .expect("existing environment override");
+    assert!(matches!(
+        existing.environment,
+        Some(SessionEnvironmentOverride::Existing { environment_id })
+            if environment_id == "workstation"
+    ));
+
+    let none: SessionStartParams = serde_json::from_value(json!({
+        "environment": {"type": "none"}
+    }))
+    .expect("none environment override");
+    assert!(matches!(
+        none.environment,
+        Some(SessionEnvironmentOverride::None {})
+    ));
+}
+
+#[test]
 fn run_terminal_notification_uses_token_only_wire_shape() {
     let params: RunStartParams = serde_json::from_value(json!({
         "sessionId": "session_1",
@@ -3096,6 +3119,7 @@ fn test_profile(profile_id: ProfileId) -> AgentProfile {
         description: Some("Ticket support profile".to_owned()),
         revision: 1,
         document: ProfileDocument {
+            metadata: Default::default(),
             config: Some(SessionConfig {
                 features: Some(FeaturesConfig {
                     subagents: Some(SubagentsFeature {

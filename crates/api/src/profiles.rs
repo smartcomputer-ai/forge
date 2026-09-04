@@ -177,6 +177,11 @@ pub struct AgentProfileSummary {
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ProfileDocument {
+    /// Descriptive metadata defaults copied to a session when it is created
+    /// from this profile. Explicit `session/start` metadata wins key by key.
+    /// Applying the profile to an existing session does not change metadata.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub metadata: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config: Option<SessionConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

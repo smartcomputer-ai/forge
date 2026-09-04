@@ -2479,6 +2479,13 @@
             }
           ]
         },
+        "metadata": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Descriptive metadata defaults copied to a session when it is created\nfrom this profile. Explicit `session/start` metadata wins key by key.\nApplying the profile to an existing session does not change metadata.",
+          "type": "object"
+        },
         "profileId": {
           "$ref": "#/definitions/ProfileId"
         },
@@ -2544,6 +2551,13 @@
               "type": "null"
             }
           ]
+        },
+        "metadata": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Descriptive metadata defaults copied to a session when it is created\nfrom this profile. Explicit `session/start` metadata wins key by key.\nApplying the profile to an existing session does not change metadata.",
+          "type": "object"
         },
         "profileId": {
           "$ref": "#/definitions/ProfileId"
@@ -9544,6 +9558,13 @@
               "type": "null"
             }
           ]
+        },
+        "metadata": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Descriptive metadata defaults copied to a session when it is created\nfrom this profile. Explicit `session/start` metadata wins key by key.\nApplying the profile to an existing session does not change metadata.",
+          "type": "object"
         }
       },
       "type": "object"
@@ -9799,6 +9820,17 @@
             "string",
             "null"
           ]
+        },
+        "environment": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/SessionEnvironmentOverride"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Optional creation-time override for the selected profile's environment\nintent. Omit to use the profile's intent unchanged."
         },
         "metadata": {
           "additionalProperties": {
@@ -13157,6 +13189,41 @@
       ],
       "type": "object"
     },
+    "SessionEnvironmentOverride": {
+      "description": "Creation-time override for the environment intent carried by a profile.\nAbsence uses the profile unchanged; `none` suppresses its environment\nintent, while `existing` activates the specified universe environment.",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "type": {
+              "const": "none",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "environmentId": {
+              "type": "string"
+            },
+            "type": {
+              "const": "existing",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "environmentId"
+          ],
+          "type": "object"
+        }
+      ]
+    },
     "SessionEventKindView": {
       "oneOf": [
         {
@@ -15319,6 +15386,17 @@
             "string",
             "null"
           ]
+        },
+        "environment": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/SessionEnvironmentOverride"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Optional creation-time override for the selected profile's environment\nintent. Omit to use the profile's intent unchanged."
         },
         "metadata": {
           "additionalProperties": {

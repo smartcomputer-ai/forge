@@ -303,6 +303,7 @@ export interface ProfileInit {
   description: string;
   instructions: string;
   config: Record<string, unknown>;
+  metadata?: Record<string, string>;
   environment?: ProfileDocument["environment"];
   revision: number;
   createdAtMs: number;
@@ -316,6 +317,7 @@ export function profile(init: ProfileInit): ProfileDocument {
     description: init.description,
     instructions: { type: "text", text: init.instructions },
     config: structuredClone(init.config),
+    ...(init.metadata === undefined ? {} : { metadata: structuredClone(init.metadata) }),
     ...(init.environment === undefined ? {} : { environment: init.environment }),
     revision: init.revision,
     createdAtMs: init.createdAtMs,
@@ -731,7 +733,7 @@ export interface ManagedInit {
   id: string;
   botId: string;
   displayName: string;
-  profile: Pick<ProfileInit, "config" | "instructions">;
+  profile: Pick<ProfileInit, "config" | "instructions" | "metadata">;
   tools: ManagedWorkflowTool[];
   createdAtMs: number;
   environmentId?: string;
@@ -750,6 +752,7 @@ export function managedSession(store: DemoStore, universe: UniverseState, init: 
       tools: init.tools,
     },
     config: structuredClone(init.profile.config),
+    metadata: structuredClone(init.profile.metadata ?? {}),
     instructions: init.profile.instructions,
     activeEnvironmentId: init.environmentId ?? null,
     createdAtMs: init.createdAtMs,

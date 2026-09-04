@@ -44,7 +44,8 @@ Automatic deletion and explicitly cascading manual deletion remove a selected
 session subtree through one shared lifecycle path, so rows, events, and
 checkpoints go together and every deleted session's owned environments are
 closed. Ordinary manual deletion remains a conservative one-session operation.
-The UI identifies the retention root and shows the tree's deletion deadline.
+Session settings identify the retention root and show the tree's deletion
+policy without crowding the primary list or detail header.
 
 ## Problem
 
@@ -309,10 +310,10 @@ Bump `REQUIRED_SCHEMA_REVISION` and `LIGHTSPEED_SCHEMA_REVISION` together.
 - Session page: an automatic-deletion control on roots, with "Keep until
   manually deleted" as the default. Descendants show "Retained with <root>"
   and link to the root rather than presenting an editable control.
-- Session page and sessions list: "Deletes in 3 days" from the effective
-  `retention.deleteAtMs`. When the root is still open, show "Deletes 3 days
-  after root closes". A past deadline blocked by an open descendant shows
-  "Deletion pending" rather than a negative duration.
+- Session settings show the effective policy and retention root. A root can
+  set or clear its close-relative duration; a descendant links to the root
+  rather than presenting an editable control. The primary sessions list and
+  detail header stay focused on identity, lifecycle state, and actions.
 - Manual deletion defaults to the selected session only. The UI offers an
   explicit "also delete forks and delegated children" option with a bounded
   descendant count. For any non-leaf target, it explains that cascade is

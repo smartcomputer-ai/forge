@@ -488,6 +488,7 @@ async fn run_environment_power_live_client(
             ..SessionConfig::default()
         }),
         profile: None,
+        environment: None,
         delete_after_close_ms: None,
     })
     .await?;

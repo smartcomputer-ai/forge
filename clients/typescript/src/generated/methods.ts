@@ -146,12 +146,12 @@ export const METHOD_INFO = {
   "session/start": {
     scope: "universe",
     summary: "Create or reopen a session",
-    description: "Creates a session with optional config/profile setup. Retrying an existing session id returns that session; creation settings apply only when it is first created.",
+    description: "Creates a session with optional config/profile setup. Profile metadata supplies defaults that explicit metadata overrides; an existing-or-none environment override can replace the profile intent. Retrying an existing session id returns that session; creation settings apply only when it is first created.",
   },
   "session/managed/start": {
     scope: "universe",
     summary: "Create or reopen a managed session",
-    description: "Creates a session with an immutable lifecycle controller and/or workflow tools using explicit bound pull/push dispatch, start targets, and Accepted, Joined, or keyed-Promise completion. Retrying an existing session id requires the same managed-creation declaration; an ordinary session cannot be upgraded to managed.",
+    description: "Creates a session with an immutable lifecycle controller and/or workflow tools using explicit bound pull/push dispatch, start targets, and Accepted, Joined, or keyed-Promise completion. Profile metadata defaults and the creation-time environment override follow session/start semantics. Retrying an existing session id requires the same managed-creation declaration; an ordinary session cannot be upgraded to managed.",
   },
   "session/read": {
     scope: "universe",
@@ -815,7 +815,7 @@ export interface MethodMap {
   /**
    * Create or reopen a session
    *
-   * Creates a session with optional config/profile setup. Retrying an existing session id returns that session; creation settings apply only when it is first created.
+   * Creates a session with optional config/profile setup. Profile metadata supplies defaults that explicit metadata overrides; an existing-or-none environment override can replace the profile intent. Retrying an existing session id returns that session; creation settings apply only when it is first created.
    */
   "session/start": {
     params: Api.SessionStartParams;
@@ -824,7 +824,7 @@ export interface MethodMap {
   /**
    * Create or reopen a managed session
    *
-   * Creates a session with an immutable lifecycle controller and/or workflow tools using explicit bound pull/push dispatch, start targets, and Accepted, Joined, or keyed-Promise completion. Retrying an existing session id requires the same managed-creation declaration; an ordinary session cannot be upgraded to managed.
+   * Creates a session with an immutable lifecycle controller and/or workflow tools using explicit bound pull/push dispatch, start targets, and Accepted, Joined, or keyed-Promise completion. Profile metadata defaults and the creation-time environment override follow session/start semantics. Retrying an existing session id requires the same managed-creation declaration; an ordinary session cannot be upgraded to managed.
    */
   "session/managed/start": {
     params: Api.ManagedSessionStartParams;
@@ -1994,7 +1994,7 @@ export const rpc = {
   /**
    * Create or reopen a session
    *
-   * Creates a session with optional config/profile setup. Retrying an existing session id returns that session; creation settings apply only when it is first created.
+   * Creates a session with optional config/profile setup. Profile metadata supplies defaults that explicit metadata overrides; an existing-or-none environment override can replace the profile intent. Retrying an existing session id returns that session; creation settings apply only when it is first created.
    */
   sessionStart(client: RpcCaller, params: Api.SessionStartParams): Promise<Api.AgentApiOutcomeOfSessionStartResponse> {
     return client.call("session/start", params);
@@ -2002,7 +2002,7 @@ export const rpc = {
   /**
    * Create or reopen a managed session
    *
-   * Creates a session with an immutable lifecycle controller and/or workflow tools using explicit bound pull/push dispatch, start targets, and Accepted, Joined, or keyed-Promise completion. Retrying an existing session id requires the same managed-creation declaration; an ordinary session cannot be upgraded to managed.
+   * Creates a session with an immutable lifecycle controller and/or workflow tools using explicit bound pull/push dispatch, start targets, and Accepted, Joined, or keyed-Promise completion. Profile metadata defaults and the creation-time environment override follow session/start semantics. Retrying an existing session id requires the same managed-creation declaration; an ordinary session cannot be upgraded to managed.
    */
   sessionManagedStart(client: RpcCaller, params: Api.ManagedSessionStartParams): Promise<Api.AgentApiOutcomeOfSessionStartResponse> {
     return client.call("session/managed/start", params);

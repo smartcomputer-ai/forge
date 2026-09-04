@@ -6,4 +6,5 @@ edition = "2024"
 [dependencies]
 api = { path = "../api" }
 async-trait = "0.1"
+environment-protocol = { path = "../environment-protocol" }
 thiserror = "1"

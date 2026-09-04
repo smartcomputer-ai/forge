@@ -3283,6 +3283,7 @@ version = "0.1.0"
 dependencies = [
  "api",
  "async-trait",
+ "environment-protocol",
  "thiserror 1.0.69",
 ]
 

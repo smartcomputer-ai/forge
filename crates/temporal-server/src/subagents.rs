@@ -609,6 +609,7 @@ mod tests {
                     description: Some("Reviews things".to_owned()),
                     revision,
                     document: ProfileDocument {
+                        metadata: Default::default(),
                         config: None,
                         instructions: None,
                         environment: None,

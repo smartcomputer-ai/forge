@@ -9,7 +9,7 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
     "name": "lightspeed_session_start",
     "method": "session/start",
     "summary": "Create or reopen a session",
-    "description": "Creates a session with optional config/profile setup. Retrying an existing session id returns that session; creation settings apply only when it is first created.",
+    "description": "Creates a session with optional config/profile setup. Profile metadata supplies defaults that explicit metadata overrides; an existing-or-none environment override can replace the profile intent. Retrying an existing session id returns that session; creation settings apply only when it is first created.",
     "paramsType": "SessionStartParams",
     "resultType": "AgentApiOutcome<SessionStartResponse>",
     "inputSchema": {
@@ -42,6 +42,17 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
             "string",
             "null"
           ]
+        },
+        "environment": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/SessionEnvironmentOverride"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Optional creation-time override for the selected profile's environment\nintent. Omit to use the profile's intent unchanged."
         },
         "metadata": {
           "additionalProperties": {
@@ -451,6 +462,13 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                   "type": "null"
                 }
               ]
+            },
+            "metadata": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "description": "Descriptive metadata defaults copied to a session when it is created\nfrom this profile. Explicit `session/start` metadata wins key by key.\nApplying the profile to an existing session does not change metadata.",
+              "type": "object"
             }
           },
           "type": "object"
@@ -817,6 +835,45 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
             }
           },
           "type": "object"
+        },
+        "SessionEnvironmentOverride": {
+          "description": "Creation-time override for the environment intent carried by a profile.\nAbsence uses the profile unchanged; `none` suppresses its environment\nintent, while `existing` activates the specified universe environment.",
+          "oneOf": [
+            {
+              "additionalProperties": {
+                "not": {}
+              },
+              "properties": {
+                "type": {
+                  "const": "none",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type"
+              ],
+              "type": "object"
+            },
+            {
+              "additionalProperties": {
+                "not": {}
+              },
+              "properties": {
+                "environmentId": {
+                  "type": "string"
+                },
+                "type": {
+                  "const": "existing",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "type",
+                "environmentId"
+              ],
+              "type": "object"
+            }
+          ]
         },
         "SubagentAgentRef": {
           "additionalProperties": {
@@ -3639,6 +3696,13 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                   "type": "null"
                 }
               ]
+            },
+            "metadata": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "description": "Descriptive metadata defaults copied to a session when it is created\nfrom this profile. Explicit `session/start` metadata wins key by key.\nApplying the profile to an existing session does not change metadata.",
+              "type": "object"
             }
           },
           "type": "object"
@@ -5172,6 +5236,13 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                 }
               ]
             },
+            "metadata": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "description": "Descriptive metadata defaults copied to a session when it is created\nfrom this profile. Explicit `session/start` metadata wins key by key.\nApplying the profile to an existing session does not change metadata.",
+              "type": "object"
+            },
             "profileId": {
               "$ref": "#/definitions/ProfileId"
             }
@@ -6324,6 +6395,13 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                   "type": "null"
                 }
               ]
+            },
+            "metadata": {
+              "additionalProperties": {
+                "type": "string"
+              },
+              "description": "Descriptive metadata defaults copied to a session when it is created\nfrom this profile. Explicit `session/start` metadata wins key by key.\nApplying the profile to an existing session does not change metadata.",
+              "type": "object"
             },
             "profileId": {
               "$ref": "#/definitions/ProfileId"

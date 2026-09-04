@@ -161,6 +161,10 @@ impl ProfileSourceExt for ProfileSource {
 }
 
 pub fn validate_profile_document(document: &ProfileDocument) -> Result<(), ProfileError> {
+    environment_protocol::registration::validate_registration_metadata(None, &document.metadata)
+        .map_err(|message| ProfileError::InvalidInput {
+            message: format!("invalid metadata: {message}"),
+        })?;
     if let Some(instructions) = &document.instructions {
         validate_profile_instructions(instructions)?;
     }
@@ -360,6 +364,25 @@ mod tests {
         assert!(matches!(
             validate_profile_document(&empty_environment),
             Err(ProfileError::InvalidInput { message }) if message.contains("environment.environmentId")
+        ));
+    }
+
+    #[test]
+    fn document_validation_applies_session_metadata_bounds() {
+        let valid = ProfileDocument {
+            metadata: BTreeMap::from([("campaign".to_owned(), "release-42".to_owned())]),
+            ..ProfileDocument::default()
+        };
+        assert!(validate_profile_document(&valid).is_ok());
+
+        let reserved = ProfileDocument {
+            metadata: BTreeMap::from([("lightspeed.internal".to_owned(), "value".to_owned())]),
+            ..ProfileDocument::default()
+        };
+        assert!(matches!(
+            validate_profile_document(&reserved),
+            Err(ProfileError::InvalidInput { message })
+                if message.contains("invalid metadata") && message.contains("lightspeed.")
         ));
     }
 

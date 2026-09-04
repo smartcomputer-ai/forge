@@ -16,6 +16,10 @@
   [P108](p108-universe-environments.md) and `docs/spec/04-environments.md`.
   Both already reserve room for "a separate lifecycle policy" that closes a
   session-created environment; P125 is that policy.
+- Extended 2026-09-04 with a narrow creation-time override: a start may
+  activate a different existing environment or explicitly select none while
+  retaining the named profile. Omission still uses the profile intent, and
+  provisioning remains authored in the profile.
 
 ## Goal
 
@@ -68,6 +72,7 @@ Replace `activeEnvironmentId` with one tagged field:
 
 ```text
 ProfileDocument {
+  metadata?      Map<String, String>  # creation-time session defaults
   config?        SessionConfig
   instructions?  ProfileInstructions
   environment?   ProfileEnvironment
@@ -116,8 +121,10 @@ Rejected alternatives:
   config would make every config put re-evaluate "should I create a VM?".
   Profiles are already the provisioning document ("compiles into
   operations", P85), so this is their natural home.
-- **A separate `environment` parameter on `session/start`.** Inline profiles
-  already give every start call site the full document; one place is enough.
+- **A second provisioning document on `session/start`.** Provisioning stays in
+  the profile. The later lightweight override deliberately supports only
+  `{type: existing, environmentId}` and `{type: none}` so an interactive user
+  can choose a machine without copying the full profile inline.
 - **A model-visible `environment_create` tool.** Explicitly deferred by
   P117/P118 behind a future default-off grant. Nothing here changes that:
   provisioning happens on the trusted `session/start`/`profiles/apply` path
@@ -307,6 +314,9 @@ deployment, no provider or VM change):
   `ProfileEnvironmentRetention` enum.
 - `ProfileApplySummary.active_environment_changed` stays; add
   `environment_provisioned: bool`.
+- `SessionStartParams.environment` and `ManagedSessionStartParams.environment`
+  optionally override the resolved profile intent with an existing environment
+  or no environment. Absence preserves the profile behavior.
 - `EnvironmentView.origin_session: Option<EnvironmentOriginSessionView>`;
   `EnvironmentListParams.origin_session_id`.
 - Regenerate `crates/api/contract/*`, TypeScript client, Configurator MCP.
@@ -327,7 +337,8 @@ rules shared with `environments/create`).
   request id → `create_environment_record` with `origin_session` →
   activate).
 - `session/start`: pre-start binding/provider checks for `provision`
-  profiles; provisioning after workflow start; unchanged for other profiles.
+  profiles; provisioning after workflow start. Resolve the creation override
+  first, so choosing an existing environment or none skips profile provisioning.
 - `EnvironmentResolver::selectable`: status-aware admission (decision 4):
   `NotReady` for `provisioning`/`booting`, typed failure for `failed`,
   probe only for `ready`/`offline`/`unknown`. Today it ignores status
@@ -360,6 +371,9 @@ rules shared with `environments/create`).
   away. `resource-features.ts` and `api.ts` read `environment` instead of
   `activeEnvironmentId`; `EnvironmentsPage` shows origin session and can
   filter by it.
+  The basic new-session dialog also offers profile default, no environment,
+  or an existing universe environment when the selected profile grants the
+  environments feature; this does not convert the profile to inline JSON.
 - **Channels**: binding profiles can now provision one VM per conversation
   session with no Channels code change.
 - **Fleet**: `agent_spawn { base: profile }` with a `provision` +
