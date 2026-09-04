@@ -97,11 +97,12 @@ sub-agents under their parent — behind `+N`; the selected conversation is
 always inline, so a deep link never lands in the overflow. With one
 session the row is `Main · Activity`; settings stays in the bot header.
 
-The transcript takes the full width: `SessionDetail` embedded renders no
-header of its own (no "Managed by" badge, no second title). What that
-header carried sits in a chevron menu on the active tab — session id,
-copy id, open on the Sessions page, reset, then overflow-safe metadata as
-the final read-only section. The
+The transcript viewport takes the full width while transcript entries,
+lineage, queued runs, and the composer share a centered `max-w-5xl` content
+rail. `SessionDetail` embedded renders no header of its own (no "Managed by"
+badge, no second title). What that header carried sits in a chevron menu on
+the active tab — session id with an adjacent copy icon, open on the Sessions
+page, reset, then overflow-safe metadata as the final read-only section. The
 composer sends a plain message to that session (§5); sub-agents of the
 open conversation also appear in the lineage strip above the transcript.
 

@@ -2009,7 +2009,7 @@ export function SessionDetail({
       <MessageScrollerProvider autoScroll defaultScrollPosition="end">
         <MessageScroller className="min-h-0 flex-1">
           <MessageScrollerViewport>
-            <MessageScrollerContent className="gap-3 px-4 py-6 md:px-8">
+            <MessageScrollerContent className="mx-auto w-full max-w-5xl gap-3 px-4 py-6 md:px-8">
               {tail.phase === "loading" && entries.length === 0 && !tail.error && (
                 <LoadingNote />
               )}
@@ -2252,7 +2252,8 @@ function SessionLineage({
   const tagClass = "inline-flex min-w-0 max-w-64 items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium text-foreground transition-colors hover:bg-muted";
   if (!origin && list.length === 0) return null;
   return (
-    <div className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 border-b bg-muted/30 px-4 py-1.5 text-xs text-muted-foreground">
+    <div className="shrink-0 border-b bg-muted/30">
+      <div className="mx-auto flex w-full max-w-5xl flex-wrap items-center gap-x-3 gap-y-1 px-4 py-1.5 text-xs text-muted-foreground md:px-8">
       {origin && (
         <span className="flex min-w-0 flex-wrap items-center gap-1">
           <span>Parent:</span>
@@ -2343,6 +2344,7 @@ function SessionLineage({
           )}
         </span>
       )}
+      </div>
     </div>
   );
 }
