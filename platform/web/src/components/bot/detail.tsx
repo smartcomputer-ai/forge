@@ -5,7 +5,6 @@ import {
   ArrowUpRight,
   ChevronDown,
   ChevronRight,
-  Copy,
   LoaderCircle,
   Pause,
   Play,
@@ -421,7 +420,6 @@ function ConversationMenu({
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const [resetOpen, setResetOpen] = useState(false);
-  const [copied, setCopied] = useState(false);
   const managedHere = (controller.sessions ?? []).some((entry) => entry.sessionId === sessionId);
   const session = useQuery({
     queryKey: ["session", universeId, sessionId],
@@ -465,17 +463,6 @@ function ConversationMenu({
           <SessionMenuIdentity sessionId={sessionId} />
           <DropdownMenuSeparator />
           <DropdownMenuGroup>
-            <DropdownMenuItem
-              onClick={() => {
-                void navigator.clipboard
-                  .writeText(sessionId)
-                  .then(() => setCopied(true))
-                  .catch(() => undefined);
-                window.setTimeout(() => setCopied(false), 1_500);
-              }}
-            >
-              <Copy /> {copied ? "Copied" : "Copy session id"}
-            </DropdownMenuItem>
             <DropdownMenuItem onClick={() => navigate(`/u/${slug}/sessions/${encodeURIComponent(sessionId)}`)}>
               <ArrowUpRight /> Open on the Sessions page
             </DropdownMenuItem>

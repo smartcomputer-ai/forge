@@ -105,7 +105,10 @@ the final read-only section. The
 composer sends a plain message to that session (§5); sub-agents of the
 open conversation also appear in the lineage strip above the transcript.
 
-The standalone Sessions detail uses the same identity-and-actions menu.
+The standalone Sessions detail places the same identity menu directly beside
+the display name (session id, copy, bot navigation, then metadata). Session
+settings and the available Close/Delete lifecycle action stay visible as
+top-right header icons instead of being buried in that menu.
 Its bar keeps only the display name, live state, lifecycle state, and
 management badge; copy id, settings, close/delete, and metadata move into
 the menu. A bot-controlled session also links directly back to that exact

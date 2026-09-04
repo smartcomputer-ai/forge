@@ -7,7 +7,7 @@ import {
   useQueryClient,
 } from "@tanstack/react-query";
 import { NavLink, useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { Archive, ArrowLeft, Check, ChevronDown, Copy, ListChecks, ListFilter, LoaderCircle, Plus, ShieldCheck, SlidersHorizontal, Trash2, X } from "lucide-react";
+import { Archive, ArrowLeft, ChevronDown, ListChecks, ListFilter, LoaderCircle, Plus, ShieldCheck, SlidersHorizontal, Trash2, X } from "lucide-react";
 import {
   api,
   type BlobContent,
@@ -1348,7 +1348,6 @@ export function SessionDetail({
   const [stoppingRunId, setStoppingRunId] = useState<string | null>(null);
   const [cancellingQueued, setCancellingQueued] = useState<Set<string>>(() => new Set());
   const [sendError, setSendError] = useState<string | null>(null);
-  const [sessionIdCopied, setSessionIdCopied] = useState(false);
   const [closeError, setCloseError] = useState<string | null>(null);
   const [closeOpen, setCloseOpen] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
@@ -1589,12 +1588,6 @@ export function SessionDetail({
   }, [sessionId]);
 
   useEffect(() => {
-    if (!sessionIdCopied) return;
-    const timer = window.setTimeout(() => setSessionIdCopied(false), 1_500);
-    return () => window.clearTimeout(timer);
-  }, [sessionIdCopied]);
-
-  useEffect(() => {
     if (settingsOpen && !runActive) {
       void session.refetch();
     }
@@ -1808,114 +1801,110 @@ export function SessionDetail({
           <NavLink to={backTo} className="shrink-0 md:hidden">
             <ArrowLeft className="size-4" />
           </NavLink>
-          <h1 className="min-w-0 flex-1 truncate text-sm font-semibold">
-            {session.data?.displayName ?? sessionId.slice(0, 24)}
-          </h1>
-          {activeRun && !activeToolGroup && (
-            <span className="hidden max-w-40 shrink truncate text-xs text-muted-foreground xl:inline">
-              {activeRun.label}…
-            </span>
-          )}
-          {closed && (
-            <span className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">
-              Closed
-            </span>
-          )}
-          {managed && (
-            <Tooltip>
-              <TooltipTrigger render={<span className="shrink-0" />}>
-                <Badge variant="secondary" className="gap-1">
-                  <ShieldCheck />
-                  <span className="hidden xl:inline">Managed by {managerLabel}</span>
-                </Badge>
-              </TooltipTrigger>
-              <TooltipContent>
-                {`Lifecycle and chat input are controlled by ${managerLabel}; configuration remains editable.`}
-              </TooltipContent>
-            </Tooltip>
-          )}
-          <DropdownMenu>
-            <DropdownMenuTrigger
-              render={
-                <Button
-                  variant="ghost"
-                  size="icon-sm"
-                  className="shrink-0 text-muted-foreground"
-                  aria-label="Session menu"
-                  title="Session details and actions"
-                />
-              }
-            >
-              <ChevronDown />
-            </DropdownMenuTrigger>
-            <DropdownMenuContent
-              align="end"
-              className="max-h-[min(28rem,calc(100vh-1rem))] w-80 max-w-[calc(100vw-1rem)]"
-            >
-              <SessionMenuIdentity sessionId={sessionId} />
-              <DropdownMenuSeparator />
-              <DropdownMenuGroup>
-                <DropdownMenuItem
-                  onClick={() => {
-                    void navigator.clipboard
-                      .writeText(sessionId)
-                      .then(() => setSessionIdCopied(true))
-                      .catch(() => undefined);
-                  }}
-                >
-                  {sessionIdCopied ? <Check /> : <Copy />}
-                  {sessionIdCopied ? "Copied" : "Copy session id"}
-                </DropdownMenuItem>
+          <div className="flex min-w-0 items-center gap-0.5">
+            <h1 className="min-w-0 truncate text-sm font-semibold">
+              {session.data?.displayName ?? sessionId.slice(0, 24)}
+            </h1>
+            <DropdownMenu>
+              <DropdownMenuTrigger
+                render={
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    className="shrink-0 text-muted-foreground"
+                    aria-label="Session details"
+                    title="Session details"
+                  />
+                }
+              >
+                <ChevronDown />
+              </DropdownMenuTrigger>
+              <DropdownMenuContent
+                align="start"
+                className="max-h-[min(28rem,calc(100vh-1rem))] w-80 max-w-[calc(100vw-1rem)]"
+              >
+                <SessionMenuIdentity sessionId={sessionId} />
                 {owningBotHref && (
-                  <DropdownMenuItem onClick={() => navigate(owningBotHref)}>
-                    <BotFaceIcon /> Open in bot
-                  </DropdownMenuItem>
+                  <>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuGroup>
+                    <DropdownMenuItem onClick={() => navigate(owningBotHref)}>
+                      <BotFaceIcon /> Open in bot
+                    </DropdownMenuItem>
+                    </DropdownMenuGroup>
+                  </>
                 )}
-                <DropdownMenuItem onClick={() => setSettingsOpen(true)}>
-                  <SlidersHorizontal /> Session settings
-                </DropdownMenuItem>
-              </DropdownMenuGroup>
-              {!closed && !managed && (
-                <>
-                  <DropdownMenuSeparator />
-                  <DropdownMenuGroup>
-                    <DropdownMenuItem
-                      variant="destructive"
-                      disabled={closeSession.isPending}
-                      onClick={() => {
-                        setCloseError(null);
-                        setCloseOpen(true);
-                      }}
-                    >
-                      {closeSession.isPending
-                        ? <LoaderCircle className="animate-spin" />
-                        : <Archive />}
-                      {runActive ? "Force close session…" : "Close session…"}
-                    </DropdownMenuItem>
-                  </DropdownMenuGroup>
-                </>
-              )}
-              {closed && !managed && (
-                <>
-                  <DropdownMenuSeparator />
-                  <DropdownMenuGroup>
-                    <DropdownMenuItem
-                      variant="destructive"
-                      disabled={deleteSession.isPending}
-                      onClick={() => {
-                        setDeleteError(null);
-                        setDeleteCascade(false);
-                        setDeleteOpen(true);
-                      }}
-                    >
-                      <Trash2 /> Delete session…
-                    </DropdownMenuItem>
-                  </DropdownMenuGroup>
-                </>
-              )}
-              <SessionMenuMetadata metadata={session.data?.metadata} />
-            </DropdownMenuContent>
-          </DropdownMenu>
+                <SessionMenuMetadata metadata={session.data?.metadata} />
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
+          <div className="ml-auto flex min-w-0 shrink-0 items-center gap-1">
+            {activeRun && !activeToolGroup && (
+              <span className="hidden max-w-40 shrink truncate text-xs text-muted-foreground xl:inline">
+                {activeRun.label}…
+              </span>
+            )}
+            {closed && (
+              <span className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">
+                Closed
+              </span>
+            )}
+            {managed && (
+              <Tooltip>
+                <TooltipTrigger render={<span className="shrink-0" />}>
+                  <Badge variant="secondary" className="gap-1">
+                    <ShieldCheck />
+                    <span className="hidden xl:inline">Managed by {managerLabel}</span>
+                  </Badge>
+                </TooltipTrigger>
+                <TooltipContent>
+                  {`Lifecycle and chat input are controlled by ${managerLabel}; configuration remains editable.`}
+                </TooltipContent>
+              </Tooltip>
+            )}
+            {!closed && !managed && (
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                className="text-destructive"
+                disabled={closeSession.isPending}
+                onClick={() => {
+                  setCloseError(null);
+                  setCloseOpen(true);
+                }}
+                aria-label={runActive ? "Force close session" : "Close session"}
+                title={runActive ? "Force close session" : "Close session"}
+              >
+                {closeSession.isPending ? <LoaderCircle className="animate-spin" /> : <Archive />}
+              </Button>
+            )}
+            {closed && !managed && (
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                className="text-destructive"
+                disabled={deleteSession.isPending}
+                onClick={() => {
+                  setDeleteError(null);
+                  setDeleteCascade(false);
+                  setDeleteOpen(true);
+                }}
+                aria-label="Delete session"
+                title="Delete session"
+              >
+                {deleteSession.isPending ? <LoaderCircle className="animate-spin" /> : <Trash2 />}
+              </Button>
+            )}
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              onClick={() => setSettingsOpen(true)}
+              aria-label="Session settings"
+              title="Session settings"
+            >
+              <SlidersHorizontal />
+            </Button>
+          </div>
         </header>
 
         <AlertDialog

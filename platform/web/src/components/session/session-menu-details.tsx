@@ -1,3 +1,5 @@
+import { useEffect, useState } from "react";
+import { Check, Copy } from "lucide-react";
 import {
   DropdownMenuGroup,
   DropdownMenuLabel,
@@ -14,16 +16,36 @@ export function sessionMenuMetadataEntries(
 
 /** Compact, read-only session identity shared by the bot and Sessions menus. */
 export function SessionMenuIdentity({ sessionId }: { sessionId: string }) {
+  const [copied, setCopied] = useState(false);
+  useEffect(() => {
+    if (!copied) return;
+    const timer = window.setTimeout(() => setCopied(false), 1_500);
+    return () => window.clearTimeout(timer);
+  }, [copied]);
   return (
     <DropdownMenuGroup>
       <DropdownMenuLabel>Session</DropdownMenuLabel>
-      <div className="min-w-0 px-2 pb-1.5">
+      <div className="flex min-w-0 items-center gap-2 px-2 pb-1.5">
         <code
-          className="block min-w-0 truncate text-xs text-foreground"
+          className="block min-w-0 flex-1 truncate text-xs text-foreground"
           title={sessionId}
         >
           {sessionId}
         </code>
+        <button
+          type="button"
+          className="grid size-6 shrink-0 place-items-center rounded-sm text-muted-foreground hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+          aria-label={copied ? "Session id copied" : "Copy session id"}
+          title={copied ? "Copied" : "Copy session id"}
+          onClick={() => {
+            void navigator.clipboard
+              .writeText(sessionId)
+              .then(() => setCopied(true))
+              .catch(() => undefined);
+          }}
+        >
+          {copied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
+        </button>
       </div>
     </DropdownMenuGroup>
   );
