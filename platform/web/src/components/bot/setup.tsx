@@ -71,7 +71,7 @@ import {
 
 /**
  * Everything about how a bot works, as a stack of sections that each read
- * as one line when closed — so the page at a glance is a summary, and you
+ * as one line when closed — so the modal at a glance is a summary, and you
  * open only what you are editing. Each section saves on its own.
  */
 export function BotSetup({
@@ -123,7 +123,7 @@ export function BotSetup({
 
   return (
     <div className="min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto">
-      <div className="mx-auto grid w-full min-w-0 max-w-5xl gap-3 px-4 py-5 text-sm md:px-8">
+      <div className="grid w-full min-w-0 gap-3 px-4 py-5 text-sm md:px-6">
         <IdentitySection universeId={universeId} bot={bot} manage={manage} />
         <BriefSection universeId={universeId} bot={bot} manage={manage} />
         <SetupSection

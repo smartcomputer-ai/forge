@@ -12,7 +12,7 @@ import {
   RotateCcw,
   SlidersHorizontal,
 } from "lucide-react";
-import { NavLink, useNavigate } from "react-router-dom";
+import { NavLink, useNavigate, useSearchParams } from "react-router-dom";
 import { api, botLabel, type BotControllerSnapshot, type BotStateView, type BotView, type SessionView } from "@/api";
 import {
   AlertDialog,
@@ -38,12 +38,13 @@ import {
 import { cn } from "@/lib/utils";
 import { BotActivity } from "./activity";
 import { BotChat } from "./chat";
+import { BotEditorDialog } from "./editor-dialog";
 import { BotAvatar } from "./face";
 import { botInputOf, idIsRedundant } from "./identity";
 import { BotSetup } from "./setup";
 import { StatusDot, botStatus, relativeTime } from "./status";
 
-export type BotTab = "chat" | "activity" | "setup";
+export type BotTab = "chat" | "activity";
 
 /** Threads shown as tabs before the rest fold into the +N menu. */
 const INLINE_THREADS = 3;
@@ -120,9 +121,8 @@ export function conversationTabs(
 }
 
 /**
- * One bot: a header that answers "is it working?", then one row of tabs —
- * its conversations, then Activity and Setup. Nothing about a bot lives
- * elsewhere, and there is no third level.
+ * One bot: a header that answers "is it working?", then one row for its
+ * conversations and Activity. Settings is a global bot action in the header.
  */
 export function BotDetail({
   universeId,
@@ -144,11 +144,15 @@ export function BotDetail({
   sessionId: string | undefined;
 }) {
   const queryClient = useQueryClient();
+  const [searchParams, setSearchParams] = useSearchParams();
   const base = `/u/${slug}/bots/${bot.botId}`;
   const controller = state?.controller ?? undefined;
   const status = botStatus(bot, controller, stateError);
   const selected = view === "chat" ? (sessionId ?? controller?.mainSessionId) : undefined;
-  const { inline, overflow } = conversationTabs(state, view === "chat" ? selected : undefined);
+  const { inline, overflow } = conversationTabs(
+    state,
+    view === "chat" ? selected : undefined,
+  );
   const sessionHref = (id: string) => (id === controller?.mainSessionId ? base : `${base}/chat/${encodeURIComponent(id)}`);
   const enabled = bot.enabled ?? true;
   const togglePause = useMutation({
@@ -166,6 +170,13 @@ export function BotDetail({
     },
   });
   const pending = controller?.pendingDeliveries ?? 0;
+  const settingsOpen = searchParams.get("settings") === "open";
+  const setSettingsOpen = (open: boolean) => {
+    const next = new URLSearchParams(searchParams);
+    if (open) next.set("settings", "open");
+    else next.delete("settings");
+    setSearchParams(next, { replace: !open });
+  };
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
@@ -188,8 +199,8 @@ export function BotDetail({
           <StatusDot tone={status.tone} />
           <span className="truncate">{status.label}</span>
         </span>
-        {manage && bot.closedAtMs == null && (
-          <div className="ml-auto flex items-center gap-1">
+        <div className="ml-auto flex items-center gap-1">
+          {manage && bot.closedAtMs == null && (
             <Button
               variant="outline"
               size="xs"
@@ -206,13 +217,22 @@ export function BotDetail({
               )}
               {enabled ? "Pause" : "Resume"}
             </Button>
-          </div>
-        )}
+          )}
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            onClick={() => setSettingsOpen(true)}
+            title="Bot settings"
+            aria-label="Bot settings"
+          >
+            <SlidersHorizontal />
+          </Button>
+        </div>
       </div>
       {togglePause.error && (
         <p className="border-b bg-destructive/10 px-4 py-1.5 text-xs text-destructive">{togglePause.error.message}</p>
       )}
-      <nav className="flex h-10 shrink-0 items-stretch gap-0.5 overflow-x-auto border-b px-2" aria-label="Bot conversations and sections">
+      <nav className="flex h-10 shrink-0 items-stretch gap-0.5 overflow-x-auto border-b px-2" aria-label="Bot conversations and activity">
         {controller ? (
           inline.map((tab) => {
             const active = view === "chat" && selected === tab.id;
@@ -271,18 +291,21 @@ export function BotDetail({
             <span className="rounded-full bg-primary px-1.5 text-[10px] font-semibold text-primary-foreground">{pending}</span>
           )}
         </TabLink>
-        <TabLink to={`${base}/setup`} active={view === "setup"}>
-          <SlidersHorizontal className="size-4" />
-          Setup
-        </TabLink>
       </nav>
       {view === "chat" ? (
         <BotChat universeId={universeId} slug={slug} bot={bot} state={state} stateError={stateError} sessionId={sessionId} />
-      ) : view === "activity" ? (
-        <BotActivity universeId={universeId} slug={slug} bot={bot} state={state} stateError={stateError} manage={manage} />
       ) : (
-        <BotSetup universeId={universeId} slug={slug} bot={bot} state={state} manage={manage} />
+        <BotActivity universeId={universeId} slug={slug} bot={bot} state={state} stateError={stateError} manage={manage} />
       )}
+      <BotEditorDialog
+        open={settingsOpen}
+        onOpenChange={setSettingsOpen}
+        title={`Bot Settings (${botLabel(bot)})`}
+        description="Identity, job, triggers, session profile, collaborators, guardrails, and lifecycle."
+        contentClassName="sm:max-w-4xl"
+      >
+        <BotSetup universeId={universeId} slug={slug} bot={bot} state={state} manage={manage} />
+      </BotEditorDialog>
     </div>
   );
 }

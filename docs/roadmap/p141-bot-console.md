@@ -31,32 +31,33 @@ wants to hire a bot, give it a job, and check on it.
 
 The person's mental model is a **colleague with a job**:
 
-| The person thinks | The system has |
-| --- | --- |
-| who it is | `botId`, `displayName`, `description` |
-| its job | `brief` (+ profile instructions) |
-| what it can use | profile `config` (model, features) |
-| where it works | profile `environment` |
-| when it wakes | `bot_triggers` |
-| its conversations | main / keyed / per-event sessions, sub-agents |
-| what it did | `bot_events` with outcomes, controller state |
-| its limits | `runsPerDay`, breaker, TTL, `selfConfig`, `emit`, inbox |
+| The person thinks | The system has                                          |
+| ----------------- | ------------------------------------------------------- |
+| who it is         | `botId`, `displayName`, `description`                   |
+| its job           | `brief` (+ profile instructions)                        |
+| what it can use   | profile `config` (model, features)                      |
+| where it works    | profile `environment`                                   |
+| when it wakes     | `bot_triggers`                                          |
+| its conversations | main / keyed / per-event sessions, sub-agents           |
+| what it did       | `bot_events` with outcomes, controller state            |
+| its limits        | `runsPerDay`, breaker, TTL, `selfConfig`, `emit`, inbox |
 
 And three things you do with a colleague: **talk** to them, **watch** what
-they are doing, **set up** their job. That is the whole information
-architecture.
+they are doing, **configure** their job. Talk and watch are ongoing work
+surfaces; configuration is a focused modal task.
 
 ## 2. Principles
 
-1. **Talk · Watch · Set up.** The bot page has exactly three tabs: Chat,
-   Activity, Setup. Nothing about a bot lives anywhere else.
+1. **Talk · Watch; settings on demand.** Conversations and Activity share
+   the bot tab bar. A header settings action opens the bot configuration in
+   a large responsive modal.
 2. **The bot is self-contained.** Its setup (instructions, capabilities,
    environment) lives on the bot by default. Profiles remain the reuse
    mechanism for power users and for sub-agents, not a prerequisite.
 3. **Forms and chat edit the same record, and each sees the other's
-   changes.** The Setup tab reflects what the bot did through
+   changes.** Bot settings reflects what the bot did through
    `bot_trigger_put`; a form save reaches the bot at its next boundary.
-4. **Complexity behind named seams**, not hidden: wizard vs Setup; Basics
+4. **Complexity behind named seams**, not hidden: creation vs settings; Basics
    vs Advanced per trigger; own setup vs shared profile; console vs
    channels; timeline row vs payload.
 5. **Speak the person's language in labels; keep the API vocabulary.**
@@ -68,30 +69,33 @@ architecture.
 
 Header: a deterministic face colour from the id, display name, `botId` in
 mono, a status word (Starting / Idle / Working on #48 / Paused / Out of
-budget until 00:00 UTC / Needs attention / Closed), and Pause/Resume. Close
-and Delete live in Setup › Danger zone.
+budget until 00:00 UTC / Needs attention / Closed), a settings action, and
+Pause/Resume. Close and Delete live in Bot settings › Danger zone.
 
 Routes:
 
 ```
 /u/:slug/bots                          list
-/u/:slug/bots/new                      wizard (full page)
 /u/:slug/bots/:botId                   Chat, main conversation
 /u/:slug/bots/:botId/chat/:sessionId   Chat, a thread or sub-agent
 /u/:slug/bots/:botId/activity
-/u/:slug/bots/:botId/setup[#section]
 ```
+
+Creation is `?new=bot` on the list or current bot route; settings is
+`?settings=open` on a bot route. Both use the same large dialog shell, so
+the underlying roster or bot remains in place and browser Back closes the
+task.
 
 ### 3.1 Conversations as tabs
 
 Revised after the first live look (2026-08-27): a conversation column
 under the bot's tabs was a third navigation level and most bots have one
-or two sessions, so conversations *are* the tabs. The tab row reads
-`Main · PR-912 · PR-907 · +3 ▾ │ Activity · Setup`: Main and the three
+or two sessions, so conversations _are_ the tabs. The tab row reads
+`Main · PR-912 · PR-907 · +3 ▾ │ Activity`: Main and the three
 most recently active threads inline, the rest — older threads and
 sub-agents under their parent — behind `+N`; the selected conversation is
 always inline, so a deep link never lands in the overflow. With one
-session the row is `Main · Activity · Setup`.
+session the row is `Main · Activity`; settings stays in the bot header.
 
 The transcript takes the full width: `SessionDetail` embedded renders no
 header of its own (no "Managed by" badge, no second title). What that
@@ -167,8 +171,10 @@ of chrome and went. Every section saves on its own.
 
 ## 4. Creating a bot: the wizard
 
-A full page (`/bots/new`), five steps, a summary card on the right that
-fills in as you go, every step skippable with defaults. It creates the bot
+A large responsive modal (`?new=bot`) with five steps. Its header, stepper,
+and action footer stay in place while only the full-width form body scrolls;
+the bot avatar lives in the modal header and the footer keeps validation status
+visible. Every step is skippable with defaults. It creates the bot
 **and** its own setup in one go; "Use a shared profile" is an option on
 step 4.
 
@@ -230,7 +236,7 @@ sessions (or keeps a milder note; the bot page never shows it). Who may
 message a bot is a check on the messages route (managers by default).
 
 The self-configuration loop needs nothing new either: `bot_trigger_put`
-and `bot_brief_put` already exist under `selfConfig`. The Setup tab must
+and `bot_brief_put` already exist under `selfConfig`. Bot settings must
 refetch triggers and the bot record when the 3 s state poll sees a change
 (today the triggers query is separate and would show the bot's edit only
 on reload). Provenance on trigger cards ("added by Triage") would need an
@@ -242,11 +248,11 @@ The wizard writes a profile named after the bot (`profileId = botId`,
 description "Setup of bot ⟨id⟩") and the bot references it — nothing on the
 bot row records that, and nothing cleans it up: the point is that a bot can
 be created with its setup in one flow, not that the platform tracks
-ownership. Setup › Session profile edits whatever profile the bot references
+ownership. Bot settings › Session profile edits whatever profile the bot references
 through the ordinary `PUT /profiles/:id` route, overlaying only changed fields
 onto the latest revision; when other bots use the same profile the section
-says so. "Use a shared profile" is the wizard's other path, and Setup can
-switch profiles later. A `bots.setup` document on the row (P130's original
+says so. "Use a shared profile" is the wizard's other path, and Bot settings
+can switch profiles later. A `bots.setup` document on the row (P130's original
 `inline` sketch) and an ownership column were both considered and dropped:
 they buy a tidier Profiles list at the cost of a second document model.
 
@@ -261,25 +267,25 @@ in flight), so no Temporal query per row.
 
 ## 8. Language
 
-| API | Label |
-| --- | --- |
-| `idle` / `session_busy`, `delivering_event` / `budget_exhausted` / `degraded` / `initializing` | Idle / Working / Out of budget / Needs attention / Starting |
-| main session / keyed & per-event sessions | Main / Threads |
-| `runsPerDay` / `breaker` / `routedSessionCloseAfterMs` | Daily run limit / Flood protection / Close inactive threads |
-| `selfConfig` / `emit` / inbox trigger | Can change its own brief and triggers / Can message other bots / Accepts messages from other bots |
-| Settings › Setups | Templates (frees "Setup" for the bot tab) |
+| API                                                                                            | Label                                                                                             |
+| ---------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| `idle` / `session_busy`, `delivering_event` / `budget_exhausted` / `degraded` / `initializing` | Idle / Working / Out of budget / Needs attention / Starting                                       |
+| main session / keyed & per-event sessions                                                      | Main / Threads                                                                                    |
+| `runsPerDay` / `breaker` / `routedSessionCloseAfterMs`                                         | Daily run limit / Flood protection / Close inactive threads                                       |
+| `selfConfig` / `emit` / inbox trigger                                                          | Can change its own brief and triggers / Can message other bots / Accepts messages from other bots |
+| Settings › Setups                                                                              | Templates (frees "Setup" for the bot tab)                                                         |
 
 ## 9. Backend changes
 
-| Change | Why | Size |
-| --- | --- | --- |
-| `POST /bots` accepts `triggers`, created in order and rolled back together | §4 | small — done |
-| Bot list carries `pendingCount` and `lastEvent` from `bot_events` | §7 | small — done |
-| Sample payloads for token-verified webhooks ("Send sample" on the card) | §3.3 | UI only — done |
-| Templates | §4 | static in web — done |
-| `POST /bots/reconcile { profileId }` signals every open bot on a profile; Setup and the Profiles page call it after a save, so a profile edit reaches its bots at their next idle moment instead of at the next unrelated config change | §6 | small — done |
-| Controller rotates Main when a new profile revision cannot be applied in place: `ensureBotSession` compares the session's pinned provider api kind with the profile's before applying (the engine's `ProviderCompatibility` rejection is the backstop) and reports `BOT_SESSION_PROFILE_UNAPPLICABLE`, which joins the declaration-mismatch rotation path. The previous Main is left open, as it is for a declaration rotation | §6 | small — done |
-| Fire-now for schedules | §3.3 | not built; needs a route over Temporal's trigger-immediately |
+| Change                                                                                                                                                                                                                                                                                                                                                                                                                         | Why  | Size                                                         |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---- | ------------------------------------------------------------ |
+| `POST /bots` accepts `triggers`, created in order and rolled back together                                                                                                                                                                                                                                                                                                                                                     | §4   | small — done                                                 |
+| Bot list carries `pendingCount` and `lastEvent` from `bot_events`                                                                                                                                                                                                                                                                                                                                                              | §7   | small — done                                                 |
+| Sample payloads for token-verified webhooks ("Send sample" on the card)                                                                                                                                                                                                                                                                                                                                                        | §3.3 | UI only — done                                               |
+| Templates                                                                                                                                                                                                                                                                                                                                                                                                                      | §4   | static in web — done                                         |
+| `POST /bots/reconcile { profileId }` signals every open bot on a profile; Setup and the Profiles page call it after a save, so a profile edit reaches its bots at their next idle moment instead of at the next unrelated config change                                                                                                                                                                                        | §6   | small — done                                                 |
+| Controller rotates Main when a new profile revision cannot be applied in place: `ensureBotSession` compares the session's pinned provider api kind with the profile's before applying (the engine's `ProviderCompatibility` rejection is the backstop) and reports `BOT_SESSION_PROFILE_UNAPPLICABLE`, which joins the declaration-mismatch rotation path. The previous Main is left open, as it is for a declaration rotation | §6   | small — done                                                 |
+| Fire-now for schedules                                                                                                                                                                                                                                                                                                                                                                                                         | §3.3 | not built; needs a route over Temporal's trigger-immediately |
 
 Everything else is `platform/web`.
 
@@ -287,19 +293,19 @@ Everything else is `platform/web`.
 
 Built 2026-08-27, in one pass:
 
-- `platform/web`: routes `/bots/new`, `/bots/:id`, `/bots/:id/chat/:sid`,
-  `/bots/:id/activity`, `/bots/:id/setup`; `BotsPage` roster
+- `platform/web`: routes `/bots/:id`, `/bots/:id/chat/:sid`, and
+  `/bots/:id/activity`, with query-backed create/settings modals; `BotsPage` roster
   (`rosterLine`), `components/bot/detail.tsx` shell, `chat.tsx` (conversations
-  + embedded `SessionDetail` with `embedded`/`sessionHref` props, the
-  introduction message), `activity.tsx` (strip, filters, timeline, test
-  event, replay), `setup.tsx` (seven sections, per-section saves, unified
-  session-profile switcher, inbox as a guardrail), `triggers.tsx` (cards with
-  `trigger-summary.ts` sentences, `DeliveryFields` behind an Advanced
-  disclosure, `ScheduleFields`, `TriggerKindPicker`, `TriggerKindFields`,
-  `triggerCreateBody` for the wizard, "Send sample"), `BotCreatePage.tsx`
-  (five steps, summary rail, `templates.ts`), `face.tsx` (deterministic
-  colour), `status.tsx` (person-facing status words). The create-bot and
-  settings dialogs are gone; Settings › Setups is labelled Templates.
+  and embedded `SessionDetail` with `embedded`/`sessionHref` props, the
+    introduction message), `activity.tsx` (strip, filters, timeline, test
+    event, replay), `setup.tsx` (seven sections, per-section saves, unified
+    session-profile switcher, inbox as a guardrail), `triggers.tsx` (cards with
+    `trigger-summary.ts` sentences, `DeliveryFields` behind an Advanced
+    disclosure, `ScheduleFields`, `TriggerKindPicker`, `TriggerKindFields`,
+    `triggerCreateBody` for the wizard, "Send sample"), `BotCreatePage.tsx`
+    (five steps, fixed stepper and action footer, `templates.ts`), `face.tsx` (deterministic
+    colour), `status.tsx` (person-facing status words). The create-bot and
+    settings standalone routes are gone; Settings › Setups is labelled Templates.
 - Not built: fire-now for schedules; an "Ask the bot" affordance; a
   mobile pass beyond the responsive layout; hiding bot threads on the
   Sessions page.

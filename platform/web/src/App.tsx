@@ -8,7 +8,6 @@ import { AdminUniversesPage } from "@/pages/AdminUniversesPage";
 import { AdminUsersPage } from "@/pages/AdminUsersPage";
 import { AdminChannelsPage } from "@/pages/AdminChannelsPage";
 import { AdminEnvironmentProvidersPage } from "@/pages/AdminEnvironmentProvidersPage";
-import { BotCreatePage } from "@/pages/BotCreatePage";
 import { BotsPage } from "@/pages/BotsPage";
 import { ChannelsPage } from "@/pages/ChannelsPage";
 import { EnvironmentsPage } from "@/pages/EnvironmentsPage";
@@ -102,7 +101,6 @@ export function App() {
           path="u/:slug/channels"
           element={<Navigate to="../settings/channels" replace relative="path" />}
         />
-        <Route path="u/:slug/bots/new" element={<BotCreatePage admin={admin} />} />
         <Route path="u/:slug/bots/:botId" element={<BotsPage admin={admin} view="chat" />} />
         <Route
           path="u/:slug/bots/:botId/chat/:sessionId"
@@ -112,7 +110,6 @@ export function App() {
           path="u/:slug/bots/:botId/activity"
           element={<BotsPage admin={admin} view="activity" />}
         />
-        <Route path="u/:slug/bots/:botId/setup" element={<BotsPage admin={admin} view="setup" />} />
         <Route path="u/:slug/profiles" element={<ProfilesPage admin={admin} />} />
         <Route
           path="u/:slug/environments"

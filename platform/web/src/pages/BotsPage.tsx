@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { Plus } from "lucide-react";
-import { NavLink, useNavigate, useParams } from "react-router-dom";
+import { NavLink, useParams, useSearchParams } from "react-router-dom";
 import {
   api,
   botLabel,
@@ -10,6 +10,7 @@ import {
   type BotView,
 } from "@/api";
 import { BotDetail, type BotTab } from "@/components/bot/detail";
+import { BotCreateDialog } from "@/pages/BotCreatePage";
 import { BotAvatar } from "@/components/bot/face";
 import { StatusDot, relativeTime, type BotTone } from "@/components/bot/status";
 import { BotFace } from "@/components/icons/bot";
@@ -20,10 +21,11 @@ import { cn } from "@/lib/utils";
 
 const ROSTER_REFRESH_MS = 5_000;
 
-/// Bots: a roster on the left, one bot's Chat / Activity / Setup on the right.
+/// Bots: a roster on the left and one bot's conversations or activity on the right.
 export function BotsPage({ admin, view = "chat" }: { admin: boolean; view?: BotTab }) {
   const { universe, slug, isLoading } = useActiveUniverse();
   const { botId, sessionId } = useParams<{ botId?: string; sessionId?: string }>();
+  const [searchParams, setSearchParams] = useSearchParams();
 
   if (isLoading) return <LoadingNote />;
   if (!universe) {
@@ -35,6 +37,13 @@ export function BotsPage({ admin, view = "chat" }: { admin: boolean; view?: BotT
   }
 
   const manage = canManage(universe, admin);
+  const createOpen = searchParams.get("new") === "bot";
+  const setCreateOpen = (open: boolean) => {
+    const next = new URLSearchParams(searchParams);
+    if (open) next.set("new", "bot");
+    else next.delete("new");
+    setSearchParams(next, { replace: !open });
+  };
   return (
     <div className="flex min-h-0 min-w-0 flex-1">
       <aside
@@ -43,7 +52,13 @@ export function BotsPage({ admin, view = "chat" }: { admin: boolean; view?: BotT
           botId ? "hidden" : "flex",
         )}
       >
-        <BotsPane universeId={universe.id} slug={slug!} activeId={botId} manage={manage} />
+        <BotsPane
+          universeId={universe.id}
+          slug={slug!}
+          activeId={botId}
+          manage={manage}
+          onCreate={() => setCreateOpen(true)}
+        />
       </aside>
       <section className={cn("min-w-0 flex-1 flex-col", botId ? "flex" : "hidden md:flex")}>
         {botId ? (
@@ -61,13 +76,21 @@ export function BotsPage({ admin, view = "chat" }: { admin: boolean; view?: BotT
             <BotFace size={40} className="text-muted-foreground/60" />
             <span>Pick a bot{manage ? ", or create one" : ""}.</span>
             {manage && (
-              <Button size="sm" variant="outline" render={<NavLink to={`/u/${slug}/bots/new`} />}>
+              <Button size="sm" variant="outline" onClick={() => setCreateOpen(true)}>
                 <Plus data-icon="inline-start" /> New bot
               </Button>
             )}
           </div>
         )}
       </section>
+      {manage && (
+        <BotCreateDialog
+          universeId={universe.id}
+          slug={slug!}
+          open={createOpen}
+          onOpenChange={setCreateOpen}
+        />
+      )}
     </div>
   );
 }
@@ -115,13 +138,14 @@ function BotsPane({
   slug,
   activeId,
   manage,
+  onCreate,
 }: {
   universeId: string;
   slug: string;
   activeId: string | undefined;
   manage: boolean;
+  onCreate: () => void;
 }) {
-  const navigate = useNavigate();
   const bots = useQuery({
     queryKey: ["bots", universeId],
     queryFn: () => api<BotListResponse>("GET", `/api/v1/universes/${universeId}/bots`),
@@ -141,7 +165,7 @@ function BotsPane({
             variant="ghost"
             size="icon-sm"
             className="ml-auto"
-            onClick={() => navigate(`/u/${slug}/bots/new`)}
+            onClick={onCreate}
             aria-label="New bot"
           >
             <Plus />
@@ -155,7 +179,7 @@ function BotsPane({
           <div className="grid gap-3 p-4 text-sm text-muted-foreground">
             <p>No bots yet.</p>
             {manage && (
-              <Button size="sm" onClick={() => navigate(`/u/${slug}/bots/new`)}>
+              <Button size="sm" onClick={onCreate}>
                 <Plus data-icon="inline-start" /> Create your first bot
               </Button>
             )}
