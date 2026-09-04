@@ -7,7 +7,7 @@ import {
   useQueryClient,
 } from "@tanstack/react-query";
 import { NavLink, useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { Archive, ArrowLeft, Check, Copy, ListChecks, ListFilter, LoaderCircle, Plus, ShieldCheck, SlidersHorizontal, Trash2, X } from "lucide-react";
+import { Archive, ArrowLeft, Check, ChevronDown, Copy, ListChecks, ListFilter, LoaderCircle, Plus, ShieldCheck, SlidersHorizontal, Trash2, X } from "lucide-react";
 import {
   api,
   type BlobContent,
@@ -31,6 +31,14 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
 import { BotFaceIcon } from "@/components/icons/bot";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuGroup,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import {
   AlertDialog,
@@ -45,6 +53,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { ProfileEnvironmentEditor } from "@/components/session/profile-environment-editor";
 import { MetadataMapEditor } from "@/components/session/metadata-editor";
+import { SessionMenuIdentity, SessionMenuMetadata } from "@/components/session/session-menu-details";
 import { ProfileRetentionEditor } from "@/components/session/profile-retention-editor";
 import { SessionConfigEditor } from "@/components/session/session-config-editor";
 import { SessionSettingsDialog } from "@/components/session/session-settings-sheet";
@@ -96,7 +105,7 @@ import {
   type TranscriptEntry,
 } from "@/lib/sessions/transcript";
 import { useSessionConfigEditorOptions } from "@/lib/sessions/editor-options";
-import { managedSessionOwnerLabel } from "@/lib/sessions/management";
+import { managedSessionBotId, managedSessionOwnerLabel } from "@/lib/sessions/management";
 import {
   hasSessionFeature,
   selectableEnvironments,
@@ -111,6 +120,7 @@ import {
   parseMetadataPair,
   readSessionMetadataFilter,
   readSessionListPreferences,
+  sessionListActiveFilterCount,
   searchParamsWithMetadataFilter,
   writeSessionMetadataFilter,
   writeSessionListPreferences,
@@ -145,7 +155,7 @@ export function SessionsPage({ admin }: { admin: boolean }) {
           sessionId ? "hidden" : "flex",
         )}
       >
-        <SessionList universeId={universe.id} slug={slug!} activeId={sessionId} />
+        <SessionList key={universe.id} universeId={universe.id} slug={slug!} activeId={sessionId} />
       </aside>
       <section className={cn("min-w-0 flex-1 flex-col", sessionId ? "flex" : "hidden md:flex")}>
         <ProviderReadinessBanner universeId={universe.id} slug={slug!} />
@@ -181,6 +191,7 @@ function SessionList({
   const [searchParams, setSearchParams] = useSearchParams();
   const metadataFilter = metadataFilterFromSearchParams(searchParams);
   const [filterDraft, setFilterDraft] = useState("");
+  const [metadataKeyDraft, setMetadataKeyDraft] = useState("");
   const filterEntries = Object.entries(metadataFilter);
   const listQuery = new URLSearchParams({ limit: "50" });
   for (const [key, value] of filterEntries) listQuery.append("metadata", `${key}=${value}`);
@@ -201,8 +212,8 @@ function SessionList({
     refetchIntervalInBackground: false,
   });
   const [createOpen, setCreateOpen] = useState(false);
-  const [preferences, setPreferences] = useState(readSessionListPreferences);
-  const { showClosed, showSubagents } = preferences;
+  const [preferences, setPreferences] = useState(() => readSessionListPreferences(universeId));
+  const { showClosed, showSubagents, showSessionIds, metadataKeys } = preferences;
   const [selecting, setSelecting] = useState(false);
   const [selectingAll, setSelectingAll] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(() => new Set());
@@ -218,15 +229,13 @@ function SessionList({
   const selectedOpen = selectedSessions.filter((session) => session.lifecycleStatus !== "closed");
   const selectedClosed = selectedSessions.filter((session) => session.lifecycleStatus === "closed");
   const allVisibleSelected = visibleIds.length > 0 && visibleIds.every((id) => selected.has(id));
-  const activeFilterCount = filterEntries.length
-    + (showClosed ? 0 : 1)
-    + (showSubagents ? 0 : 1);
+  const activeFilterCount = sessionListActiveFilterCount(metadataFilter, preferences);
   const listSearch = searchParams.toString();
   const restoredFilterUniverse = useRef<string | null>(null);
 
   useEffect(() => {
-    writeSessionListPreferences(preferences);
-  }, [preferences]);
+    writeSessionListPreferences(universeId, preferences);
+  }, [preferences, universeId]);
 
   useEffect(() => {
     if (restoredFilterUniverse.current !== universeId) {
@@ -265,6 +274,20 @@ function SessionList({
     addFilter(pair.key, pair.value);
     setFilterDraft("");
   };
+  const submitMetadataKey = (event: FormEvent) => {
+    event.preventDefault();
+    const key = metadataKeyDraft.trim();
+    if (!key || metadataKeys.includes(key)) return;
+    setPreferences((current) => ({
+      ...current,
+      metadataKeys: [...current.metadataKeys, key],
+    }));
+    setMetadataKeyDraft("");
+  };
+  const removeMetadataKey = (key: string) => setPreferences((current) => ({
+    ...current,
+    metadataKeys: current.metadataKeys.filter((candidate) => candidate !== key),
+  }));
   const toggleSelected = (id: string) =>
     setSelected((current) => {
       const next = new Set(current);
@@ -355,32 +378,27 @@ function SessionList({
             )}
           </PopoverTrigger>
           <PopoverContent align="end" className="grid gap-4 p-4">
-            <div className="grid gap-1">
-              <h2 className="text-sm font-semibold">Filter sessions</h2>
-              <p className="text-xs text-muted-foreground">
-                Visibility preferences are remembered in this browser.
-              </p>
-            </div>
+            <h2 className="text-sm font-semibold">Filter sessions</h2>
             <div className="grid gap-2">
               <label className="flex cursor-pointer items-center gap-2 text-sm">
                 <Checkbox
-                  checked={showClosed}
+                  checked={!showClosed}
                   onCheckedChange={(checked) => setPreferences((current) => ({
                     ...current,
-                    showClosed: checked === true,
+                    showClosed: checked !== true,
                   }))}
                 />
-                Show closed sessions
+                Hide closed sessions
               </label>
               <label className="flex cursor-pointer items-center gap-2 text-sm">
                 <Checkbox
-                  checked={showSubagents}
+                  checked={!showSubagents}
                   onCheckedChange={(checked) => setPreferences((current) => ({
                     ...current,
-                    showSubagents: checked === true,
+                    showSubagents: checked !== true,
                   }))}
                 />
-                Show sub-agent sessions
+                Hide sub-agent sessions
               </label>
             </div>
             <div className="grid gap-2 border-t pt-3">
@@ -435,6 +453,58 @@ function SessionList({
                 </Button>
               </form>
               <p className="text-xs text-muted-foreground">Matches every exact key/value pair.</p>
+            </div>
+            <div className="grid gap-2 border-t pt-3">
+              <span className="text-xs font-medium">Display</span>
+              <label className="flex cursor-pointer items-center gap-2 text-sm">
+                <Checkbox
+                  checked={showSessionIds}
+                  onCheckedChange={(checked) => setPreferences((current) => ({
+                    ...current,
+                    showSessionIds: checked === true,
+                  }))}
+                />
+                Show session IDs
+              </label>
+              <span className="mt-1 text-xs font-medium">Metadata keys</span>
+              {metadataKeys.length > 0 && (
+                <div className="flex flex-wrap gap-1.5">
+                  {metadataKeys.map((key) => (
+                    <Badge
+                      key={key}
+                      variant="secondary"
+                      className="max-w-full gap-1 font-mono text-[11px]"
+                    >
+                      <span className="truncate">{key}</span>
+                      <button
+                        type="button"
+                        onClick={() => removeMetadataKey(key)}
+                        aria-label={`Stop showing metadata key ${key}`}
+                        className="shrink-0 rounded hover:text-foreground"
+                      >
+                        <X className="size-3" />
+                      </button>
+                    </Badge>
+                  ))}
+                </div>
+              )}
+              <form onSubmit={submitMetadataKey} className="flex gap-2">
+                <Input
+                  value={metadataKeyDraft}
+                  onChange={(event) => setMetadataKeyDraft(event.target.value)}
+                  placeholder="key"
+                  aria-label="Metadata key to show"
+                  className="h-8 min-w-0 flex-1 font-mono text-xs"
+                />
+                <Button
+                  type="submit"
+                  variant="outline"
+                  size="sm"
+                  disabled={!metadataKeyDraft.trim() || metadataKeys.includes(metadataKeyDraft.trim())}
+                >
+                  Add
+                </Button>
+              </form>
             </div>
           </PopoverContent>
         </Popover>
@@ -543,6 +613,8 @@ function SessionList({
               selecting={selecting}
               selected={selected}
               onToggle={toggleSelected}
+              showSessionIds={showSessionIds}
+              metadataKeys={metadataKeys}
               search={listSearch}
             />
           ))}
@@ -665,6 +737,8 @@ interface SessionRowControls {
   selecting: boolean;
   selected: Set<string>;
   onToggle: (id: string) => void;
+  showSessionIds: boolean;
+  metadataKeys: string[];
   search: string;
 }
 
@@ -711,6 +785,8 @@ function SessionListItem({
   selecting,
   selected,
   onToggle,
+  showSessionIds,
+  metadataKeys,
   search,
 }: {
   session: SessionSummary;
@@ -721,13 +797,19 @@ function SessionListItem({
   const botManaged = session.managed && session.id.startsWith("bot:v1:");
   const origin = session.origin ?? null;
   const isSelected = selected.has(session.id);
+  const displayName = session.displayName?.trim();
+  const showSecondaryId = showSessionIds && Boolean(displayName);
+  const visibleMetadata = metadataKeys.flatMap((key) => {
+    const value = session.metadata?.[key];
+    return value === undefined ? [] : [{ key, value }];
+  });
   const indent = depth > 0 ? { paddingLeft: `${1 + depth * 1.25}rem` } : undefined;
   const summary = (
     <>
       <span className="flex min-w-0 items-center gap-2">
         {depth > 0 && <span className="shrink-0 text-muted-foreground">↳</span>}
-        <span className="truncate font-medium">
-          {session.displayName ?? session.id.slice(0, 18)}
+        <span className="min-w-0 flex-1 truncate font-medium" title={displayName ? undefined : session.id}>
+          {displayName || session.id}
         </span>
         {origin && (
           <Badge
@@ -737,24 +819,35 @@ function SessionListItem({
             sub-agent
           </Badge>
         )}
+        {session.managed && (
+          <Badge className="shrink-0" variant="secondary" title={botManaged ? "Bot-managed session" : undefined}>
+            {botManaged && <BotFaceIcon />}
+            {botManaged ? "Bot" : "Managed"}
+          </Badge>
+        )}
         {session.lifecycleStatus === "closed" && (
           <span className="shrink-0 rounded-full bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
             closed
           </span>
         )}
-        {session.managed && (
-          <Badge variant="secondary" title={botManaged ? "Bot-managed session" : undefined}>
-            {botManaged && <BotFaceIcon />}
-            {botManaged ? "Bot Managed" : "Managed"}
-          </Badge>
-        )}
-      </span>
-      <span className="flex gap-2 font-mono text-xs text-muted-foreground">
-        <span className="truncate">{session.id.slice(0, 14)}…</span>
-        <span className="ml-auto shrink-0 font-sans">
+        <span className="ml-auto shrink-0 font-sans text-xs text-muted-foreground">
           {relativeTime(session.updatedAtMs)}
         </span>
       </span>
+      {showSecondaryId && (
+        <span className="truncate font-mono text-xs text-muted-foreground" title={session.id}>
+          {session.id}
+        </span>
+      )}
+      {visibleMetadata.map(({ key, value }) => (
+        <span
+          key={key}
+          className="truncate font-mono text-[11px] text-muted-foreground"
+          title={`${key}=${value}`}
+        >
+          {key}={value}
+        </span>
+      ))}
     </>
   );
   const rowClass = cn(
@@ -1475,6 +1568,10 @@ export function SessionDetail({
   const management = session.data?.management;
   const managed = session.data?.managed === true;
   const managerLabel = managedSessionOwnerLabel(management);
+  const owningBotId = managedSessionBotId(management, session.data?.metadata);
+  const owningBotHref = owningBotId
+    ? `/u/${slug}/bots/${encodeURIComponent(owningBotId)}/chat/${encodeURIComponent(sessionId)}`
+    : null;
   // Operator override: the engine happily admits direct runs on a managed
   // session (they queue like any client run), so the gate here is policy,
   // not capability. Off by default because direct input bypasses the
@@ -1700,194 +1797,211 @@ export function SessionDetail({
   return (
     <>
       {!embedded && (
-      <header className="flex h-12 min-w-0 shrink-0 items-center gap-3 overflow-hidden border-b px-4">
-        {!embedded && (
+        <>
+        <header className="flex h-12 min-w-0 shrink-0 items-center gap-3 overflow-hidden border-b px-4">
           <NavLink to={backTo} className="shrink-0 md:hidden">
             <ArrowLeft className="size-4" />
           </NavLink>
-        )}
-        <h1 className="min-w-0 flex-1 truncate text-sm font-semibold">
-          {session.data?.displayName ?? sessionId.slice(0, 24)}
-        </h1>
-        {closed && (
-          <span className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">
-            Closed
-          </span>
-        )}
-        {managed && (
-          <Tooltip>
-            <TooltipTrigger
+          <h1 className="min-w-0 flex-1 truncate text-sm font-semibold">
+            {session.data?.displayName ?? sessionId.slice(0, 24)}
+          </h1>
+          {activeRun && !activeToolGroup && (
+            <span className="hidden max-w-40 shrink truncate text-xs text-muted-foreground xl:inline">
+              {activeRun.label}…
+            </span>
+          )}
+          {closed && (
+            <span className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">
+              Closed
+            </span>
+          )}
+          {managed && (
+            <Tooltip>
+              <TooltipTrigger render={<span className="shrink-0" />}>
+                <Badge variant="secondary" className="gap-1">
+                  <ShieldCheck />
+                  <span className="hidden xl:inline">Managed by {managerLabel}</span>
+                </Badge>
+              </TooltipTrigger>
+              <TooltipContent>
+                {`Lifecycle and chat input are controlled by ${managerLabel}; configuration remains editable.`}
+              </TooltipContent>
+            </Tooltip>
+          )}
+          <DropdownMenu>
+            <DropdownMenuTrigger
               render={
-                <button
-                  type="button"
-                  className="shrink-0"
-                  onClick={() => setSettingsOpen(true)}
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  className="shrink-0 text-muted-foreground"
+                  aria-label="Session menu"
+                  title="Session details and actions"
                 />
               }
             >
-              <Badge variant="secondary" className="gap-1">
-                <ShieldCheck />
-                <span className="hidden xl:inline">Managed by {managerLabel}</span>
-              </Badge>
-            </TooltipTrigger>
-            <TooltipContent>
-              {`Lifecycle and chat input are controlled by ${managerLabel}; configuration remains editable.`}
-            </TooltipContent>
-          </Tooltip>
-        )}
-        <div className="flex shrink-0 items-center gap-1">
-          {!closed && !managed && (
-            <AlertDialog
-              open={closeOpen}
-              onOpenChange={(open) => {
-                setCloseOpen(open);
-                if (open) setCloseError(null);
-              }}
+              <ChevronDown />
+            </DropdownMenuTrigger>
+            <DropdownMenuContent
+              align="end"
+              className="max-h-[min(28rem,calc(100vh-1rem))] w-80 max-w-[calc(100vw-1rem)]"
             >
-              <AlertDialogTrigger
-                render={
-                  <Button
-                    variant="ghost"
-                    size="icon-sm"
-                    className="text-destructive"
-                    disabled={closeSession.isPending}
-                    aria-label={runActive ? "Force close session" : "Close session"}
-                    title={runActive
-                      ? "Cancel active work and permanently close this session"
-                      : "Permanently close this session"}
-                  />
-                }
-              >
-                {closeSession.isPending
-                  ? <LoaderCircle className="animate-spin" />
-                  : <Archive />}
-              </AlertDialogTrigger>
-              <AlertDialogContent>
-                <AlertDialogHeader>
-                  <AlertDialogTitle>
-                    {runActive ? "Force close this session?" : "Close this session?"}
-                  </AlertDialogTitle>
-                  <AlertDialogDescription>
-                    {runActive
-                      ? "This cancels active and queued work, then permanently closes the session. Recovery of a stuck workflow can take up to about 90 seconds while the engine terminates it and reconciles the session. The history remains available, but the session cannot be reopened."
-                      : "This permanently closes the session. It remains in the session list so its history can be inspected, but it cannot be reopened."}
-                  </AlertDialogDescription>
-                </AlertDialogHeader>
-                {closeSession.isPending && (
-                  <p className="text-sm text-muted-foreground">
-                    Force close is running in the background. You can hide this dialog and
-                    continue using the app.
-                  </p>
+              <SessionMenuIdentity sessionId={sessionId} />
+              <DropdownMenuSeparator />
+              <DropdownMenuGroup>
+                <DropdownMenuItem
+                  onClick={() => {
+                    void navigator.clipboard
+                      .writeText(sessionId)
+                      .then(() => setSessionIdCopied(true))
+                      .catch(() => undefined);
+                  }}
+                >
+                  {sessionIdCopied ? <Check /> : <Copy />}
+                  {sessionIdCopied ? "Copied" : "Copy session id"}
+                </DropdownMenuItem>
+                {owningBotHref && (
+                  <DropdownMenuItem onClick={() => navigate(owningBotHref)}>
+                    <BotFaceIcon /> Open in bot
+                  </DropdownMenuItem>
                 )}
-                {closeError && <p className="text-sm text-destructive">{closeError}</p>}
-                <AlertDialogFooter>
-                  <AlertDialogCancel>
-                    {closeSession.isPending ? "Hide" : "Cancel"}
-                  </AlertDialogCancel>
-                  <AlertDialogAction
-                    className="bg-destructive text-white hover:bg-destructive/90"
-                    disabled={closeSession.isPending}
-                    onClick={() => closeSession.mutate()}
-                  >
-                    {closeSession.isPending
-                      ? "Force-closing…"
-                      : runActive
-                        ? "Force close session"
-                        : "Close session"}
-                  </AlertDialogAction>
-                </AlertDialogFooter>
-              </AlertDialogContent>
-            </AlertDialog>
-          )}
-          {closed && !managed && (
-            <AlertDialog
-              open={deleteOpen}
-              onOpenChange={(open) => {
-                setDeleteOpen(open);
-                if (open) {
-                  setDeleteError(null);
-                  setDeleteCascade(false);
-                }
-              }}
-            >
-              <AlertDialogTrigger
-                render={
-                  <Button
-                    variant="ghost"
-                    size="icon-sm"
-                    className="text-destructive"
-                    aria-label="Delete session"
-                  />
-                }
-              >
-                <Trash2 />
-              </AlertDialogTrigger>
-              <AlertDialogContent>
-                <AlertDialogHeader>
-                  <AlertDialogTitle>Delete this session permanently?</AlertDialogTitle>
-                  <AlertDialogDescription>
-                    This removes the session and its retained history. It cannot be undone.
-                    A session with history forks or delegated children cannot be deleted
-                    unless cascade is enabled.
-                  </AlertDialogDescription>
-                </AlertDialogHeader>
-                <label className="flex items-start gap-2 rounded-lg border p-3 text-sm">
-                  <Checkbox
-                    checked={deleteCascade}
-                    onCheckedChange={(checked) => setDeleteCascade(checked === true)}
-                    disabled={deleteSession.isPending}
-                  />
-                  <span>
-                    <span className="block font-medium">Also delete forks and delegated children</span>
-                    <span className="block text-xs text-muted-foreground">
-                      Every descendant must already be closed. Config-only clones are not included.
-                    </span>
-                  </span>
-                </label>
-                {deleteError && <p className="text-sm text-destructive">{deleteError}</p>}
-                <AlertDialogFooter>
-                  <AlertDialogCancel disabled={deleteSession.isPending}>Cancel</AlertDialogCancel>
-                  <AlertDialogAction
-                    className="bg-destructive text-white hover:bg-destructive/90"
-                    disabled={deleteSession.isPending}
-                    onClick={() => deleteSession.mutate()}
-                  >
-                    {deleteSession.isPending ? "Deleting…" : "Delete permanently"}
-                  </AlertDialogAction>
-                </AlertDialogFooter>
-              </AlertDialogContent>
-            </AlertDialog>
-          )}
-          <Button
-            variant="ghost"
-            size="icon-sm"
-            aria-label="Session settings"
-            onClick={() => setSettingsOpen(true)}
-          >
-            <SlidersHorizontal />
-          </Button>
-        </div>
-        {activeRun && !activeToolGroup && (
-          <span className="hidden max-w-40 shrink truncate text-xs text-muted-foreground xl:inline">
-            {activeRun.label}…
-          </span>
-        )}
-        <Button
-          variant="ghost"
-          size="icon-sm"
-          className="shrink-0 text-muted-foreground"
-          aria-label={sessionIdCopied ? "Session ID copied" : "Copy session ID"}
-          title={sessionIdCopied ? "Copied" : `Copy ${sessionId}`}
-          onClick={() => {
-            void navigator.clipboard
-              .writeText(sessionId)
-              .then(() => setSessionIdCopied(true))
-              .catch(() => undefined);
+                <DropdownMenuItem onClick={() => setSettingsOpen(true)}>
+                  <SlidersHorizontal /> Session settings
+                </DropdownMenuItem>
+              </DropdownMenuGroup>
+              {!closed && !managed && (
+                <>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuGroup>
+                    <DropdownMenuItem
+                      variant="destructive"
+                      disabled={closeSession.isPending}
+                      onClick={() => {
+                        setCloseError(null);
+                        setCloseOpen(true);
+                      }}
+                    >
+                      {closeSession.isPending
+                        ? <LoaderCircle className="animate-spin" />
+                        : <Archive />}
+                      {runActive ? "Force close session…" : "Close session…"}
+                    </DropdownMenuItem>
+                  </DropdownMenuGroup>
+                </>
+              )}
+              {closed && !managed && (
+                <>
+                  <DropdownMenuSeparator />
+                  <DropdownMenuGroup>
+                    <DropdownMenuItem
+                      variant="destructive"
+                      disabled={deleteSession.isPending}
+                      onClick={() => {
+                        setDeleteError(null);
+                        setDeleteCascade(false);
+                        setDeleteOpen(true);
+                      }}
+                    >
+                      <Trash2 /> Delete session…
+                    </DropdownMenuItem>
+                  </DropdownMenuGroup>
+                </>
+              )}
+              <SessionMenuMetadata metadata={session.data?.metadata} />
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </header>
+
+        <AlertDialog
+          open={closeOpen}
+          onOpenChange={(open) => {
+            setCloseOpen(open);
+            if (open) setCloseError(null);
           }}
         >
-          {sessionIdCopied ? <Check /> : <Copy />}
-        </Button>
-      </header>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>
+                {runActive ? "Force close this session?" : "Close this session?"}
+              </AlertDialogTitle>
+              <AlertDialogDescription>
+                {runActive
+                  ? "This cancels active and queued work, then permanently closes the session. Recovery of a stuck workflow can take up to about 90 seconds while the engine terminates it and reconciles the session. The history remains available, but the session cannot be reopened."
+                  : "This permanently closes the session. It remains in the session list so its history can be inspected, but it cannot be reopened."}
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            {closeSession.isPending && (
+              <p className="text-sm text-muted-foreground">
+                Force close is running in the background. You can hide this dialog and
+                continue using the app.
+              </p>
+            )}
+            {closeError && <p className="text-sm text-destructive">{closeError}</p>}
+            <AlertDialogFooter>
+              <AlertDialogCancel>
+                {closeSession.isPending ? "Hide" : "Cancel"}
+              </AlertDialogCancel>
+              <AlertDialogAction
+                className="bg-destructive text-white hover:bg-destructive/90"
+                disabled={closeSession.isPending}
+                onClick={() => closeSession.mutate()}
+              >
+                {closeSession.isPending
+                  ? "Force-closing…"
+                  : runActive
+                    ? "Force close session"
+                    : "Close session"}
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+
+        <AlertDialog
+          open={deleteOpen}
+          onOpenChange={(open) => {
+            setDeleteOpen(open);
+            if (open) {
+              setDeleteError(null);
+              setDeleteCascade(false);
+            }
+          }}
+        >
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Delete this session permanently?</AlertDialogTitle>
+              <AlertDialogDescription>
+                This removes the session and its retained history. It cannot be undone.
+                A session with history forks or delegated children cannot be deleted
+                unless cascade is enabled.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <label className="flex min-w-0 items-start gap-2 rounded-lg border p-3 text-sm">
+              <Checkbox
+                checked={deleteCascade}
+                onCheckedChange={(checked) => setDeleteCascade(checked === true)}
+                disabled={deleteSession.isPending}
+              />
+              <span className="min-w-0">
+                <span className="block font-medium">Also delete forks and delegated children</span>
+                <span className="block text-xs text-muted-foreground">
+                  Every descendant must already be closed. Config-only clones are not included.
+                </span>
+              </span>
+            </label>
+            {deleteError && <p className="text-sm text-destructive">{deleteError}</p>}
+            <AlertDialogFooter>
+              <AlertDialogCancel disabled={deleteSession.isPending}>Cancel</AlertDialogCancel>
+              <AlertDialogAction
+                className="bg-destructive text-white hover:bg-destructive/90"
+                disabled={deleteSession.isPending}
+                onClick={() => deleteSession.mutate()}
+              >
+                {deleteSession.isPending ? "Deleting…" : "Delete permanently"}
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+        </>
       )}
       <SessionLineage
         universeId={universeId}

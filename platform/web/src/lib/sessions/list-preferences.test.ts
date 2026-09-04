@@ -5,27 +5,72 @@ import {
   parseMetadataPair,
   readSessionMetadataFilter,
   readSessionListPreferences,
+  sessionListActiveFilterCount,
   searchParamsWithMetadataFilter,
   writeSessionMetadataFilter,
   writeSessionListPreferences,
 } from "./list-preferences";
 
 describe("session list preferences", () => {
+  it("counts enabled filters but not display preferences", () => {
+    expect(sessionListActiveFilterCount(
+      {},
+      DEFAULT_SESSION_LIST_PREFERENCES,
+    )).toBe(0);
+    expect(sessionListActiveFilterCount(
+      { campaign: "nightly", agent: "lightspeed" },
+      { showClosed: false, showSubagents: true },
+    )).toBe(3);
+  });
+
   it("reads valid values and falls back field by field", () => {
-    expect(readSessionListPreferences({
-      getItem: () => JSON.stringify({ showClosed: false, showSubagents: "yes" }),
-    })).toEqual({ showClosed: false, showSubagents: true });
-    expect(readSessionListPreferences({ getItem: () => "not-json" }))
+    expect(readSessionListPreferences("universe-a", {
+      getItem: () => JSON.stringify({
+        showClosed: false,
+        showSubagents: "yes",
+        showSessionIds: true,
+        metadataKeys: [" campaign ", "owner", "campaign", 12, ""],
+      }),
+    })).toEqual({
+      showClosed: false,
+      showSubagents: true,
+      showSessionIds: true,
+      metadataKeys: ["campaign", "owner"],
+    });
+    expect(readSessionListPreferences("universe-a", { getItem: () => "not-json" }))
       .toEqual(DEFAULT_SESSION_LIST_PREFERENCES);
   });
 
-  it("writes preferences as one browser-local document", () => {
-    let saved = "";
+  it("stores visibility preferences per universe", () => {
+    const values = new Map<string, string>();
+    const storage = {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => { values.set(key, value); },
+    };
     writeSessionListPreferences(
-      { showClosed: false, showSubagents: true },
-      { setItem: (_key, value) => { saved = value; } },
+      "universe-a",
+      { showClosed: false, showSubagents: true, showSessionIds: false, metadataKeys: ["campaign"] },
+      storage,
     );
-    expect(JSON.parse(saved)).toEqual({ showClosed: false, showSubagents: true });
+    writeSessionListPreferences(
+      "universe-b",
+      { showClosed: true, showSubagents: false, showSessionIds: true, metadataKeys: ["owner"] },
+      storage,
+    );
+    expect(readSessionListPreferences("universe-a", storage))
+      .toEqual({
+        showClosed: false,
+        showSubagents: true,
+        showSessionIds: false,
+        metadataKeys: ["campaign"],
+      });
+    expect(readSessionListPreferences("universe-b", storage))
+      .toEqual({
+        showClosed: true,
+        showSubagents: false,
+        showSessionIds: true,
+        metadataKeys: ["owner"],
+      });
   });
 
   it("stores metadata filters per universe", () => {

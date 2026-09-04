@@ -95,10 +95,18 @@ session the row is `Main · Activity · Setup`.
 
 The transcript takes the full width: `SessionDetail` embedded renders no
 header of its own (no "Managed by" badge, no second title). What that
-header carried sits in a `⋯` at the right end of the tab row —
-conversation settings, copy id, open on the Sessions page, reset. The
+header carried sits in a chevron menu on the active tab — session id,
+copy id, open on the Sessions page, reset, then overflow-safe metadata as
+the final read-only section. The
 composer sends a plain message to that session (§5); sub-agents of the
 open conversation also appear in the lineage strip above the transcript.
+
+The standalone Sessions detail uses the same identity-and-actions menu.
+Its bar keeps only the display name, live state, lifecycle state, and
+management badge; copy id, settings, close/delete, and metadata move into
+the menu. A bot-controlled session also links directly back to that exact
+conversation on the bot page, using its lifecycle-controller ownership
+rather than guessing from a session-id prefix.
 
 ### 3.2 Activity
 

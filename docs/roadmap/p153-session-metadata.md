@@ -168,8 +168,19 @@ sessions to its environments.
   loop over the matches.
 - Platform sessions page: the list-header filter popover builds the `metadata`
   query and shows the active pairs without adding metadata to every list row
-  or the detail header. The query is URL-backed so it survives list/detail
-  navigation and can be bookmarked; visibility preferences are browser-local.
+  or the detail header. Session detail menus expose the full map without
+  widening either header. The query is URL-backed so it survives list/detail
+  navigation and can be bookmarked; filters and visibility preferences are
+  browser-local per universe. Session ids are hidden from named list rows by
+  default and can be restored from a separate Display section below the
+  metadata filters with a remembered "Show session IDs" toggle. Display
+  options do not contribute to the active-filter badge. The same Display
+  section accepts metadata keys whose values should appear as compact,
+  truncated `key=value` rows below the optional session id; this preference
+  is also browser-local per universe. "Hide closed" and
+  "Hide sub-agent sessions" are off by default, and the badge counts only
+  enabled hide-filters and metadata pairs;
+  unnamed sessions use their id as the primary label regardless.
   A selection model over the filtered list provides close and delete actions
   that loop over the selection after a count confirmation. Selecting every
   match first fetches every filtered page so the scope is explicit. The map

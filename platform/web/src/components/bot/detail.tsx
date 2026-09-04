@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Activity,
   ArrowUpRight,
@@ -13,7 +13,7 @@ import {
   SlidersHorizontal,
 } from "lucide-react";
 import { NavLink, useNavigate } from "react-router-dom";
-import { api, botLabel, type BotControllerSnapshot, type BotStateView, type BotView } from "@/api";
+import { api, botLabel, type BotControllerSnapshot, type BotStateView, type BotView, type SessionView } from "@/api";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -25,6 +25,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
+import { SessionMenuIdentity, SessionMenuMetadata } from "@/components/session/session-menu-details";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -396,6 +397,14 @@ function ConversationMenu({
   const [resetOpen, setResetOpen] = useState(false);
   const [copied, setCopied] = useState(false);
   const managedHere = (controller.sessions ?? []).some((entry) => entry.sessionId === sessionId);
+  const session = useQuery({
+    queryKey: ["session", universeId, sessionId],
+    queryFn: () =>
+      api<SessionView>(
+        "GET",
+        `/api/v1/universes/${universeId}/sessions/${encodeURIComponent(sessionId)}`,
+      ),
+  });
   const reset = useMutation({
     mutationFn: () =>
       api(
@@ -423,12 +432,13 @@ function ConversationMenu({
         >
           {reset.isPending ? <LoaderCircle className="size-3.5 animate-spin" /> : <ChevronDown className="size-3.5" />}
         </DropdownMenuTrigger>
-        <DropdownMenuContent align="start" className="min-w-56">
-          {/* A label is a group label in base-ui: it must sit inside a group. */}
+        <DropdownMenuContent
+          align="start"
+          className="max-h-[min(28rem,calc(100vh-1rem))] w-80 max-w-[calc(100vw-1rem)]"
+        >
+          <SessionMenuIdentity sessionId={sessionId} />
+          <DropdownMenuSeparator />
           <DropdownMenuGroup>
-            <DropdownMenuLabel className="truncate font-mono text-xs font-normal text-muted-foreground">
-              {sessionId}
-            </DropdownMenuLabel>
             <DropdownMenuItem
               onClick={() => {
                 void navigator.clipboard
@@ -440,7 +450,7 @@ function ConversationMenu({
             >
               <Copy /> {copied ? "Copied" : "Copy session id"}
             </DropdownMenuItem>
-            <DropdownMenuItem onClick={() => navigate(`/u/${slug}/sessions/${sessionId}`)}>
+            <DropdownMenuItem onClick={() => navigate(`/u/${slug}/sessions/${encodeURIComponent(sessionId)}`)}>
               <ArrowUpRight /> Open on the Sessions page
             </DropdownMenuItem>
           </DropdownMenuGroup>
@@ -454,6 +464,7 @@ function ConversationMenu({
               </DropdownMenuGroup>
             </>
           )}
+          <SessionMenuMetadata metadata={session.data?.metadata} />
         </DropdownMenuContent>
       </DropdownMenu>
       <AlertDialog

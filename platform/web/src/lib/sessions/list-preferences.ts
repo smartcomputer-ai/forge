@@ -1,14 +1,28 @@
 export interface SessionListPreferences {
   showClosed: boolean;
   showSubagents: boolean;
+  showSessionIds: boolean;
+  metadataKeys: string[];
 }
 
 export const DEFAULT_SESSION_LIST_PREFERENCES: SessionListPreferences = {
   showClosed: true,
   showSubagents: true,
+  showSessionIds: false,
+  metadataKeys: [],
 };
 
-const STORAGE_KEY = "lightspeed:sessions:list-preferences";
+/** Display-only preferences intentionally do not contribute to this count. */
+export function sessionListActiveFilterCount(
+  metadataFilter: Record<string, string>,
+  preferences: Pick<SessionListPreferences, "showClosed" | "showSubagents">,
+): number {
+  return Object.keys(metadataFilter).length
+    + Number(!preferences.showClosed)
+    + Number(!preferences.showSubagents);
+}
+
+const LIST_PREFERENCES_KEY_PREFIX = "lightspeed:sessions:list-preferences:";
 const METADATA_FILTER_KEY_PREFIX = "lightspeed:sessions:metadata-filter:";
 
 interface StorageReader {
@@ -20,13 +34,16 @@ interface StorageWriter {
 }
 
 export function readSessionListPreferences(
+  universeId: string,
   storage: StorageReader | undefined = typeof window === "undefined"
     ? undefined
     : window.localStorage,
 ): SessionListPreferences {
   if (!storage) return DEFAULT_SESSION_LIST_PREFERENCES;
   try {
-    const parsed: unknown = JSON.parse(storage.getItem(STORAGE_KEY) ?? "null");
+    const parsed: unknown = JSON.parse(
+      storage.getItem(`${LIST_PREFERENCES_KEY_PREFIX}${universeId}`) ?? "null",
+    );
     if (!parsed || typeof parsed !== "object") return DEFAULT_SESSION_LIST_PREFERENCES;
     const record = parsed as Record<string, unknown>;
     return {
@@ -36,6 +53,14 @@ export function readSessionListPreferences(
       showSubagents: typeof record.showSubagents === "boolean"
         ? record.showSubagents
         : DEFAULT_SESSION_LIST_PREFERENCES.showSubagents,
+      showSessionIds: typeof record.showSessionIds === "boolean"
+        ? record.showSessionIds
+        : DEFAULT_SESSION_LIST_PREFERENCES.showSessionIds,
+      metadataKeys: Array.isArray(record.metadataKeys)
+        ? [...new Set(record.metadataKeys.filter(
+          (key): key is string => typeof key === "string" && key.trim().length > 0,
+        ).map((key) => key.trim()))]
+        : DEFAULT_SESSION_LIST_PREFERENCES.metadataKeys,
     };
   } catch {
     return DEFAULT_SESSION_LIST_PREFERENCES;
@@ -43,13 +68,17 @@ export function readSessionListPreferences(
 }
 
 export function writeSessionListPreferences(
+  universeId: string,
   preferences: SessionListPreferences,
   storage: StorageWriter | undefined = typeof window === "undefined"
     ? undefined
     : window.localStorage,
 ) {
   try {
-    storage?.setItem(STORAGE_KEY, JSON.stringify(preferences));
+    storage?.setItem(
+      `${LIST_PREFERENCES_KEY_PREFIX}${universeId}`,
+      JSON.stringify(preferences),
+    );
   } catch {
     // Browsing remains usable when storage is unavailable or full.
   }
