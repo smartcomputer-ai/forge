@@ -1,6 +1,6 @@
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, CalendarClock, Check, ChevronRight, Copy, Inbox, MessageCircle, Pause, Pencil, Play, Plus, RefreshCw, RotateCw, Send, Terminal, Trash2, Webhook } from "lucide-react";
+import { ArrowLeft, CalendarClock, Check, ChevronDown, ChevronRight, Copy, Inbox, MessageCircle, Pause, Play, Plus, RefreshCw, RotateCw, Send, Terminal, Trash2, Webhook } from "lucide-react";
 import {
   api,
   botLabel,
@@ -35,14 +35,6 @@ import {
   ComboboxList,
   ComboboxValue,
 } from "@/components/ui/combobox";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
 import { Field, FieldDescription, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -56,7 +48,7 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import { CronBuilder } from "./cron-builder";
-import { deliverySentence, deliveryShapeOf, triggerSummary } from "./trigger-summary";
+import { deliverySentence, deliveryShapeOf, describeCron, triggerSummary } from "./trigger-summary";
 
 export const NAME_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
 
@@ -316,10 +308,339 @@ export function TriggerKindIcon({
   return <Webhook className={classes} />;
 }
 
+/**
+ * The single trigger view/editor used by creation and by saved bot settings.
+ * Callers supply only lifecycle actions and persistence; the card, expansion,
+ * fields, validation presentation, and responsive behavior stay identical.
+ */
+export function TriggerFormCard({
+  universeId,
+  botId,
+  bots,
+  kind,
+  name,
+  forms,
+  patch,
+  summary,
+  secondarySummary,
+  problem,
+  error,
+  open,
+  onOpenChange,
+  expandable = true,
+  nameEditable = false,
+  onNameChange,
+  lockedScheduleAtMs = null,
+  badges,
+  actions,
+  collapsedDetails,
+  footer,
+  fields,
+  idPrefix,
+}: {
+  universeId: string;
+  botId: string;
+  bots: BotListItem[];
+  kind: TriggerKind;
+  name: string;
+  forms: TriggerForms;
+  patch: <K extends keyof TriggerForms>(key: K, next: TriggerForms[K]) => void;
+  summary: string;
+  secondarySummary?: string;
+  problem?: string | null;
+  error?: string | null;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  expandable?: boolean;
+  nameEditable?: boolean;
+  onNameChange?: (name: string) => void;
+  lockedScheduleAtMs?: number | null;
+  badges?: ReactNode;
+  actions?: ReactNode;
+  collapsedDetails?: ReactNode;
+  footer?: ReactNode;
+  fields?: ReactNode;
+  idPrefix: string;
+}) {
+  const exec = kind === "poll" && forms.poll.sourceKind === "exec";
+  return (
+    <div
+      className={cn(
+        "min-w-0 max-w-full overflow-hidden rounded-md border text-xs",
+        problem && "border-amber-500/60",
+      )}
+    >
+      <div className="flex min-w-0 items-start gap-2 px-3 py-2">
+        <button
+          type="button"
+          className="flex min-w-0 flex-1 items-start gap-2 text-left"
+          onClick={() => expandable && onOpenChange(!open)}
+          aria-expanded={expandable ? open : undefined}
+          disabled={!expandable}
+        >
+          {expandable && (open ? (
+              <ChevronDown className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+            ) : (
+              <ChevronRight className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+            ))}
+          <TriggerKindIcon kind={kind} exec={exec} className="mt-0.5" />
+          <span className="min-w-0 flex-1">
+            <span className="flex min-w-0 flex-wrap items-center gap-2">
+              <span className="truncate font-medium">{name}</span>
+              {badges}
+            </span>
+            <span
+              className={cn(
+                "block truncate text-muted-foreground",
+                problem && "text-amber-700 dark:text-amber-400",
+              )}
+              title={problem ?? summary}
+            >
+              {problem ?? summary}
+            </span>
+            {secondarySummary && (
+              <span className="block truncate text-muted-foreground/80" title={secondarySummary}>
+                {secondarySummary}
+              </span>
+            )}
+          </span>
+        </button>
+        {actions && <span className="flex shrink-0 flex-wrap items-center justify-end">{actions}</span>}
+      </div>
+      {!open && collapsedDetails && <div className="border-t px-3 py-2">{collapsedDetails}</div>}
+      {open && (
+        <div className="grid min-w-0 gap-4 border-t p-3">
+          {nameEditable && (
+            <Field>
+              <FieldLabel htmlFor={`${idPrefix}-name`}>Name</FieldLabel>
+              <Input
+                id={`${idPrefix}-name`}
+                value={name}
+                onChange={(event) => onNameChange?.(event.target.value)}
+                className="font-mono"
+              />
+            </Field>
+          )}
+          {fields ?? (kind === "schedule" && lockedScheduleAtMs != null ? (
+            <ScheduleFields
+              form={forms.schedule}
+              setForm={(next) => patch("schedule", next)}
+              lockedAtMs={lockedScheduleAtMs}
+              idPrefix={idPrefix}
+            />
+          ) : (
+            <TriggerKindFields
+              universeId={universeId}
+              kind={kind}
+              forms={forms}
+              patch={patch}
+              botId={botId}
+              bots={bots}
+            />
+          ))}
+          {problem && <p className="text-xs text-destructive">{problem}</p>}
+          {error && <p className="text-xs text-destructive">{error}</p>}
+          {footer && <div className="flex flex-wrap items-center justify-end gap-2 border-t pt-3">{footer}</div>}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function triggerFormsFromView(trigger: BotTriggerView): TriggerForms {
+  return {
+    schedule:
+      trigger.kind === "schedule"
+        ? {
+            once: trigger.atMs != null,
+            at: "",
+            cron: trigger.cron ?? "",
+            timezone: trigger.timezone ?? "UTC",
+            summary: trigger.summary,
+          }
+        : defaultScheduleForm,
+    webhook: trigger.kind === "webhook" ? webhookFormFromTrigger(trigger) : defaultWebhookForm,
+    poll: trigger.kind === "poll" ? pollFormFromTrigger(trigger) : defaultPollForm,
+    inbox: trigger.kind === "bot" ? inboxFormFromTrigger(trigger) : defaultInboxForm(),
+    chat: trigger.kind === "chat" ? chatFormFromTrigger(trigger) : defaultChatForm,
+  };
+}
+
+function triggerUpdateBody(trigger: BotTriggerView, forms: TriggerForms, deliveryOnly: boolean): BotTriggerInput {
+  const base = triggerInputOf(trigger);
+  if (deliveryOnly) return { ...base, ...deliveryPayload(forms.inbox) };
+  if (trigger.kind === "schedule") {
+    return {
+      ...base,
+      kind: "schedule",
+      ...(trigger.atMs != null
+        ? { atMs: trigger.atMs, cron: null, timezone: "UTC", summary: forms.schedule.summary.trim() }
+        : { atMs: null, ...scheduleSpecPayload({ ...forms.schedule, once: false }) }),
+    };
+  }
+  if (trigger.kind === "poll") return { ...base, kind: "poll", ...pollPayload(forms.poll) };
+  if (trigger.kind === "bot") return { ...base, kind: "bot", ...inboxPayload(forms.inbox) };
+  if (trigger.kind === "chat") {
+    const { pairingCode: _existing, ...withoutCode } = base;
+    return {
+      ...withoutCode,
+      kind: "chat",
+      ...chatPayload(forms.chat, trigger.pairingCode),
+    } as BotTriggerInput;
+  }
+  return { ...base, kind: "webhook", ...webhookPayload(forms.webhook) };
+}
+
+export function SavedTriggerFormCard({
+  universeId,
+  botId,
+  bots,
+  trigger,
+  open,
+  onOpenChange,
+  badges,
+  actions,
+  collapsedDetails,
+  deliveryOnly = false,
+  editable = true,
+  summary: summaryOverride,
+  secondarySummary: secondarySummaryOverride,
+}: {
+  universeId: string;
+  botId: string;
+  bots: BotListItem[];
+  trigger: BotTriggerView;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  badges?: ReactNode;
+  actions?: ReactNode;
+  collapsedDetails?: ReactNode;
+  deliveryOnly?: boolean;
+  editable?: boolean;
+  summary?: string;
+  secondarySummary?: string;
+}) {
+  const queryClient = useQueryClient();
+  const [forms, setForms] = useState<TriggerForms>(() => triggerFormsFromView(trigger));
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    if (!open) {
+      setForms(triggerFormsFromView(trigger));
+      setError(null);
+    }
+  }, [open, trigger]);
+  const patch = <K extends keyof TriggerForms>(key: K, next: TriggerForms[K]) =>
+    setForms((current) => ({ ...current, [key]: next }));
+  const oneShotAtMs = trigger.kind === "schedule" ? (trigger.atMs ?? null) : null;
+  const formIssue = deliveryOnly
+    ? deliveryFormProblem(forms.inbox)
+    : trigger.kind === "schedule" && oneShotAtMs != null
+      ? forms.schedule.summary.trim()
+        ? null
+        : "Say what the bot should do when this fires."
+      : triggerFormProblem(trigger.kind, forms);
+  const save = useMutation({
+    mutationFn: () =>
+      api("PUT", `/api/v1/universes/${universeId}/bots/${botId}/triggers/${trigger.triggerId}`, {
+        trigger: triggerUpdateBody(trigger, forms, deliveryOnly),
+        expectedRevision: trigger.revision,
+      }),
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["bot-triggers", universeId, botId] }),
+        queryClient.invalidateQueries({ queryKey: ["bots"] }),
+      ]);
+      setError(null);
+      onOpenChange(false);
+    },
+    onError: (err) => setError(err.message),
+  });
+  const summary = summaryOverride ?? (deliveryOnly ? "How messages reach this bot" : triggerSummary(trigger));
+  const secondarySummary = secondarySummaryOverride ?? (deliveryOnly ? deliverySentence(deliveryShapeOf(trigger)) : deliverySentence(deliveryShapeOf(trigger), trigger.kind === "chat"));
+
+  return (
+    <TriggerFormCard
+      universeId={universeId}
+      botId={botId}
+      bots={bots}
+      kind={trigger.kind}
+      name={deliveryOnly ? "Routing & batching" : trigger.triggerId}
+      forms={forms}
+      patch={patch}
+      summary={summary}
+      secondarySummary={secondarySummary}
+      problem={formIssue}
+      error={error}
+      open={open}
+      onOpenChange={onOpenChange}
+      expandable={editable}
+      badges={badges}
+      lockedScheduleAtMs={oneShotAtMs}
+      actions={actions}
+      collapsedDetails={collapsedDetails}
+      fields={deliveryOnly ? (
+        <DeliveryFieldsBody
+          form={forms.inbox}
+          setForm={(next) => patch("inbox", next)}
+          chat={trigger.kind === "chat"}
+        />
+      ) : undefined}
+      idPrefix={`edit-trigger-${trigger.triggerId}`}
+      footer={(
+        <>
+          <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
+            Cancel
+          </Button>
+          <Button
+            type="button"
+            onClick={() => {
+              setError(null);
+              save.mutate();
+            }}
+            disabled={save.isPending || formIssue !== null}
+          >
+            {save.isPending ? "Saving…" : "Save"}
+          </Button>
+        </>
+      )}
+    />
+  );
+}
+
 export function defaultTriggerName(kind: TriggerKind, pollSource?: "http" | "exec"): string {
   if (kind === "bot") return "inbox";
   if (kind === "poll") return pollSource === "exec" ? "command-poll" : "poll";
   return kind;
+}
+
+/** Plain-language summary shared by trigger drafts in creation and settings. */
+export function triggerDraftSummary(kind: TriggerKind, forms: TriggerForms): string {
+  switch (kind) {
+    case "schedule":
+      return forms.schedule.once
+        ? forms.schedule.at
+          ? `Once, at ${new Date(forms.schedule.at).toLocaleString()}`
+          : "Once — pick when"
+        : describeCron(forms.schedule.cron, forms.schedule.timezone);
+    case "webhook":
+      return `${forms.webhook.preset ? "GitHub webhook" : "Webhook"} · ${forms.webhook.scheme === "token" ? "URL token" : "signed"}`;
+    case "poll": {
+      const every = `every ${forms.poll.intervalMinutes || "?"} min`;
+      return forms.poll.sourceKind === "http"
+        ? forms.poll.url
+          ? `Checks ${forms.poll.url} ${every}`
+          : "Check a URL — enter it"
+        : forms.poll.argvText.trim()
+          ? `Runs ${forms.poll.argvText.trim().split(/\n/)[0]} ${every}`
+          : "Run a command — enter it";
+    }
+    case "chat":
+      return forms.chat.channelAccountId ? "Messages on the chosen account" : "Chat — pick an account";
+    case "bot":
+      return forms.inbox.fromMode === "any"
+        ? "Messages from any bot"
+        : `Messages from ${forms.inbox.fromBotIds.join(", ") || "…"}`;
+  }
 }
 
 /** A sample delivery for a token-verified webhook, so a person sees the loop close without leaving the page. */
@@ -499,8 +820,16 @@ export function TriggersSection({
             <h2 className="text-sm font-semibold">Triggers</h2>
             <p className="text-xs text-muted-foreground">When this bot wakes up: schedules, webhooks, polls, chats, other bots.</p>
           </div>
-          {manage && (
-            <Button variant="outline" size="xs" className="ml-auto" onClick={() => setAddOpen(true)}>
+          {manage && !addOpen && (
+            <Button
+              variant="outline"
+              size="xs"
+              className="ml-auto"
+              onClick={() => {
+                setEditing(null);
+                setAddOpen(true);
+              }}
+            >
               <Plus data-icon="inline-start" /> Add trigger
             </Button>
           )}
@@ -519,31 +848,36 @@ export function TriggersSection({
         <p className="text-xs text-muted-foreground">Sample sent — it shows up under Activity in a moment.</p>
       )}
       {visibleTriggers.map((trigger) => {
-        const exec = trigger.kind === "poll" && trigger.source.kind === "exec";
         const summary = triggerSummary(trigger, accountList);
         const delivery = deliverySentence(deliveryShapeOf(trigger), trigger.kind === "chat");
         const enabled = trigger.enabled ?? true;
+        const editedTrigger = editing?.triggerId === trigger.triggerId ? editing : trigger;
+        const open = editing?.triggerId === trigger.triggerId;
         return (
-          <div key={trigger.triggerId} className="min-w-0 max-w-full overflow-hidden rounded-md border p-3 text-xs">
-            <div className="flex min-w-0 items-start gap-2">
-              <TriggerKindIcon kind={trigger.kind} exec={exec} className="mt-0.5" />
-              <div className="min-w-0 flex-1">
-                <div className="flex min-w-0 flex-wrap items-center gap-2">
-                  <span className="truncate font-medium">{trigger.triggerId}</span>
-                  {!enabled && (
-                    <Badge
-                      variant={pausedVariant(trigger.disabledReason)}
-                      title={trigger.disabledAtMs != null ? `since ${new Date(trigger.disabledAtMs).toLocaleString()}` : undefined}
-                    >
-                      {pausedLabel(trigger.disabledReason)}
-                    </Badge>
-                  )}
-                </div>
-                <p className="truncate text-muted-foreground" title={summary}>{summary}</p>
-                <p className="truncate text-muted-foreground/80" title={delivery}>{delivery}</p>
-              </div>
-              {manage && (
-                <span className="flex shrink-0 items-center">
+          <SavedTriggerFormCard
+            key={`${editedTrigger.triggerId}:${editedTrigger.revision}`}
+            universeId={universeId}
+            botId={botId}
+            bots={bots.data?.bots ?? []}
+            trigger={editedTrigger}
+            editable={manage}
+            summary={summary}
+            secondarySummary={delivery}
+            badges={!enabled ? (
+              <Badge
+                variant={pausedVariant(trigger.disabledReason)}
+                title={trigger.disabledAtMs != null ? `since ${new Date(trigger.disabledAtMs).toLocaleString()}` : undefined}
+              >
+                {pausedLabel(trigger.disabledReason)}
+              </Badge>
+            ) : undefined}
+            open={open}
+            onOpenChange={(next) => {
+              setAddOpen(false);
+              setEditing(next ? trigger : null);
+            }}
+            actions={manage ? (
+              <>
                   {trigger.kind === "webhook" && (trigger.verification?.scheme ?? "token") === "token" && (
                     <Button
                       variant="ghost"
@@ -555,14 +889,6 @@ export function TriggersSection({
                       <Send data-icon="inline-start" /> Send sample
                     </Button>
                   )}
-                  <Button
-                    variant="ghost"
-                    size="icon-sm"
-                    onClick={() => setEditing(trigger)}
-                    aria-label="Edit trigger"
-                  >
-                    <Pencil />
-                  </Button>
                   <Button
                     variant="ghost"
                     size="icon-sm"
@@ -591,18 +917,18 @@ export function TriggersSection({
                       <Trash2 />
                     </Button>
                   )}
-                </span>
-              )}
-            </div>
-            {trigger.lastFilterError && (
-              <p
-                className="mt-2 rounded-md bg-destructive/10 p-2 text-destructive wrap-anywhere"
-                title={trigger.lastFilterErrorAtMs != null ? `at ${new Date(trigger.lastFilterErrorAtMs).toLocaleString()}` : undefined}
-              >
-                filter error: {trigger.lastFilterError}
-              </p>
-            )}
-            <div className="mt-2 border-t pt-2">
+              </>
+            ) : undefined}
+            collapsedDetails={(
+              <>
+                {trigger.lastFilterError && (
+                  <p
+                    className="mb-2 rounded-md bg-destructive/10 p-2 text-destructive wrap-anywhere"
+                    title={trigger.lastFilterErrorAtMs != null ? `at ${new Date(trigger.lastFilterErrorAtMs).toLocaleString()}` : undefined}
+                  >
+                    filter error: {trigger.lastFilterError}
+                  </p>
+                )}
               {trigger.kind === "schedule" ? (
                 <ScheduleRowDetail trigger={trigger} />
               ) : trigger.kind === "poll" ? (
@@ -614,17 +940,26 @@ export function TriggersSection({
               ) : (
                 <WebhookRowDetail trigger={trigger} manage={manage} />
               )}
-            </div>
-          </div>
+              </>
+            )}
+          />
         );
       })}
-      {manage && headless && (
-        <Button variant="outline" size="sm" className="justify-self-start" onClick={() => setAddOpen(true)}>
+      {manage && headless && !addOpen && (
+        <Button
+          variant="outline"
+          size="sm"
+          className="justify-self-start"
+          onClick={() => {
+            setEditing(null);
+            setAddOpen(true);
+          }}
+        >
           <Plus data-icon="inline-start" /> Add trigger
         </Button>
       )}
       {manage && (
-        <AddTriggerDialog
+        <AddTriggerInline
           universeId={universeId}
           botId={botId}
           bots={bots.data?.bots ?? []}
@@ -632,18 +967,6 @@ export function TriggersSection({
           open={addOpen}
           onOpenChange={setAddOpen}
           excludeKinds={hideKinds}
-        />
-      )}
-      {manage && editing && (
-        <EditTriggerDialog
-          universeId={universeId}
-          botId={botId}
-          bots={bots.data?.bots ?? []}
-          trigger={editing}
-          open
-          onOpenChange={(open) => {
-            if (!open) setEditing(null);
-          }}
         />
       )}
     </section>
@@ -2168,7 +2491,7 @@ export function TriggerKindPicker({
   );
 }
 
-function AddTriggerDialog({
+function AddTriggerInline({
   universeId,
   botId,
   bots,
@@ -2190,6 +2513,7 @@ function AddTriggerDialog({
   const [name, setName] = useState("");
   const [forms, setForms] = useState<TriggerForms>(defaultTriggerForms);
   const [error, setError] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState(true);
   const nameInvalid = name.trim().length > 0 && !NAME_PATTERN.test(name.trim());
   const formIssue = kind === null ? null : triggerFormProblem(kind, forms, env);
   const patch = <K extends keyof TriggerForms>(key: K, next: TriggerForms[K]) =>
@@ -2199,6 +2523,7 @@ function AddTriggerDialog({
     setName("");
     setForms(defaultTriggerForms());
     setError(null);
+    setExpanded(true);
   };
   const changeOpen = (next: boolean) => {
     if (!next) reset();
@@ -2214,6 +2539,7 @@ function AddTriggerDialog({
     }
     if (!name.trim()) setName(defaultTriggerName(next, options?.pollSource));
     setKind(next);
+    setExpanded(true);
   };
   const create = useMutation({
     mutationFn: () => {
@@ -2235,100 +2561,65 @@ function AddTriggerDialog({
     },
     onError: (err) => setError(err.message),
   });
-  const incomplete = kind === null || !name.trim() || nameInvalid || formIssue !== null;
+  const problem = !name.trim()
+    ? "Name this trigger."
+    : nameInvalid
+      ? "Use lowercase letters, numbers, and dashes, starting with a letter or number."
+      : formIssue;
+  const incomplete = kind === null || problem !== null;
 
+  if (!open) return null;
+  if (!kind) {
+    return (
+      <div className="grid gap-4 rounded-md border border-dashed p-4">
+        <div className="grid gap-0.5">
+          <h3 className="text-sm font-medium">Add trigger</h3>
+          <p className="text-xs text-muted-foreground">How should this bot wake up?</p>
+        </div>
+        <TriggerKindPicker env={env} onPick={pick} exclude={excludeKinds} />
+        <div className="flex justify-end border-t pt-3">
+          <Button type="button" variant="outline" onClick={() => changeOpen(false)}>
+            Cancel
+          </Button>
+        </div>
+      </div>
+    );
+  }
   return (
-    <Dialog open={open} onOpenChange={changeOpen}>
-      <DialogContent
-        className={kind
-          ? "h-[min(92dvh,900px)] grid-rows-[auto_minmax(0,1fr)_auto] gap-0 p-0 sm:max-w-xl"
-          : "max-h-[92dvh] grid-rows-[auto_minmax(0,1fr)_auto] gap-0 p-0 sm:max-w-xl"}
-      >
-        <DialogHeader className="border-b p-6 pr-14">
-          <DialogTitle>
-            {kind === "poll"
-              ? forms.poll.sourceKind === "exec"
-                ? "Run a command"
-                : "Check a URL"
-              : kind === "bot"
-                ? "Other bots"
-                : kind === "chat"
-                  ? "Chat account"
-                  : kind
-                    ? `Add ${kind}`
-                    : "Add trigger"}
-          </DialogTitle>
-          <DialogDescription>
-            {kind === "schedule"
-              ? "Wake the bot on a recurring schedule, or once at a specific time."
-              : kind === "webhook"
-                ? "Give the bot a protected URL that external systems post to."
-                : kind === "poll"
-                  ? "Fetch a source on an interval and wake the bot with new items."
-                  : kind === "bot"
-                    ? "Let other bots in this universe message this bot."
-                    : kind === "chat"
-                      ? "Answer Telegram or WhatsApp conversations on an account, one thread per conversation."
-                      : "How should this bot wake up?"}
-          </DialogDescription>
-        </DialogHeader>
-        {!kind ? (
-          <>
-            <div className="min-h-0 overflow-y-auto p-6">
-              <TriggerKindPicker env={env} onPick={pick} exclude={excludeKinds} />
-            </div>
-            <DialogFooter className="border-t p-4">
-              <Button type="button" variant="outline" onClick={() => changeOpen(false)}>
-                Cancel
-              </Button>
-            </DialogFooter>
-          </>
-        ) : (
-          <form
-            onSubmit={(event) => {
-              event.preventDefault();
+    <TriggerFormCard
+      universeId={universeId}
+      botId={botId}
+      bots={bots}
+      kind={kind}
+      name={name}
+      forms={forms}
+      patch={patch}
+      summary={triggerDraftSummary(kind, forms)}
+      problem={problem}
+      error={error}
+      open={expanded}
+      onOpenChange={setExpanded}
+      nameEditable
+      onNameChange={setName}
+      idPrefix="add-trigger"
+      footer={(
+        <>
+          <Button type="button" variant="outline" onClick={() => setKind(null)}>
+            <ArrowLeft data-icon="inline-start" /> Back
+          </Button>
+          <Button
+            type="button"
+            onClick={() => {
               setError(null);
               create.mutate();
             }}
-            className="contents"
+            disabled={create.isPending || incomplete}
           >
-            <div className="grid min-h-0 content-start gap-4 overflow-y-auto p-6">
-              <Field>
-                <FieldLabel htmlFor="trigger-name">Name</FieldLabel>
-                <Input
-                  id="trigger-name"
-                  value={name}
-                  onChange={(event) => setName(event.target.value)}
-                  aria-invalid={nameInvalid || undefined}
-                  className="font-mono"
-                  autoFocus
-                />
-                {nameInvalid ? (
-                  <p className="text-xs text-destructive">
-                    Use lowercase letters, numbers, and dashes, starting with a letter or number.
-                  </p>
-                ) : (
-                  <FieldDescription>How the bot and the API refer to this trigger.</FieldDescription>
-                )}
-              </Field>
-              <TriggerKindFields universeId={universeId} kind={kind} forms={forms} patch={patch} botId={botId} bots={bots} />
-            </div>
-            <div className="grid gap-2 border-t p-4">
-              {formIssue && <p className="text-xs text-destructive">{formIssue}</p>}
-              {error && <p className="text-sm text-destructive">{error}</p>}
-              <DialogFooter>
-                <Button type="button" variant="outline" onClick={() => setKind(null)}>
-                  <ArrowLeft data-icon="inline-start" /> Back
-                </Button>
-                <Button type="submit" disabled={create.isPending || incomplete}>
-                  {create.isPending ? "Adding…" : "Add trigger"}
-                </Button>
-              </DialogFooter>
-            </div>
-          </form>
-        )}
-      </DialogContent>
-    </Dialog>
+            {create.isPending ? "Adding…" : "Add trigger"}
+          </Button>
+        </>
+      )}
+    />
   );
 }
 
@@ -2363,157 +2654,5 @@ export function TriggerKindChoice({
         )}
       </span>
     </button>
-  );
-}
-
-export function EditTriggerDialog({
-  universeId,
-  botId,
-  bots,
-  trigger,
-  open,
-  onOpenChange,
-  deliveryOnly = false,
-}: {
-  universeId: string;
-  botId: string;
-  bots: BotListItem[];
-  trigger: BotTriggerView;
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  /** Only routing, batching, busy handling, and idle close: the rest of the trigger is edited elsewhere (the inbox's sender list). */
-  deliveryOnly?: boolean;
-}) {
-  const queryClient = useQueryClient();
-  const oneShotAtMs = trigger.kind === "schedule" ? (trigger.atMs ?? null) : null;
-  const [forms, setForms] = useState<TriggerForms>(() => ({
-    schedule:
-      trigger.kind === "schedule"
-        ? {
-            once: trigger.atMs != null,
-            at: "",
-            cron: trigger.cron ?? "",
-            timezone: trigger.timezone ?? "UTC",
-            summary: trigger.summary,
-          }
-        : defaultScheduleForm,
-    webhook: trigger.kind === "webhook" ? webhookFormFromTrigger(trigger) : defaultWebhookForm,
-    poll: trigger.kind === "poll" ? pollFormFromTrigger(trigger) : defaultPollForm,
-    inbox: trigger.kind === "bot" ? inboxFormFromTrigger(trigger) : defaultInboxForm(),
-    chat: trigger.kind === "chat" ? chatFormFromTrigger(trigger) : defaultChatForm,
-  }));
-  const [error, setError] = useState<string | null>(null);
-  const patch = <K extends keyof TriggerForms>(key: K, next: TriggerForms[K]) =>
-    setForms((current) => ({ ...current, [key]: next }));
-  const formIssue = deliveryOnly
-    ? deliveryFormProblem(forms.inbox)
-    : trigger.kind === "schedule" && oneShotAtMs != null
-      ? forms.schedule.summary.trim()
-        ? null
-        : "Say what the bot should do when this fires."
-      : triggerFormProblem(trigger.kind, forms);
-  const save = useMutation({
-    mutationFn: () => {
-      const base = triggerInputOf(trigger);
-      let body: BotTriggerInput;
-      if (deliveryOnly) {
-        body = { ...base, ...deliveryPayload(forms.inbox) };
-      } else if (trigger.kind === "schedule") {
-        body = {
-          ...base,
-          kind: "schedule",
-          ...(oneShotAtMs != null
-            ? { atMs: oneShotAtMs, cron: null, timezone: "UTC", summary: forms.schedule.summary.trim() }
-            : { atMs: null, ...scheduleSpecPayload({ ...forms.schedule, once: false }) }),
-        };
-      } else if (trigger.kind === "poll") {
-        body = { ...base, kind: "poll", ...pollPayload(forms.poll) };
-      } else if (trigger.kind === "bot") {
-        body = { ...base, kind: "bot", ...inboxPayload(forms.inbox) };
-      } else if (trigger.kind === "chat") {
-        // Drop the stored code so switching pairing off does not carry it,
-        // and keep it (through the payload) when pairing stays on.
-        const { pairingCode: _existing, ...withoutCode } = base;
-        body = {
-          ...withoutCode,
-          kind: "chat",
-          ...chatPayload(forms.chat, trigger.pairingCode),
-        } as BotTriggerInput;
-      } else {
-        body = { ...base, kind: "webhook", ...webhookPayload(forms.webhook) };
-      }
-      return api("PUT", `/api/v1/universes/${universeId}/bots/${botId}/triggers/${trigger.triggerId}`, {
-        trigger: body,
-        expectedRevision: trigger.revision,
-      });
-    },
-    onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: ["bot-triggers", universeId, botId] });
-      setError(null);
-      onOpenChange(false);
-    },
-    onError: (err) => setError(err.message),
-  });
-
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="h-[min(92dvh,900px)] grid-rows-[auto_minmax(0,1fr)_auto] gap-0 p-0 sm:max-w-xl">
-        <DialogHeader className="border-b p-6 pr-14">
-          <DialogTitle>{deliveryOnly ? "Routing & batching" : `Edit ${trigger.triggerId}`}</DialogTitle>
-          <DialogDescription>
-            {deliveryOnly
-              ? "How messages from other bots reach this bot: which conversation, whether they batch, and what happens while it is busy."
-              : trigger.kind === "schedule"
-              ? "Changes apply to the next fire."
-              : trigger.kind === "poll"
-                ? "Source changes reset the cursor: the next check re-baselines against the source."
-                : trigger.kind === "bot"
-                  ? "Sender and routing changes apply to the next message another bot sends here."
-                  : trigger.kind === "chat"
-                    ? "Account, activation, and access changes apply to the next message; paired conversations keep their threads."
-                    : "The URL keeps its token; verification and routing changes apply to the next delivery."}
-          </DialogDescription>
-        </DialogHeader>
-        <form
-          onSubmit={(event) => {
-            event.preventDefault();
-            setError(null);
-            save.mutate();
-          }}
-          className="contents"
-        >
-          <div className="grid min-h-0 content-start gap-4 overflow-y-auto p-6">
-            {deliveryOnly ? (
-              <DeliveryFieldsBody
-                form={forms.inbox}
-                setForm={(next) => patch("inbox", next)}
-                chat={trigger.kind === "chat"}
-              />
-            ) : trigger.kind === "schedule" ? (
-              <ScheduleFields
-                form={forms.schedule}
-                setForm={(next) => patch("schedule", next)}
-                lockedAtMs={oneShotAtMs}
-                idPrefix="edit-trigger"
-              />
-            ) : (
-              <TriggerKindFields universeId={universeId} kind={trigger.kind} forms={forms} patch={patch} botId={botId} bots={bots} />
-            )}
-          </div>
-          <div className="grid gap-2 border-t p-4">
-            {formIssue && <p className="text-xs text-destructive">{formIssue}</p>}
-            {error && <p className="text-sm text-destructive">{error}</p>}
-            <DialogFooter>
-              <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
-                Cancel
-              </Button>
-              <Button type="submit" disabled={save.isPending || formIssue !== null}>
-                {save.isPending ? "Saving…" : "Save"}
-              </Button>
-            </DialogFooter>
-          </div>
-        </form>
-      </DialogContent>
-    </Dialog>
   );
 }

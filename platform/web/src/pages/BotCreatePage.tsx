@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Check, ChevronDown, ChevronRight, Trash2 } from "lucide-react";
+import { Check, Trash2 } from "lucide-react";
 import { NavLink, useNavigate } from "react-router-dom";
 import {
   api,
@@ -20,13 +20,13 @@ import { describeCron } from "@/components/bot/trigger-summary";
 import {
   BotMultiSelect,
   NAME_PATTERN,
-  TriggerKindFields,
-  TriggerKindIcon,
+  TriggerFormCard,
   TriggerKindPicker,
   defaultPollForm,
   defaultTriggerForms,
   defaultTriggerName,
   triggerCreateBody,
+  triggerDraftSummary,
   triggerFormProblem,
   type BotEnvStatus,
   type TriggerForms,
@@ -105,34 +105,7 @@ export function uniqueTriggerName(base: string, taken: string[]): string {
 
 /** Plain words for a trigger still being drafted, from its form. */
 export function wakeupSummary(draft: WakeupDraft): string {
-  switch (draft.kind) {
-    case "schedule": {
-      const form = draft.forms.schedule;
-      if (form.once) return form.at ? `Once, at ${new Date(form.at).toLocaleString()}` : "Once — pick when";
-      return describeCron(form.cron, form.timezone);
-    }
-    case "webhook": {
-      const form = draft.forms.webhook;
-      return `${form.preset ? "GitHub webhook" : "Webhook"} · ${form.scheme === "token" ? "URL token" : "signed"}`;
-    }
-    case "poll": {
-      const form = draft.forms.poll;
-      const every = `every ${form.intervalMinutes || "?"} min`;
-      return form.sourceKind === "http"
-        ? form.url
-          ? `Checks ${form.url} ${every}`
-          : "Check a URL — enter it"
-        : form.argvText.trim()
-          ? `Runs ${form.argvText.trim().split(/\n/)[0]} ${every}`
-          : "Run a command — enter it";
-    }
-    case "chat":
-      return draft.forms.chat.channelAccountId ? "Messages on the chosen account" : "Chat — pick an account";
-    case "bot": {
-      const form = draft.forms.inbox;
-      return form.fromMode === "any" ? "Messages from any bot" : `Messages from ${form.fromBotIds.join(", ") || "…"}`;
-    }
-  }
+  return triggerDraftSummary(draft.kind, draft.forms);
 }
 
 /** What a template comes with, in a few words: its triggers, then its capabilities. */
@@ -567,35 +540,33 @@ function Wizard({
                       const problem = wakeupProblems.find((entry) => entry.key === draft.key)?.problem ?? null;
                       const open = openWakeup === draft.key;
                       return (
-                        <div
+                        <TriggerFormCard
                           key={draft.key}
-                          className={cn("min-w-0 max-w-full rounded-md border", problem && "border-amber-500/60")}
-                        >
-                          <div className="flex min-w-0 items-center gap-2 px-3 py-2 text-sm">
-                            <button
-                              type="button"
-                              className="flex min-w-0 flex-1 items-center gap-2 text-left"
-                              onClick={() => setOpenWakeup(open ? null : draft.key)}
-                              aria-expanded={open}
-                            >
-                              {open ? (
-                                <ChevronDown className="size-4 text-muted-foreground" />
-                              ) : (
-                                <ChevronRight className="size-4 text-muted-foreground" />
-                              )}
-                              <TriggerKindIcon kind={draft.kind} exec={draft.forms.poll.sourceKind === "exec"} />
-                              <span className="min-w-0">
-                                <span className="block truncate font-medium">{draft.name}</span>
-                                <span
-                                  className={cn(
-                                    "block truncate text-xs text-muted-foreground",
-                                    problem && "text-amber-700 dark:text-amber-400",
-                                  )}
-                                >
-                                  {problem ?? wakeupSummary(draft)}
-                                </span>
-                              </span>
-                            </button>
+                          universeId={universeId}
+                          botId={botId.trim() || "new-bot"}
+                          bots={bots.data?.bots ?? []}
+                          kind={draft.kind}
+                          name={draft.name}
+                          forms={draft.forms}
+                          patch={(key, value) =>
+                            updateWakeup(draft.key, (current) => ({
+                              ...current,
+                              forms: { ...current.forms, [key]: value },
+                            }))
+                          }
+                          summary={wakeupSummary(draft)}
+                          problem={problem}
+                          open={open}
+                          onOpenChange={(next) => setOpenWakeup(next ? draft.key : null)}
+                          nameEditable
+                          onNameChange={(name) =>
+                            updateWakeup(draft.key, (current) => ({
+                              ...current,
+                              name,
+                            }))
+                          }
+                          idPrefix={`wakeup-${draft.key}`}
+                          actions={(
                             <Button
                               variant="ghost"
                               size="icon-sm"
@@ -606,39 +577,8 @@ function Wizard({
                             >
                               <Trash2 />
                             </Button>
-                          </div>
-                          {open && (
-                            <div className="grid gap-4 border-t p-3">
-                              <Field>
-                                <FieldLabel htmlFor={`wakeup-name-${draft.key}`}>Name</FieldLabel>
-                                <Input
-                                  id={`wakeup-name-${draft.key}`}
-                                  value={draft.name}
-                                  onChange={(event) =>
-                                    updateWakeup(draft.key, (current) => ({
-                                      ...current,
-                                      name: event.target.value,
-                                    }))
-                                  }
-                                  className="font-mono"
-                                />
-                              </Field>
-                              <TriggerKindFields
-                                universeId={universeId}
-                                kind={draft.kind}
-                                forms={draft.forms}
-                                patch={(key, value) =>
-                                  updateWakeup(draft.key, (current) => ({
-                                    ...current,
-                                    forms: { ...current.forms, [key]: value },
-                                  }))
-                                }
-                                botId={botId.trim() || "new-bot"}
-                                bots={bots.data?.bots ?? []}
-                              />
-                            </div>
                           )}
-                        </div>
+                        />
                       );
                     })}
                   </div>

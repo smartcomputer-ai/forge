@@ -61,7 +61,7 @@ import { briefSummary, capabilitySummary, environmentSummary, guardrailsSummary,
 import { triggerSummary } from "./trigger-summary";
 import {
   BotMultiSelect,
-  EditTriggerDialog,
+  SavedTriggerFormCard,
   TriggersSection,
   inboxSelectionSpec,
   triggerInputOf,
@@ -971,16 +971,14 @@ function OtherBotsSection({
         />
       )}
       {manage && inbox && editingInbox && (
-        <EditTriggerDialog
+        <SavedTriggerFormCard
           universeId={universeId}
           botId={bot.botId}
           bots={bots.data?.bots ?? []}
           trigger={inbox}
           open
           deliveryOnly
-          onOpenChange={(open) => {
-            if (!open) setEditingInbox(false);
-          }}
+          onOpenChange={setEditingInbox}
         />
       )}
     </SetupSection>

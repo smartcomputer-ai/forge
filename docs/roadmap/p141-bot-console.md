@@ -143,7 +143,10 @@ of chrome and went. Every section saves on its own.
   ("Weekdays 09:00 Europe/Berlin", "GitHub webhook · pull_request",
   "Telegram · @acme_bot · direct messages"), state with reason when paused
   (breaker, poll failed, one-shot fired, operator, bot closed), last fired,
-  and actions: Fire now / Send sample, Pause, Edit. The editor is today's per-kind form split into
+  and actions: Fire now / Send sample, Pause, Delete. Clicking a card expands
+  its editor inline. Creation, addition, viewing, and editing all reuse the
+  same trigger card and per-kind fields; trigger configuration never opens a
+  second modal. The editor is today's per-kind form split into
   **Basics** and an **Advanced** disclosure (filter, routing, coalescing,
   when busy, thread retention) whose closed state shows a sentence: "One
   thread per pull request · waits up to 2 min to batch · queues when
@@ -160,7 +163,7 @@ of chrome and went. Every section saves on its own.
   trigger to the system: "Can message other bots" (`emit`) and "Accepts
   messages from: nobody / any bot / only …" (the `bot`-kind inbox trigger,
   created and edited through the trigger API; "Routing & batching…" opens
-  the ordinary trigger editor). The Triggers section hides the inbox and
+  the ordinary inline trigger editor). The Triggers section hides the inbox and
   its picker omits "Other bots" so the record has one surface. Two earlier
   placements — inbox under Guardrails, and inbox only under Triggers with
   `emit` under Guardrails — split the topic and were replaced.
