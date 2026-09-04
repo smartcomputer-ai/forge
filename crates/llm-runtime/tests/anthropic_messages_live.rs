@@ -2,7 +2,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use engine::{
-    ANTHROPIC_MESSAGES_COMPACTION_PROVIDER_KIND, BlobRef, ContextCompactionRequest,
+    ANTHROPIC_MESSAGES_CITED_TEXT_PROVIDER_KIND, ANTHROPIC_MESSAGES_COMPACTION_PROVIDER_KIND,
+    ANTHROPIC_MESSAGES_SERVER_TOOL_RESULT_PROVIDER_KIND,
+    ANTHROPIC_MESSAGES_SERVER_TOOL_USE_PROVIDER_KIND, BlobRef, ContextCompactionRequest,
     ContextCompactionStatus, ContextCompactionTask, ContextEntry, ContextEntryId,
     ContextEntryInput, ContextEntryKind, ContextEntrySource, ContextMessageRole, ContextSnapshot,
     LlmFinish, LlmGenerationRequest, LlmGenerationResult, LlmGenerationStatus, LlmRequest,
@@ -12,6 +14,13 @@ use engine::{
 use llm_clients::anthropic::messages::{Client, Config};
 use llm_runtime::{AnthropicMessagesLlmAdapter, LlmCompactionAdapter, LlmGenerationAdapter};
 use serde_json::{Value, json};
+use tools::{
+    runtime::ToolDocument,
+    web::{
+        fetch::{WebFetchToolConfig, anthropic_messages_web_fetch_tool_bundle},
+        search::{WebSearchToolConfig, anthropic_messages_web_search_tool_bundle},
+    },
+};
 
 mod support;
 
@@ -83,6 +92,16 @@ fn unquote_dotenv_value(value: &str) -> String {
 
 async fn text_blob(blobs: &InMemoryBlobStore, text: &str) -> BlobRef {
     blobs.insert_text(text).await
+}
+
+async fn store_tool_documents(blobs: &InMemoryBlobStore, documents: &[ToolDocument]) {
+    for document in documents {
+        let stored_ref = blobs
+            .put_bytes(document.blob_bytes())
+            .await
+            .expect("store tool document");
+        assert_eq!(stored_ref, document.blob_ref);
+    }
 }
 
 fn model_selection() -> ModelSelection {
@@ -308,6 +327,168 @@ async fn anthropic_messages_live_adapter_generates_result() {
         raw_response.contains("\"id\""),
         "expected raw response JSON, got {raw_response}"
     );
+}
+
+fn assert_hosted_web_result(result: &LlmGenerationResult, capability: &str) {
+    assert_eq!(result.status, LlmGenerationStatus::Succeeded);
+    assert_eq!(result.facts.finish, LlmFinish::Stop);
+    assert!(
+        result.context_entries.iter().any(|entry| {
+            entry.provider_kind.as_deref() == Some(ANTHROPIC_MESSAGES_SERVER_TOOL_USE_PROVIDER_KIND)
+        }),
+        "expected {capability} server_tool_use block: {:?}",
+        result.context_entries
+    );
+    assert!(
+        result.context_entries.iter().any(|entry| {
+            entry.provider_kind.as_deref()
+                == Some(ANTHROPIC_MESSAGES_SERVER_TOOL_RESULT_PROVIDER_KIND)
+        }),
+        "expected {capability} server-tool result block: {:?}",
+        result.context_entries
+    );
+    assert!(
+        cited_text_blocks(result).is_some(),
+        "expected {capability} cited blocks after an assistant message: {:?}",
+        result.context_entries
+    );
+}
+
+/// The exact cited blocks the provider attached to an assistant message. They
+/// follow the message they came from.
+fn cited_text_blocks(result: &LlmGenerationResult) -> Option<&ContextEntryInput> {
+    let index = result.context_entries.iter().position(|entry| {
+        entry.provider_kind.as_deref() == Some(ANTHROPIC_MESSAGES_CITED_TEXT_PROVIDER_KIND)
+    })?;
+    let preceded_by_message = index > 0
+        && matches!(
+            result.context_entries[index - 1].kind,
+            ContextEntryKind::Message {
+                role: ContextMessageRole::Assistant
+            }
+        );
+    preceded_by_message.then(|| &result.context_entries[index])
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires ANTHROPIC_API_KEY and a model supporting hosted web search (costs real money)"]
+async fn anthropic_messages_live_adapter_uses_hosted_web_search() {
+    let blobs = Arc::new(InMemoryBlobStore::new());
+    let bundle = anthropic_messages_web_search_tool_bundle(&WebSearchToolConfig::default())
+        .expect("web search bundle")
+        .expect("enabled web search");
+    store_tool_documents(&blobs, &bundle.documents).await;
+    let input_ref = text_blob(
+        &blobs,
+        "Use web search to find Anthropic's current web search tool documentation. Reply with one short sourced sentence.",
+    )
+    .await;
+    let mut request = intent_request(
+        "live-anthropic-messages-web-search",
+        vec![user_entry(1, input_ref)],
+    );
+    request.tools = vec![bundle.spec];
+    request.tool_choice = Some(ToolChoice::Specific {
+        tool_name: ToolName::new("web_search"),
+    });
+    let adapter = AnthropicMessagesLlmAdapter::new(
+        retrying_anthropic_messages_client(live_client()),
+        blobs.clone(),
+    )
+    .with_debug_dumps(true);
+
+    let execution = adapter
+        .generate(generation_request(1, request))
+        .await
+        .expect("generate with hosted web search");
+
+    assert_hosted_web_result(&execution.result, "web search");
+    let cited = cited_text_blocks(&execution.result).expect("cited blocks");
+    let native_blocks = blobs
+        .read_text(&cited.content_ref)
+        .await
+        .expect("native blocks");
+    let native_blocks: Value = serde_json::from_str(&native_blocks).expect("native blocks JSON");
+    assert!(
+        native_blocks
+            .as_array()
+            .into_iter()
+            .flatten()
+            .flat_map(|block| {
+                block
+                    .get("citations")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+            })
+            .any(|citation| {
+                citation.get("type").and_then(Value::as_str) == Some("web_search_result_location")
+            }),
+        "expected native search citations in the retained blocks: {native_blocks}"
+    );
+    let provider_request =
+        provider_request_json(&blobs, &dumps(&execution).provider_request_ref).await;
+    assert_eq!(provider_request["tools"][0]["type"], "web_search_20250305");
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires ANTHROPIC_API_KEY and a model supporting hosted web fetch (costs real money)"]
+async fn anthropic_messages_live_adapter_uses_hosted_web_fetch() {
+    let blobs = Arc::new(InMemoryBlobStore::new());
+    let bundle = anthropic_messages_web_fetch_tool_bundle(&WebFetchToolConfig::enabled())
+        .expect("web fetch bundle")
+        .expect("enabled web fetch");
+    store_tool_documents(&blobs, &bundle.documents).await;
+    let input_ref = text_blob(
+        &blobs,
+        "Use web_fetch to read https://www.rfc-editor.org/rfc/rfc2606.txt. State which top-level domains it reserves and cite the fetched document.",
+    )
+    .await;
+    let mut request = intent_request(
+        "live-anthropic-messages-web-fetch",
+        vec![user_entry(1, input_ref)],
+    );
+    request.tools = vec![bundle.spec];
+    request.tool_choice = Some(ToolChoice::Specific {
+        tool_name: ToolName::new("web_fetch"),
+    });
+    let adapter = AnthropicMessagesLlmAdapter::new(
+        retrying_anthropic_messages_client(live_client()),
+        blobs.clone(),
+    )
+    .with_debug_dumps(true);
+
+    let execution = adapter
+        .generate(generation_request(1, request))
+        .await
+        .expect("generate with hosted web fetch");
+
+    assert_hosted_web_result(&execution.result, "web fetch");
+    let cited = cited_text_blocks(&execution.result).expect("cited blocks");
+    let native_blocks = blobs
+        .read_text(&cited.content_ref)
+        .await
+        .expect("native blocks");
+    let native_blocks: Value = serde_json::from_str(&native_blocks).expect("native blocks JSON");
+    assert!(
+        native_blocks
+            .as_array()
+            .into_iter()
+            .flatten()
+            .flat_map(|block| {
+                block
+                    .get("citations")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+            })
+            .any(|citation| citation.get("document_index").is_some()),
+        "expected document-located fetch citations in the retained blocks: {native_blocks}"
+    );
+    let provider_request =
+        provider_request_json(&blobs, &dumps(&execution).provider_request_ref).await;
+    assert_eq!(provider_request["tools"][0]["type"], "web_fetch_20250910");
+    assert_eq!(provider_request["tools"][0]["citations"]["enabled"], true);
 }
 
 /// 32x32 solid red PNG.

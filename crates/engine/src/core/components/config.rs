@@ -774,9 +774,12 @@ fn validate_web_feature(web: &WebFeature, api_kind: &ProviderApiKind) -> Result<
         ));
     }
     if let Some(search) = &web.search {
-        if api_kind != &ProviderApiKind::OpenAiResponses {
+        if !matches!(
+            api_kind,
+            ProviderApiKind::OpenAiResponses | ProviderApiKind::AnthropicMessages
+        ) {
             return Err(DomainError::ProviderCompatibility(format!(
-                "web search requires OpenAI Responses api kind, got {:?}",
+                "web search requires OpenAI Responses or Anthropic Messages api kind, got {:?}",
                 api_kind
             )));
         }
@@ -800,6 +803,15 @@ fn validate_web_feature(web: &WebFeature, api_kind: &ProviderApiKind) -> Result<
         {
             return Err(DomainError::InvariantViolation(
                 "web search blocked_domains must not contain empty entries".to_owned(),
+            ));
+        }
+        if api_kind == &ProviderApiKind::AnthropicMessages
+            && search.allowed_domains.is_some()
+            && !search.blocked_domains.is_empty()
+        {
+            return Err(DomainError::ProviderCompatibility(
+                "Anthropic web search accepts allowedDomains or blockedDomains, not both"
+                    .to_owned(),
             ));
         }
     }
@@ -1089,16 +1101,32 @@ mod tests {
     }
 
     #[test]
-    fn web_search_requires_openai_responses() {
+    fn web_search_accepts_anthropic_messages() {
         let mut config = config(ProviderApiKind::AnthropicMessages, None);
         config.features.web = Some(WebFeature {
             search: Some(WebSearchFeature::default()),
             ..WebFeature::default()
         });
 
+        config
+            .validate()
+            .expect("Anthropic web search is supported");
+    }
+
+    #[test]
+    fn anthropic_web_search_rejects_mixed_domain_filters() {
+        let mut config = config(ProviderApiKind::AnthropicMessages, None);
+        config.features.web = Some(WebFeature {
+            search: Some(WebSearchFeature {
+                allowed_domains: Some(vec!["docs.rs".to_owned()]),
+                blocked_domains: vec!["example.com".to_owned()],
+            }),
+            ..WebFeature::default()
+        });
+
         let error = config
             .validate()
-            .expect_err("web search should reject Anthropic");
+            .expect_err("Anthropic should reject mixed domain filters");
 
         assert!(matches!(error, DomainError::ProviderCompatibility(_)));
     }

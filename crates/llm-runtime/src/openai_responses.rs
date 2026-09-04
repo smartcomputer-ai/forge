@@ -6,12 +6,13 @@ use engine::{
     ContextCompactionResult, ContextCompactionStatus, ContextCompactionTask, ContextEntry,
     ContextEntryInput, ContextEntryKind, ContextMessageRole, LlmFinish, LlmGenerationFacts,
     LlmGenerationRequest, LlmGenerationResult, LlmGenerationStatus, LlmRequest, LlmUsage,
-    OPENAI_RESPONSES_COMPACTION_PROVIDER_KIND, OPENAI_RESPONSES_MCP_APPROVAL_REQUEST_PROVIDER_KIND,
-    OPENAI_RESPONSES_MCP_CALL_PROVIDER_KIND, OPENAI_RESPONSES_MCP_LIST_TOOLS_PROVIDER_KIND,
-    OPENAI_RESPONSES_WEB_SEARCH_CALL_PROVIDER_KIND, ObservedApprovalRequest, ObservedToolCall,
-    ProviderApiKind, ProviderNativeToolExecution, RemoteMcpApprovalPolicy, RemoteMcpExecution,
-    RemoteMcpExposure, RemoteMcpToolSpec, TokenEstimate, TokenEstimateQuality, ToolCallId,
-    ToolChoice, ToolKind, ToolName, ToolSpec, storage::BlobStore,
+    OPENAI_RESPONSES_CITED_TEXT_PROVIDER_KIND, OPENAI_RESPONSES_COMPACTION_PROVIDER_KIND,
+    OPENAI_RESPONSES_MCP_APPROVAL_REQUEST_PROVIDER_KIND, OPENAI_RESPONSES_MCP_CALL_PROVIDER_KIND,
+    OPENAI_RESPONSES_MCP_LIST_TOOLS_PROVIDER_KIND, OPENAI_RESPONSES_WEB_SEARCH_CALL_PROVIDER_KIND,
+    ObservedApprovalRequest, ObservedToolCall, ProviderApiKind, ProviderNativeToolExecution,
+    RemoteMcpApprovalPolicy, RemoteMcpExecution, RemoteMcpExposure, RemoteMcpToolSpec,
+    TokenEstimate, TokenEstimateQuality, ToolCallId, ToolChoice, ToolKind, ToolName, ToolSpec,
+    storage::BlobStore,
 };
 use llm_clients::{ApiResponse, openai::responses as oai};
 use serde_json::{Value, json};
@@ -366,7 +367,13 @@ async fn materialize_input_items(
     entries: &[ContextEntry],
 ) -> LlmAdapterResult<Vec<oai::ResponseInputItem>> {
     let mut input: Vec<oai::ResponseInputItem> = Vec::with_capacity(entries.len());
-    for item in entries {
+    for (index, item) in entries.iter().enumerate() {
+        // The exact cited item follows the assistant message it came from
+        // and replays in its place, so the neutral text is skipped. Without
+        // it (a truncated turn, or a removed entry) the text replays as is.
+        if replaced_by_cited_item(item, entries.get(index + 1)) {
+            continue;
+        }
         let next = materialize_input_item(blobs, item).await?;
         // Consecutive same-role USER messages (for example an image entry
         // plus its caption) fold into one message with multiple content
@@ -536,6 +543,21 @@ async fn materialize_input_item(
             "approve": approve,
         }))),
     }
+}
+
+/// True when `entry` is the neutral text of an assistant message and `next`
+/// carries that message's exact provider item.
+fn replaced_by_cited_item(entry: &ContextEntry, next: Option<&ContextEntry>) -> bool {
+    matches!(
+        entry.kind,
+        ContextEntryKind::Message {
+            role: ContextMessageRole::Assistant
+        }
+    ) && next.is_some_and(|next| {
+        matches!(next.kind, ContextEntryKind::ProviderOpaque)
+            && next.provider_kind.as_deref() == Some(OPENAI_RESPONSES_CITED_TEXT_PROVIDER_KIND)
+            && next.source == entry.source
+    })
 }
 
 fn is_openai_raw_item(item: &ContextEntry) -> bool {
@@ -862,11 +884,10 @@ pub async fn result_from_response(
         let raw_item = raw_output_item(&response.raw_json, index, item)?;
         match item.r#type.as_str() {
             "message" => {
-                if let Some(context_entry) =
-                    assistant_context_entry(blobs, request, item, &response.parsed).await?
-                {
-                    context_entries.push(context_entry);
-                }
+                context_entries.extend(
+                    assistant_context_entries(blobs, request, item, &response.parsed, raw_item)
+                        .await?,
+                );
             }
             "function_call" => {
                 let (context_entry, tool_call) =
@@ -1132,12 +1153,13 @@ fn raw_output_item(
     })
 }
 
-async fn assistant_context_entry(
+async fn assistant_context_entries(
     blobs: &dyn BlobStore,
     _request: &LlmGenerationRequest,
     item: &oai::ResponseOutputItem,
     response: &oai::Response,
-) -> LlmAdapterResult<Option<ContextEntryInput>> {
+    raw_item: Value,
+) -> LlmAdapterResult<Vec<ContextEntryInput>> {
     let text = item
         .content
         .iter()
@@ -1174,11 +1196,11 @@ async fn assistant_context_entry(
         (text, PROVIDER_KIND_MESSAGE)
     };
     if text.is_empty() {
-        return Ok(None);
+        return Ok(Vec::new());
     }
 
     let content_ref = put_text(blobs, &text).await?;
-    Ok(Some(ContextEntryInput {
+    let mut entries = vec![ContextEntryInput {
         kind: ContextEntryKind::Message {
             role: ContextMessageRole::Assistant,
         },
@@ -1188,7 +1210,38 @@ async fn assistant_context_entry(
         provider_kind: Some(provider_kind.to_string()),
         provider_item_id: item.id.clone(),
         token_estimate: None,
-    }))
+    }];
+    // URL citations are annotations on the exact output item, so a cited
+    // message is followed by that item: it replays in place of the neutral
+    // text, and the API projects its sources onto the message.
+    if has_url_citations(&raw_item) {
+        entries.push(ContextEntryInput {
+            kind: ContextEntryKind::ProviderOpaque,
+            content_ref: put_json(blobs, &raw_item).await?,
+            media_type: Some(MEDIA_TYPE_JSON.to_owned()),
+            preview: Some("OpenAI Responses cited text".to_owned()),
+            provider_kind: Some(OPENAI_RESPONSES_CITED_TEXT_PROVIDER_KIND.to_owned()),
+            provider_item_id: item.id.clone(),
+            token_estimate: None,
+        });
+    }
+    Ok(entries)
+}
+
+fn has_url_citations(raw_item: &Value) -> bool {
+    raw_item
+        .get("content")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|part| part.get("type").and_then(Value::as_str) == Some("output_text"))
+        .flat_map(|part| {
+            part.get("annotations")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+        })
+        .any(|annotation| annotation.get("type").and_then(Value::as_str) == Some("url_citation"))
 }
 
 async fn function_call_context(
@@ -2945,6 +2998,98 @@ mod tests {
             .await
             .expect("raw item");
         assert_eq!(retained, raw_item);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn cited_message_is_followed_by_its_exact_item_which_replays() {
+        let blobs = InMemoryBlobStore::new();
+        let raw_item = json!({
+            "id": "msg_1",
+            "type": "message",
+            "role": "assistant",
+            "status": "completed",
+            "content": [{
+                "type": "output_text",
+                "text": "OpenAI has citations.",
+                "annotations": [{
+                    "type": "url_citation",
+                    "start_index": 11,
+                    "end_index": 20,
+                    "url": "https://example.com/source",
+                    "title": "Example source"
+                }]
+            }]
+        });
+        let raw_json = json!({
+            "id": "resp_1",
+            "status": "completed",
+            "output": [raw_item.clone()]
+        });
+        let response = ApiResponse {
+            parsed: serde_json::from_value(raw_json.clone()).expect("response"),
+            raw_json,
+            status: 200,
+            headers: HeaderSnapshot::default(),
+        };
+        let request = LlmGenerationRequest {
+            session_id: SessionId::new("session-a"),
+            run_id: RunId::new(1),
+            turn_id: TurnId::new(1),
+            request: intent_request(Vec::new()),
+        };
+
+        let result = result_from_response(&blobs, &request, &response)
+            .await
+            .expect("result");
+
+        assert_eq!(result.context_entries.len(), 2);
+        let message = &result.context_entries[0];
+        assert!(matches!(
+            message.kind,
+            ContextEntryKind::Message {
+                role: ContextMessageRole::Assistant
+            }
+        ));
+        assert_eq!(
+            message.provider_kind.as_deref(),
+            Some(PROVIDER_KIND_MESSAGE)
+        );
+        assert_eq!(message.preview.as_deref(), Some("OpenAI has citations."));
+        let cited = &result.context_entries[1];
+        assert!(matches!(cited.kind, ContextEntryKind::ProviderOpaque));
+        assert_eq!(
+            cited.provider_kind.as_deref(),
+            Some(OPENAI_RESPONSES_CITED_TEXT_PROVIDER_KIND)
+        );
+        assert_eq!(
+            read_json(&blobs, &cited.content_ref)
+                .await
+                .expect("native cited item"),
+            raw_item
+        );
+
+        let retained = result
+            .context_entries
+            .iter()
+            .enumerate()
+            .map(|(index, entry)| retained_context_entry(index, entry))
+            .collect::<Vec<_>>();
+        let input = materialize_input_items(&blobs, &retained)
+            .await
+            .expect("materialize cited output");
+        assert_eq!(
+            serde_json::to_value(input).expect("input JSON"),
+            json!([raw_item])
+        );
+
+        // Without its exact item (a truncated turn keeps only the text), the
+        // message replays as plain assistant text.
+        let input = materialize_input_items(&blobs, &retained[..1])
+            .await
+            .expect("materialize plain output");
+        let input = serde_json::to_value(input).expect("input JSON");
+        assert_eq!(input[0]["role"], "assistant");
+        assert_eq!(input[0]["content"], "OpenAI has citations.");
     }
 
     #[tokio::test(flavor = "current_thread")]

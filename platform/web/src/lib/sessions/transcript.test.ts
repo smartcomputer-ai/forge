@@ -110,6 +110,73 @@ describe("session transcript traces", () => {
     ]);
   });
 
+  it("renders citations projected on an assistant message", () => {
+    const state = applyEvents(emptyTranscript(), [
+      event(1, {
+        type: "contextEntriesApplied",
+        entries: [
+          item("answer", { type: "message", role: "assistant" }, {
+            text: "A sourced answer.",
+            citations: [{
+              url: "https://example.com/source",
+              title: "Example source",
+              citedText: "A sourced answer",
+            }],
+          }),
+          item("search-result", { type: "providerOpaque" }),
+        ],
+      }),
+    ]);
+
+    expect(state.entries).toEqual([{
+      kind: "message",
+      key: "answer",
+      role: "assistant",
+      text: "A sourced answer.",
+      contentRef: "sha256:answer",
+      textTruncated: false,
+      citations: [{
+        url: "https://example.com/source",
+        title: "Example source",
+        citedText: "A sourced answer",
+      }],
+    }]);
+  });
+
+  it("ignores opaque entries that carry no display", () => {
+    const state = applyEvents(emptyTranscript(), [
+      event(1, {
+        type: "contextEntriesApplied",
+        entries: [
+          item("answer", { type: "message", role: "assistant" }, {
+            text: "A fetched answer.",
+            citations: [{
+              url: "https://example.com/fetched",
+              title: "Fetched source",
+              citedText: "A fetched answer",
+            }],
+          }),
+          item("server-tool-use", { type: "providerOpaque" }),
+          item("server-tool-result", { type: "providerOpaque" }),
+        ],
+      }),
+    ]);
+
+    expect(state.entries).toEqual([{
+      kind: "message",
+      key: "answer",
+      role: "assistant",
+      text: "A fetched answer.",
+      contentRef: "sha256:answer",
+      textTruncated: false,
+      citations: [{
+        url: "https://example.com/fetched",
+        title: "Fetched source",
+        citedText: "A fetched answer",
+      }],
+    }]);
+  });
+
   it("merges context calls, batch metadata, results, and status into one group", () => {
     const state = applyEvents(emptyTranscript(), [
       event(1, {

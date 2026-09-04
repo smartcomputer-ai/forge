@@ -12,7 +12,8 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use engine::{
-    ANTHROPIC_MESSAGES_COMPACTION_PROVIDER_KIND, ANTHROPIC_MESSAGES_MCP_TOOL_RESULT_PROVIDER_KIND,
+    ANTHROPIC_MESSAGES_CITED_TEXT_PROVIDER_KIND, ANTHROPIC_MESSAGES_COMPACTION_PROVIDER_KIND,
+    ANTHROPIC_MESSAGES_MCP_TOOL_RESULT_PROVIDER_KIND,
     ANTHROPIC_MESSAGES_MCP_TOOL_USE_PROVIDER_KIND,
     ANTHROPIC_MESSAGES_SERVER_TOOL_RESULT_PROVIDER_KIND,
     ANTHROPIC_MESSAGES_SERVER_TOOL_USE_PROVIDER_KIND, CompactionPolicy, ContextCompactionRequest,
@@ -68,6 +69,10 @@ const MEDIA_TYPE_TEXT: &str = "text/plain";
 /// every current model's output ceiling; the session's `maxOutputTokens` is
 /// the knob for tighter bounds.
 const DEFAULT_MAX_OUTPUT_TOKENS: u64 = 32_768;
+/// Bound the provider's server-tool continuation loop. Anthropic explicitly
+/// permits repeated `pause_turn` responses, so an unbounded adapter loop would
+/// turn one durable activity into an uncontrolled sequence of billed calls.
+const MAX_PAUSE_TURN_CONTINUATIONS: usize = 8;
 /// Summary budget for summarization-based compaction when the task carries no
 /// `target_tokens`.
 const DEFAULT_COMPACTION_MAX_TOKENS: u64 = 2048;
@@ -195,24 +200,63 @@ impl LlmGenerationAdapter for AnthropicMessagesLlmAdapter {
         }
 
         let provider_request = self.materialize_create_request(&request.request).await?;
-        let (send_request, redacted_request) =
+        let (mut send_request, mut redacted_request) =
             inject_remote_mcp_auth(self.secrets.as_ref(), &request.request, provider_request)
                 .await?;
         let provider =
             resolve_model_provider(self.provider_keys.as_ref(), &request.request.model).await?;
-        let request_dump = debug_dump_request(self.debug_dumps, &redacted_request)?;
-        let response = self
-            .client
-            .create(
-                send_request,
-                provider.as_ref().map(|provider| provider.as_request_auth()),
+        let mut request_dumps = Vec::new();
+        let mut responses = Vec::new();
+        loop {
+            if let Some(dump) = debug_dump_request(self.debug_dumps, &redacted_request)? {
+                request_dumps.push(dump);
+            }
+            let response = self
+                .client
+                .create(
+                    send_request.clone(),
+                    provider.as_ref().map(|provider| provider.as_request_auth()),
+                )
+                .await?;
+            let paused = response.parsed.stop_reason == Some(am::StopReason::PauseTurn);
+            if paused && responses.len() >= MAX_PAUSE_TURN_CONTINUATIONS {
+                return Err(LlmAdapterError::InvalidProviderRequest {
+                    message: format!(
+                        "Anthropic server-tool turn exceeded {} pause_turn continuations",
+                        MAX_PAUSE_TURN_CONTINUATIONS
+                    ),
+                });
+            }
+            if paused {
+                let paused_message = paused_assistant_message(&response.raw_json)?;
+                send_request.messages.push(paused_message.clone());
+                redacted_request.messages.push(paused_message);
+            }
+            responses.push(response);
+            if !paused {
+                break;
+            }
+        }
+        let result = result_from_responses(self.blobs.as_ref(), &request, &responses).await?;
+        let request_dump = match request_dumps.len() {
+            0 => None,
+            1 => request_dumps.pop(),
+            _ => Some(Value::Array(request_dumps)),
+        };
+        let raw_response_dump = if responses.len() == 1 {
+            responses[0].raw_json.clone()
+        } else {
+            Value::Array(
+                responses
+                    .iter()
+                    .map(|response| response.raw_json.clone())
+                    .collect(),
             )
-            .await?;
-        let result = result_from_response(self.blobs.as_ref(), &request, &response).await?;
+        };
         let debug_dumps = store_debug_dumps(
             self.blobs.as_ref(),
             request_dump,
-            &response.raw_json,
+            &raw_response_dump,
             &request,
             "anthropic_messages",
         )
@@ -223,6 +267,20 @@ impl LlmGenerationAdapter for AnthropicMessagesLlmAdapter {
             debug_dumps,
         })
     }
+}
+
+fn paused_assistant_message(raw_response: &Value) -> LlmAdapterResult<am::MessageParam> {
+    let blocks = raw_response
+        .get("content")
+        .and_then(Value::as_array)
+        .ok_or_else(|| LlmAdapterError::InvalidProviderRequest {
+            message: "Anthropic pause_turn response is missing a content array".to_owned(),
+        })?
+        .iter()
+        .cloned()
+        .map(am::ContentBlockParam::Raw)
+        .collect();
+    Ok(am::MessageParam::assistant(blocks))
 }
 
 #[async_trait]
@@ -494,7 +552,12 @@ fn tool_is_deferred(tool: &am::Tool) -> bool {
 fn adapter_owned_raw_tool(value: &Value) -> bool {
     matches!(
         value.get("type").and_then(Value::as_str),
-        Some(MCP_TOOLSET_TYPE | TOOL_SEARCH_TOOL_TYPE)
+        Some(
+            MCP_TOOLSET_TYPE
+                | TOOL_SEARCH_TOOL_TYPE
+                | tools::web::search::ANTHROPIC_MESSAGES_WEB_SEARCH_TYPE
+                | tools::web::fetch::ANTHROPIC_MESSAGES_WEB_FETCH_TYPE
+        )
     )
 }
 
@@ -517,6 +580,12 @@ fn place_message_breakpoint(messages: &mut [am::MessageParam], cache_control: &V
             am::ContentBlockParam::ToolResult(block) => &mut block.cache_control,
             am::ContentBlockParam::Raw(value) => {
                 if let Some(object) = value.as_object_mut()
+                    // Anthropic requires cited text blocks (including opaque
+                    // encrypted indexes) to be replayed unchanged.
+                    && !object
+                        .get("citations")
+                        .and_then(Value::as_array)
+                        .is_some_and(|citations| !citations.is_empty())
                     && object
                         .get("type")
                         .and_then(Value::as_str)
@@ -553,7 +622,7 @@ async fn materialize_messages(
     entries: &[ContextEntry],
 ) -> LlmAdapterResult<Vec<am::MessageParam>> {
     let mut messages: Vec<am::MessageParam> = Vec::new();
-    for entry in entries {
+    for (index, entry) in entries.iter().enumerate() {
         if is_raw_input_message(entry) {
             let (role, blocks) = materialize_input_message(blobs, entry).await?;
             for block in blocks {
@@ -561,10 +630,57 @@ async fn materialize_messages(
             }
             continue;
         }
+        // The exact cited blocks follow the assistant message they came from
+        // and replay in its place, so the neutral text is skipped. Without
+        // them (a truncated turn, or a removed entry) the text replays as is.
+        if replaced_by_cited_blocks(entry, entries.get(index + 1)) {
+            continue;
+        }
+        if is_cited_text_blocks(entry) {
+            for block in cited_text_blocks(blobs, entry).await? {
+                push_block(
+                    &mut messages,
+                    am::MessageRole::Assistant,
+                    am::ContentBlockParam::Raw(block),
+                )?;
+            }
+            continue;
+        }
         let (role, block) = materialize_block(blobs, entry).await?;
         push_block(&mut messages, role, block)?;
     }
     Ok(messages)
+}
+
+fn is_cited_text_blocks(entry: &ContextEntry) -> bool {
+    matches!(entry.kind, ContextEntryKind::ProviderOpaque)
+        && entry.provider_kind.as_deref() == Some(ANTHROPIC_MESSAGES_CITED_TEXT_PROVIDER_KIND)
+}
+
+/// True when `entry` is the neutral text of an assistant message and `next`
+/// carries that message's exact provider blocks.
+fn replaced_by_cited_blocks(entry: &ContextEntry, next: Option<&ContextEntry>) -> bool {
+    matches!(
+        entry.kind,
+        ContextEntryKind::Message {
+            role: ContextMessageRole::Assistant
+        }
+    ) && next.is_some_and(|next| is_cited_text_blocks(next) && next.source == entry.source)
+}
+
+async fn cited_text_blocks(
+    blobs: &dyn BlobStore,
+    entry: &ContextEntry,
+) -> LlmAdapterResult<Vec<Value>> {
+    match read_json(blobs, &entry.content_ref).await? {
+        Value::Array(blocks) => Ok(blocks),
+        _ => Err(LlmAdapterError::InvalidProviderRequest {
+            message: format!(
+                "Anthropic cited text entry {} must carry a content block array",
+                entry.entry_id
+            ),
+        }),
+    }
 }
 
 fn push_block(
@@ -1082,15 +1198,19 @@ pub async fn result_from_response(
 
     let mut context_entries = Vec::new();
     let mut tool_calls = Vec::new();
+    // Consecutive text blocks form one assistant message; any other block
+    // between them ends the run, so replay keeps the provider's block order.
+    let mut text_run: Vec<Value> = Vec::new();
 
     for (index, block) in response.parsed.content.iter().enumerate() {
         let raw_block = raw_content_block(&response.raw_json, index, block)?;
+        if block.r#type == "text" {
+            text_run.push(raw_block);
+            continue;
+        }
+        context_entries
+            .extend(text_run_context_entries(blobs, std::mem::take(&mut text_run)).await?);
         match block.r#type.as_str() {
-            "text" => {
-                if let Some(entry) = text_context_entry(blobs, block).await? {
-                    context_entries.push(entry);
-                }
-            }
             "tool_use" => {
                 let (entry, tool_call) = tool_use_context(blobs, block, raw_block, index).await?;
                 context_entries.push(entry);
@@ -1104,6 +1224,7 @@ pub async fn result_from_response(
             }
         }
     }
+    context_entries.extend(text_run_context_entries(blobs, text_run).await?);
 
     let usage = response.parsed.usage.as_ref().map(llm_usage);
     let context_token_estimate =
@@ -1170,6 +1291,79 @@ pub async fn result_from_response(
             context_token_estimate,
         },
     })
+}
+
+async fn result_from_responses(
+    blobs: &dyn BlobStore,
+    request: &LlmGenerationRequest,
+    responses: &[ApiResponse<am::Message>],
+) -> LlmAdapterResult<LlmGenerationResult> {
+    let mut combined: Option<LlmGenerationResult> = None;
+    for response in responses {
+        let mut part = result_from_response(blobs, request, response).await?;
+        if part.status == LlmGenerationStatus::Failed {
+            if let Some(previous) = combined {
+                let mut usage = previous.facts.usage;
+                merge_llm_usage(&mut usage, part.facts.usage.as_ref());
+                part.facts.usage = usage;
+            }
+            // A refused or truncated continuation is not a complete provider
+            // turn. Keep its normal partial-output policy and do not commit
+            // earlier server-tool blocks that cannot safely be replayed.
+            return Ok(part);
+        }
+        match &mut combined {
+            None => combined = Some(part),
+            Some(total) => {
+                total.context_entries.extend(part.context_entries);
+                total
+                    .facts
+                    .tool_calls
+                    .extend(part.facts.tool_calls.into_iter());
+                total
+                    .facts
+                    .approval_requests
+                    .extend(part.facts.approval_requests.into_iter());
+                merge_llm_usage(&mut total.facts.usage, part.facts.usage.as_ref());
+                total.status = part.status;
+                total.failure_ref = part.failure_ref;
+                total.facts.provider_response_id = part.facts.provider_response_id;
+                total.facts.finish = part.facts.finish;
+                total.facts.context_token_estimate = part.facts.context_token_estimate;
+            }
+        }
+    }
+    combined.ok_or_else(|| LlmAdapterError::InvalidProviderRequest {
+        message: "Anthropic generation produced no responses".to_owned(),
+    })
+}
+
+fn merge_llm_usage(total: &mut Option<LlmUsage>, next: Option<&LlmUsage>) {
+    let Some(next) = next else {
+        return;
+    };
+    let Some(total) = total.as_mut() else {
+        *total = Some(next.clone());
+        return;
+    };
+    fn add(total: &mut Option<u32>, next: Option<u32>) {
+        if let Some(next) = next {
+            *total = Some(total.unwrap_or_default().saturating_add(next));
+        }
+    }
+    add(&mut total.input_tokens, next.input_tokens);
+    add(&mut total.output_tokens, next.output_tokens);
+    add(&mut total.reasoning_tokens, next.reasoning_tokens);
+    add(&mut total.total_tokens, next.total_tokens);
+    add(&mut total.cached_input_tokens, next.cached_input_tokens);
+    add(
+        &mut total.cache_write_input_tokens,
+        next.cache_write_input_tokens,
+    );
+    add(
+        &mut total.cache_miss_input_tokens,
+        next.cache_miss_input_tokens,
+    );
 }
 
 /// A `refusal` stop is terminal for the turn: the provider's safety
@@ -1292,25 +1486,53 @@ fn raw_content_block(
     })
 }
 
-async fn text_context_entry(
+/// One assistant message from a run of consecutive `text` blocks. The neutral
+/// text is their exact concatenation. When any block carries citations the
+/// run is also kept verbatim in a following provider-opaque entry, so replay
+/// returns the provider's own blocks, encrypted citation indexes included, and
+/// the API projects the sources onto the message.
+async fn text_run_context_entries(
     blobs: &dyn BlobStore,
-    block: &am::ContentBlock,
-) -> LlmAdapterResult<Option<ContextEntryInput>> {
-    let Some(text) = block.text.as_deref().filter(|text| !text.is_empty()) else {
-        return Ok(None);
-    };
-    let content_ref = put_text(blobs, text).await?;
-    Ok(Some(ContextEntryInput {
+    blocks: Vec<Value>,
+) -> LlmAdapterResult<Vec<ContextEntryInput>> {
+    let text = blocks
+        .iter()
+        .filter_map(|block| block.get("text").and_then(Value::as_str))
+        .collect::<String>();
+    if text.is_empty() {
+        return Ok(Vec::new());
+    }
+    let content_ref = put_text(blobs, text.as_str()).await?;
+    let mut entries = vec![ContextEntryInput {
         kind: ContextEntryKind::Message {
             role: ContextMessageRole::Assistant,
         },
         content_ref,
         media_type: Some(MEDIA_TYPE_TEXT.to_owned()),
-        preview: Some(text.to_owned()),
+        preview: Some(text),
         provider_kind: Some(PROVIDER_KIND_TEXT.to_owned()),
         provider_item_id: None,
         token_estimate: None,
-    }))
+    }];
+    if blocks.iter().any(has_citations) {
+        entries.push(ContextEntryInput {
+            kind: ContextEntryKind::ProviderOpaque,
+            content_ref: put_json(blobs, &Value::Array(blocks)).await?,
+            media_type: Some(MEDIA_TYPE_JSON.to_owned()),
+            preview: Some("Anthropic Messages cited text".to_owned()),
+            provider_kind: Some(ANTHROPIC_MESSAGES_CITED_TEXT_PROVIDER_KIND.to_owned()),
+            provider_item_id: None,
+            token_estimate: None,
+        });
+    }
+    Ok(entries)
+}
+
+fn has_citations(block: &Value) -> bool {
+    block
+        .get("citations")
+        .and_then(Value::as_array)
+        .is_some_and(|citations| !citations.is_empty())
 }
 
 async fn tool_use_context(
@@ -1481,7 +1703,7 @@ fn u64_to_u32(value: u64) -> u32 {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, VecDeque};
     use std::sync::{Arc, Mutex};
 
     use engine::{
@@ -1545,11 +1767,53 @@ mod tests {
         let value = serde_json::to_value(tools).expect("tools json");
         assert_eq!(value[0]["name"], "mcp_docs__read");
     }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn materialize_create_request_lowers_anthropic_hosted_web_tools() {
+        let blobs = InMemoryBlobStore::new();
+        let mut config = tools::toolset::ToolsetConfig::empty();
+        config.web.search = Some(tools::web::search::WebSearchToolConfig::new(
+            vec!["example.com".to_owned()],
+            Vec::new(),
+        ));
+        config.web.fetch = true;
+        let target = tools::runtime::ToolTarget::api_kind(ProviderApiKind::AnthropicMessages);
+        let resolved = tools::toolset::resolve_toolset(
+            tools::toolset::ToolsetEnvironment { target: &target },
+            &config,
+        )
+        .expect("resolve hosted web tools");
+        for document in resolved.documents {
+            let stored = blobs
+                .put_bytes(document.bytes)
+                .await
+                .expect("store tool document");
+            assert_eq!(stored, document.blob_ref);
+        }
+        let mut request = intent_request(Vec::new());
+        request.tools = resolved.tools.into_values().collect();
+
+        let value = serde_json::to_value(
+            materialize_create_request(&blobs, &request)
+                .await
+                .expect("materialize hosted web tools"),
+        )
+        .expect("json");
+
+        assert_eq!(value["tools"][0]["type"], "web_fetch_20250910");
+        assert_eq!(value["tools"][0]["citations"]["enabled"], true);
+        assert_eq!(value["tools"][1]["type"], "web_search_20250305");
+        assert_eq!(value["tools"][1]["allowed_domains"], json!(["example.com"]));
+        assert_eq!(
+            value["tools"][1]["cache_control"],
+            json!({ "type": "ephemeral" })
+        );
+    }
     use crate::executor::{LlmAdapterRegistry, LlmRuntime};
     use crate::params::{AnthropicMessagesParams, AnthropicThinkingConfig};
 
     struct FakeAnthropicMessagesApi {
-        response: ApiResponse<am::Message>,
+        responses: Mutex<VecDeque<ApiResponse<am::Message>>>,
         seen: Mutex<Vec<am::CreateMessageRequest>>,
         seen_api_keys: Mutex<Vec<Option<String>>>,
     }
@@ -1574,18 +1838,35 @@ mod tests {
                 .lock()
                 .expect("lock")
                 .push(observed_auth(auth));
-            Ok(self.response.clone())
+            self.responses
+                .lock()
+                .expect("lock")
+                .pop_front()
+                .ok_or_else(|| {
+                    llm_clients::LlmApiError::Decode(llm_clients::DecodeError::new(
+                        "fake Anthropic response queue exhausted",
+                    ))
+                })
         }
     }
 
     fn fake_api(raw_json: Value) -> Arc<FakeAnthropicMessagesApi> {
+        fake_api_sequence(vec![raw_json])
+    }
+
+    fn fake_api_sequence(raw_responses: Vec<Value>) -> Arc<FakeAnthropicMessagesApi> {
         Arc::new(FakeAnthropicMessagesApi {
-            response: ApiResponse {
-                parsed: serde_json::from_value(raw_json.clone()).expect("message"),
-                raw_json,
-                status: 200,
-                headers: HeaderSnapshot::default(),
-            },
+            responses: Mutex::new(
+                raw_responses
+                    .into_iter()
+                    .map(|raw_json| ApiResponse {
+                        parsed: serde_json::from_value(raw_json.clone()).expect("message"),
+                        raw_json,
+                        status: 200,
+                        headers: HeaderSnapshot::default(),
+                    })
+                    .collect(),
+            ),
             seen: Mutex::new(Vec::new()),
             seen_api_keys: Mutex::new(Vec::new()),
         })
@@ -2533,6 +2814,75 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn generate_continues_pause_turn_with_exact_assistant_blocks_and_merges_usage() {
+        let paused_content = json!([
+            {
+                "type": "server_tool_use",
+                "id": "srvtoolu_1",
+                "name": "web_search",
+                "input": { "query": "lightspeed agent runtime" }
+            },
+            {
+                "type": "web_search_tool_result",
+                "tool_use_id": "srvtoolu_1",
+                "content": [{
+                    "type": "web_search_result",
+                    "url": "https://example.com",
+                    "encrypted_content": "opaque-result"
+                }]
+            }
+        ]);
+        let api = fake_api_sequence(vec![
+            json!({
+                "id": "msg_paused",
+                "type": "message",
+                "role": "assistant",
+                "model": "claude-opus-4-8",
+                "stop_reason": "pause_turn",
+                "content": paused_content.clone(),
+                "usage": { "input_tokens": 10, "output_tokens": 2 }
+            }),
+            json!({
+                "id": "msg_final",
+                "type": "message",
+                "role": "assistant",
+                "model": "claude-opus-4-8",
+                "stop_reason": "end_turn",
+                "content": [{ "type": "text", "text": "Found it." }],
+                "usage": { "input_tokens": 20, "output_tokens": 3 }
+            }),
+        ]);
+        let blobs = Arc::new(InMemoryBlobStore::new());
+        let adapter = AnthropicMessagesLlmAdapter::new(api.clone(), blobs);
+        let request = LlmGenerationRequest {
+            session_id: SessionId::new("session-a"),
+            run_id: RunId::new(1),
+            turn_id: TurnId::new(1),
+            request: intent_request(Vec::new()),
+        };
+
+        let execution = LlmGenerationAdapter::generate(&adapter, request)
+            .await
+            .expect("continue paused server-tool turn");
+
+        let sent = api.seen.lock().expect("lock");
+        assert_eq!(sent.len(), 2);
+        let followup = serde_json::to_value(&sent[1]).expect("follow-up request");
+        assert_eq!(followup["messages"][0]["role"], "assistant");
+        assert_eq!(followup["messages"][0]["content"], paused_content);
+        assert_eq!(execution.result.facts.finish, LlmFinish::Stop);
+        assert_eq!(
+            execution.result.facts.provider_response_id.as_deref(),
+            Some("msg_final")
+        );
+        let usage = execution.result.facts.usage.expect("combined usage");
+        assert_eq!(usage.input_tokens, Some(30));
+        assert_eq!(usage.output_tokens, Some(5));
+        assert_eq!(usage.total_tokens, Some(35));
+        assert_eq!(execution.result.context_entries.len(), 3);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn generate_omits_optional_unbound_remote_mcp_authorization() {
         let blobs = Arc::new(InMemoryBlobStore::new());
         let api = fake_api(completed_text_response_json());
@@ -3017,6 +3367,253 @@ mod tests {
             .expect("raw server tool use");
         assert_eq!(retained, server_tool_use);
         assert_eq!(result.facts.finish, LlmFinish::Stop);
+    }
+
+    fn assistant_response(content: Value, stop_reason: &str) -> ApiResponse<am::Message> {
+        let raw_json = json!({
+            "id": "msg_1",
+            "type": "message",
+            "role": "assistant",
+            "stop_reason": stop_reason,
+            "content": content
+        });
+        ApiResponse {
+            parsed: serde_json::from_value(raw_json.clone()).expect("message"),
+            raw_json,
+            status: 200,
+            headers: HeaderSnapshot::default(),
+        }
+    }
+
+    async fn replayed_content(blobs: &InMemoryBlobStore, result: &LlmGenerationResult) -> Value {
+        let entries = result
+            .context_entries
+            .iter()
+            .enumerate()
+            .map(|(index, item)| retained_context_entry(index, item))
+            .collect();
+        let replayed = materialize_create_request(blobs, &intent_request(entries))
+            .await
+            .expect("replay assistant output");
+        let mut content =
+            serde_json::to_value(replayed).expect("json")["messages"][0]["content"].clone();
+        // The adapter's cache breakpoint lands on the last replayed block; it
+        // is request policy, not part of the provider's retained blocks.
+        for block in content.as_array_mut().into_iter().flatten() {
+            if let Some(block) = block.as_object_mut() {
+                block.remove("cache_control");
+            }
+        }
+        content
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn cited_text_run_is_one_message_followed_by_its_exact_blocks() {
+        let blobs = InMemoryBlobStore::new();
+        let blocks = json!([
+            { "type": "text", "text": "The big one is " },
+            {
+                "type": "text",
+                "text": "documented here",
+                "citations": [{
+                    "type": "web_search_result_location",
+                    "url": "https://example.com/docs",
+                    "title": "Lightspeed docs",
+                    "encrypted_index": "opaque-index",
+                    "cited_text": "documented here"
+                }]
+            },
+            { "type": "text", "text": "." }
+        ]);
+        let response = assistant_response(blocks.clone(), "end_turn");
+
+        let result = result_from_response(&blobs, &generation_request(), &response)
+            .await
+            .expect("result");
+
+        assert_eq!(result.context_entries.len(), 2);
+        let message = &result.context_entries[0];
+        assert!(matches!(
+            message.kind,
+            ContextEntryKind::Message {
+                role: ContextMessageRole::Assistant
+            }
+        ));
+        assert_eq!(
+            read_text(&blobs, &message.content_ref).await.expect("text"),
+            "The big one is documented here."
+        );
+        let cited = &result.context_entries[1];
+        assert!(matches!(cited.kind, ContextEntryKind::ProviderOpaque));
+        assert_eq!(
+            cited.provider_kind.as_deref(),
+            Some(ANTHROPIC_MESSAGES_CITED_TEXT_PROVIDER_KIND)
+        );
+        assert_eq!(
+            read_json(&blobs, &cited.content_ref)
+                .await
+                .expect("cited blocks"),
+            blocks
+        );
+        assert_eq!(replayed_content(&blobs, &result).await, blocks);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn server_tool_blocks_split_text_runs_and_keep_block_order() {
+        let blobs = InMemoryBlobStore::new();
+        let server_tool_use = json!({
+            "type": "server_tool_use",
+            "id": "srvtoolu_1",
+            "name": "web_search",
+            "input": { "query": "lightspeed" }
+        });
+        let server_tool_result = json!({
+            "type": "web_search_tool_result",
+            "tool_use_id": "srvtoolu_1",
+            "content": [{
+                "type": "web_search_result",
+                "url": "https://example.com",
+                "title": "Example",
+                "encrypted_content": "opaque-result"
+            }]
+        });
+        let response = assistant_response(
+            json!([
+                { "type": "text", "text": "I'll look that up." },
+                server_tool_use,
+                server_tool_result,
+                { "type": "text", "text": "Found it." }
+            ]),
+            "end_turn",
+        );
+
+        let result = result_from_response(&blobs, &generation_request(), &response)
+            .await
+            .expect("result");
+
+        let kinds = result
+            .context_entries
+            .iter()
+            .map(|entry| entry.kind.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            kinds,
+            vec![
+                ContextEntryKind::Message {
+                    role: ContextMessageRole::Assistant
+                },
+                ContextEntryKind::ProviderOpaque,
+                ContextEntryKind::ProviderOpaque,
+                ContextEntryKind::Message {
+                    role: ContextMessageRole::Assistant
+                },
+            ]
+        );
+        assert_eq!(
+            result.context_entries[0].preview.as_deref(),
+            Some("I'll look that up.")
+        );
+        assert_eq!(
+            result.context_entries[3].preview.as_deref(),
+            Some("Found it.")
+        );
+        assert!(result.context_entries.iter().all(|entry| {
+            entry.provider_kind.as_deref() != Some(ANTHROPIC_MESSAGES_CITED_TEXT_PROVIDER_KIND)
+        }));
+
+        let replayed = replayed_content(&blobs, &result).await;
+        assert_eq!(replayed[0]["text"], "I'll look that up.");
+        assert_eq!(replayed[1], server_tool_use);
+        assert_eq!(replayed[2], server_tool_result);
+        assert_eq!(replayed[3]["text"], "Found it.");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn fetch_result_and_cited_blocks_replay_in_order() {
+        let blobs = InMemoryBlobStore::new();
+        let fetched_result = json!({
+            "type": "web_fetch_tool_result",
+            "tool_use_id": "srvtoolu_1",
+            "content": {
+                "type": "web_fetch_result",
+                "url": "https://example.com/page",
+                "content": { "type": "document", "source": { "type": "text", "data": "body" } }
+            }
+        });
+        let cited_text = json!({
+            "type": "text",
+            "text": "A cited passage.",
+            "citations": [{
+                "type": "char_location",
+                "document_index": 0,
+                "document_title": "Example page",
+                "start_char_index": 0,
+                "end_char_index": 7,
+                "cited_text": "A cited"
+            }]
+        });
+        let response = assistant_response(
+            json!([fetched_result.clone(), cited_text.clone()]),
+            "end_turn",
+        );
+
+        let result = result_from_response(&blobs, &generation_request(), &response)
+            .await
+            .expect("result");
+
+        let kinds = result
+            .context_entries
+            .iter()
+            .map(|entry| entry.provider_kind.as_deref().unwrap_or_default())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            kinds,
+            vec![
+                ANTHROPIC_MESSAGES_SERVER_TOOL_RESULT_PROVIDER_KIND,
+                PROVIDER_KIND_TEXT,
+                ANTHROPIC_MESSAGES_CITED_TEXT_PROVIDER_KIND,
+            ]
+        );
+        assert_eq!(
+            replayed_content(&blobs, &result).await,
+            json!([fetched_result, cited_text])
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn truncated_cited_text_replays_as_plain_text() {
+        let blobs = InMemoryBlobStore::new();
+        let response = assistant_response(
+            json!([{
+                "type": "text",
+                "text": "Cut off mid",
+                "citations": [{
+                    "type": "web_search_result_location",
+                    "url": "https://example.com/docs",
+                    "title": "Lightspeed docs",
+                    "encrypted_index": "opaque-index",
+                    "cited_text": "Cut off"
+                }]
+            }]),
+            "max_tokens",
+        );
+
+        let result = result_from_response(&blobs, &generation_request(), &response)
+            .await
+            .expect("result");
+
+        assert_eq!(result.status, LlmGenerationStatus::Failed);
+        assert_eq!(result.context_entries.len(), 1);
+        assert!(matches!(
+            result.context_entries[0].kind,
+            ContextEntryKind::Message {
+                role: ContextMessageRole::Assistant
+            }
+        ));
+        let replayed = replayed_content(&blobs, &result).await;
+        assert_eq!(replayed[0]["type"], "text");
+        assert_eq!(replayed[0]["text"], "Cut off mid");
+        assert!(replayed[0].get("citations").is_none());
     }
 
     /// A `max_tokens` cut-off fails the turn but keeps the partial text; the

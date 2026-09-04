@@ -28,6 +28,9 @@ pub const SKILL_ACTIVATION_PROVIDER_KIND_SESSION: &str = "lightspeed.skill.activ
 pub const OPENAI_RESPONSES_COMPACTION_PROVIDER_KIND: &str = "openai.responses.compaction";
 pub const OPENAI_COMPLETIONS_COMPACTION_PROVIDER_KIND: &str = "openai.completions.compaction";
 pub const OPENAI_RESPONSES_WEB_SEARCH_CALL_PROVIDER_KIND: &str = "openai.responses.web_search_call";
+/// Exact OpenAI Responses assistant message item carrying URL citations. It
+/// follows the assistant message it annotates and is what replays to OpenAI.
+pub const OPENAI_RESPONSES_CITED_TEXT_PROVIDER_KIND: &str = "openai.responses.cited_text";
 pub const OPENAI_RESPONSES_MCP_LIST_TOOLS_PROVIDER_KIND: &str = "openai.responses.mcp_list_tools";
 pub const OPENAI_RESPONSES_MCP_CALL_PROVIDER_KIND: &str = "openai.responses.mcp_call";
 pub const OPENAI_RESPONSES_MCP_APPROVAL_REQUEST_PROVIDER_KIND: &str =
@@ -37,6 +40,10 @@ pub const ANTHROPIC_MESSAGES_SERVER_TOOL_USE_PROVIDER_KIND: &str =
     "anthropic.messages.server_tool_use";
 pub const ANTHROPIC_MESSAGES_SERVER_TOOL_RESULT_PROVIDER_KIND: &str =
     "anthropic.messages.server_tool_result";
+/// Exact Anthropic text blocks of one assistant message that carry citations.
+/// It follows the assistant message it annotates and is what replays to
+/// Anthropic.
+pub const ANTHROPIC_MESSAGES_CITED_TEXT_PROVIDER_KIND: &str = "anthropic.messages.cited_text";
 pub const ANTHROPIC_MESSAGES_MCP_TOOL_USE_PROVIDER_KIND: &str = "anthropic.messages.mcp_tool_use";
 pub const ANTHROPIC_MESSAGES_MCP_TOOL_RESULT_PROVIDER_KIND: &str =
     "anthropic.messages.mcp_tool_result";

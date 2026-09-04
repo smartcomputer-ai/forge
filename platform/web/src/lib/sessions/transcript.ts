@@ -17,6 +17,7 @@ export type TranscriptEntry =
       text: string;
       contentRef: string;
       textTruncated: boolean;
+      citations?: Array<{ url: string; title?: string | null; citedText?: string | null }>;
       /// The run this entry belongs to, when the engine recorded one.
       runId?: string;
       /// A user message injected into a running run (steering) rather than
@@ -557,6 +558,9 @@ function applyNonToolCallItem(
           text: item.text,
           contentRef: item.contentRef,
           textTruncated: item.textTruncated === true,
+          ...(kind.role === "assistant" && item.citations?.length
+            ? { citations: item.citations }
+            : {}),
           ...(runId ? { runId } : {}),
           ...(source?.type === "steering" ? { steering: true } : {}),
         });

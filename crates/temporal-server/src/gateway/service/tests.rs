@@ -1496,15 +1496,10 @@ fn web_feature_grant_maps_search_and_fetch() {
 }
 
 #[test]
-fn web_search_rejects_explicit_enable_for_non_openai_responses() {
-    for (api_kind, provider_id, model) in [
-        (
-            ProviderApiKind::AnthropicMessages,
-            "anthropic",
-            "claude-test",
-        ),
-        (ProviderApiKind::OpenAiCompletions, "openai", "gpt-test"),
-    ] {
+fn web_search_rejects_explicit_enable_for_unsupported_api_kind() {
+    for (api_kind, provider_id, model) in
+        [(ProviderApiKind::OpenAiCompletions, "openai", "gpt-test")]
+    {
         let config = engine_session_config_from_api(
             api::SessionConfig {
                 features: Some(api::FeaturesConfig {
@@ -1538,6 +1533,36 @@ fn web_search_rejects_explicit_enable_for_non_openai_responses() {
             engine::DomainError::ProviderCompatibility(_)
         ));
     }
+}
+
+#[test]
+fn web_search_accepts_anthropic_messages() {
+    let config = engine_session_config_from_api(
+        api::SessionConfig {
+            features: Some(api::FeaturesConfig {
+                web: Some(api::WebFeature {
+                    version: api::CURRENT_FEATURE_VERSION,
+                    fetch: Some(api::WebFetchFeature {}),
+                    search: Some(api::WebSearchFeature {
+                        allowed_domains: Some(vec!["docs.anthropic.com".to_owned()]),
+                        blocked_domains: Vec::new(),
+                    }),
+                }),
+                ..api::FeaturesConfig::default()
+            }),
+            ..api::SessionConfig::default()
+        },
+        ModelSelection {
+            api_kind: ProviderApiKind::AnthropicMessages,
+            provider_id: "anthropic".to_owned(),
+            model: "claude-test".to_owned(),
+        },
+    )
+    .expect("map config");
+
+    config
+        .validate()
+        .expect("Anthropic web tools are supported");
 }
 
 #[test]

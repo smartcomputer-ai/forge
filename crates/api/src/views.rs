@@ -275,6 +275,18 @@ pub struct ProviderContextDisplayView {
     pub error: Option<String>,
 }
 
+/// A source the assistant cited, in the same shape for every provider. The
+/// exact provider output stays in a separate opaque context entry for replay.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CitationView {
+    pub url: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cited_text: Option<String>,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub enum RunStatus {
@@ -438,6 +450,10 @@ pub struct ContextEntryView {
     pub text_truncated: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display: Option<ProviderContextDisplayView>,
+    /// Sources this assistant message cites, derived from the provider-native
+    /// cited entry that follows it. Empty for every other entry kind.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub citations: Vec<CitationView>,
     /// Where the entry came from: run input, a steering batch, model output,
     /// a tool result, reasoning state, a context edit, or the runtime. Lets
     /// transcripts render steering distinctly from the run's first input.

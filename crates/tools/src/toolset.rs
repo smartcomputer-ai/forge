@@ -10,9 +10,13 @@ use crate::{
     environment::control::{environment_control_tool_bindings, environment_control_tool_bundles},
     error::{ToolError, ToolResult},
     runtime::{ToolCatalog, ToolDispatchMode, ToolDocument, ToolSpecBundle, ToolTarget},
-    web::fetch::{WebFetchToolConfig, web_fetch_tool_binding, web_fetch_tool_bundle},
+    web::fetch::{
+        WebFetchToolConfig, anthropic_messages_web_fetch_tool_bundle, web_fetch_tool_binding,
+        web_fetch_tool_bundle,
+    },
     web::search::{
-        OpenAiResponsesWebSearchConfig, apply_openai_responses_web_search_includes,
+        OpenAiResponsesWebSearchConfig, WebSearchMode, WebSearchToolConfig,
+        anthropic_messages_web_search_tool_bundle, apply_openai_responses_web_search_includes,
         openai_responses_web_search_tool_bundle,
     },
     workflow_tool::workflow_tool_tool_binding,
@@ -21,8 +25,7 @@ use crate::{
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ToolsetConfig {
     pub builtin: BuiltinToolsetConfig,
-    pub openai_web_search: OpenAiResponsesWebSearchConfig,
-    pub web_fetch: WebFetchToolConfig,
+    pub web: WebToolsetConfig,
     pub concurrency: ConcurrencyToolsetConfig,
     pub environment_read: bool,
     pub environment_selection: bool,
@@ -32,8 +35,7 @@ impl ToolsetConfig {
     pub fn empty() -> Self {
         Self {
             builtin: BuiltinToolsetConfig::disabled(),
-            openai_web_search: OpenAiResponsesWebSearchConfig::default(),
-            web_fetch: WebFetchToolConfig::default(),
+            web: WebToolsetConfig::default(),
             concurrency: ConcurrencyToolsetConfig::default(),
             environment_read: false,
             environment_selection: false,
@@ -46,6 +48,12 @@ impl ToolsetConfig {
             ..Self::empty()
         }
     }
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct WebToolsetConfig {
+    pub search: Option<WebSearchToolConfig>,
+    pub fetch: bool,
 }
 
 impl Default for ToolsetConfig {
@@ -422,32 +430,54 @@ pub fn resolve_toolset(
         builder.add_builtin_tools(env.target, &config.builtin)?;
     }
 
-    if config.openai_web_search.enabled() {
-        if env.target.api_kind != ProviderApiKind::OpenAiResponses {
-            return Err(ToolError::UnsupportedCapability {
-                message: format!(
-                    "web.search currently supports {:?}, got {:?}",
-                    ProviderApiKind::OpenAiResponses,
-                    env.target.api_kind
-                ),
-            });
+    if let Some(search) = &config.web.search {
+        let bundle = match env.target.api_kind {
+            ProviderApiKind::OpenAiResponses => {
+                let provider_config = OpenAiResponsesWebSearchConfig {
+                    mode: WebSearchMode::Cached,
+                    allowed_domains: search.allowed_domains.clone(),
+                    blocked_domains: search.blocked_domains.clone(),
+                    include_sources: true,
+                    ..OpenAiResponsesWebSearchConfig::default()
+                };
+                let bundle = openai_responses_web_search_tool_bundle(&provider_config)?;
+                builder
+                    .provider_params_patch
+                    .add_openai_web_search(&provider_config);
+                bundle
+            }
+            ProviderApiKind::AnthropicMessages => {
+                anthropic_messages_web_search_tool_bundle(search)?
+            }
+            ref api_kind => {
+                return Err(ToolError::UnsupportedCapability {
+                    message: format!(
+                        "web.search supports OpenAI Responses and Anthropic Messages, got {api_kind:?}"
+                    ),
+                });
+            }
         }
-        let bundle = openai_responses_web_search_tool_bundle(&config.openai_web_search)?
-            .ok_or_else(|| ToolError::InvalidRequest {
-                message: "web.search was enabled but did not produce a provider tool".to_owned(),
-            })?;
+        .ok_or_else(|| ToolError::InvalidRequest {
+            message: "web.search was enabled but did not produce a provider tool".to_owned(),
+        })?;
         builder.add_provider_tool_bundle(bundle);
-        builder
-            .provider_params_patch
-            .add_openai_web_search(&config.openai_web_search);
     }
 
-    if config.web_fetch.enabled {
-        let bundle =
-            web_fetch_tool_bundle(&config.web_fetch)?.ok_or_else(|| ToolError::InvalidRequest {
-                message: "web.fetch was enabled but did not produce a function tool".to_owned(),
-            })?;
-        builder.add_web_fetch(bundle);
+    if config.web.fetch {
+        let provider_config = WebFetchToolConfig::enabled();
+        let bundle = if env.target.api_kind == ProviderApiKind::AnthropicMessages {
+            anthropic_messages_web_fetch_tool_bundle(&provider_config)?
+        } else {
+            web_fetch_tool_bundle(&provider_config)?
+        }
+        .ok_or_else(|| ToolError::InvalidRequest {
+            message: "web.fetch was enabled but did not produce a tool".to_owned(),
+        })?;
+        if env.target.api_kind == ProviderApiKind::AnthropicMessages {
+            builder.add_provider_tool_bundle(bundle);
+        } else {
+            builder.add_web_fetch(bundle);
+        }
     }
 
     if config.environment_read || config.environment_selection {
@@ -587,7 +617,7 @@ mod tests {
     use crate::concurrency::{AWAIT_TOOL_NAME, CANCEL_TOOL_NAME, SLEEP_TOOL_NAME};
     use crate::subagents::AGENT_SPAWN_TOOL_NAME;
     use crate::web::fetch::WEB_FETCH_TOOL_NAME;
-    use crate::web::search::{WebSearchContextSize, WebSearchMode};
+    use crate::web::search::WebSearchToolConfig;
 
     fn target(api_kind: ProviderApiKind) -> ToolTarget {
         ToolTarget::api_kind(api_kind)
@@ -1033,14 +1063,10 @@ mod tests {
     fn web_search_adds_provider_native_tool_and_defaults_patch() {
         let target = target(ProviderApiKind::OpenAiResponses);
         let mut config = ToolsetConfig::empty();
-        config.openai_web_search = OpenAiResponsesWebSearchConfig {
-            mode: WebSearchMode::Cached,
-            search_context_size: Some(WebSearchContextSize::Low),
-            allowed_domains: vec!["docs.rs".to_owned()],
-            blocked_domains: Vec::new(),
-            user_location: None,
-            include_sources: true,
-        };
+        config.web.search = Some(WebSearchToolConfig::new(
+            vec!["docs.rs".to_owned()],
+            Vec::new(),
+        ));
 
         let toolset =
             resolve_toolset(ToolsetEnvironment { target: &target }, &config).expect("toolset");
@@ -1054,7 +1080,6 @@ mod tests {
             json!({
                 "type": "web_search",
                 "external_web_access": false,
-                "search_context_size": "low",
                 "filters": { "allowed_domains": ["docs.rs"] }
             })
         );
@@ -1066,22 +1091,26 @@ mod tests {
     }
 
     #[test]
-    fn web_search_rejects_non_openai_responses_target() {
+    fn web_search_uses_anthropic_hosted_tool() {
         let target = target(ProviderApiKind::AnthropicMessages);
         let mut config = ToolsetConfig::empty();
-        config.openai_web_search = OpenAiResponsesWebSearchConfig::cached();
+        config.web.search = Some(WebSearchToolConfig::default());
 
-        let error = resolve_toolset(ToolsetEnvironment { target: &target }, &config)
-            .expect_err("web search should reject Anthropic target");
+        let toolset =
+            resolve_toolset(ToolsetEnvironment { target: &target }, &config).expect("toolset");
 
-        assert!(matches!(error, ToolError::UnsupportedCapability { .. }));
+        assert_eq!(visible_names(&toolset), vec!["web_search"]);
+        assert!(toolset.catalog.is_empty());
+        let native: Value =
+            serde_json::from_slice(&toolset.documents[0].bytes).expect("native tool json");
+        assert_eq!(native["type"], json!("web_search_20250305"));
     }
 
     #[test]
     fn web_fetch_adds_standard_function_tool_and_catalog_binding() {
         let target = target(ProviderApiKind::OpenAiResponses);
         let mut config = ToolsetConfig::empty();
-        config.web_fetch = WebFetchToolConfig::enabled();
+        config.web.fetch = true;
 
         let toolset =
             resolve_toolset(ToolsetEnvironment { target: &target }, &config).expect("toolset");
@@ -1097,5 +1126,23 @@ mod tests {
             .tools
             .get(&ToolName::new(WEB_FETCH_TOOL_NAME))
             .expect("web_fetch spec");
+    }
+
+    #[test]
+    fn web_fetch_uses_anthropic_hosted_tool_without_local_binding() {
+        let target = target(ProviderApiKind::AnthropicMessages);
+        let mut config = ToolsetConfig::empty();
+        config.web.fetch = true;
+
+        let toolset =
+            resolve_toolset(ToolsetEnvironment { target: &target }, &config).expect("toolset");
+
+        assert_eq!(visible_names(&toolset), vec![WEB_FETCH_TOOL_NAME]);
+        assert!(toolset.catalog.is_empty());
+        let spec = toolset
+            .tools
+            .get(&ToolName::new(WEB_FETCH_TOOL_NAME))
+            .expect("web_fetch spec");
+        assert!(matches!(spec.kind, engine::ToolKind::ProviderNative(_)));
     }
 }

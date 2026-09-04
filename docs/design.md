@@ -137,7 +137,15 @@ inside that environment. Trusted logical bindings select the runtime domain;
 there is no generic execution-target field and no shared filesystem router.
 VFS prompts and the `skills.catalog.vfs` catalog refresh from linked workspace
 heads before runs, while environment files never participate in automatic
-prompt or skill discovery. Web fetch/search/extract tools remain independent.
+prompt or skill discovery. Web fetch/search/extract tools remain independent;
+toolset resolution selects provider-hosted Anthropic search/fetch, OpenAI
+Responses hosted search, or the guarded local fetch implementation on other
+routes. A cited assistant message is followed by one provider-opaque entry
+holding the provider's exact output; the originating adapter replays that in
+place of the neutral text, and the API projection derives the same
+URL/title/cited-text citations from it onto the message for OpenAI and
+Anthropic. A run of consecutive Anthropic text blocks is one message, so
+citations never fragment an answer.
 When a task genuinely needs a machine, the agent borrows one; dedicated VMs
 connect through a bridge daemon, and durable jobs run long tasks on that
 borrowed compute while the harness stays outside. Machines Lightspeed cannot

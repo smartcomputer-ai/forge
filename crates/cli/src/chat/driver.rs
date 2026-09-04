@@ -63,10 +63,10 @@ pub(crate) struct ChatArgs {
     /// Max output token limit.
     #[arg(long, env = "LIGHTSPEED_CHAT_MAX_TOKENS")]
     max_tokens: Option<u32>,
-    /// Disable OpenAI Responses hosted web search for this session.
+    /// Disable provider-hosted web search for this session.
     #[arg(long = "no-web-search")]
     no_web_search: bool,
-    /// Disable guarded web fetch for this session.
+    /// Disable web fetch for this session.
     #[arg(long = "no-web-fetch")]
     no_web_fetch: bool,
     /// Filesystem tool mode for this session: edit, read-only, or none.
@@ -1609,7 +1609,11 @@ fn dev_features(settings: &ChatDraftSettings) -> FeaturesConfig {
         Some(crate::chat::protocol::FilesystemToolMode::None) => None,
     };
     let web_fetch = settings.web_fetch.unwrap_or(true);
-    let web_search = settings.web_search.unwrap_or(true) && settings.api_kind == "openai:responses";
+    let web_search = settings.web_search.unwrap_or(true)
+        && matches!(
+            settings.api_kind.as_str(),
+            "openai:responses" | "anthropic:messages"
+        );
     FeaturesConfig {
         vfs: Some(VfsFeature {
             version: api::CURRENT_FEATURE_VERSION,
@@ -1973,6 +1977,7 @@ mod tests {
                     output: Some("Echoing your input: simba".into()),
                     error: None,
                 }),
+                citations: Vec::new(),
                 source: None,
                 supersedes: None,
                 superseded_by: None,

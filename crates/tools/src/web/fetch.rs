@@ -1,8 +1,11 @@
-//! Guarded, recorded web fetch function tool.
+//! Web fetch tool builders and guarded, recorded local implementation.
 
 use std::time::Duration;
 
-use engine::{BlobRef, FunctionToolSpec, ToolKind, ToolName, ToolParallelism, ToolSpec};
+use engine::{
+    BlobRef, FunctionToolSpec, ProviderApiKind, ProviderNativeToolExecution,
+    ProviderNativeToolSpec, ToolKind, ToolName, ToolParallelism, ToolSpec,
+};
 use futures_util::StreamExt;
 use reqwest::{
     StatusCode, Url,
@@ -27,6 +30,9 @@ use super::{
 
 pub const WEB_FETCH_TOOL_NAME: &str = "web_fetch";
 pub const WEB_FETCH_LOGICAL_ID: &str = "web.fetch";
+pub const ANTHROPIC_MESSAGES_WEB_FETCH_TYPE: &str = "web_fetch_20250910";
+const ANTHROPIC_MESSAGES_DEFAULT_MAX_USES: u32 = 5;
+const ANTHROPIC_MESSAGES_DEFAULT_MAX_CONTENT_TOKENS: u32 = 20_000;
 const DEFAULT_MAX_CHARS: u32 = 20_000;
 const MAX_MAX_CHARS: u32 = 20_000;
 const DEFAULT_MAX_RESPONSE_BYTES: u64 = 2 * 1024 * 1024;
@@ -141,6 +147,42 @@ pub fn web_fetch_tool_bundle(config: &WebFetchToolConfig) -> ToolResult<Option<T
             ),
         },
         documents: vec![description, input_schema],
+    }))
+}
+
+/// Build Anthropic's hosted fetch tool. The basic direct-call version avoids
+/// silently granting a code-execution sandbox and remains broadly compatible.
+pub fn anthropic_messages_web_fetch_tool_bundle(
+    config: &WebFetchToolConfig,
+) -> ToolResult<Option<ToolSpecBundle>> {
+    if !config.enabled {
+        return Ok(None);
+    }
+    let native_tool = ToolDocument::text(
+        "application/json",
+        serde_json::to_string(&json!({
+            "type": ANTHROPIC_MESSAGES_WEB_FETCH_TYPE,
+            "name": WEB_FETCH_TOOL_NAME,
+            "max_uses": ANTHROPIC_MESSAGES_DEFAULT_MAX_USES,
+            "max_content_tokens": ANTHROPIC_MESSAGES_DEFAULT_MAX_CONTENT_TOKENS,
+            "citations": { "enabled": true }
+        }))
+        .map_err(|error| ToolError::InvalidRequest {
+            message: format!("failed to encode Anthropic Messages web fetch tool: {error}"),
+        })?,
+    );
+    Ok(Some(ToolSpecBundle {
+        spec: ToolSpec {
+            name: ToolName::new(WEB_FETCH_TOOL_NAME),
+            kind: ToolKind::ProviderNative(ProviderNativeToolSpec {
+                api_kind: ProviderApiKind::AnthropicMessages,
+                native_tool_ref: native_tool.blob_ref.clone(),
+                execution: ProviderNativeToolExecution::ProviderHosted,
+            }),
+            parallelism: ToolParallelism::ParallelSafe,
+            execution: engine::ToolExecutionSpec::default(),
+        },
+        documents: vec![native_tool],
     }))
 }
 
@@ -364,6 +406,29 @@ mod tests {
         );
         assert_eq!(function.input_schema_ref, bundle.documents[1].blob_ref);
         assert!(bundle.documents[1].text_lossy().contains("\"url\""));
+    }
+
+    #[test]
+    fn builds_anthropic_provider_native_tool() {
+        let bundle = anthropic_messages_web_fetch_tool_bundle(&WebFetchToolConfig::enabled())
+            .expect("bundle")
+            .expect("enabled");
+        let ToolKind::ProviderNative(native) = &bundle.spec.kind else {
+            panic!("expected provider-native tool");
+        };
+        assert_eq!(native.api_kind, ProviderApiKind::AnthropicMessages);
+        let native_tool: Value =
+            serde_json::from_slice(&bundle.documents[0].bytes).expect("native tool");
+        assert_eq!(
+            native_tool,
+            json!({
+                "type": "web_fetch_20250910",
+                "name": "web_fetch",
+                "max_uses": 5,
+                "max_content_tokens": 20_000,
+                "citations": { "enabled": true }
+            })
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]

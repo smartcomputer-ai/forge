@@ -1364,6 +1364,7 @@ mod tests {
             text: text.map(str::to_owned),
             text_truncated: false,
             display: None,
+            citations: Vec::new(),
             source: None,
             supersedes: None,
             superseded_by: None,
