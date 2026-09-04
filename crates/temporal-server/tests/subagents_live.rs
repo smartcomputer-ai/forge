@@ -507,11 +507,13 @@ async fn create_child_profile(api: &GatewayAgentApi) -> anyhow::Result<ProfileId
             display_name: Some("Live child".to_owned()),
             description: Some("Answers CHILD_TASK briefs".to_owned()),
             document: ProfileDocument {
+                metadata: Default::default(),
                 config: Some(SessionConfig::default()),
                 instructions: Some(ProfileInstructions::Text {
                     text: "You are a scripted live sub-agent.".to_owned(),
                 }),
                 environment: None,
+                retention: None,
             },
         },
     })
@@ -554,6 +556,7 @@ async fn start_subagent_parent_with_features(
             ..SessionConfig::default()
         }),
         profile: None,
+        environment: None,
         delete_after_close_ms: None,
     })
     .await?;
@@ -584,6 +587,7 @@ async fn list_children(
             limit: 50,
             root_session_id: None,
             parent_session_id: Some(parent.clone()),
+            exclude_closed: false,
         })
         .await?
         .sessions)
@@ -696,6 +700,7 @@ async fn run_agent_run_inline_live_client(
             limit: None,
             root_session_id: Some(session_id.as_str().to_owned()),
             parent_session_id: None,
+            exclude_closed: false,
         })
         .await?;
     assert_eq!(listed.result.sessions.len(), 1);
@@ -952,6 +957,7 @@ async fn run_agent_run_inherit_environment_live_client(
             display_name: Some("Inheriting child".to_owned()),
             description: Some("Answers CHILD_TASK briefs on the parent\'s environment".to_owned()),
             document: ProfileDocument {
+                metadata: Default::default(),
                 config: Some(SessionConfig {
                     features: Some(api::FeaturesConfig {
                         environments: Some(environments_feature.clone()),
@@ -963,6 +969,7 @@ async fn run_agent_run_inherit_environment_live_client(
                     text: "You are a scripted live sub-agent.".to_owned(),
                 }),
                 environment: Some(api::ProfileEnvironment::Inherit {}),
+                retention: None,
             },
         },
     })
@@ -974,12 +981,14 @@ async fn run_agent_run_inherit_environment_live_client(
         session_id: Some(session_id.as_str().to_owned()),
         display_name: None,
         config: None,
+        environment: None,
         delete_after_close_ms: None,
         profile: Some(ProfileSource::Inline {
             profile: Box::new(api::InlineAgentProfile {
                 display_name: None,
                 description: None,
                 document: ProfileDocument {
+                    metadata: Default::default(),
                     config: Some(SessionConfig {
                         model: Some(model_to_api(&model)),
                         features: Some(api::FeaturesConfig {
@@ -998,6 +1007,7 @@ async fn run_agent_run_inherit_environment_live_client(
                         idle_policy: None,
                         credentials: Vec::new(),
                     }),
+                    retention: None,
                 },
             }),
         }),

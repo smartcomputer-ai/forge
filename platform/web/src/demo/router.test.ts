@@ -6,9 +6,12 @@ import type {
   BotListItem,
   McpServer,
   McpToolDiscovery,
+  Environment,
   SessionEventsPage,
   SessionListPage,
+  SessionView,
 } from "@/api";
+import { SOFTWARE_FACTORY_UNIVERSE_ID } from "./fixtures/software-factory";
 
 /// Walks the demo router the way the UI does: every read path each page
 /// opens with must answer, and the live paths (a message, its tail, a bot
@@ -89,6 +92,20 @@ describe("demo router", () => {
         }
       }
     }
+  });
+
+  it("includes long, filterable evaluation metadata in the software factory", async () => {
+    const { call } = await boot();
+    const campaign = "terminal-bench-lightspeed-rerun-hosted-20260904-113000-software-factory";
+    const result = await call(
+      "GET",
+      `/api/v1/universes/${SOFTWARE_FACTORY_UNIVERSE_ID}/sessions?metadata=${encodeURIComponent(`campaign=${campaign}`)}`,
+    );
+    expect(result.status).toBe(200);
+    const sessions = (result.json as SessionListPage).sessions;
+    expect(sessions.length).toBeGreaterThanOrEqual(2);
+    expect(sessions.every((session) => session.metadata?.campaign === campaign)).toBe(true);
+    expect(sessions.some((session) => (session.metadata?.workflowRunId?.length ?? 0) > 60)).toBe(true);
   });
 
   it("answers the admin pages", async () => {
@@ -214,6 +231,39 @@ describe("demo router", () => {
     expect(view.runs.find((run) => run.id === runId)?.status).toBe("completed");
   }, 30_000);
 
+  it("copies profile metadata and accepts lightweight environment overrides", async () => {
+    const { call } = await boot();
+    const base = `/api/v1/universes/${SOFTWARE_FACTORY_UNIVERSE_ID}`;
+    const environments = (await call("GET", `${base}/environments`)).json as Environment[];
+    const existing = environments.find((environment) => environment.status !== "closed");
+    expect(existing).toBeDefined();
+
+    const withoutEnvironment = await call("POST", `${base}/sessions`, {
+      profile: { kind: "named", profileId: "implementer" },
+      metadata: { campaign: "explicit-campaign" },
+      environment: { type: "none" },
+    });
+    expect(withoutEnvironment.status).toBe(200);
+    expect(withoutEnvironment.json as SessionView).toMatchObject({
+      activeEnvironmentId: null,
+      metadata: {
+        agent: "lightspeed-software-factory-agent-with-provisioned-incus-environment",
+        campaign: "explicit-campaign",
+        profileRole: "parallel-task-implementation-and-pull-request-authoring",
+      },
+    });
+
+    const withExisting = await call("POST", `${base}/sessions`, {
+      profile: { kind: "named", profileId: "implementer" },
+      environment: { type: "existing", environmentId: existing!.environmentId },
+    });
+    expect(withExisting.status).toBe(200);
+    expect(withExisting.json as SessionView).toMatchObject({
+      activeEnvironmentId: existing!.environmentId,
+      metadata: { campaign: expect.stringContaining("terminal-bench-lightspeed") },
+    });
+  });
+
   it("sets and clears session-tree retention through the web routes", async () => {
     const { call } = await boot();
     const [universe] = (await call("GET", "/api/v1/universes")).json as Universe[];
@@ -236,6 +286,23 @@ describe("demo router", () => {
     );
     expect(cleared.status).toBe(200);
     expect((cleared.json as { retention: { deleteAfterCloseMs: null } }).retention.deleteAfterCloseMs).toBeNull();
+
+    const inherited = await call("POST", `/api/v1/universes/${universe!.id}/sessions`, {
+      profile: {
+        kind: "inline",
+        profile: { retention: { deleteAfterCloseMs: 172_800_000 } },
+      },
+    });
+    expect((inherited.json as SessionView).retention.deleteAfterCloseMs).toBe(172_800_000);
+
+    const overriddenToKeep = await call("POST", `/api/v1/universes/${universe!.id}/sessions`, {
+      deleteAfterCloseMs: null,
+      profile: {
+        kind: "inline",
+        profile: { retention: { deleteAfterCloseMs: 172_800_000 } },
+      },
+    });
+    expect((overriddenToKeep.json as SessionView).retention.deleteAfterCloseMs).toBeNull();
   });
 
   it("admits a manual bot event and resolves its outcome", async () => {

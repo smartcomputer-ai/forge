@@ -6,8 +6,8 @@ import {
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
-import { NavLink, useNavigate, useParams } from "react-router-dom";
-import { Archive, ArrowLeft, Check, Copy, ListChecks, ListFilter, LoaderCircle, Plus, ShieldCheck, SlidersHorizontal, Trash2, X } from "lucide-react";
+import { NavLink, useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { Archive, ArrowLeft, ChevronDown, ListChecks, ListFilter, LoaderCircle, Plus, ShieldCheck, SlidersHorizontal, Trash2, X } from "lucide-react";
 import {
   api,
   type BlobContent,
@@ -17,6 +17,7 @@ import {
   type ProfileSource,
   type ProfileSummary,
   type SessionListPage,
+  type SessionEnvironmentOverride,
   type SessionOrigin,
   type SessionRunAccepted,
   type SessionRunApprovalsDecided,
@@ -30,6 +31,14 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
 import { BotFaceIcon } from "@/components/icons/bot";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuGroup,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import {
   AlertDialog,
@@ -43,6 +52,9 @@ import {
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
 import { ProfileEnvironmentEditor } from "@/components/session/profile-environment-editor";
+import { MetadataMapEditor } from "@/components/session/metadata-editor";
+import { SessionMenuIdentity, SessionMenuMetadata } from "@/components/session/session-menu-details";
+import { ProfileRetentionEditor } from "@/components/session/profile-retention-editor";
 import { SessionConfigEditor } from "@/components/session/session-config-editor";
 import { SessionSettingsDialog } from "@/components/session/session-settings-sheet";
 import { SetupEditorSection } from "@/components/session/setup-editor-section";
@@ -56,14 +68,7 @@ import {
 } from "@/components/ui/dialog";
 import { Field, FieldDescription, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
-import {
-  DropdownMenu,
-  DropdownMenuCheckboxItem,
-  DropdownMenuContent,
-  DropdownMenuGroup,
-  DropdownMenuLabel,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import {
   MessageScroller,
   MessageScrollerButton,
@@ -100,24 +105,37 @@ import {
   type TranscriptEntry,
 } from "@/lib/sessions/transcript";
 import { useSessionConfigEditorOptions } from "@/lib/sessions/editor-options";
-import { managedSessionOwnerLabel } from "@/lib/sessions/management";
+import { managedSessionBotId, managedSessionOwnerLabel } from "@/lib/sessions/management";
 import {
   hasSessionFeature,
+  selectableEnvironments,
   resourceFeatureDisableReasons,
   setupResourceFeatureError,
 } from "@/lib/sessions/resource-features";
 import { ProviderReadinessBanner } from "@/components/provider-readiness-banner";
 import { canManage, useActiveUniverse } from "@/lib/universes";
 import { cn } from "@/lib/utils";
+import {
+  metadataFilterFromSearchParams,
+  parseMetadataPair,
+  readSessionMetadataFilter,
+  readSessionListPreferences,
+  sessionListActiveFilterCount,
+  searchParamsWithMetadataFilter,
+  writeSessionMetadataFilter,
+  writeSessionListPreferences,
+} from "@/lib/sessions/list-preferences";
 
 /// U4a+U4d: master-detail session chat. Pane = paged session list plus
 /// New session (sub-agent tree expansion arrives with engine D1 parent
 /// linkage); detail = live transcript (long-poll tail) with a composer.
 const SESSION_LIST_REFRESH_MS = 5_000;
+const INLINE_SUBAGENT_LIMIT = 5;
 
 export function SessionsPage({ admin }: { admin: boolean }) {
   const { universe, slug, isLoading } = useActiveUniverse();
   const { sessionId } = useParams<{ sessionId: string }>();
+  const location = useLocation();
 
   if (isLoading) {
     return <LoadingNote />;
@@ -138,7 +156,7 @@ export function SessionsPage({ admin }: { admin: boolean }) {
           sessionId ? "hidden" : "flex",
         )}
       >
-        <SessionList universeId={universe.id} slug={slug!} activeId={sessionId} />
+        <SessionList key={universe.id} universeId={universe.id} slug={slug!} activeId={sessionId} />
       </aside>
       <section className={cn("min-w-0 flex-1 flex-col", sessionId ? "flex" : "hidden md:flex")}>
         <ProviderReadinessBanner universeId={universe.id} slug={slug!} />
@@ -148,6 +166,8 @@ export function SessionsPage({ admin }: { admin: boolean }) {
             universeId={universe.id}
             slug={slug!}
             sessionId={sessionId}
+            backTo={`/u/${slug}/sessions${location.search}`}
+            sessionHref={(target) => `/u/${slug}/sessions/${target}${location.search}`}
           />
         ) : (
           <div className="flex flex-1 items-center justify-center p-6 text-sm text-muted-foreground">
@@ -169,13 +189,20 @@ function SessionList({
   activeId: string | undefined;
 }) {
   const queryClient = useQueryClient();
-  const [metadataFilter, setMetadataFilter] = useState<Record<string, string>>({});
+  const [searchParams, setSearchParams] = useSearchParams();
+  const metadataFilter = metadataFilterFromSearchParams(searchParams);
   const [filterDraft, setFilterDraft] = useState("");
+  const [metadataKeyDraft, setMetadataKeyDraft] = useState("");
   const filterEntries = Object.entries(metadataFilter);
+  const [preferences, setPreferences] = useState(() => readSessionListPreferences(universeId));
+  const { showClosed, showSubagents, showSessionIds, metadataKeys } = preferences;
   const listQuery = new URLSearchParams({ limit: "50" });
-  for (const [key, value] of filterEntries) listQuery.append("metadata", `${key}=${value}`);
+  if (!showClosed) listQuery.set("excludeClosed", "true");
+  for (const [key, value] of filterEntries) {
+    listQuery.append("metadata", value ? `${key}=${value}` : key);
+  }
   const pages = useInfiniteQuery({
-    queryKey: ["sessions", universeId, metadataFilter],
+    queryKey: ["sessions", universeId, metadataFilter, { showClosed }],
     queryFn: ({ pageParam }) =>
       api<SessionListPage>(
         "GET",
@@ -191,34 +218,56 @@ function SessionList({
     refetchIntervalInBackground: false,
   });
   const [createOpen, setCreateOpen] = useState(false);
-  const [showClosed, setShowClosed] = useState(true);
-  const [showSubagents, setShowSubagents] = useState(true);
   const [selecting, setSelecting] = useState(false);
+  const [selectingAll, setSelectingAll] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(() => new Set());
   const [bulkNotice, setBulkNotice] = useState<string | null>(null);
 
   const allSessions = pages.data?.pages.flatMap((page) => page.sessions) ?? [];
-  const sessions = allSessions
-    .filter((session) => showClosed || session.lifecycleStatus !== "closed")
-    .filter((session) => showSubagents || !session.origin);
+  const sessions = allSessions.filter((session) => showSubagents || !session.origin);
   const tree = buildSessionTree(sessions);
   const visibleIds = sessions.map((session) => session.id);
   const selectedSessions = sessions.filter((session) => selected.has(session.id));
   const selectedOpen = selectedSessions.filter((session) => session.lifecycleStatus !== "closed");
   const selectedClosed = selectedSessions.filter((session) => session.lifecycleStatus === "closed");
   const allVisibleSelected = visibleIds.length > 0 && visibleIds.every((id) => selected.has(id));
+  const activeFilterCount = sessionListActiveFilterCount(metadataFilter, preferences);
+  const listSearch = searchParams.toString();
+  const restoredFilterUniverse = useRef<string | null>(null);
 
-  const addFilter = (key: string, value: string) => {
-    setMetadataFilter((current) => ({ ...current, [key]: value }));
+  useEffect(() => {
+    writeSessionListPreferences(universeId, preferences);
+  }, [preferences, universeId]);
+
+  useEffect(() => {
+    if (restoredFilterUniverse.current !== universeId) {
+      restoredFilterUniverse.current = universeId;
+      if (searchParams.has("metadata")) {
+        writeSessionMetadataFilter(universeId, metadataFilter);
+        return;
+      }
+      const stored = readSessionMetadataFilter(universeId);
+      if (Object.keys(stored).length > 0) {
+        setSearchParams(searchParamsWithMetadataFilter(searchParams, stored), { replace: true });
+      }
+      return;
+    }
+    writeSessionMetadataFilter(universeId, metadataFilter);
+  }, [metadataFilter, searchParams, setSearchParams, universeId]);
+
+  const updateMetadataFilter = (next: Record<string, string>) => {
+    writeSessionMetadataFilter(universeId, next);
+    setSearchParams(searchParamsWithMetadataFilter(searchParams, next), { replace: true });
     setSelected(new Set());
   };
+
+  const addFilter = (key: string, value: string) => {
+    updateMetadataFilter({ ...metadataFilter, [key]: value });
+  };
   const removeFilter = (key: string) => {
-    setMetadataFilter((current) => {
-      const next = { ...current };
-      delete next[key];
-      return next;
-    });
-    setSelected(new Set());
+    const next = { ...metadataFilter };
+    delete next[key];
+    updateMetadataFilter(next);
   };
   const submitFilter = (event: FormEvent) => {
     event.preventDefault();
@@ -227,6 +276,20 @@ function SessionList({
     addFilter(pair.key, pair.value);
     setFilterDraft("");
   };
+  const submitMetadataKey = (event: FormEvent) => {
+    event.preventDefault();
+    const key = metadataKeyDraft.trim();
+    if (!key || metadataKeys.includes(key)) return;
+    setPreferences((current) => ({
+      ...current,
+      metadataKeys: [...current.metadataKeys, key],
+    }));
+    setMetadataKeyDraft("");
+  };
+  const removeMetadataKey = (key: string) => setPreferences((current) => ({
+    ...current,
+    metadataKeys: current.metadataKeys.filter((candidate) => candidate !== key),
+  }));
   const toggleSelected = (id: string) =>
     setSelected((current) => {
       const next = new Set(current);
@@ -236,7 +299,25 @@ function SessionList({
     });
   const exitSelecting = () => {
     setSelecting(false);
+    setSelectingAll(false);
     setSelected(new Set());
+  };
+
+  const selectAllMatching = async () => {
+    setSelectingAll(true);
+    setBulkNotice(null);
+    try {
+      let result = await pages.fetchNextPage();
+      while (result.hasNextPage) result = await pages.fetchNextPage();
+      const matches = (result.data?.pages.flatMap((page) => page.sessions) ?? [])
+        .filter((session) => showClosed || session.lifecycleStatus !== "closed")
+        .filter((session) => showSubagents || !session.origin);
+      setSelected(new Set(matches.map((session) => session.id)));
+    } catch (error) {
+      setBulkNotice(error instanceof Error ? error.message : "Could not load all matching sessions.");
+    } finally {
+      setSelectingAll(false);
+    }
   };
 
   /// The API has no bulk operation by design: the filtered list is the
@@ -278,37 +359,159 @@ function SessionList({
           {sessions.length}
           {pages.hasNextPage ? "+" : ""}
         </span>
-        <DropdownMenu>
-          <DropdownMenuTrigger
+        <Popover>
+          <PopoverTrigger
             render={
               <Button
                 variant="ghost"
                 size="icon-sm"
-                className={cn("ml-auto", !showClosed && "text-primary")}
-                aria-label="Session list settings"
+                className={cn("relative ml-auto", activeFilterCount > 0 && "text-primary")}
+                aria-label={activeFilterCount > 0
+                  ? `Filter sessions, ${activeFilterCount} active`
+                  : "Filter sessions"}
               />
             }
           >
             <ListFilter />
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="min-w-48">
-            <DropdownMenuGroup>
-              <DropdownMenuLabel>List settings</DropdownMenuLabel>
-              <DropdownMenuCheckboxItem
-                checked={showClosed}
-                onCheckedChange={(checked) => setShowClosed(checked === true)}
-              >
-                Show closed sessions
-              </DropdownMenuCheckboxItem>
-              <DropdownMenuCheckboxItem
-                checked={showSubagents}
-                onCheckedChange={(checked) => setShowSubagents(checked === true)}
-              >
-                Show sub-agent sessions
-              </DropdownMenuCheckboxItem>
-            </DropdownMenuGroup>
-          </DropdownMenuContent>
-        </DropdownMenu>
+            {activeFilterCount > 0 && (
+              <span className="absolute -right-0.5 -top-0.5 flex size-4 items-center justify-center rounded-full bg-primary text-[9px] font-semibold text-primary-foreground">
+                {activeFilterCount}
+              </span>
+            )}
+          </PopoverTrigger>
+          <PopoverContent align="end" className="grid gap-4 p-4">
+            <h2 className="text-sm font-semibold">Filter sessions</h2>
+            <div className="grid gap-2">
+              <label className="flex cursor-pointer items-center gap-2 text-sm">
+                <Checkbox
+                  checked={!showClosed}
+                  onCheckedChange={(checked) => setPreferences((current) => ({
+                    ...current,
+                    showClosed: checked !== true,
+                  }))}
+                />
+                Hide closed sessions
+              </label>
+              <label className="flex cursor-pointer items-center gap-2 text-sm">
+                <Checkbox
+                  checked={!showSubagents}
+                  onCheckedChange={(checked) => setPreferences((current) => ({
+                    ...current,
+                    showSubagents: checked !== true,
+                  }))}
+                />
+                Hide sub-agent sessions
+              </label>
+            </div>
+            <div className="grid gap-2 border-t pt-3">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-xs font-medium">Metadata filters</span>
+                {filterEntries.length > 0 && (
+                  <button
+                    type="button"
+                    className="text-xs text-muted-foreground hover:text-foreground"
+                    onClick={() => updateMetadataFilter({})}
+                  >
+                    Clear all
+                  </button>
+                )}
+              </div>
+              {filterEntries.length > 0 && (
+                <div className="flex flex-wrap gap-1.5">
+                  {filterEntries.map(([key, value]) => (
+                    <Badge
+                      key={key}
+                      variant="secondary"
+                      className="max-w-full gap-1 font-mono text-[11px]"
+                    >
+                      <span className="truncate">{value ? `${key}=${value}` : key}</span>
+                      <button
+                        type="button"
+                        onClick={() => removeFilter(key)}
+                        aria-label={`Remove filter ${key}`}
+                        className="shrink-0 rounded hover:text-foreground"
+                      >
+                        <X className="size-3" />
+                      </button>
+                    </Badge>
+                  ))}
+                </div>
+              )}
+              <form onSubmit={submitFilter} className="flex gap-2">
+                <Input
+                  value={filterDraft}
+                  onChange={(event) => setFilterDraft(event.target.value)}
+                  placeholder="key or key=value"
+                  aria-label="Metadata filter"
+                  className="h-8 min-w-0 flex-1 font-mono text-xs"
+                />
+                <Button
+                  type="submit"
+                  variant="outline"
+                  size="sm"
+                  disabled={!parseMetadataPair(filterDraft)}
+                >
+                  Add
+                </Button>
+              </form>
+              <p className="text-xs text-muted-foreground">
+                A key alone matches its presence. Key/value pairs match exactly.
+              </p>
+            </div>
+            <div className="grid gap-2 border-t pt-3">
+              <h2 className="text-sm font-semibold">List Appearance</h2>
+              <label className="flex cursor-pointer items-center gap-2 text-sm">
+                <Checkbox
+                  checked={showSessionIds}
+                  onCheckedChange={(checked) => setPreferences((current) => ({
+                    ...current,
+                    showSessionIds: checked === true,
+                  }))}
+                />
+                Show session IDs
+              </label>
+              <span className="mt-1 text-xs font-medium">Metadata keys to show</span>
+              {metadataKeys.length > 0 && (
+                <div className="flex flex-wrap gap-1.5">
+                  {metadataKeys.map((key) => (
+                    <Badge
+                      key={key}
+                      variant="secondary"
+                      className="max-w-full gap-1 font-mono text-[11px]"
+                    >
+                      <span className="truncate">{key}</span>
+                      <button
+                        type="button"
+                        onClick={() => removeMetadataKey(key)}
+                        aria-label={`Stop showing metadata key ${key}`}
+                        className="shrink-0 rounded hover:text-foreground"
+                      >
+                        <X className="size-3" />
+                      </button>
+                    </Badge>
+                  ))}
+                </div>
+              )}
+              <form onSubmit={submitMetadataKey} className="flex gap-2">
+                <Input
+                  value={metadataKeyDraft}
+                  onChange={(event) => setMetadataKeyDraft(event.target.value)}
+                  placeholder="key"
+                  aria-label="Metadata key to show"
+                  className="h-8 min-w-0 flex-1 font-mono text-xs"
+                />
+                <Button
+                  type="submit"
+                  variant="outline"
+                  size="sm"
+                  disabled={!metadataKeyDraft.trim() || metadataKeys.includes(metadataKeyDraft.trim())}
+                >
+                  Add
+                </Button>
+              </form>
+            </div>
+          </PopoverContent>
+        </Popover>
         <Button
           variant="ghost"
           size="icon-sm"
@@ -328,35 +531,11 @@ function SessionList({
           <Plus />
         </Button>
       </div>
-      <form
-        onSubmit={submitFilter}
-        className="flex shrink-0 flex-wrap items-center gap-1.5 border-b px-4 py-2"
-      >
-        {filterEntries.map(([key, value]) => (
-          <Badge key={key} variant="secondary" className="gap-1 font-mono text-[11px]">
-            {key}={value}
-            <button
-              type="button"
-              onClick={() => removeFilter(key)}
-              aria-label={`Remove filter ${key}`}
-              className="rounded hover:text-foreground"
-            >
-              <X className="size-3" />
-            </button>
-          </Badge>
-        ))}
-        <Input
-          value={filterDraft}
-          onChange={(event) => setFilterDraft(event.target.value)}
-          placeholder="Filter by metadata: key=value"
-          aria-label="Metadata filter"
-          className="h-7 min-w-40 flex-1 font-mono text-xs"
-        />
-      </form>
       {selecting && (
-        <div className="flex shrink-0 items-center gap-2 border-b bg-muted/40 px-4 py-2 text-xs">
+        <div className="flex shrink-0 flex-wrap items-center gap-2 border-b bg-muted/40 px-4 py-2 text-xs">
           <Checkbox
             checked={allVisibleSelected}
+            disabled={selectingAll}
             onCheckedChange={(checked) =>
               setSelected(checked === true ? new Set(visibleIds) : new Set())
             }
@@ -364,13 +543,23 @@ function SessionList({
           />
           <span className="text-muted-foreground">
             {selected.size} selected
-            {filterEntries.length > 0 ? " in filter" : ""}
+            {pages.hasNextPage ? ` of ${sessions.length} loaded` : ""}
           </span>
+          {pages.hasNextPage && (
+            <button
+              type="button"
+              className="text-primary hover:underline disabled:opacity-50"
+              disabled={selectingAll}
+              onClick={() => void selectAllMatching()}
+            >
+              {selectingAll ? "Loading all…" : "Select all matching"}
+            </button>
+          )}
           <div className="ml-auto flex items-center gap-1">
             <BulkActionDialog
               action="close"
               count={selectedOpen.length}
-              pending={bulk.isPending}
+              pending={bulk.isPending || selectingAll}
               onConfirm={() =>
                 bulk.mutate({ action: "close", ids: selectedOpen.map((session) => session.id) })
               }
@@ -378,7 +567,7 @@ function SessionList({
             <BulkActionDialog
               action="delete"
               count={selectedClosed.length}
-              pending={bulk.isPending}
+              pending={bulk.isPending || selectingAll}
               onConfirm={() =>
                 bulk.mutate({ action: "delete", ids: selectedClosed.map((session) => session.id) })
               }
@@ -409,12 +598,14 @@ function SessionList({
           <p className="p-4 text-sm text-muted-foreground">
             {filterEntries.length > 0
               ? "No sessions match this metadata filter."
+              : !showClosed
+                ? "No open sessions."
               : "No sessions yet — start one, or bind a chat."}
           </p>
         )}
-        {pages.data && !showClosed && allSessions.length > 0 && sessions.length === 0 && (
+        {pages.data && !showSubagents && allSessions.length > 0 && sessions.length === 0 && (
           <p className="p-4 text-sm text-muted-foreground">
-            No open sessions in the loaded results.
+            No top-level sessions in the loaded results.
           </p>
         )}
         <ul>
@@ -428,41 +619,35 @@ function SessionList({
               selecting={selecting}
               selected={selected}
               onToggle={toggleSelected}
-              onFilter={addFilter}
+              showSessionIds={showSessionIds}
+              metadataKeys={metadataKeys}
+              search={listSearch}
             />
           ))}
         </ul>
-        {pages.hasNextPage && (
-          <div className="p-3">
-            <Button
-              variant="outline"
-              size="sm"
-              className="w-full"
-              disabled={pages.isFetchingNextPage}
-              onClick={() => void pages.fetchNextPage()}
-            >
-              {pages.isFetchingNextPage ? "Loading…" : "Load more"}
-            </Button>
-          </div>
-        )}
       </div>
+      {pages.hasNextPage && (
+        <div className="shrink-0 border-t p-2">
+          <Button
+            variant="outline"
+            size="sm"
+            className="w-full"
+            disabled={pages.isFetchingNextPage}
+            onClick={() => void pages.fetchNextPage()}
+          >
+            {pages.isFetchingNextPage ? "Loading…" : "Load more sessions"}
+          </Button>
+        </div>
+      )}
       <NewSessionDialog
         universeId={universeId}
         slug={slug}
         open={createOpen}
         onOpenChange={setCreateOpen}
+        search={listSearch}
       />
     </>
   );
-}
-
-/// `key=value` typed into the filter bar; the value may itself contain `=`.
-export function parseMetadataPair(raw: string): { key: string; value: string } | null {
-  const at = raw.indexOf("=");
-  if (at <= 0) return null;
-  const key = raw.slice(0, at).trim();
-  const value = raw.slice(at + 1).trim();
-  return key && value ? { key, value } : null;
 }
 
 /// Run `task` over `items` with at most `width` in flight; every outcome is
@@ -558,7 +743,9 @@ interface SessionRowControls {
   selecting: boolean;
   selected: Set<string>;
   onToggle: (id: string) => void;
-  onFilter: (key: string, value: string) => void;
+  showSessionIds: boolean;
+  metadataKeys: string[];
+  search: string;
 }
 
 function SessionTreeItem({
@@ -596,8 +783,6 @@ function SessionTreeItem({
   );
 }
 
-const ROW_CHIP_LIMIT = 3;
-
 function SessionListItem({
   session,
   slug,
@@ -606,7 +791,9 @@ function SessionListItem({
   selecting,
   selected,
   onToggle,
-  onFilter,
+  showSessionIds,
+  metadataKeys,
+  search,
 }: {
   session: SessionSummary;
   slug: string;
@@ -615,15 +802,20 @@ function SessionListItem({
 } & SessionRowControls) {
   const botManaged = session.managed && session.id.startsWith("bot:v1:");
   const origin = session.origin ?? null;
-  const metadata = Object.entries(session.metadata ?? {});
   const isSelected = selected.has(session.id);
+  const displayName = session.displayName?.trim();
+  const showSecondaryId = showSessionIds && Boolean(displayName);
+  const visibleMetadata = metadataKeys.flatMap((key) => {
+    const value = session.metadata?.[key];
+    return value === undefined ? [] : [{ key, value }];
+  });
   const indent = depth > 0 ? { paddingLeft: `${1 + depth * 1.25}rem` } : undefined;
   const summary = (
     <>
       <span className="flex min-w-0 items-center gap-2">
         {depth > 0 && <span className="shrink-0 text-muted-foreground">↳</span>}
-        <span className="truncate font-medium">
-          {session.displayName ?? session.id.slice(0, 18)}
+        <span className="min-w-0 flex-1 truncate font-medium" title={displayName ? undefined : session.id}>
+          {displayName || session.id}
         </span>
         {origin && (
           <Badge
@@ -633,34 +825,39 @@ function SessionListItem({
             sub-agent
           </Badge>
         )}
+        {session.managed && (
+          <Badge className="shrink-0" variant="secondary" title={botManaged ? "Bot-managed session" : undefined}>
+            {botManaged && <BotFaceIcon />}
+            {botManaged ? "Bot" : "Managed"}
+          </Badge>
+        )}
         {session.lifecycleStatus === "closed" && (
           <span className="shrink-0 rounded-full bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
             closed
           </span>
         )}
-        {session.managed && (
-          <Badge variant="secondary" title={botManaged ? "Bot-managed session" : undefined}>
-            {botManaged && <BotFaceIcon />}
-            {botManaged ? "Bot Managed" : "Managed"}
-          </Badge>
-        )}
-      </span>
-      <span className="flex gap-2 font-mono text-xs text-muted-foreground">
-        <span className="truncate">{session.id.slice(0, 14)}…</span>
-        <span className="ml-auto shrink-0 font-sans">
+        <span className="ml-auto shrink-0 font-sans text-xs text-muted-foreground">
           {relativeTime(session.updatedAtMs)}
         </span>
       </span>
-      {session.retention.deleteAfterCloseMs != null && (
-        <span className="text-xs text-muted-foreground">
-          {sessionRetentionLabel(session)}
+      {showSecondaryId && (
+        <span className="truncate font-mono text-xs text-muted-foreground" title={session.id}>
+          {session.id}
         </span>
       )}
+      {visibleMetadata.map(({ key, value }) => (
+        <span
+          key={key}
+          className="truncate font-mono text-[11px] text-muted-foreground"
+          title={`${key}=${value}`}
+        >
+          {key}={value}
+        </span>
+      ))}
     </>
   );
   const rowClass = cn(
-    "flex flex-col gap-0.5 px-4 py-2.5 text-sm hover:bg-muted/50",
-    metadata.length > 0 ? "pb-1" : "border-b",
+    "flex flex-col gap-0.5 border-b px-4 py-2.5 text-sm hover:bg-muted/50",
     (active || isSelected) && "bg-muted",
   );
   return (
@@ -678,35 +875,13 @@ function SessionListItem({
           </span>
         </label>
       ) : (
-        <NavLink to={`/u/${slug}/sessions/${session.id}`} className={rowClass} style={indent}>
-          {summary}
-        </NavLink>
-      )}
-      {metadata.length > 0 && (
-        <div
-          className={cn("flex flex-wrap gap-1 border-b px-4 pb-2", (active || isSelected) && "bg-muted")}
+        <NavLink
+          to={`/u/${slug}/sessions/${session.id}${search ? `?${search}` : ""}`}
+          className={rowClass}
           style={indent}
         >
-          {metadata.slice(0, ROW_CHIP_LIMIT).map(([key, value]) => (
-            <button
-              type="button"
-              key={key}
-              onClick={() => onFilter(key, value)}
-              title={`Filter by ${key}=${value}`}
-              className="max-w-48 truncate rounded bg-muted px-1 font-mono text-[10px] text-muted-foreground hover:text-foreground"
-            >
-              {key}={value}
-            </button>
-          ))}
-          {metadata.length > ROW_CHIP_LIMIT && (
-            <span
-              className="text-[10px] text-muted-foreground"
-              title={metadata.map(([key, value]) => `${key}=${value}`).join("\n")}
-            >
-              +{metadata.length - ROW_CHIP_LIMIT}
-            </span>
-          )}
-        </div>
+          {summary}
+        </NavLink>
       )}
     </li>
   );
@@ -717,17 +892,21 @@ function NewSessionDialog({
   slug,
   open,
   onOpenChange,
+  search,
 }: {
   universeId: string;
   slug: string;
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  search: string;
 }) {
   const [displayName, setDisplayName] = useState("");
   const [profileId, setProfileId] = useState("");
   const [step, setStep] = useState<"basics" | "setup">("basics");
   const [inlineProfile, setInlineProfile] = useState<InlineProfile | null>(null);
+  const [environmentOverride, setEnvironmentOverride] = useState<SessionEnvironmentOverride>();
   const [configError, setConfigError] = useState<string | null>(null);
+  const [retentionError, setRetentionError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const navigate = useNavigate();
   const queryClient = useQueryClient();
@@ -747,13 +926,14 @@ function NewSessionDialog({
   const environments = useQuery({
     queryKey: ["environments", universeId],
     queryFn: () => api<Environment[]>("GET", `/api/v1/universes/${universeId}/environments`),
-    enabled: open && step === "setup",
+    enabled: open,
   });
   const create = useMutation({
     mutationFn: () =>
       api<SessionView>("POST", `/api/v1/universes/${universeId}/sessions`, {
         ...(displayName.trim() ? { displayName: displayName.trim() } : {}),
         profile: profileForCreate(profileId, inlineProfile, selectedProfile.data),
+        ...(environmentOverride ? { environment: environmentOverride } : {}),
       }),
     onSuccess: async (session) => {
       await queryClient.invalidateQueries({ queryKey: ["sessions", universeId] });
@@ -763,9 +943,11 @@ function NewSessionDialog({
       setProfileId("");
       setStep("basics");
       setInlineProfile(null);
+      setEnvironmentOverride(undefined);
       setConfigError(null);
+      setRetentionError(null);
       setError(null);
-      navigate(`/u/${slug}/sessions/${target}`);
+      navigate(`/u/${slug}/sessions/${target}${search ? `?${search}` : ""}`);
     },
     onError: (err) => setError(err.message),
   });
@@ -775,8 +957,8 @@ function NewSessionDialog({
     const resourceError = setupResourceFeatureError(
       inlineProfile ?? selectedProfile.data ?? {},
     );
-    if (configError || resourceError) {
-      setError(configError ? `Config: ${configError}` : resourceError);
+    if (configError || retentionError || resourceError) {
+      setError(configError ? `Config: ${configError}` : retentionError ? `Retention: ${retentionError}` : resourceError);
       return;
     }
     create.mutate();
@@ -789,7 +971,9 @@ function NewSessionDialog({
       setProfileId("");
       setStep("basics");
       setInlineProfile(null);
+      setEnvironmentOverride(undefined);
       setConfigError(null);
+      setRetentionError(null);
       setError(null);
     }
   };
@@ -805,6 +989,7 @@ function NewSessionDialog({
         ? inlineProfileFromDocument(selectedProfile.data)
         : {},
     );
+    setEnvironmentOverride(undefined);
     setStep("setup");
   };
   const resourceFeatureError = inlineProfile
@@ -844,7 +1029,9 @@ function NewSessionDialog({
                   onValueChange={(value) => {
                     setProfileId(value as string);
                     setInlineProfile(null);
+                    setEnvironmentOverride(undefined);
                     setConfigError(null);
+                    setRetentionError(null);
                     setError(null);
                   }}
                 >
@@ -870,6 +1057,40 @@ function NewSessionDialog({
                   The profile is resolved at creation; later profile edits do not change this session.
                 </FieldDescription>
               </Field>
+              {profileId
+                && selectedProfile.data
+                && hasSessionFeature(selectedProfile.data.config, "environments")
+                && !inlineProfile ? (
+                <Field>
+                  <FieldLabel>Environment</FieldLabel>
+                  <Select
+                    value={environmentOverrideValue(environmentOverride)}
+                    onValueChange={(value) => {
+                      setEnvironmentOverride(environmentOverrideFromValue(value as string));
+                      setError(null);
+                    }}
+                  >
+                    <SelectTrigger className="w-full">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="profile">Use profile default</SelectItem>
+                      <SelectItem value="none">No active environment</SelectItem>
+                      {selectableEnvironments(environments.data ?? []).map((environment) => (
+                        <SelectItem
+                          key={environment.environmentId}
+                          value={`existing:${environment.environmentId}`}
+                        >
+                          {environment.displayName ?? environment.environmentId}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <FieldDescription>
+                    Override this session’s environment without converting the profile to an inline setup.
+                  </FieldDescription>
+                </Field>
+              ) : null}
               <Button
                 type="button"
                 variant="outline"
@@ -908,6 +1129,7 @@ function NewSessionDialog({
                 options={editorOptions}
                 environments={environments.data}
                 onValidityChange={setConfigError}
+                onRetentionValidityChange={setRetentionError}
                 onChange={setInlineProfile}
               />
             </div>
@@ -931,7 +1153,7 @@ function NewSessionDialog({
                 )}
                 <Button
                   type="button"
-                  disabled={create.isPending || Boolean(configError || resourceFeatureError)}
+                  disabled={create.isPending || Boolean(configError || retentionError || resourceFeatureError)}
                   onClick={() => create.mutate()}
                 >
                   {create.isPending ? "Creating…" : "Create session"}
@@ -950,12 +1172,14 @@ function InlineSetupEditor({
   options,
   environments,
   onValidityChange,
+  onRetentionValidityChange,
   onChange,
 }: {
   value: InlineProfile;
   options: ReturnType<typeof useSessionConfigEditorOptions>;
   environments: Environment[] | undefined;
   onValidityChange: (message: string | null) => void;
+  onRetentionValidityChange: (message: string | null) => void;
   onChange: (profile: InlineProfile) => void;
 }) {
   const change = (mutate: (next: InlineProfile) => void) => {
@@ -984,8 +1208,8 @@ function InlineSetupEditor({
         />
       </SetupEditorSection>
       <SetupEditorSection
-        title="Session config"
-        description="Sparse behavior and capability grants. Unset values inherit engine defaults."
+        title="Model configuration"
+        description="Choose the model and its default reasoning behavior. Unset values inherit deployment or provider defaults."
       >
         <SessionConfigEditor
           value={value.config}
@@ -996,6 +1220,41 @@ function InlineSetupEditor({
           profiles={options.profiles}
           environmentProviders={options.environmentProviders}
           featureDisableReasons={resourceFeatureDisableReasons(value)}
+          metadataSetup={(
+            <MetadataMapEditor
+              value={value.metadata}
+              onChange={(metadata) => change((next) => {
+                if (metadata) next.metadata = metadata;
+                else delete next.metadata;
+              })}
+            />
+          )}
+          metadataDescription="Metadata copied onto the new session. It helps with filtering and does not affect how the session runs."
+          retentionSetup={(
+            <ProfileRetentionEditor
+              value={value.retention?.deleteAfterCloseMs}
+              onValidityChange={onRetentionValidityChange}
+              onChange={(deleteAfterCloseMs) => change((next) => {
+                if (deleteAfterCloseMs !== undefined) next.retention = { deleteAfterCloseMs };
+                else delete next.retention;
+              })}
+            />
+          )}
+          retentionDescription="Automatic deletion for this new root session after it closes."
+          environmentSetup={(
+            <ProfileEnvironmentEditor
+              embedded
+              value={value.environment}
+              environments={environments}
+              bindings={options.environmentBindings}
+              templates={options.environmentTemplates}
+              secrets={options.secrets}
+              onChange={(environment) => change((next) => {
+                if (environment) next.environment = environment;
+                else delete next.environment;
+              })}
+            />
+          )}
           onValidityChange={onValidityChange}
           onChange={(config) => change((next) => {
             if (config) next.config = config;
@@ -1003,28 +1262,29 @@ function InlineSetupEditor({
           })}
         />
       </SetupEditorSection>
-      <ProfileEnvironmentEditor
-        value={value.environment}
-        environments={environments}
-        bindings={options.environmentBindings}
-        templates={options.environmentTemplates}
-        secrets={options.secrets}
-        disabled={!hasSessionFeature(value.config, "environments")}
-        onChange={(environment) => change((next) => {
-          if (environment) next.environment = environment;
-          else delete next.environment;
-        })}
-      />
     </div>
   );
 }
 
 function inlineProfileFromDocument(document: ProfileDocument): InlineProfile {
   const profile: InlineProfile = {};
+  if (document.metadata) profile.metadata = structuredClone(document.metadata);
+  if (document.retention) profile.retention = structuredClone(document.retention);
   if (isRecord(document.config)) profile.config = structuredClone(document.config);
   if (isRecord(document.instructions)) profile.instructions = structuredClone(document.instructions) as InlineProfile["instructions"];
   if (document.environment) profile.environment = structuredClone(document.environment);
   return profile;
+}
+
+function environmentOverrideValue(environment: SessionEnvironmentOverride | undefined): string {
+  if (!environment) return "profile";
+  return environment.type === "none" ? "none" : `existing:${environment.environmentId}`;
+}
+
+function environmentOverrideFromValue(value: string): SessionEnvironmentOverride | undefined {
+  if (value === "profile") return undefined;
+  if (value === "none") return { type: "none" };
+  return { type: "existing", environmentId: value.slice("existing:".length) };
 }
 
 function profileForCreate(
@@ -1088,7 +1348,6 @@ export function SessionDetail({
   const [stoppingRunId, setStoppingRunId] = useState<string | null>(null);
   const [cancellingQueued, setCancellingQueued] = useState<Set<string>>(() => new Set());
   const [sendError, setSendError] = useState<string | null>(null);
-  const [sessionIdCopied, setSessionIdCopied] = useState(false);
   const [closeError, setCloseError] = useState<string | null>(null);
   const [closeOpen, setCloseOpen] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
@@ -1314,6 +1573,10 @@ export function SessionDetail({
   const management = session.data?.management;
   const managed = session.data?.managed === true;
   const managerLabel = managedSessionOwnerLabel(management);
+  const owningBotId = managedSessionBotId(management, session.data?.metadata);
+  const owningBotHref = owningBotId
+    ? `/u/${slug}/bots/${encodeURIComponent(owningBotId)}/chat/${encodeURIComponent(sessionId)}`
+    : null;
   // Operator override: the engine happily admits direct runs on a managed
   // session (they queue like any client run), so the gate here is policy,
   // not capability. Off by default because direct input bypasses the
@@ -1323,12 +1586,6 @@ export function SessionDetail({
   useEffect(() => {
     setDirectInput(false);
   }, [sessionId]);
-
-  useEffect(() => {
-    if (!sessionIdCopied) return;
-    const timer = window.setTimeout(() => setSessionIdCopied(false), 1_500);
-    return () => window.clearTimeout(timer);
-  }, [sessionIdCopied]);
 
   useEffect(() => {
     if (settingsOpen && !runActive) {
@@ -1530,7 +1787,7 @@ export function SessionDetail({
             }
           : current,
       );
-      navigate(`/u/${slug}/sessions`);
+      navigate(backTo);
       await queryClient.invalidateQueries({ queryKey: ["sessions", universeId] });
     },
     onError: (error) => setDeleteError(error.message),
@@ -1539,203 +1796,207 @@ export function SessionDetail({
   return (
     <>
       {!embedded && (
-      <header className="flex h-12 shrink-0 items-center gap-3 border-b px-4">
-        {!embedded && (
-          <NavLink to={backTo} className="md:hidden">
+        <>
+        <header className="flex h-12 min-w-0 shrink-0 items-center gap-3 overflow-hidden border-b px-4">
+          <NavLink to={backTo} className="shrink-0 md:hidden">
             <ArrowLeft className="size-4" />
           </NavLink>
-        )}
-        <h1 className="min-w-0 truncate text-sm font-semibold">
-          {session.data?.displayName ?? sessionId.slice(0, 24)}
-        </h1>
-        {Object.entries(session.data?.metadata ?? {}).slice(0, 4).map(([key, value]) => (
-          <span
-            key={key}
-            className="hidden shrink-0 rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground lg:inline"
-            title={`${key}=${value}`}
-          >
-            {key}={value}
-          </span>
-        ))}
-        {closed && (
-          <span className="rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">
-            Closed
-          </span>
-        )}
-        {session.data?.retention.deleteAfterCloseMs != null && (
-          <span className="rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">
-            {sessionRetentionLabel({
-              lifecycleStatus: closed ? "closed" : "open",
-              retention: session.data.retention,
-            })}
-          </span>
-        )}
-        {managed && (
-          <Tooltip>
-            <TooltipTrigger
-              render={<button type="button" onClick={() => setSettingsOpen(true)} />}
-            >
-              <Badge variant="secondary" className="gap-1">
-                <ShieldCheck /> Managed by {managerLabel}
-              </Badge>
-            </TooltipTrigger>
-            <TooltipContent>
-              {`Lifecycle and chat input are controlled by ${managerLabel}; configuration remains editable.`}
-            </TooltipContent>
-          </Tooltip>
-        )}
-        <div className="ml-auto flex items-center gap-1">
-          {!closed && !managed && (
-            <AlertDialog
-              open={closeOpen}
-              onOpenChange={(open) => {
-                setCloseOpen(open);
-                if (open) setCloseError(null);
-              }}
-            >
-              <AlertDialogTrigger
+          <div className="flex min-w-0 items-center gap-0.5">
+            <h1 className="min-w-0 truncate text-sm font-semibold">
+              {session.data?.displayName ?? sessionId.slice(0, 24)}
+            </h1>
+            <DropdownMenu>
+              <DropdownMenuTrigger
                 render={
                   <Button
                     variant="ghost"
                     size="icon-sm"
-                    className="text-destructive"
-                    disabled={closeSession.isPending}
-                    aria-label={runActive ? "Force close session" : "Close session"}
-                    title={runActive
-                      ? "Cancel active work and permanently close this session"
-                      : "Permanently close this session"}
+                    className="shrink-0 text-muted-foreground"
+                    aria-label="Session details"
+                    title="Session details"
                   />
                 }
               >
-                {closeSession.isPending
-                  ? <LoaderCircle className="animate-spin" />
-                  : <Archive />}
-              </AlertDialogTrigger>
-              <AlertDialogContent>
-                <AlertDialogHeader>
-                  <AlertDialogTitle>
-                    {runActive ? "Force close this session?" : "Close this session?"}
-                  </AlertDialogTitle>
-                  <AlertDialogDescription>
-                    {runActive
-                      ? "This cancels active and queued work, then permanently closes the session. Recovery of a stuck workflow can take up to about 90 seconds while the engine terminates it and reconciles the session. The history remains available, but the session cannot be reopened."
-                      : "This permanently closes the session. It remains in the session list so its history can be inspected, but it cannot be reopened."}
-                  </AlertDialogDescription>
-                </AlertDialogHeader>
-                {closeSession.isPending && (
-                  <p className="text-sm text-muted-foreground">
-                    Force close is running in the background. You can hide this dialog and
-                    continue using the app.
-                  </p>
+                <ChevronDown />
+              </DropdownMenuTrigger>
+              <DropdownMenuContent
+                align="start"
+                className="max-h-[min(28rem,calc(100vh-1rem))] w-80 max-w-[calc(100vw-1rem)]"
+              >
+                <SessionMenuIdentity sessionId={sessionId} />
+                {owningBotHref && (
+                  <>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuGroup>
+                    <DropdownMenuItem onClick={() => navigate(owningBotHref)}>
+                      <BotFaceIcon /> Open in bot
+                    </DropdownMenuItem>
+                    </DropdownMenuGroup>
+                  </>
                 )}
-                {closeError && <p className="text-sm text-destructive">{closeError}</p>}
-                <AlertDialogFooter>
-                  <AlertDialogCancel>
-                    {closeSession.isPending ? "Hide" : "Cancel"}
-                  </AlertDialogCancel>
-                  <AlertDialogAction
-                    className="bg-destructive text-white hover:bg-destructive/90"
-                    disabled={closeSession.isPending}
-                    onClick={() => closeSession.mutate()}
-                  >
-                    {closeSession.isPending
-                      ? "Force-closing…"
-                      : runActive
-                        ? "Force close session"
-                        : "Close session"}
-                  </AlertDialogAction>
-                </AlertDialogFooter>
-              </AlertDialogContent>
-            </AlertDialog>
-          )}
-          {closed && !managed && (
-            <AlertDialog
-              open={deleteOpen}
-              onOpenChange={(open) => {
-                setDeleteOpen(open);
-                if (open) {
+                <SessionMenuMetadata metadata={session.data?.metadata} />
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
+          <div className="ml-auto flex min-w-0 shrink-0 items-center gap-1">
+            {activeRun && !activeToolGroup && (
+              <span className="hidden max-w-40 shrink truncate text-xs text-muted-foreground xl:inline">
+                {activeRun.label}…
+              </span>
+            )}
+            {closed && (
+              <span className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">
+                Closed
+              </span>
+            )}
+            {managed && (
+              <Tooltip>
+                <TooltipTrigger render={<span className="shrink-0" />}>
+                  <Badge variant="secondary" className="gap-1">
+                    <ShieldCheck />
+                    <span className="hidden xl:inline">Managed by {managerLabel}</span>
+                  </Badge>
+                </TooltipTrigger>
+                <TooltipContent>
+                  {`Lifecycle and chat input are controlled by ${managerLabel}; configuration remains editable.`}
+                </TooltipContent>
+              </Tooltip>
+            )}
+            {!closed && !managed && (
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                className="text-destructive"
+                disabled={closeSession.isPending}
+                onClick={() => {
+                  setCloseError(null);
+                  setCloseOpen(true);
+                }}
+                aria-label={runActive ? "Force close session" : "Close session"}
+                title={runActive ? "Force close session" : "Close session"}
+              >
+                {closeSession.isPending ? <LoaderCircle className="animate-spin" /> : <Archive />}
+              </Button>
+            )}
+            {closed && !managed && (
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                className="text-destructive"
+                disabled={deleteSession.isPending}
+                onClick={() => {
                   setDeleteError(null);
                   setDeleteCascade(false);
-                }
-              }}
-            >
-              <AlertDialogTrigger
-                render={
-                  <Button
-                    variant="ghost"
-                    size="icon-sm"
-                    className="text-destructive"
-                    aria-label="Delete session"
-                  />
-                }
+                  setDeleteOpen(true);
+                }}
+                aria-label="Delete session"
+                title="Delete session"
               >
-                <Trash2 />
-              </AlertDialogTrigger>
-              <AlertDialogContent>
-                <AlertDialogHeader>
-                  <AlertDialogTitle>Delete this session permanently?</AlertDialogTitle>
-                  <AlertDialogDescription>
-                    This removes the session and its retained history. It cannot be undone.
-                    A session with history forks or delegated children cannot be deleted
-                    unless cascade is enabled.
-                  </AlertDialogDescription>
-                </AlertDialogHeader>
-                <label className="flex items-start gap-2 rounded-lg border p-3 text-sm">
-                  <Checkbox
-                    checked={deleteCascade}
-                    onCheckedChange={(checked) => setDeleteCascade(checked === true)}
-                    disabled={deleteSession.isPending}
-                  />
-                  <span>
-                    <span className="block font-medium">Also delete forks and delegated children</span>
-                    <span className="block text-xs text-muted-foreground">
-                      Every descendant must already be closed. Config-only clones are not included.
-                    </span>
-                  </span>
-                </label>
-                {deleteError && <p className="text-sm text-destructive">{deleteError}</p>}
-                <AlertDialogFooter>
-                  <AlertDialogCancel disabled={deleteSession.isPending}>Cancel</AlertDialogCancel>
-                  <AlertDialogAction
-                    className="bg-destructive text-white hover:bg-destructive/90"
-                    disabled={deleteSession.isPending}
-                    onClick={() => deleteSession.mutate()}
-                  >
-                    {deleteSession.isPending ? "Deleting…" : "Delete permanently"}
-                  </AlertDialogAction>
-                </AlertDialogFooter>
-              </AlertDialogContent>
-            </AlertDialog>
-          )}
-          <Button
-            variant="ghost"
-            size="icon-sm"
-            aria-label="Session settings"
-            onClick={() => setSettingsOpen(true)}
-          >
-            <SlidersHorizontal />
-          </Button>
-        </div>
-        {activeRun && !activeToolGroup && (
-          <span className="shrink-0 text-xs text-muted-foreground">{activeRun.label}…</span>
-        )}
-        <Button
-          variant="ghost"
-          size="xs"
-          className="shrink-0 gap-1.5 px-2 font-mono text-xs text-muted-foreground"
-          aria-label={sessionIdCopied ? "Session ID copied" : "Copy session ID"}
-          title={sessionIdCopied ? "Copied" : `Copy ${sessionId}`}
-          onClick={() => {
-            void navigator.clipboard
-              .writeText(sessionId)
-              .then(() => setSessionIdCopied(true))
-              .catch(() => undefined);
+                {deleteSession.isPending ? <LoaderCircle className="animate-spin" /> : <Trash2 />}
+              </Button>
+            )}
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              onClick={() => setSettingsOpen(true)}
+              aria-label="Session settings"
+              title="Session settings"
+            >
+              <SlidersHorizontal />
+            </Button>
+          </div>
+        </header>
+
+        <AlertDialog
+          open={closeOpen}
+          onOpenChange={(open) => {
+            setCloseOpen(open);
+            if (open) setCloseError(null);
           }}
         >
-          {sessionIdCopied ? "Copied" : `${sessionId.slice(0, 18)}…`}
-          {sessionIdCopied ? <Check /> : <Copy />}
-        </Button>
-      </header>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>
+                {runActive ? "Force close this session?" : "Close this session?"}
+              </AlertDialogTitle>
+              <AlertDialogDescription>
+                {runActive
+                  ? "This cancels active and queued work, then permanently closes the session. Recovery of a stuck workflow can take up to about 90 seconds while the engine terminates it and reconciles the session. The history remains available, but the session cannot be reopened."
+                  : "This permanently closes the session. It remains in the session list so its history can be inspected, but it cannot be reopened."}
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            {closeSession.isPending && (
+              <p className="text-sm text-muted-foreground">
+                Force close is running in the background. You can hide this dialog and
+                continue using the app.
+              </p>
+            )}
+            {closeError && <p className="text-sm text-destructive">{closeError}</p>}
+            <AlertDialogFooter>
+              <AlertDialogCancel>
+                {closeSession.isPending ? "Hide" : "Cancel"}
+              </AlertDialogCancel>
+              <AlertDialogAction
+                className="bg-destructive text-white hover:bg-destructive/90"
+                disabled={closeSession.isPending}
+                onClick={() => closeSession.mutate()}
+              >
+                {closeSession.isPending
+                  ? "Force-closing…"
+                  : runActive
+                    ? "Force close session"
+                    : "Close session"}
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+
+        <AlertDialog
+          open={deleteOpen}
+          onOpenChange={(open) => {
+            setDeleteOpen(open);
+            if (open) {
+              setDeleteError(null);
+              setDeleteCascade(false);
+            }
+          }}
+        >
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Delete this session permanently?</AlertDialogTitle>
+              <AlertDialogDescription>
+                This removes the session and its retained history. It cannot be undone.
+                A session with history forks or delegated children cannot be deleted
+                unless cascade is enabled.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <label className="flex min-w-0 items-start gap-2 rounded-lg border p-3 text-sm">
+              <Checkbox
+                checked={deleteCascade}
+                onCheckedChange={(checked) => setDeleteCascade(checked === true)}
+                disabled={deleteSession.isPending}
+              />
+              <span className="min-w-0">
+                <span className="block font-medium">Also delete forks and delegated children</span>
+                <span className="block text-xs text-muted-foreground">
+                  Every descendant must already be closed. Config-only clones are not included.
+                </span>
+              </span>
+            </label>
+            {deleteError && <p className="text-sm text-destructive">{deleteError}</p>}
+            <AlertDialogFooter>
+              <AlertDialogCancel disabled={deleteSession.isPending}>Cancel</AlertDialogCancel>
+              <AlertDialogAction
+                className="bg-destructive text-white hover:bg-destructive/90"
+                disabled={deleteSession.isPending}
+                onClick={() => deleteSession.mutate()}
+              >
+                {deleteSession.isPending ? "Deleting…" : "Delete permanently"}
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+        </>
       )}
       <SessionLineage
         universeId={universeId}
@@ -1748,7 +2009,7 @@ export function SessionDetail({
       <MessageScrollerProvider autoScroll defaultScrollPosition="end">
         <MessageScroller className="min-h-0 flex-1">
           <MessageScrollerViewport>
-            <MessageScrollerContent className="gap-3 px-4 py-6 md:px-8">
+            <MessageScrollerContent className="mx-auto w-full max-w-5xl gap-3 px-4 py-6 md:px-8">
               {tail.phase === "loading" && entries.length === 0 && !tail.error && (
                 <LoadingNote />
               )}
@@ -1959,51 +2220,191 @@ function SessionLineage({
   sessionHref?: (sessionId: string) => string;
 }) {
   const href = sessionHref ?? ((id: string) => `/u/${slug}/sessions/${id}`);
-  const children = useQuery({
-    queryKey: ["session-children", universeId, sessionId, runRevision],
+  const parentId = origin?.parentSessionId;
+  const parent = useQuery({
+    queryKey: ["session", universeId, parentId],
     queryFn: () =>
-      api<SessionListPage>(
+      api<SessionView>(
         "GET",
-        `/api/v1/universes/${universeId}/sessions?limit=50&parentSessionId=${encodeURIComponent(sessionId)}`,
+        `/api/v1/universes/${universeId}/sessions/${encodeURIComponent(parentId!)}`,
       ),
+    enabled: Boolean(parentId),
   });
-  const list = children.data?.sessions ?? [];
+  const children = useInfiniteQuery({
+    queryKey: ["session-children", universeId, sessionId, runRevision],
+    queryFn: ({ pageParam }) => {
+      const params = new URLSearchParams({ limit: "50", parentSessionId: sessionId });
+      if (pageParam) params.set("cursor", pageParam);
+      return api<SessionListPage>(
+        "GET",
+        `/api/v1/universes/${universeId}/sessions?${params.toString()}`,
+      );
+    },
+    initialPageParam: "",
+    getNextPageParam: (last) => last.nextCursor ?? undefined,
+  });
+  const list = children.data?.pages.flatMap((page) => page.sessions) ?? [];
+  const inlineChildren = list.slice(0, INLINE_SUBAGENT_LIMIT);
+  const overflowChildren = list.slice(INLINE_SUBAGENT_LIMIT);
+  const hiddenCount = overflowChildren.length;
+  const parentName = parent.data?.displayName?.trim();
+  const parentLabel = parentName || (parentId ? compactSessionId(parentId) : "");
+  const tagClass = "inline-flex min-w-0 max-w-64 items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium text-foreground transition-colors hover:bg-muted";
   if (!origin && list.length === 0) return null;
   return (
-    <div className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 border-b bg-muted/30 px-4 py-1.5 text-xs text-muted-foreground">
+    <div className="shrink-0 border-b bg-muted/30">
+      <div className="mx-auto flex w-full max-w-5xl flex-wrap items-center gap-x-3 gap-y-1 px-4 py-1.5 text-xs text-muted-foreground md:px-8">
       {origin && (
-        <span className="flex min-w-0 items-center gap-1">
-          <span>Sub-agent of</span>
-          <NavLink to={href(origin.parentSessionId)} className="truncate font-mono text-foreground hover:underline">
-            {origin.parentSessionId.slice(0, 18)}…
-          </NavLink>
-          <span>
-            · {origin.agent.profileId} (rev {origin.agent.revision}) · depth {origin.depth}
-            {origin.rootSessionId !== origin.parentSessionId ? ` · root ${origin.rootSessionId.slice(0, 12)}…` : ""}
-          </span>
+        <span className="flex min-w-0 flex-wrap items-center gap-1">
+          <span>Parent:</span>
+          <Tooltip>
+            <TooltipTrigger
+              render={<NavLink to={href(origin.parentSessionId)} className={tagClass} />}
+            >
+              <span className={cn("truncate", !parentName && "font-mono font-normal")}>
+                {parentLabel}
+              </span>
+              {parent.data?.status && (
+                <span
+                  className={cn(
+                    "size-1.5 shrink-0 rounded-full",
+                    parent.data.status === "closed" ? "bg-muted-foreground/50" : "bg-foreground",
+                  )}
+                  aria-hidden="true"
+                />
+              )}
+            </TooltipTrigger>
+            <TooltipContent className="max-w-sm items-start">
+              <LineageTooltipDetails
+                id={origin.parentSessionId}
+                status={parent.data
+                  ? (parent.data.status === "closed" ? "closed" : "open")
+                  : undefined}
+                origin={parent.data?.origin ?? null}
+              />
+            </TooltipContent>
+          </Tooltip>
         </span>
       )}
       {list.length > 0 && (
         <span className="flex min-w-0 flex-wrap items-center gap-1">
-          <span>Sub-agents ({list.length}{children.data?.nextCursor ? "+" : ""}):</span>
-          {list.map((child) => (
-            <NavLink
+          <span>Sub-agents ({list.length}{children.hasNextPage ? "+" : ""}):</span>
+          {inlineChildren.map((child) => (
+            <SubagentLineageLink
               key={child.id}
+              child={child}
               to={href(child.id)}
-              className={cn(
-                "rounded-full border px-2 py-0.5 font-mono text-foreground hover:bg-muted",
-                child.lifecycleStatus === "closed" && "text-muted-foreground",
-              )}
-              title={`${child.id} · ${child.origin?.agent.profileId ?? "sub-agent"} · ${child.lifecycleStatus}`}
-            >
-              {child.displayName ?? child.id.slice(0, 14)}
-              {child.lifecycleStatus !== "closed" ? " ●" : ""}
-            </NavLink>
+              className={tagClass}
+            />
           ))}
+          {(hiddenCount > 0 || children.hasNextPage) && (
+            <Popover>
+              <PopoverTrigger
+                render={
+                  <button
+                    type="button"
+                    className={tagClass}
+                    aria-label={`Show ${hiddenCount}${children.hasNextPage ? " or more" : ""} additional sub-agents`}
+                  />
+                }
+              >
+                +{hiddenCount}{children.hasNextPage ? "+" : ""}
+              </PopoverTrigger>
+              <PopoverContent align="start" className="w-80 p-2">
+                <div className="mb-1 px-2 py-1 text-xs font-medium text-muted-foreground">
+                  Additional sub-agents
+                </div>
+                <div className="max-h-72 overflow-y-auto">
+                  {overflowChildren.map((child) => (
+                    <SubagentLineageLink
+                      key={child.id}
+                      child={child}
+                      to={href(child.id)}
+                      className="flex min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-sm text-foreground transition-colors hover:bg-muted"
+                    />
+                  ))}
+                  {hiddenCount === 0 && children.isFetchingNextPage && (
+                    <p className="px-2 py-1.5 text-xs text-muted-foreground">Loading…</p>
+                  )}
+                </div>
+                {children.hasNextPage && (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="mt-1 w-full"
+                    disabled={children.isFetchingNextPage}
+                    onClick={() => void children.fetchNextPage()}
+                  >
+                    {children.isFetchingNextPage ? "Loading…" : "Load more sub-agents"}
+                  </Button>
+                )}
+              </PopoverContent>
+            </Popover>
+          )}
         </span>
       )}
+      </div>
     </div>
   );
+}
+
+function SubagentLineageLink({
+  child,
+  to,
+  className,
+}: {
+  child: SessionSummary;
+  to: string;
+  className: string;
+}) {
+  const childName = child.displayName?.trim();
+  return (
+    <Tooltip>
+      <TooltipTrigger render={<NavLink to={to} className={className} />}>
+        <span className={cn("min-w-0 flex-1 truncate", !childName && "font-mono font-normal")}>
+          {childName || compactSessionId(child.id)}
+        </span>
+        <span
+          className={cn(
+            "size-1.5 shrink-0 rounded-full",
+            child.lifecycleStatus === "closed" ? "bg-muted-foreground/50" : "bg-foreground",
+          )}
+          aria-hidden="true"
+        />
+      </TooltipTrigger>
+      <TooltipContent className="max-w-sm items-start">
+        <LineageTooltipDetails
+          id={child.id}
+          status={child.lifecycleStatus === "closed" ? "closed" : "open"}
+          origin={child.origin ?? null}
+        />
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
+function LineageTooltipDetails({
+  id,
+  status,
+  origin,
+}: {
+  id: string;
+  status?: "open" | "closed";
+  origin: SessionOrigin | null;
+}) {
+  return (
+    <span className="flex min-w-0 flex-col gap-0.5">
+      <span>Session ID: <span className="wrap-anywhere font-mono">{id}</span></span>
+      <span>Status: {status === "closed" ? "Closed" : status === "open" ? "Open" : "…"}</span>
+      <span>Profile: <span className="font-mono">{origin?.agent.profileId ?? "—"}</span></span>
+      <span>Depth: {origin?.depth ?? 0}</span>
+    </span>
+  );
+}
+
+function compactSessionId(id: string, length = 18): string {
+  return `${id.slice(0, length)}${id.length > length ? "…" : ""}`;
 }
 
 function relativeTime(ms: number): string {
@@ -2012,22 +2413,4 @@ function relativeTime(ms: number): string {
   if (delta < 3_600_000) return `${Math.floor(delta / 60_000)}m`;
   if (delta < 86_400_000) return `${Math.floor(delta / 3_600_000)}h`;
   return `${Math.floor(delta / 86_400_000)}d`;
-}
-
-function sessionRetentionLabel(
-  session: Pick<SessionSummary, "lifecycleStatus" | "retention">,
-): string {
-  const duration = session.retention.deleteAfterCloseMs;
-  if (duration == null) return "Kept until manually deleted";
-  const deadline = session.retention.deleteAtMs;
-  if (deadline == null) return `Deletes ${formatDuration(duration)} after root closes`;
-  const remaining = deadline - Date.now();
-  if (remaining <= 0) return "Deletion pending";
-  return `Deletes in ${formatDuration(remaining)}`;
-}
-
-function formatDuration(ms: number): string {
-  if (ms < 3_600_000) return `${Math.max(1, Math.ceil(ms / 60_000))} minutes`;
-  if (ms < 86_400_000) return `${Math.ceil(ms / 3_600_000)} hours`;
-  return `${Math.ceil(ms / 86_400_000)} days`;
 }

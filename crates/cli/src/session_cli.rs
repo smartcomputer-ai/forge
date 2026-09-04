@@ -197,7 +197,8 @@ async fn start(args: StartArgs) -> Result<()> {
             metadata: args.metadata.map(),
             config: None,
             profile,
-            delete_after_close_ms: args.delete_after_close_ms,
+            environment: None,
+            delete_after_close_ms: args.delete_after_close_ms.map(Some),
         })
         .await
         .map_err(api_error)?
@@ -368,6 +369,7 @@ async fn collect_sessions(
                 limit: Some(selection.limit),
                 root_session_id: selection.root_session_id.clone(),
                 parent_session_id: selection.parent_session_id.clone(),
+                exclude_closed: false,
                 metadata: selection.metadata.clone(),
             })
             .await

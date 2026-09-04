@@ -291,52 +291,6 @@ function LiveSessionSetup({
         <div className="grid gap-8">
           <section className="grid gap-3">
             <div className="grid gap-0.5">
-              <h2 className="text-sm font-semibold">Metadata</h2>
-              <p className="text-xs text-muted-foreground">
-                Descriptive key/value pairs for finding this session in the list; they never
-                affect how it runs. Keys up to 64 bytes, values up to 256, no{" "}
-                <code>lightspeed.</code> prefix.
-              </p>
-            </div>
-            <MetadataEditor rows={metadataRows} onChange={setMetadataRows} disabled={save.isPending} />
-          </section>
-          <section className="grid gap-3">
-            <div className="grid gap-0.5">
-              <h2 className="text-sm font-semibold">Automatic deletion</h2>
-              {session?.retention.rootSessionId === sessionId ? (
-                <p className="text-xs text-muted-foreground">
-                  Delete this session, its history forks, and delegated children after the root closes. Leave blank to keep the tree until manually deleted.
-                </p>
-              ) : (
-                <p className="text-xs text-muted-foreground">
-                  Retained with root session{" "}
-                  <a className="font-mono underline" href={`../${session?.retention.rootSessionId}`}>
-                    {session?.retention.rootSessionId}
-                  </a>. Change deletion from the root.
-                </p>
-              )}
-            </div>
-            {session?.retention.rootSessionId === sessionId && (
-              <div className="grid max-w-xs gap-1.5">
-                <label className="text-xs font-medium" htmlFor="session-retention-days">
-                  Delete after close (days)
-                </label>
-                <Input
-                  id="session-retention-days"
-                  type="number"
-                  min="0.000001"
-                  step="any"
-                  value={retentionDaysDraft}
-                  onChange={(event) => setRetentionDaysDraft(event.target.value)}
-                  placeholder="Keep until manually deleted"
-                  disabled={save.isPending}
-                />
-                {retentionError && <p className="text-xs text-destructive">{retentionError}</p>}
-              </div>
-            )}
-          </section>
-          <section className="grid gap-3">
-            <div className="grid gap-0.5">
               <h2 className="text-sm font-semibold">Custom instructions</h2>
               <p className="text-xs text-muted-foreground">
                 Session-local instructions reconciled with the product default and workspace-linked VFS prompts.
@@ -357,9 +311,9 @@ function LiveSessionSetup({
           </section>
           <section className="grid gap-3">
             <div className="grid gap-0.5">
-              <h2 className="text-sm font-semibold">Session config</h2>
+              <h2 className="text-sm font-semibold">Model configuration</h2>
               <p className="text-xs text-muted-foreground">
-                Sparse behavior and capability grants. Enable a resource capability before editing its setup.
+                Choose the model and its default reasoning behavior. Unset values inherit deployment or provider defaults.
               </p>
             </div>
             <SessionConfigEditor
@@ -378,16 +332,56 @@ function LiveSessionSetup({
               featureDisableReasons={resourceFeatureDisableReasons({
                 config: configDraft,
               })}
+              metadataSetup={(
+                <MetadataEditor
+                  rows={metadataRows}
+                  onChange={setMetadataRows}
+                  disabled={save.isPending}
+                />
+              )}
+              metadataDescription="Descriptive key/value pairs for finding this session in the list. Keys are limited to 64 bytes, values to 256 bytes, and the lightspeed. prefix is reserved."
+              retentionSetup={session?.retention.rootSessionId === sessionId ? (
+                <div className="grid max-w-xs gap-1.5">
+                  <label className="text-xs font-medium" htmlFor="session-retention-days">
+                    Delete after close (days)
+                  </label>
+                  <Input
+                    id="session-retention-days"
+                    type="number"
+                    min="0.000001"
+                    step="any"
+                    value={retentionDaysDraft}
+                    onChange={(event) => setRetentionDaysDraft(event.target.value)}
+                    placeholder="Keep until manually deleted"
+                    disabled={save.isPending}
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Deletes this session, its history forks, and delegated children after the root closes. Leave blank to keep the tree.
+                  </p>
+                  {retentionError && <p className="text-xs text-destructive">{retentionError}</p>}
+                </div>
+              ) : (
+                <p className="text-sm text-muted-foreground">
+                  Retained with root session{" "}
+                  <a className="font-mono underline" href={`../${session?.retention.rootSessionId}`}>
+                    {session?.retention.rootSessionId}
+                  </a>. Change automatic deletion from the root.
+                </p>
+              )}
+              retentionDescription="Delete the retained session tree automatically after its root session closes."
+              environmentSetup={(
+                <ActiveEnvironmentEditor
+                  embedded
+                  value={activeEnvironmentDraft}
+                  environments={environments.data ?? []}
+                  loading={environments.isLoading}
+                  disabled={!hasSessionFeature(configDraft, "environments")}
+                  onChange={setActiveEnvironmentDraft}
+                />
+              )}
               pinnedApiKind={pinnedApiKind || undefined}
             />
           </section>
-          <ActiveEnvironmentEditor
-            value={activeEnvironmentDraft}
-            environments={environments.data ?? []}
-            loading={environments.isLoading}
-            disabled={!hasSessionFeature(configDraft, "environments")}
-            onChange={setActiveEnvironmentDraft}
-          />
           {environments.error && <p className="text-sm text-destructive">{environments.error.message}</p>}
           {instructions.error && <p className="text-sm text-destructive">{instructions.error.message}</p>}
         </div>
@@ -455,12 +449,14 @@ function ActiveEnvironmentEditor({
   environments: allEnvironments,
   loading,
   disabled,
+  embedded = false,
   onChange,
 }: {
   value: string | null;
   environments: Environment[];
   loading: boolean;
   disabled: boolean;
+  embedded?: boolean;
   onChange: (environmentId: string | null) => void;
 }) {
   const none = "__no_active_environment__";
@@ -469,11 +465,8 @@ function ActiveEnvironmentEditor({
     ...environments.map((environment) => environment.environmentId),
     ...(value ? [value] : []),
   ])];
-  return (
-    <SetupEditorSection
-      title="Active environment"
-      description="The one universe environment used by process and environment-targeted tools. Selection does not transfer ownership."
-    >
+  const content = (
+    <>
       {disabled && (
         <p className="rounded-lg border border-dashed p-3 text-sm text-muted-foreground">
           Enable the Environments feature to select an active environment.
@@ -512,6 +505,29 @@ function ActiveEnvironmentEditor({
           })}
         </SelectContent>
       </Select>
+    </>
+  );
+
+  if (embedded) {
+    return (
+      <div className="grid gap-3">
+        <div className="grid gap-0.5">
+          <p className="text-sm font-medium">Active environment</p>
+          <p className="text-xs text-muted-foreground">
+            The one universe environment used by process and environment-targeted tools. Selection does not transfer ownership.
+          </p>
+        </div>
+        {content}
+      </div>
+    );
+  }
+
+  return (
+    <SetupEditorSection
+      title="Active environment"
+      description="The one universe environment used by process and environment-targeted tools. Selection does not transfer ownership."
+    >
+      {content}
     </SetupEditorSection>
   );
 }

@@ -11,6 +11,8 @@ import type {
   EnvironmentView,
   ProfileEnvironment as ProfileEnvironmentView,
   ProfileEnvironmentCredential as ProfileEnvironmentCredentialView,
+  ProfileSessionRetention as ProfileSessionRetentionView,
+  SessionEnvironmentOverride as SessionEnvironmentOverrideView,
   SessionEventView,
   SessionEventsReadResponse,
   ToolCallDisplayView,
@@ -155,9 +157,13 @@ export interface ProfileSummary {
 
 export type ProfileEnvironment = ProfileEnvironmentView;
 export type ProfileEnvironmentCredential = ProfileEnvironmentCredentialView;
+export type ProfileSessionRetention = ProfileSessionRetentionView;
+export type SessionEnvironmentOverride = SessionEnvironmentOverrideView;
 
 export type ProfileDocument = {
   profileId: string;
+  metadata?: Record<string, string>;
+  retention?: ProfileSessionRetention | null;
   environment?: ProfileEnvironment | null;
   revision?: number;
   createdAtMs?: number;
@@ -165,6 +171,8 @@ export type ProfileDocument = {
 } & Record<string, unknown>;
 
 export type InlineProfile = {
+  metadata?: Record<string, string>;
+  retention?: ProfileSessionRetention | null;
   config?: Record<string, unknown>;
   instructions?:
     | { type: "text"; text: string }

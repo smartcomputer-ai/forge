@@ -1,19 +1,18 @@
 import { useState } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Activity,
   ArrowUpRight,
   ChevronDown,
   ChevronRight,
-  Copy,
   LoaderCircle,
   Pause,
   Play,
   RotateCcw,
   SlidersHorizontal,
 } from "lucide-react";
-import { NavLink, useNavigate } from "react-router-dom";
-import { api, botLabel, type BotControllerSnapshot, type BotStateView, type BotView } from "@/api";
+import { NavLink, useNavigate, useSearchParams } from "react-router-dom";
+import { api, botLabel, type BotControllerSnapshot, type BotStateView, type BotView, type SessionView } from "@/api";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -25,6 +24,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
+import { SessionMenuIdentity, SessionMenuMetadata } from "@/components/session/session-menu-details";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -37,12 +37,13 @@ import {
 import { cn } from "@/lib/utils";
 import { BotActivity } from "./activity";
 import { BotChat } from "./chat";
+import { BotEditorDialog } from "./editor-dialog";
 import { BotAvatar } from "./face";
 import { botInputOf, idIsRedundant } from "./identity";
 import { BotSetup } from "./setup";
 import { StatusDot, botStatus, relativeTime } from "./status";
 
-export type BotTab = "chat" | "activity" | "setup";
+export type BotTab = "chat" | "activity";
 
 /** Threads shown as tabs before the rest fold into the +N menu. */
 const INLINE_THREADS = 3;
@@ -72,6 +73,9 @@ export function conversationTabs(
   const active = new Set((controller.activeDeliveries ?? []).map((delivery) => delivery.sessionId));
   const sessions = controller.sessions ?? [];
   const labelOf = new Map(sessions.map((session) => [session.sessionId, session.kind === "main" ? "Main" : session.label]));
+  for (const child of state?.descendants ?? []) {
+    labelOf.set(child.id, child.displayName?.trim() || child.id.slice(0, 14));
+  }
   const ready = controller.setupStatus === "ready";
   const main: ConversationTab = {
     id: controller.mainSessionId,
@@ -116,9 +120,8 @@ export function conversationTabs(
 }
 
 /**
- * One bot: a header that answers "is it working?", then one row of tabs —
- * its conversations, then Activity and Setup. Nothing about a bot lives
- * elsewhere, and there is no third level.
+ * One bot: a header that answers "is it working?", then one row for its
+ * conversations and Activity. Settings is a global bot action in the header.
  */
 export function BotDetail({
   universeId,
@@ -140,11 +143,15 @@ export function BotDetail({
   sessionId: string | undefined;
 }) {
   const queryClient = useQueryClient();
+  const [searchParams, setSearchParams] = useSearchParams();
   const base = `/u/${slug}/bots/${bot.botId}`;
   const controller = state?.controller ?? undefined;
   const status = botStatus(bot, controller, stateError);
   const selected = view === "chat" ? (sessionId ?? controller?.mainSessionId) : undefined;
-  const { inline, overflow } = conversationTabs(state, view === "chat" ? selected : undefined);
+  const { inline, overflow } = conversationTabs(
+    state,
+    view === "chat" ? selected : undefined,
+  );
   const sessionHref = (id: string) => (id === controller?.mainSessionId ? base : `${base}/chat/${encodeURIComponent(id)}`);
   const enabled = bot.enabled ?? true;
   const togglePause = useMutation({
@@ -162,6 +169,13 @@ export function BotDetail({
     },
   });
   const pending = controller?.pendingDeliveries ?? 0;
+  const settingsOpen = searchParams.get("settings") === "open";
+  const setSettingsOpen = (open: boolean) => {
+    const next = new URLSearchParams(searchParams);
+    if (open) next.set("settings", "open");
+    else next.delete("settings");
+    setSearchParams(next, { replace: !open });
+  };
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col">
@@ -184,8 +198,8 @@ export function BotDetail({
           <StatusDot tone={status.tone} />
           <span className="truncate">{status.label}</span>
         </span>
-        {manage && bot.closedAtMs == null && (
-          <div className="ml-auto flex items-center gap-1">
+        <div className="ml-auto flex items-center gap-1">
+          {manage && bot.closedAtMs == null && (
             <Button
               variant="outline"
               size="xs"
@@ -202,13 +216,22 @@ export function BotDetail({
               )}
               {enabled ? "Pause" : "Resume"}
             </Button>
-          </div>
-        )}
+          )}
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            onClick={() => setSettingsOpen(true)}
+            title="Bot settings"
+            aria-label="Bot settings"
+          >
+            <SlidersHorizontal />
+          </Button>
+        </div>
       </div>
       {togglePause.error && (
         <p className="border-b bg-destructive/10 px-4 py-1.5 text-xs text-destructive">{togglePause.error.message}</p>
       )}
-      <nav className="flex h-10 shrink-0 items-stretch gap-0.5 overflow-x-auto border-b px-2" aria-label="Bot conversations and sections">
+      <nav className="flex h-10 shrink-0 items-stretch gap-0.5 overflow-x-auto border-b px-2" aria-label="Bot conversations and activity">
         {controller ? (
           inline.map((tab) => {
             const active = view === "chat" && selected === tab.id;
@@ -267,18 +290,21 @@ export function BotDetail({
             <span className="rounded-full bg-primary px-1.5 text-[10px] font-semibold text-primary-foreground">{pending}</span>
           )}
         </TabLink>
-        <TabLink to={`${base}/setup`} active={view === "setup"}>
-          <SlidersHorizontal className="size-4" />
-          Setup
-        </TabLink>
       </nav>
       {view === "chat" ? (
         <BotChat universeId={universeId} slug={slug} bot={bot} state={state} stateError={stateError} sessionId={sessionId} />
-      ) : view === "activity" ? (
-        <BotActivity universeId={universeId} slug={slug} bot={bot} state={state} stateError={stateError} manage={manage} />
       ) : (
-        <BotSetup universeId={universeId} slug={slug} bot={bot} state={state} manage={manage} />
+        <BotActivity universeId={universeId} slug={slug} bot={bot} state={state} stateError={stateError} manage={manage} />
       )}
+      <BotEditorDialog
+        open={settingsOpen}
+        onOpenChange={setSettingsOpen}
+        title={`Bot Settings (${botLabel(bot)})`}
+        description="Identity, job, triggers, session profile, collaborators, guardrails, and lifecycle."
+        contentClassName="sm:max-w-4xl"
+      >
+        <BotSetup universeId={universeId} slug={slug} bot={bot} state={state} manage={manage} />
+      </BotEditorDialog>
     </div>
   );
 }
@@ -394,8 +420,15 @@ function ConversationMenu({
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const [resetOpen, setResetOpen] = useState(false);
-  const [copied, setCopied] = useState(false);
   const managedHere = (controller.sessions ?? []).some((entry) => entry.sessionId === sessionId);
+  const session = useQuery({
+    queryKey: ["session", universeId, sessionId],
+    queryFn: () =>
+      api<SessionView>(
+        "GET",
+        `/api/v1/universes/${universeId}/sessions/${encodeURIComponent(sessionId)}`,
+      ),
+  });
   const reset = useMutation({
     mutationFn: () =>
       api(
@@ -423,24 +456,14 @@ function ConversationMenu({
         >
           {reset.isPending ? <LoaderCircle className="size-3.5 animate-spin" /> : <ChevronDown className="size-3.5" />}
         </DropdownMenuTrigger>
-        <DropdownMenuContent align="start" className="min-w-56">
-          {/* A label is a group label in base-ui: it must sit inside a group. */}
+        <DropdownMenuContent
+          align="start"
+          className="max-h-[min(28rem,calc(100vh-1rem))] w-80 max-w-[calc(100vw-1rem)]"
+        >
+          <SessionMenuIdentity sessionId={sessionId} />
+          <DropdownMenuSeparator />
           <DropdownMenuGroup>
-            <DropdownMenuLabel className="truncate font-mono text-xs font-normal text-muted-foreground">
-              {sessionId}
-            </DropdownMenuLabel>
-            <DropdownMenuItem
-              onClick={() => {
-                void navigator.clipboard
-                  .writeText(sessionId)
-                  .then(() => setCopied(true))
-                  .catch(() => undefined);
-                window.setTimeout(() => setCopied(false), 1_500);
-              }}
-            >
-              <Copy /> {copied ? "Copied" : "Copy session id"}
-            </DropdownMenuItem>
-            <DropdownMenuItem onClick={() => navigate(`/u/${slug}/sessions/${sessionId}`)}>
+            <DropdownMenuItem onClick={() => navigate(`/u/${slug}/sessions/${encodeURIComponent(sessionId)}`)}>
               <ArrowUpRight /> Open on the Sessions page
             </DropdownMenuItem>
           </DropdownMenuGroup>
@@ -454,6 +477,7 @@ function ConversationMenu({
               </DropdownMenuGroup>
             </>
           )}
+          <SessionMenuMetadata metadata={session.data?.metadata} />
         </DropdownMenuContent>
       </DropdownMenu>
       <AlertDialog

@@ -1684,6 +1684,22 @@ export type SessionJobCancelScopeView = "job" | "dependents";
  */
 export type SessionJobDependencyPolicyView = "allSucceeded" | "allTerminal";
 /**
+ * Creation-time override for the environment intent carried by a profile.
+ * Absence uses the profile unchanged; `none` suppresses its environment
+ * intent, while `existing` activates the specified universe environment.
+ *
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "SessionEnvironmentOverride".
+ */
+export type SessionEnvironmentOverride =
+  | {
+      type: "none";
+    }
+  | {
+      environmentId: string;
+      type: "existing";
+    };
+/**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "ProfileSource".
  */
@@ -5281,7 +5297,21 @@ export interface AgentProfile {
    */
   environment?: ProfileEnvironment | null;
   instructions?: ProfileInstructions | null;
+  /**
+   * Descriptive metadata defaults copied to a session when it is created
+   * from this profile. Explicit `session/start` metadata wins key by key.
+   * Applying the profile to an existing session does not change metadata.
+   */
+  metadata?: {
+    [k: string]: string;
+  };
   profileId: ProfileId;
+  /**
+   * Creation-time session retention default. Absence keeps the tree until
+   * manual deletion. Applying a profile to an existing session does not
+   * change retention.
+   */
+  retention?: ProfileSessionRetention | null;
   revision: number;
   updatedAtMs: number;
 }
@@ -5298,6 +5328,18 @@ export interface ProfileEnvironmentCredential {
    */
   envName: string;
   source: EnvironmentCredentialSourceView;
+}
+/**
+ * Root-session retention policy supplied by a profile at session creation.
+ *
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "ProfileSessionRetention".
+ */
+export interface ProfileSessionRetention {
+  /**
+   * Positive close-relative automatic-deletion duration.
+   */
+  deleteAfterCloseMs: number;
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
@@ -5931,7 +5973,21 @@ export interface AgentProfileInput {
    */
   environment?: ProfileEnvironment | null;
   instructions?: ProfileInstructions | null;
+  /**
+   * Descriptive metadata defaults copied to a session when it is created
+   * from this profile. Explicit `session/start` metadata wins key by key.
+   * Applying the profile to an existing session does not change metadata.
+   */
+  metadata?: {
+    [k: string]: string;
+  };
   profileId: ProfileId;
+  /**
+   * Creation-time session retention default. Absence keeps the tree until
+   * manual deletion. Applying a profile to an existing session does not
+   * change retention.
+   */
+  retention?: ProfileSessionRetention | null;
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
@@ -6865,6 +6921,20 @@ export interface InlineAgentProfile {
    */
   environment?: ProfileEnvironment | null;
   instructions?: ProfileInstructions | null;
+  /**
+   * Descriptive metadata defaults copied to a session when it is created
+   * from this profile. Explicit `session/start` metadata wins key by key.
+   * Applying the profile to an existing session does not change metadata.
+   */
+  metadata?: {
+    [k: string]: string;
+  };
+  /**
+   * Creation-time session retention default. Absence keeps the tree until
+   * manual deletion. Applying a profile to an existing session does not
+   * change retention.
+   */
+  retention?: ProfileSessionRetention | null;
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
@@ -6885,11 +6955,17 @@ export interface JsonRpcError {
 export interface ManagedSessionStartParams {
   config?: SessionConfig | null;
   /**
-   * Root-owned automatic deletion measured from close. Absent keeps the
-   * session tree until manual deletion.
+   * Root-owned automatic deletion measured from close. Absent inherits a
+   * profile default, explicit null keeps the tree, and a duration overrides
+   * the profile.
    */
   deleteAfterCloseMs?: number | null;
   displayName?: string | null;
+  /**
+   * Optional creation-time override for the selected profile's environment
+   * intent. Omit to use the profile's intent unchanged.
+   */
+  environment?: SessionEnvironmentOverride | null;
   /**
    * Descriptive key/value metadata with the same bounds as
    * `session/start`; applied only when the session is first created.
@@ -7379,9 +7455,15 @@ export interface SessionListParams {
    * Opaque cursor from the previous page's `nextCursor`.
    */
   cursor?: string | null;
+  /**
+   * Exclude closed sessions. New sessions that have not run yet remain in
+   * the result alongside open sessions.
+   */
+  excludeClosed?: boolean;
   limit?: number | null;
   /**
-   * Only sessions carrying every listed key/value pair (AND semantics).
+   * Only sessions matching every entry (AND semantics). A non-empty value
+   * requires an exact key/value pair; an empty value requires key presence.
    * Combines with the lineage filters.
    */
   metadata?: {
@@ -7454,11 +7536,17 @@ export interface SessionRetentionPutParams {
 export interface SessionStartParams {
   config?: SessionConfig | null;
   /**
-   * Root-owned automatic deletion measured from close. Absent keeps the
-   * session tree until manual deletion.
+   * Root-owned automatic deletion measured from close. Absent inherits a
+   * profile default, explicit null keeps the tree, and a duration overrides
+   * the profile.
    */
   deleteAfterCloseMs?: number | null;
   displayName?: string | null;
+  /**
+   * Optional creation-time override for the selected profile's environment
+   * intent. Omit to use the profile's intent unchanged.
+   */
+  environment?: SessionEnvironmentOverride | null;
   /**
    * Descriptive key/value metadata, applied only when the session is
    * first created: at most 32 entries, keys 1..=64 bytes, values 1..=256

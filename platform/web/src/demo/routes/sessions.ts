@@ -3,7 +3,7 @@
 /// and status codes follow the platform server's gateway so the UI cannot
 /// tell the difference.
 import { Hono, type Context } from "hono";
-import type { Environment, ProfileSource, SessionView } from "@/api";
+import type { Environment, ProfileSessionRetention, ProfileSource, SessionView } from "@/api";
 import type { ProfileEnvironment, ProfileInstructions } from "@lightspeed-ai/agent-client";
 import {
   DEFAULT_MODEL,
@@ -27,18 +27,22 @@ import { closeEnvironment, provisionEnvironment } from "./environments";
 /// from. `profileId` is null for inline profiles.
 interface ResolvedProfile {
   profileId: string | null;
+  metadata: Record<string, string>;
+  retention: ProfileSessionRetention | null;
   config: Record<string, unknown>;
   instructions: ProfileInstructions | null;
   environment: ProfileEnvironment | null;
 }
 
-/// `?metadata=key=value`, repeatable, as the containment filter map.
+/// `?metadata=key` or `?metadata=key=value`, repeatable. Empty values request
+/// key presence; non-empty values request exact matches.
 function metadataQueryFilter(values: string[] | undefined): Record<string, string> {
   const filter: Record<string, string> = {};
   for (const raw of values ?? []) {
     const at = raw.indexOf("=");
-    if (at <= 0 || at === raw.length - 1) continue;
-    filter[raw.slice(0, at)] = raw.slice(at + 1);
+    const key = (at < 0 ? raw : raw.slice(0, at)).trim();
+    if (!key) continue;
+    filter[key] = at < 0 ? "" : raw.slice(at + 1).trim();
   }
   return filter;
 }
@@ -61,14 +65,18 @@ export function sessionRoutes(store: DemoStore): Hono {
     const offset = intQuery(c, "cursor", 0);
     const rootSessionId = c.req.query("rootSessionId") || null;
     const parentSessionId = c.req.query("parentSessionId") || null;
+    const excludeClosed = c.req.query("excludeClosed") === "true";
     const metadata = metadataQueryFilter(c.req.queries("metadata"));
     const all = [...universe.sessions.values()]
       .filter((record) => !rootSessionId || record.view.origin?.rootSessionId === rootSessionId)
       .filter(
         (record) => !parentSessionId || record.view.origin?.parentSessionId === parentSessionId,
       )
+      .filter((record) => !excludeClosed || record.view.status !== "closed")
       .filter((record) =>
-        Object.entries(metadata).every(([key, value]) => record.view.metadata?.[key] === value),
+        Object.entries(metadata).every(([key, value]) => value
+          ? record.view.metadata?.[key] === value
+          : Object.hasOwn(record.view.metadata ?? {}, key)),
       )
       .sort((a, b) => b.view.updatedAtMs - a.view.updatedAtMs);
     const page = all.slice(offset, offset + limit);
@@ -89,10 +97,14 @@ export function sessionRoutes(store: DemoStore): Hono {
       metadata?: Record<string, string>;
       deleteAfterCloseMs?: number | null;
       profile?: ProfileSource;
+      environment?: { type: "none" } | { type: "existing"; environmentId: string };
     }>(c);
     if (!body.profile) return badRequest(c, "profile is required");
     const profile = resolveProfile(universe, body.profile);
     if (!profile) return notFound(c, "not found in engine");
+    if (body.environment) {
+      profile.environment = body.environment.type === "none" ? null : body.environment;
+    }
     const config = sessionConfig(profile.config);
     const sessionId = store.nextId("session");
     const resolved = resolveEnvironment(store, universe, profile, sessionId, config);
@@ -100,8 +112,10 @@ export function sessionRoutes(store: DemoStore): Hono {
     const session = newSession(store, universe, {
       id: sessionId,
       displayName: body.displayName?.trim() || null,
-      metadata: body.metadata ?? {},
-      deleteAfterCloseMs: body.deleteAfterCloseMs,
+      metadata: { ...profile.metadata, ...(body.metadata ?? {}) },
+      deleteAfterCloseMs: Object.hasOwn(body, "deleteAfterCloseMs")
+        ? body.deleteAfterCloseMs
+        : profile.retention?.deleteAfterCloseMs,
       config,
       activeEnvironmentId: resolved.environmentId,
       instructions: instructionText(store, profile.instructions),
@@ -408,6 +422,8 @@ function resolveProfile(universe: UniverseState, source: ProfileSource): Resolve
     const profile = source.profile ?? {};
     return {
       profileId: null,
+      metadata: isStringMap(profile.metadata) ? profile.metadata : {},
+      retention: profile.retention ?? null,
       config: isRecord(profile.config) ? profile.config : {},
       instructions: profile.instructions ?? null,
       environment: profile.environment ?? null,
@@ -418,6 +434,8 @@ function resolveProfile(universe: UniverseState, source: ProfileSource): Resolve
   const instructions = document.instructions;
   return {
     profileId: document.profileId,
+    metadata: isStringMap(document.metadata) ? document.metadata : {},
+    retention: document.retention ?? null,
     config: isRecord(document.config) ? document.config : {},
     instructions: isRecord(instructions) ? (instructions as unknown as ProfileInstructions) : null,
     environment: document.environment ?? null,
@@ -525,4 +543,8 @@ function grantsEnvironments(config: NonNullable<SessionView["config"]>): boolean
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function isStringMap(value: unknown): value is Record<string, string> {
+  return isRecord(value) && Object.values(value).every((entry) => typeof entry === "string");
 }

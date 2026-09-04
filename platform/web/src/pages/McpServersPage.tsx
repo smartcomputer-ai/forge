@@ -73,7 +73,13 @@ import {
   TableTitleCell,
 } from "@/components/ui/table";
 import { LoadingNote, PageHeader, UniverseNotFound } from "@/components/page";
+import { ProgressSteps } from "@/components/ui/progress-steps";
 import { canManage, useActiveUniverse } from "@/lib/universes";
+
+const MCP_CREATE_STEPS = [
+  { id: 1 as const, label: "Server" },
+  { id: 2 as const, label: "Connection" },
+];
 
 /// U5a: the universe's MCP server registry — what the profile editor's
 /// server picker links against. Full-document saves mirror the engine's
@@ -541,7 +547,7 @@ function ServerDialog({
           status: nextStatus,
           displayName: displayName.trim(),
           ...(description.trim() ? { description: description.trim() } : {}),
-          ...(!allToolsAllowed ? { allowedTools: parsedTools } : {}),
+          allowedTools: null,
         });
       }
       return api<McpServer>(
@@ -604,7 +610,7 @@ function ServerDialog({
       setError(credentialError);
       return;
     }
-    if (!allToolsAllowed && parsedTools.length === 0) {
+    if (editing && !allToolsAllowed && parsedTools.length === 0) {
       setError("Select at least one tool, or allow every advertised tool.");
       return;
     }
@@ -625,7 +631,9 @@ function ServerDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[min(92dvh,860px)] grid-rows-[auto_minmax(0,1fr)_auto] gap-0 p-0 sm:max-w-xl">
+      <DialogContent
+        className={`max-h-[min(92dvh,860px)] gap-0 p-0 sm:max-w-xl ${editing ? "grid-rows-[auto_minmax(0,1fr)_auto]" : "grid-rows-[auto_auto_minmax(0,1fr)_auto]"}`}
+      >
         <DialogHeader className="border-b p-6 pr-14">
           <DialogTitle>{editing ? `Edit ${server.displayName || server.serverId}` : "Add MCP server"}</DialogTitle>
           <DialogDescription>
@@ -637,18 +645,17 @@ function ServerDialog({
           </DialogDescription>
         </DialogHeader>
 
+        {!editing && (
+          <ProgressSteps
+            steps={MCP_CREATE_STEPS}
+            current={step}
+            onSelect={setStep}
+            label="MCP server creation progress"
+          />
+        )}
+
         <form onSubmit={submit} className="contents">
           <div className="grid min-h-0 content-start gap-5 overflow-y-auto p-6">
-          {!editing && (
-            <div className="grid grid-cols-2 gap-2 text-xs">
-              <div className={`rounded-md px-3 py-2 ${step === 1 ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground"}`}>
-                1 · Server
-              </div>
-              <div className={`rounded-md px-3 py-2 ${step === 2 ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground"}`}>
-                2 · Connection
-              </div>
-            </div>
-          )}
           {(!editing && step === 1) ? (
             <>
               <Field>
@@ -785,6 +792,135 @@ function ServerDialog({
                 </Field>
               )}
 
+              {editing ? (
+                <Field>
+                  <div className="flex items-end justify-between gap-3">
+                    <div>
+                      <FieldLabel>Available tools</FieldLabel>
+                      <FieldDescription>
+                        Read live with the connected account's permissions and never cached.
+                        Server-provided descriptions and safety annotations are untrusted hints.
+                      </FieldDescription>
+                    </div>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      disabled={discoverTools.isPending || connectionSettingsDirty}
+                      onClick={() => discoverTools.mutate(toolConnectionKey)}
+                    >
+                      <RotateCcw className={discoverTools.isPending ? "animate-spin" : ""} />
+                      {toolDiscovery ? "Refresh" : "Load tools"}
+                    </Button>
+                  </div>
+                <Select
+                  value={allToolsAllowed ? "all" : "selected"}
+                  onValueChange={(value) => setAllToolsAllowed(value === "all")}
+                >
+                  <SelectTrigger className="w-full" aria-label="Allowed tools">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">Allow every advertised tool</SelectItem>
+                    <SelectItem value="selected">Allow only selected tools</SelectItem>
+                  </SelectContent>
+                </Select>
+                {connectionSettingsDirty && (
+                  <FieldDescription>
+                    Save connection or credential changes before loading its tools.
+                  </FieldDescription>
+                )}
+                {discoverTools.error && (
+                  <p className="text-sm text-destructive">{discoverTools.error.message}</p>
+                )}
+                {toolDiscovery?.status === "failure" && (
+                  <div className="grid gap-1">
+                    <p className="text-sm text-destructive">{toolDiscovery.message}</p>
+                    <FieldDescription>
+                      {mcpDiscoveryFailureAction(toolDiscovery.code)}
+                      {toolDiscovery.requiredScopes?.length
+                        ? ` Required scopes: ${toolDiscovery.requiredScopes.join(", ")}.`
+                        : ""}
+                    </FieldDescription>
+                  </div>
+                )}
+                {!allToolsAllowed && toolDiscovery?.status !== "success" && parsedTools.length > 0 && (
+                  <div className="rounded-md border p-3">
+                    <p className="mb-2 text-xs font-medium text-muted-foreground">Authored selection</p>
+                    <div className="flex flex-wrap gap-1.5">
+                      {parsedTools.map((name) => (
+                        <Badge key={name} variant="outline" className="font-mono">{name}</Badge>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {toolDiscovery?.status === "success" && (
+                  <div className="grid gap-2">
+                    <div className="relative">
+                      <Search className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
+                      <Input
+                        value={toolSearch}
+                        onChange={(event) => setToolSearch(event.target.value)}
+                        placeholder={`Search ${advertisedTools.length} tool${advertisedTools.length === 1 ? "" : "s"}`}
+                        aria-label="Search MCP tools"
+                        className="pl-8"
+                      />
+                    </div>
+                    <div className="max-h-64 overflow-y-auto rounded-md border">
+                      {visibleTools.length === 0 ? (
+                        <p className="p-3 text-sm text-muted-foreground">
+                          {advertisedTools.length === 0
+                            ? "No tools advertised. Check this account's access, requested scopes, and workspace or admin policy, then refresh or reconnect this server."
+                            : "No tools match your search."}
+                        </p>
+                      ) : visibleTools.map((tool) => (
+                        <Label
+                          key={tool.name}
+                          className="flex items-start gap-3 border-b p-3 font-normal last:border-b-0"
+                        >
+                          {!allToolsAllowed && (
+                            <Checkbox
+                              className="mt-0.5"
+                              checked={allowedTools.includes(tool.name)}
+                              onCheckedChange={(checked) => toggleAllowedTool(tool.name, checked === true)}
+                            />
+                          )}
+                          <span className="min-w-0 flex-1">
+                            <span className="flex flex-wrap items-center gap-1.5 text-sm font-medium">
+                              {tool.title ?? tool.name}
+                              {tool.annotations?.readOnlyHint === true && <Badge variant="outline">read only</Badge>}
+                              {tool.annotations?.readOnlyHint === false && <Badge variant="outline">may write</Badge>}
+                              {tool.annotations?.destructiveHint === true && <Badge variant="outline">destructive</Badge>}
+                              {tool.annotations?.idempotentHint === true && <Badge variant="outline">idempotent</Badge>}
+                              {tool.annotations?.openWorldHint === true && <Badge variant="outline">external access</Badge>}
+                            </span>
+                            <span className="block font-mono text-xs text-muted-foreground">{tool.name}</span>
+                            {tool.description && (
+                              <span className="mt-1 block text-xs text-muted-foreground">{tool.description}</span>
+                            )}
+                          </span>
+                        </Label>
+                      ))}
+                    </div>
+                    {!allToolsAllowed && unavailableSelectedTools.length > 0 && (
+                      <FieldDescription>
+                        Still selected but not currently advertised: {unavailableSelectedTools.join(", ")}.
+                        They are preserved until you deselect them.
+                      </FieldDescription>
+                    )}
+                  </div>
+                )}
+                </Field>
+              ) : (
+                <div className="grid gap-1 rounded-md border bg-muted/15 p-3">
+                  <p className="text-sm font-medium">Tool selection after connection</p>
+                  <p className="text-xs text-muted-foreground">
+                    This server will initially allow every advertised tool. After adding it and completing any
+                    authentication, edit the server to load its live inventory and restrict access.
+                  </p>
+                </div>
+              )}
+
               <Field>
                 <FieldLabel>Authentication</FieldLabel>
                 {detectedOAuth && (
@@ -835,8 +971,7 @@ function ServerDialog({
                       {[
                         ...(!editing ? [`id ${serverId || "…"}`] : []),
                         approvalLabel(approval).toLowerCase(),
-                        execution === "native" ? `native ${exposure}` : "provider execution",
-                        allToolsAllowed ? "all tools" : `${parsedTools.length} selected tool${parsedTools.length === 1 ? "" : "s"}`,
+                        allowPrivateNetwork ? "private-network access" : "public network only",
                       ].join(" · ")}
                     </span>
                   </span>
@@ -892,132 +1027,6 @@ function ServerDialog({
                       </span>
                     </span>
                   </Label>
-                  <Field>
-                    <div className="flex items-end justify-between gap-3">
-                      <div>
-                        <FieldLabel>Available tools</FieldLabel>
-                        <FieldDescription>
-                          Read live with the connected account's permissions and never cached.
-                          Server-provided descriptions and safety annotations are untrusted hints.
-                        </FieldDescription>
-                      </div>
-                      {editing && (
-                        <Button
-                          type="button"
-                          variant="outline"
-                          size="sm"
-                          disabled={discoverTools.isPending || connectionSettingsDirty}
-                          onClick={() => discoverTools.mutate(toolConnectionKey)}
-                        >
-                          <RotateCcw className={discoverTools.isPending ? "animate-spin" : ""} />
-                          {toolDiscovery ? "Refresh" : "Load tools"}
-                        </Button>
-                      )}
-                    </div>
-                    <Select
-                      value={allToolsAllowed ? "all" : "selected"}
-                      onValueChange={(value) => setAllToolsAllowed(value === "all")}
-                    >
-                      <SelectTrigger className="w-full" aria-label="Allowed tools">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="all">Allow every advertised tool</SelectItem>
-                        <SelectItem value="selected">Allow only selected tools</SelectItem>
-                      </SelectContent>
-                    </Select>
-                    {!editing && (
-                      <FieldDescription>
-                        Add the server first, then edit it to load and select its live tool list.
-                      </FieldDescription>
-                    )}
-                    {editing && connectionSettingsDirty && (
-                      <FieldDescription>
-                        Save connection or credential changes before loading its tools.
-                      </FieldDescription>
-                    )}
-                    {discoverTools.error && (
-                      <p className="text-sm text-destructive">{discoverTools.error.message}</p>
-                    )}
-                    {toolDiscovery?.status === "failure" && (
-                      <div className="grid gap-1">
-                        <p className="text-sm text-destructive">{toolDiscovery.message}</p>
-                        <FieldDescription>
-                          {mcpDiscoveryFailureAction(toolDiscovery.code)}
-                          {toolDiscovery.requiredScopes?.length
-                            ? ` Required scopes: ${toolDiscovery.requiredScopes.join(", ")}.`
-                            : ""}
-                        </FieldDescription>
-                      </div>
-                    )}
-                    {!allToolsAllowed && toolDiscovery?.status !== "success" && parsedTools.length > 0 && (
-                      <div className="rounded-md border p-3">
-                        <p className="mb-2 text-xs font-medium text-muted-foreground">Authored selection</p>
-                        <div className="flex flex-wrap gap-1.5">
-                          {parsedTools.map((name) => (
-                            <Badge key={name} variant="outline" className="font-mono">{name}</Badge>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-                    {toolDiscovery?.status === "success" && (
-                      <div className="grid gap-2">
-                        <div className="relative">
-                          <Search className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
-                          <Input
-                            value={toolSearch}
-                            onChange={(event) => setToolSearch(event.target.value)}
-                            placeholder={`Search ${advertisedTools.length} tool${advertisedTools.length === 1 ? "" : "s"}`}
-                            aria-label="Search MCP tools"
-                            className="pl-8"
-                          />
-                        </div>
-                        <div className="max-h-64 overflow-y-auto rounded-md border">
-                          {visibleTools.length === 0 ? (
-                            <p className="p-3 text-sm text-muted-foreground">
-                              {advertisedTools.length === 0
-                                ? "No tools advertised. Check this account's access, requested scopes, and workspace or admin policy, then refresh or reconnect this server."
-                                : "No tools match your search."}
-                            </p>
-                          ) : visibleTools.map((tool) => (
-                            <Label
-                              key={tool.name}
-                              className="flex items-start gap-3 border-b p-3 font-normal last:border-b-0"
-                            >
-                              {!allToolsAllowed && (
-                                <Checkbox
-                                  className="mt-0.5"
-                                  checked={allowedTools.includes(tool.name)}
-                                  onCheckedChange={(checked) => toggleAllowedTool(tool.name, checked === true)}
-                                />
-                              )}
-                              <span className="min-w-0 flex-1">
-                                <span className="flex flex-wrap items-center gap-1.5 text-sm font-medium">
-                                  {tool.title ?? tool.name}
-                                  {tool.annotations?.readOnlyHint === true && <Badge variant="outline">read only</Badge>}
-                                  {tool.annotations?.readOnlyHint === false && <Badge variant="outline">may write</Badge>}
-                                  {tool.annotations?.destructiveHint === true && <Badge variant="outline">destructive</Badge>}
-                                  {tool.annotations?.idempotentHint === true && <Badge variant="outline">idempotent</Badge>}
-                                  {tool.annotations?.openWorldHint === true && <Badge variant="outline">external access</Badge>}
-                                </span>
-                                <span className="block font-mono text-xs text-muted-foreground">{tool.name}</span>
-                                {tool.description && (
-                                  <span className="mt-1 block text-xs text-muted-foreground">{tool.description}</span>
-                                )}
-                              </span>
-                            </Label>
-                          ))}
-                        </div>
-                        {!allToolsAllowed && unavailableSelectedTools.length > 0 && (
-                          <FieldDescription>
-                            Still selected but not currently advertised: {unavailableSelectedTools.join(", ")}.
-                            They are preserved until you deselect them.
-                          </FieldDescription>
-                        )}
-                      </div>
-                    )}
-                  </Field>
-
                   {authKind === "oauth" && (
                     <>
                       <CredentialSelect

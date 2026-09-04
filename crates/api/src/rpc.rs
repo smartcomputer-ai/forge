@@ -321,9 +321,9 @@ api_methods! {
     METHOD_INITIALIZE => initialize(InitializeParams) -> InitializeResponse =>
         ["Inspect the Lightspeed protocol", "Returns protocol version, server identity, and supported capabilities without changing universe state."],
     METHOD_SESSION_START => start_session(SessionStartParams) -> SessionStartResponse =>
-        ["Create or reopen a session", "Creates a session with optional config/profile setup. Retrying an existing session id returns that session; creation settings apply only when it is first created."],
+        ["Create or reopen a session", "Creates a session with optional config/profile setup. Profile metadata and retention supply creation defaults; explicit start values override them. An existing-or-none environment override can replace the profile intent. Retrying an existing session id returns that session."],
     METHOD_SESSION_MANAGED_START => start_managed_session(ManagedSessionStartParams) -> SessionStartResponse =>
-        ["Create or reopen a managed session", "Creates a session with an immutable lifecycle controller and/or workflow tools using explicit bound pull/push dispatch, start targets, and Accepted, Joined, or keyed-Promise completion. Retrying an existing session id requires the same managed-creation declaration; an ordinary session cannot be upgraded to managed."],
+        ["Create or reopen a managed session", "Creates a session with immutable lifecycle and workflow-tool declarations using explicit bound dispatch. Profile metadata, retention, and environment overrides follow session/start semantics. Retrying an id requires the same managed declaration; an ordinary session cannot be upgraded."],
     METHOD_SESSION_READ => read_session(SessionReadParams) -> SessionReadResponse =>
         ["Read a session", "Returns current state plus a bounded newest-first run-summary page. Follow nextRunCursor with session/runs/list when hasOlderRuns is true; use session/events/read for the transcript."],
     METHOD_SESSION_LIST => list_sessions(SessionListParams) -> SessionListResponse =>

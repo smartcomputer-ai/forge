@@ -867,6 +867,7 @@ async fn load_session_snapshots(
                 limit: SESSION_PAGE_LIMIT,
                 root_session_id: None,
                 parent_session_id: None,
+                exclude_closed: false,
             })
             .await?;
         for record in page.sessions {

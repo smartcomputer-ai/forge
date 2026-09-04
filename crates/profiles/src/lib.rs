@@ -161,6 +161,23 @@ impl ProfileSourceExt for ProfileSource {
 }
 
 pub fn validate_profile_document(document: &ProfileDocument) -> Result<(), ProfileError> {
+    environment_protocol::registration::validate_registration_metadata(None, &document.metadata)
+        .map_err(|message| ProfileError::InvalidInput {
+            message: format!("invalid metadata: {message}"),
+        })?;
+    if let Some(value) = document
+        .retention
+        .as_ref()
+        .map(|retention| retention.delete_after_close_ms)
+        && !(1..=api::MAX_SESSION_DELETE_AFTER_CLOSE_MS).contains(&value)
+    {
+        return Err(ProfileError::InvalidInput {
+            message: format!(
+                "deleteAfterCloseMs must be 1..={}",
+                api::MAX_SESSION_DELETE_AFTER_CLOSE_MS
+            ),
+        });
+    }
     if let Some(instructions) = &document.instructions {
         validate_profile_instructions(instructions)?;
     }
@@ -360,6 +377,47 @@ mod tests {
         assert!(matches!(
             validate_profile_document(&empty_environment),
             Err(ProfileError::InvalidInput { message }) if message.contains("environment.environmentId")
+        ));
+    }
+
+    #[test]
+    fn document_validation_applies_session_metadata_bounds() {
+        let valid = ProfileDocument {
+            metadata: BTreeMap::from([("campaign".to_owned(), "release-42".to_owned())]),
+            ..ProfileDocument::default()
+        };
+        assert!(validate_profile_document(&valid).is_ok());
+
+        let reserved = ProfileDocument {
+            metadata: BTreeMap::from([("lightspeed.internal".to_owned(), "value".to_owned())]),
+            ..ProfileDocument::default()
+        };
+        assert!(matches!(
+            validate_profile_document(&reserved),
+            Err(ProfileError::InvalidInput { message })
+                if message.contains("invalid metadata") && message.contains("lightspeed.")
+        ));
+    }
+
+    #[test]
+    fn document_validation_checks_session_retention_default() {
+        let valid = ProfileDocument {
+            retention: Some(api::ProfileSessionRetention {
+                delete_after_close_ms: 86_400_000,
+            }),
+            ..ProfileDocument::default()
+        };
+        assert!(validate_profile_document(&valid).is_ok());
+
+        let zero = ProfileDocument {
+            retention: Some(api::ProfileSessionRetention {
+                delete_after_close_ms: 0,
+            }),
+            ..ProfileDocument::default()
+        };
+        assert!(matches!(
+            validate_profile_document(&zero),
+            Err(ProfileError::InvalidInput { message }) if message.contains("deleteAfterCloseMs")
         ));
     }
 

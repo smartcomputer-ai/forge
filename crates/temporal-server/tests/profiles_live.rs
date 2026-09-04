@@ -100,6 +100,7 @@ async fn run_profile_provision_live_client(
         .await?;
 
     let provision_document = |retention: api::ProfileEnvironmentRetention| ProfileDocument {
+        metadata: Default::default(),
         config: Some(SessionConfig {
             model: Some(model_to_api(&model)),
             features: Some(api::FeaturesConfig {
@@ -124,6 +125,7 @@ async fn run_profile_provision_live_client(
             idle_policy: None,
             credentials: Vec::new(),
         }),
+        retention: None,
     };
     api.create_profile(ProfileCreateParams {
         profile: AgentProfileInput {
@@ -143,6 +145,7 @@ async fn run_profile_provision_live_client(
             session_id: Some(format!("{}_rejected", session_id.as_str())),
             display_name: None,
             config: None,
+            environment: None,
             delete_after_close_ms: None,
             profile: Some(ProfileSource::Inline {
                 profile: Box::new(api::InlineAgentProfile {
@@ -186,6 +189,7 @@ async fn run_profile_provision_live_client(
             session_id: Some(session_id),
             display_name: None,
             config: None,
+            environment: None,
             delete_after_close_ms: None,
             profile: Some(ProfileSource::Named {
                 profile_id: profile_id.clone(),
@@ -313,6 +317,7 @@ async fn run_profile_provision_live_client(
         session_id: Some(retained_session.clone()),
         display_name: None,
         config: None,
+        environment: None,
         delete_after_close_ms: None,
         profile: Some(ProfileSource::Inline {
             profile: Box::new(api::InlineAgentProfile {
@@ -428,6 +433,7 @@ async fn run_profiles_live_client(
                 display_name: Some("Live profile".to_owned()),
                 description: Some("Initial live profile".to_owned()),
                 document: ProfileDocument {
+                    metadata: Default::default(),
                     config: Some(SessionConfig {
                         features: Some(api::FeaturesConfig {
                             mcp: Some(api::McpFeature {
@@ -447,6 +453,7 @@ async fn run_profiles_live_client(
                         text: "Use the profile instructions in this live test.".to_owned(),
                     }),
                     environment: None,
+                    retention: None,
                 },
             },
         })
@@ -497,6 +504,7 @@ async fn run_profiles_live_client(
             model: Some(model_to_api(&model)),
             ..SessionConfig::default()
         }),
+        environment: None,
         delete_after_close_ms: None,
         profile: Some(ProfileSource::Named {
             profile_id: profile_id.clone(),

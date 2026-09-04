@@ -30,6 +30,7 @@
 - [x] [P153](p153-session-metadata.md) — session metadata (implemented
   2026-09-03): the bounded
   string map registered environments already carry, set at `session/start`
+  or supplied as creation defaults by a profile,
   and replaced with `session/metadata/put`, a containment filter on
   `session/list` and `environments/list`, chips and a filter bar with a
   selection model in the Platform sessions page, and the Harbor adapter and

@@ -12,6 +12,22 @@ pub(super) struct ResolvedAgentProfile {
     pub(super) document: ProfileDocument,
 }
 
+pub(super) fn merge_profile_start_metadata(
+    profile_metadata: Option<&BTreeMap<String, String>>,
+    explicit_metadata: BTreeMap<String, String>,
+) -> BTreeMap<String, String> {
+    let mut metadata = profile_metadata.cloned().unwrap_or_default();
+    metadata.extend(explicit_metadata);
+    metadata
+}
+
+pub(super) fn merge_profile_start_retention(
+    profile_default: Option<u64>,
+    explicit: Option<Option<u64>>,
+) -> Option<u64> {
+    explicit.unwrap_or(profile_default)
+}
+
 impl GatewayAgentApi {
     pub(super) async fn create_profile_record(
         &self,
@@ -556,5 +572,41 @@ pub(super) fn map_profile_error(error: ProfileError) -> AgentApiError {
         )),
         ProfileError::InvalidInput { message } => AgentApiError::invalid_request(message),
         ProfileError::Store { message } => AgentApiError::internal(message),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn explicit_start_metadata_overrides_profile_defaults() {
+        let profile = BTreeMap::from([
+            ("campaign".to_owned(), "profile-campaign".to_owned()),
+            ("owner".to_owned(), "evaluation".to_owned()),
+        ]);
+        let explicit = BTreeMap::from([
+            ("campaign".to_owned(), "request-campaign".to_owned()),
+            ("trial".to_owned(), "42".to_owned()),
+        ]);
+
+        assert_eq!(
+            merge_profile_start_metadata(Some(&profile), explicit),
+            BTreeMap::from([
+                ("campaign".to_owned(), "request-campaign".to_owned()),
+                ("owner".to_owned(), "evaluation".to_owned()),
+                ("trial".to_owned(), "42".to_owned()),
+            ])
+        );
+    }
+
+    #[test]
+    fn explicit_start_retention_overrides_or_clears_profile_default() {
+        assert_eq!(merge_profile_start_retention(Some(100), None), Some(100));
+        assert_eq!(merge_profile_start_retention(Some(100), Some(None)), None);
+        assert_eq!(
+            merge_profile_start_retention(Some(100), Some(Some(200))),
+            Some(200)
+        );
     }
 }

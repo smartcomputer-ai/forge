@@ -6,8 +6,6 @@ import { ChevronRight, Plus, Trash2 } from "lucide-react";
 import {
   api,
   type Environment,
-  type EnvironmentProviderBinding,
-  type EnvironmentTemplate,
   type ProfileDocument,
   type ProfileSummary,
 } from "@/api";
@@ -23,7 +21,11 @@ import {
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
+import {
+  MetadataMapEditor,
+} from "@/components/session/metadata-editor";
 import { ProfileEnvironmentEditor } from "@/components/session/profile-environment-editor";
+import { ProfileRetentionEditor } from "@/components/session/profile-retention-editor";
 import { SessionConfigEditor } from "@/components/session/session-config-editor";
 import {
   Dialog,
@@ -39,11 +41,9 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { LoadingNote, UniverseNotFound } from "@/components/page";
 import { useSessionConfigEditorOptions } from "@/lib/sessions/editor-options";
 import {
-  hasSessionFeature,
   resourceFeatureDisableReasons,
   setupResourceFeatureError,
 } from "@/lib/sessions/resource-features";
-import { useSecretsInventory } from "@/lib/environment-credentials";
 import { canManage, useActiveUniverse } from "@/lib/universes";
 import { cn } from "@/lib/utils";
 
@@ -195,6 +195,7 @@ function ProfileEditor({
   const [tab, setTab] = useState<"form" | "json">("form");
   const [jsonText, setJsonText] = useState("");
   const [configError, setConfigError] = useState<string | null>(null);
+  const [retentionError, setRetentionError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   // Re-sync on every (re)load — including the refetch after a save, which
@@ -206,6 +207,7 @@ function ProfileEditor({
       setDraft(structuredClone(editable) as ProfileDocument);
       setJsonText(JSON.stringify(editable, null, 2));
       setConfigError(null);
+      setRetentionError(null);
       setError(null);
     }
   }, [doc.data]);
@@ -264,8 +266,8 @@ function ProfileEditor({
         return;
       }
       setDraft(document);
-    } else if (configError) {
-      setError(`Config: ${configError}`);
+    } else if (configError || retentionError) {
+      setError(configError ? `Config: ${configError}` : `Retention: ${retentionError}`);
       return;
     }
     if (document) {
@@ -295,6 +297,7 @@ function ProfileEditor({
       }
       setDraft(parsed);
       setConfigError(null);
+      setRetentionError(null);
       setError(null);
       setTab("form");
     } catch (parseError) {
@@ -386,8 +389,8 @@ function ProfileEditor({
               draft={draft}
               mutate={mutate}
               onValidityChange={setConfigError}
+              onRetentionValidityChange={setRetentionError}
             />
-            <InitialEnvironmentSection universeId={universeId} draft={draft} mutate={mutate} />
           </div>
         )}
       </div>
@@ -511,17 +514,24 @@ function ConfigSection({
   draft,
   mutate,
   onValidityChange,
+  onRetentionValidityChange,
 }: {
   universeId: string;
   draft: ProfileDocument;
   mutate: Mutate;
   onValidityChange: (message: string | null) => void;
+  onRetentionValidityChange: (message: string | null) => void;
 }) {
   const options = useSessionConfigEditorOptions(universeId);
+  const environments = useQuery({
+    queryKey: ["environments", universeId],
+    queryFn: () =>
+      api<Environment[]>("GET", `/api/v1/universes/${universeId}/environments`),
+  });
   return (
     <Section
-      title="Session config"
-      description="Sparse session behavior and capability grants. Unset values inherit engine defaults."
+      title="Model configuration"
+      description="Choose the model and its default reasoning behavior. Unset values inherit deployment or provider defaults."
     >
       <SessionConfigEditor
         value={draft.config}
@@ -532,6 +542,51 @@ function ConfigSection({
         profiles={options.profiles}
         environmentProviders={options.environmentProviders}
         featureDisableReasons={resourceFeatureDisableReasons(draft)}
+        metadataSetup={(
+          <MetadataMapEditor
+            value={draft.metadata}
+            onChange={(metadata) =>
+              mutate((document) => {
+                if (metadata) document.metadata = metadata;
+                else delete document.metadata;
+              })
+            }
+          />
+        )}
+        metadataDescription="Defaults copied when a session is created. Start-time metadata overrides matching keys."
+        retentionSetup={(
+          <ProfileRetentionEditor
+            value={draft.retention?.deleteAfterCloseMs}
+            onValidityChange={onRetentionValidityChange}
+            onChange={(deleteAfterCloseMs) =>
+              mutate((document) => {
+                if (deleteAfterCloseMs !== undefined) {
+                  document.retention = { deleteAfterCloseMs };
+                } else {
+                  delete document.retention;
+                }
+              })
+            }
+          />
+        )}
+        retentionDescription="Default automatic deletion for new root sessions created from this profile."
+        environmentSetup={(
+          <ProfileEnvironmentEditor
+            embedded
+            value={draft.environment}
+            environments={environments.data}
+            bindings={options.environmentBindings}
+            templates={options.environmentTemplates}
+            secrets={options.secrets}
+            description="How a session obtains its active environment when this profile is applied. Absence leaves an existing session's selection unchanged."
+            onChange={(environment) =>
+              mutate((document) => {
+                if (environment) document.environment = environment;
+                else delete document.environment;
+              })
+            }
+          />
+        )}
         onValidityChange={onValidityChange}
         onChange={(config) =>
           mutate((document) => {
@@ -541,57 +596,6 @@ function ConfigSection({
         }
       />
     </Section>
-  );
-}
-
-function InitialEnvironmentSection({
-  universeId,
-  draft,
-  mutate,
-}: {
-  universeId: string;
-  draft: ProfileDocument;
-  mutate: Mutate;
-}) {
-  const environments = useQuery({
-    queryKey: ["environments", universeId],
-    queryFn: () =>
-      api<Environment[]>("GET", `/api/v1/universes/${universeId}/environments`),
-  });
-  const bindings = useQuery({
-    queryKey: ["environment-provider-bindings", universeId],
-    queryFn: () =>
-      api<EnvironmentProviderBinding[]>(
-        "GET",
-        `/api/v1/universes/${universeId}/environment-provider-bindings`,
-      ),
-  });
-  const templates = useQuery({
-    queryKey: ["environment-templates", universeId],
-    queryFn: () =>
-      api<EnvironmentTemplate[]>(
-        "GET",
-        `/api/v1/universes/${universeId}/environment-templates`,
-      ),
-  });
-  const secrets = useSecretsInventory(universeId);
-  return (
-    <ProfileEnvironmentEditor
-      value={draft.environment}
-      environments={environments.data}
-      bindings={bindings.data}
-      templates={templates.data}
-      secrets={secrets.data}
-      disabled={!hasSessionFeature(draft.config, "environments")}
-      title="Environment"
-      description="How a session obtains its active environment when this profile is applied. Absence leaves an existing session's selection unchanged."
-      onChange={(environment) =>
-        mutate((document) => {
-          if (environment) document.environment = environment;
-          else delete document.environment;
-        })
-      }
-    />
   );
 }
 function NewProfileDialog({

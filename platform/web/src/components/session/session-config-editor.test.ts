@@ -60,7 +60,7 @@ describe("model picker ordering", () => {
 });
 
 describe("OpenAI processing tier config", () => {
-  it("renders the selector for an OpenAI model in the shared config editor", () => {
+  it("keeps the selector inside the collapsed model run controls", () => {
     const model = {
       providerId: "openai",
       apiKind: "openai:responses",
@@ -74,8 +74,34 @@ describe("OpenAI processing tier config", () => {
       models: [model],
     }));
 
-    expect(html).toContain("Processing tier");
-    expect(html).toContain("Provider default");
+    expect(html).toContain("Model run controls");
+    expect(html).not.toContain("Processing tier");
+  });
+
+  it("shows model capabilities directly below the model identifier", () => {
+    const model = {
+      providerId: "anthropic",
+      apiKind: "anthropic:messages",
+      model: "claude-opus-5",
+      displayName: "Claude Opus 5",
+      capabilities: {
+        maxInputTokens: 1_000_000,
+        maxOutputTokens: 128_000,
+        parallelToolUse: true,
+      },
+    } satisfies ModelOption;
+    const html = renderToString(createElement(SessionConfigEditor, {
+      value: { model },
+      onChange: () => {},
+      models: [model],
+    }));
+    const modelId = html.indexOf("anthropic · anthropic:messages");
+    const capabilities = html.indexOf("1,000,000 input tokens");
+    const reasoning = html.indexOf("Reasoning effort");
+
+    expect(modelId).toBeGreaterThanOrEqual(0);
+    expect(capabilities).toBeGreaterThan(modelId);
+    expect(reasoning).toBeGreaterThan(capabilities);
   });
 
   it("persists the tier in generation defaults for built-in OpenAI", () => {
@@ -197,6 +223,70 @@ describe("environment feature config", () => {
         },
       },
     });
+  });
+
+  it("keeps setup collapsed for an initially enabled capability", () => {
+    const marker = "Choose the session environment here";
+    const html = renderToString(createElement(SessionConfigEditor, {
+      value: { features: { environments: {} } },
+      onChange: () => {},
+      environmentSetup: createElement("p", null, marker),
+    }));
+
+    expect(html).toContain("Environments");
+    expect(html).not.toContain("Allowed providers");
+    expect(html).not.toContain(marker);
+    expect(html).toContain('aria-expanded="false"');
+  });
+
+  it("keeps Model run controls collapsed when optional settings already exist", () => {
+    const html = renderToString(createElement(SessionConfigEditor, {
+      value: { generation: { parallelToolUse: true } },
+      onChange: () => {},
+    }));
+
+    expect(html).toContain("Model run controls");
+    expect(html).toContain('aria-expanded="false"');
+    expect(html).not.toContain("Run limits");
+  });
+
+  it("renders features in task-oriented order and keeps Timers non-expandable", () => {
+    const html = renderToString(createElement(SessionConfigEditor, {
+      value: {
+        features: {
+          environments: {},
+          mcp: { servers: [{ serverId: "demo" }] },
+          subagents: {},
+          vfs: {},
+          web: { search: {} },
+          timers: {},
+        },
+      },
+      onChange: () => {},
+      metadataSetup: createElement("p", null, "Metadata fields"),
+      retentionSetup: createElement("p", null, "Retention fields"),
+    }));
+    const labels = [
+      "Environments",
+      "MCP Servers",
+      "Sub-agents",
+      "Virtual File System: Files, Instructions, Skills",
+      "Web",
+      "Timers",
+      "Session data",
+      "Session metadata",
+      "Automatic deletion",
+    ];
+    const positions = labels.map((label) => html.indexOf(label));
+
+    expect(positions.every((position) => position >= 0)).toBe(true);
+    expect(positions).toEqual([...positions].sort((left, right) => left - right));
+    const timersStart = html.indexOf('aria-label="Enable Timers"');
+    const timersEnd = html.indexOf("</button></div></div>", timersStart);
+    const timersHtml = html.slice(timersStart, timersEnd);
+    expect(timersHtml).not.toContain("aria-expanded");
+    expect(html).not.toContain("Metadata fields");
+    expect(html).not.toContain("Retention fields");
   });
 });
 

@@ -80,6 +80,13 @@ describe("conversationTabs", () => {
     expect(tabs.overflow.map((tab) => tab.label)).toEqual(["PR-1", "reviewer"]);
     expect(tabs.overflow[1]?.hint).toBe("sub-agent of PR-4");
   });
+  it("resolves a nested sub-agent's parent from descendant display names", () => {
+    const parent = subagent("sub-parent-id", "planner", "bot:v1:triage", 4);
+    const child = subagent("sub-child-id", "reviewer", "sub-parent-id", 5);
+    const tabs = conversationTabs(state({}, [parent, child]), undefined);
+    expect(tabs.overflow.find((tab) => tab.id === "sub-child-id")?.hint)
+      .toBe("sub-agent of planner");
+  });
   it("always shows the selected conversation inline", () => {
     const current = state({
       sessions: [

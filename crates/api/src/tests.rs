@@ -23,6 +23,21 @@ fn session_retention_put_requires_an_explicit_nullable_policy() {
 }
 
 #[test]
+fn session_start_retention_distinguishes_inherit_clear_and_override() {
+    let decode = |value| {
+        serde_json::from_value::<SessionStartParams>(value)
+            .expect("valid session start")
+            .delete_after_close_ms
+    };
+    assert_eq!(decode(json!({})), None);
+    assert_eq!(decode(json!({ "deleteAfterCloseMs": null })), Some(None));
+    assert_eq!(
+        decode(json!({ "deleteAfterCloseMs": 86_400_000 })),
+        Some(Some(86_400_000))
+    );
+}
+
+#[test]
 fn notification_serializes_as_json_rpc_lite_shape() {
     let notification = AgentNotification::RunCompleted {
         session_id: "session_1".to_owned(),
@@ -374,6 +389,29 @@ fn ordinary_session_start_rejects_managed_creation_fields() {
         }))
         .is_err()
     );
+}
+
+#[test]
+fn session_start_decodes_creation_environment_overrides() {
+    let existing: SessionStartParams = serde_json::from_value(json!({
+        "profile": {"kind": "named", "profileId": "developer"},
+        "environment": {"type": "existing", "environmentId": "workstation"}
+    }))
+    .expect("existing environment override");
+    assert!(matches!(
+        existing.environment,
+        Some(SessionEnvironmentOverride::Existing { environment_id })
+            if environment_id == "workstation"
+    ));
+
+    let none: SessionStartParams = serde_json::from_value(json!({
+        "environment": {"type": "none"}
+    }))
+    .expect("none environment override");
+    assert!(matches!(
+        none.environment,
+        Some(SessionEnvironmentOverride::None {})
+    ));
 }
 
 #[test]
@@ -3096,6 +3134,8 @@ fn test_profile(profile_id: ProfileId) -> AgentProfile {
         description: Some("Ticket support profile".to_owned()),
         revision: 1,
         document: ProfileDocument {
+            metadata: Default::default(),
+            retention: None,
             config: Some(SessionConfig {
                 features: Some(FeaturesConfig {
                     subagents: Some(SubagentsFeature {

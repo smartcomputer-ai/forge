@@ -2,10 +2,12 @@ import { describe, expect, it } from "vitest";
 import {
   PAIRING_ALPHABET,
   chatSpecPayload,
+  defaultTriggerForms,
   inboxBotOptionIds,
   inboxSelectionSpec,
   mintPairingCode,
   sessionCloseAfterMs,
+  triggerDraftSummary,
 } from "./triggers";
 
 describe("bot inbox sender selection", () => {
@@ -94,5 +96,18 @@ describe("session idle close", () => {
     expect(sessionCloseAfterMs({ closeMode: "inherit", closeHours: "" })).toBeNull();
     expect(sessionCloseAfterMs({ closeMode: "forever", closeHours: "" })).toBe(0);
     expect(sessionCloseAfterMs({ closeMode: "hours", closeHours: "24" })).toBe(86_400_000);
+  });
+});
+
+describe("shared trigger draft summaries", () => {
+  it("describes the same draft forms used by creation and settings", () => {
+    const forms = defaultTriggerForms();
+    forms.poll = {
+      ...forms.poll,
+      sourceKind: "http",
+      url: "https://example.test/issues",
+      intervalMinutes: "15",
+    };
+    expect(triggerDraftSummary("poll", forms)).toBe("Checks https://example.test/issues every 15 min");
   });
 });

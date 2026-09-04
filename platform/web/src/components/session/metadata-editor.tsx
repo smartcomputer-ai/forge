@@ -1,6 +1,7 @@
 /// Key/value rows for a session's descriptive metadata. Rows are edited
 /// freely; `rowsToMetadata` drops incomplete rows and the last duplicate key
 /// wins, which is exactly what the put will store.
+import { useEffect, useState } from "react";
 import { Plus, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -36,6 +37,37 @@ export function sameMetadata(a: Record<string, string>, b: Record<string, string
   return aKeys.length === bKeys.length && aKeys.every((key, i) => key === bKeys[i] && a[key] === b[key]);
 }
 
+/** Controlled metadata map with row state that preserves an unfinished pair. */
+export function MetadataMapEditor({
+  value,
+  onChange,
+  disabled,
+}: {
+  value?: Record<string, string>;
+  onChange: (metadata: Record<string, string> | undefined) => void;
+  disabled?: boolean;
+}) {
+  const source = JSON.stringify(value ?? {});
+  const [rows, setRows] = useState<MetadataRow[]>(() => metadataToRows(value));
+  const [syncedSource, setSyncedSource] = useState(source);
+
+  useEffect(() => {
+    if (source !== syncedSource) {
+      setRows(metadataToRows(value));
+      setSyncedSource(source);
+    }
+  }, [source, syncedSource, value]);
+
+  const changeRows = (next: MetadataRow[]) => {
+    const metadata = rowsToMetadata(next);
+    setRows(next);
+    setSyncedSource(JSON.stringify(metadata));
+    onChange(Object.keys(metadata).length ? metadata : undefined);
+  };
+
+  return <MetadataEditor rows={rows} onChange={changeRows} disabled={disabled} />;
+}
+
 export function MetadataEditor({
   rows,
   onChange,
@@ -48,9 +80,9 @@ export function MetadataEditor({
   const update = (index: number, patch: Partial<MetadataRow>) =>
     onChange(rows.map((row, i) => (i === index ? { ...row, ...patch } : row)));
   return (
-    <div className="grid gap-2">
+    <div className="grid min-w-0 max-w-full gap-2">
       {rows.map((row, index) => (
-        <div key={index} className="flex items-center gap-2">
+        <div key={index} className="flex min-w-0 items-center gap-2">
           <Input
             value={row.key}
             onChange={(event) => update(index, { key: event.target.value })}

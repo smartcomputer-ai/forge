@@ -1,5 +1,43 @@
 use super::*;
 
+/// Longest admitted close-relative automatic-deletion duration: 100 years.
+pub const MAX_SESSION_DELETE_AFTER_CLOSE_MS: u64 = 100 * 365 * 24 * 60 * 60 * 1_000;
+
+fn deserialize_optional_nullable_delete_after_close_ms<'de, D>(
+    deserializer: D,
+) -> Result<Option<Option<u64>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::<u64>::deserialize(deserializer).map(Some)
+}
+
+fn optional_nullable_delete_after_close_ms_schema(
+    _: &mut schemars::SchemaGenerator,
+) -> schemars::Schema {
+    schemars::json_schema!({
+        "type": ["integer", "null"],
+        "format": "uint64",
+        "minimum": 1,
+        "maximum": 3153600000000_u64
+    })
+}
+
+/// Creation-time override for the environment intent carried by a profile.
+/// Absence uses the profile unchanged; `none` suppresses its environment
+/// intent, while `existing` activates the specified universe environment.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(
+    tag = "type",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum SessionEnvironmentOverride {
+    None {},
+    Existing { environment_id: EnvironmentId },
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SessionStartParams {
@@ -17,10 +55,20 @@ pub struct SessionStartParams {
     pub config: Option<SessionConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub profile: Option<ProfileSource>,
-    /// Root-owned automatic deletion measured from close. Absent keeps the
-    /// session tree until manual deletion.
+    /// Optional creation-time override for the selected profile's environment
+    /// intent. Omit to use the profile's intent unchanged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub delete_after_close_ms: Option<u64>,
+    pub environment: Option<SessionEnvironmentOverride>,
+    /// Root-owned automatic deletion measured from close. Absent inherits a
+    /// profile default, explicit null keeps the tree, and a duration overrides
+    /// the profile.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_nullable_delete_after_close_ms",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[schemars(schema_with = "optional_nullable_delete_after_close_ms_schema")]
+    pub delete_after_close_ms: Option<Option<u64>>,
 }
 
 /// Creation request for a session with immutable workflow ownership and
@@ -39,10 +87,20 @@ pub struct ManagedSessionStartParams {
     pub config: Option<SessionConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub profile: Option<ProfileSource>,
-    /// Root-owned automatic deletion measured from close. Absent keeps the
-    /// session tree until manual deletion.
+    /// Optional creation-time override for the selected profile's environment
+    /// intent. Omit to use the profile's intent unchanged.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub delete_after_close_ms: Option<u64>,
+    pub environment: Option<SessionEnvironmentOverride>,
+    /// Root-owned automatic deletion measured from close. Absent inherits a
+    /// profile default, explicit null keeps the tree, and a duration overrides
+    /// the profile.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_optional_nullable_delete_after_close_ms",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[schemars(schema_with = "optional_nullable_delete_after_close_ms_schema")]
+    pub delete_after_close_ms: Option<Option<u64>>,
     /// Immutable workflow tools admitted only when the session is first
     /// created. This document is not part of `SessionConfig` and cannot be
     /// changed through `session/config/put`.
@@ -797,7 +855,12 @@ pub struct SessionListParams {
     /// Only sub-agent sessions delegated directly by this session.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_session_id: Option<SessionId>,
-    /// Only sessions carrying every listed key/value pair (AND semantics).
+    /// Exclude closed sessions. New sessions that have not run yet remain in
+    /// the result alongside open sessions.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub exclude_closed: bool,
+    /// Only sessions matching every entry (AND semantics). A non-empty value
+    /// requires an exact key/value pair; an empty value requires key presence.
     /// Combines with the lineage filters.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub metadata: BTreeMap<String, String>,

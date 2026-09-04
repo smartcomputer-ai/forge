@@ -548,14 +548,33 @@ impl SessionStore for PgStore {
             ),
             None => (None, None),
         };
-        // The metadata predicate is appended only when a filter is present so
-        // the containment operator can use the GIN index; a `$n IS NULL OR`
-        // form would fall back to scanning once the statement goes generic.
-        let metadata_filter = (!request.metadata.is_empty())
-            .then(|| metadata_json(&request.metadata))
+        // Metadata predicates are appended only when their filter form is
+        // present. Exact containment can use the GIN index; presence matching
+        // uses PostgreSQL's native all-keys operator. A `$n IS NULL OR` form
+        // would force weaker generic plans.
+        let metadata_exact = request
+            .metadata
+            .iter()
+            .filter(|(_, value)| !value.is_empty())
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect::<BTreeMap<_, _>>();
+        let metadata_keys = request
+            .metadata
+            .iter()
+            .filter(|(_, value)| value.is_empty())
+            .map(|(key, _)| key.clone())
+            .collect::<Vec<_>>();
+        let metadata_filter = (!metadata_exact.is_empty())
+            .then(|| metadata_json(&metadata_exact))
             .transpose()?;
-        let metadata_predicate = if metadata_filter.is_some() {
-            "AND metadata_json @> $7"
+        let metadata_predicate = match (metadata_filter.is_some(), metadata_keys.is_empty()) {
+            (true, false) => "AND metadata_json @> $7 AND metadata_json ?& $8",
+            (true, true) => "AND metadata_json @> $7",
+            (false, false) => "AND metadata_json ?& $7",
+            (false, true) => "",
+        };
+        let lifecycle_predicate = if request.exclude_closed {
+            "AND lifecycle_status <> 'closed'"
         } else {
             ""
         };
@@ -567,6 +586,7 @@ impl SessionStore for PgStore {
               AND ($2::bigint IS NULL OR (updated_at_ms, session_id) < ($2, $3))
               AND ($4::text IS NULL OR origin_root_session_id = $4)
               AND ($5::text IS NULL OR origin_parent_session_id = $5)
+              {lifecycle_predicate}
               {metadata_predicate}
             ORDER BY updated_at_ms DESC, session_id DESC
             LIMIT $6
@@ -591,6 +611,9 @@ impl SessionStore for PgStore {
             .bind(fetch_limit);
         if let Some(filter) = metadata_filter {
             sql = sql.bind(filter);
+        }
+        if !metadata_keys.is_empty() {
+            sql = sql.bind(metadata_keys);
         }
         let rows = sql
             .fetch_all(&self.pool)

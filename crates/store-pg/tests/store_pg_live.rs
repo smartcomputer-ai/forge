@@ -274,6 +274,7 @@ async fn pg_live_session_list_pages_newest_first_and_rename_persists() {
             limit: 2,
             root_session_id: None,
             parent_session_id: None,
+            exclude_closed: false,
         })
         .await
         .expect("first page");
@@ -298,6 +299,7 @@ async fn pg_live_session_list_pages_newest_first_and_rename_persists() {
             limit: 2,
             root_session_id: None,
             parent_session_id: None,
+            exclude_closed: false,
         })
         .await
         .expect("second page");
@@ -456,6 +458,7 @@ async fn pg_live_clone_copies_resources_and_links_sessions() {
             limit: 10,
             root_session_id: Some(peer_id.clone()),
             parent_session_id: None,
+            exclude_closed: false,
         })
         .await
         .expect("list by root");
@@ -2923,6 +2926,7 @@ async fn pg_live_session_metadata_filters_by_containment_and_put_replaces() {
         limit: 10,
         root_session_id: None,
         parent_session_id: None,
+        exclude_closed: false,
         metadata,
     };
     let ids = |page: SessionListPage| {
@@ -2954,6 +2958,12 @@ async fn pg_live_session_metadata_filters_by_containment_and_put_replaces() {
             BTreeMap::from([pair("source", "harbor"), pair("job", "weekly")]),
             vec![],
         ),
+        (BTreeMap::from([pair("job", "")]), vec!["meta-harbor"]),
+        (
+            BTreeMap::from([pair("source", "")]),
+            vec!["meta-bot", "meta-harbor"],
+        ),
+        (BTreeMap::from([pair("task", "")]), vec![]),
         (BTreeMap::from([pair("task", "x")]), vec![]),
         (
             BTreeMap::new(),

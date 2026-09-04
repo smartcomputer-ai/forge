@@ -1,8 +1,9 @@
-import { useEffect, useId, useState } from "react";
+import { useEffect, useId, useState, type ReactNode } from "react";
 import type { WorkspaceLinkDraft } from "@/api";
 import {
   ChevronDown,
   ChevronRight,
+  CalendarClock,
   Clock3,
   FolderOpen,
   Globe2,
@@ -10,6 +11,7 @@ import {
   Plus,
   Server,
   SlidersHorizontal,
+  Tags,
   Trash2,
   Wrench,
 } from "lucide-react";
@@ -90,6 +92,11 @@ type Props = {
   profiles?: ProfileOption[];
   environmentProviders?: EnvironmentProviderOption[];
   featureDisableReasons?: Partial<Record<FeatureName, string>>;
+  environmentSetup?: ReactNode;
+  metadataSetup?: ReactNode;
+  metadataDescription?: string;
+  retentionSetup?: ReactNode;
+  retentionDescription?: string;
   pinnedApiKind?: string;
   className?: string;
 };
@@ -137,6 +144,15 @@ const featureInfo: Record<
     icon: Wrench,
   },
 };
+
+const featureDisplayOrder: FeatureName[] = [
+  "environments",
+  "mcp",
+  "subagents",
+  "vfs",
+  "web",
+  "timers",
+];
 
 function record(value: unknown): RecordValue {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -414,6 +430,11 @@ export function SessionConfigEditor({
   profiles = [],
   environmentProviders = [],
   featureDisableReasons = {},
+  environmentSetup,
+  metadataSetup,
+  metadataDescription = "Descriptive key/value pairs for finding sessions. Metadata never changes how a session runs.",
+  retentionSetup,
+  retentionDescription = "Delete the retained session tree automatically after its root session closes.",
   pinnedApiKind,
   className,
 }: Props) {
@@ -456,55 +477,184 @@ export function SessionConfigEditor({
     });
 
   return (
-    <div className={cn("grid gap-8", className)}>
-      <section>
-        <div className="grid gap-5 rounded-lg border p-4">
-          <ModelFields
-            config={config}
-            models={models}
-            manualModel={manualModel}
-            onManualModelChange={setManualModel}
-            pinnedApiKind={pinnedApiKind}
-            change={change}
-          />
-          <AdvancedFields config={config} change={change} />
-        </div>
+    <div className={cn("grid min-w-0 max-w-full gap-8", className)}>
+      <section className="grid min-w-0 gap-5">
+        <ModelFields
+          config={config}
+          models={models}
+          manualModel={manualModel}
+          onManualModelChange={setManualModel}
+          pinnedApiKind={pinnedApiKind}
+          change={change}
+        />
+        <AdvancedFields config={config} change={change} />
       </section>
 
-      <section className="grid gap-4">
+      <section className="grid min-w-0 gap-4">
         <div className="grid gap-0.5">
           <h2 className="text-sm font-semibold">Features</h2>
           <p className="text-xs text-muted-foreground">
             Features are capability grants. Disabled features are absent from the config.
           </p>
         </div>
-        <div className="grid gap-2">
-          {(Object.keys(featureInfo) as FeatureName[]).map((name) => (
-            <FeaturePanel
-              key={name}
-              name={name}
-              enabled={name in features}
-              feature={record(features[name])}
-              disableReason={featureDisableReasons[name]}
-              onEnabledChange={(enabled) => setFeature(name, enabled)}
+        <div className="grid min-w-0 gap-2">
+          {featureDisplayOrder
+            .map((name) => name === "environments" ? (
+              <EnvironmentFeatureEditor
+                key={name}
+                value={config}
+                providers={environmentProviders}
+                disableReason={featureDisableReasons.environments}
+                onChange={onChange}
+              >
+                {environmentSetup}
+              </EnvironmentFeatureEditor>
+            ) : (
+              <FeaturePanel
+                key={name}
+                name={name}
+                enabled={name in features}
+                feature={record(features[name])}
+                disableReason={featureDisableReasons[name]}
+                expandable={name !== "timers"}
+                onEnabledChange={(enabled) => setFeature(name, enabled)}
+              >
+                {name === "vfs" && (
+                  <VfsFields
+                    feature={record(features.vfs)}
+                    workspaces={workspaces}
+                    workspacesLoading={workspacesLoading}
+                    patch={(fn) => patchFeature("vfs", fn)}
+                  />
+                )}
+                {name === "web" && <WebFields feature={record(features.web)} patch={(fn) => patchFeature("web", fn)} />}
+                {name === "subagents" && <SubagentFields feature={record(features.subagents)} profiles={profiles} patch={(fn) => patchFeature("subagents", fn)} />}
+                {name === "mcp" && <McpFields feature={record(features.mcp)} servers={mcpServers} patch={(fn) => patchFeature("mcp", fn)} />}
+              </FeaturePanel>
+            ))}
+          {(metadataSetup || retentionSetup) && (
+            <div className="grid gap-0.5 pb-1 pt-5">
+              <h2 className="text-sm font-semibold">Session data</h2>
+              <p className="text-xs text-muted-foreground">
+                Organize sessions with metadata and control how long retained data is kept.
+              </p>
+            </div>
+          )}
+          {metadataSetup && (
+            <ExpandableSetupPanel
+              title="Session metadata"
+              description={metadataDescription}
+              icon={Tags}
             >
-              {name === "vfs" && (
-                <VfsFields
-                  feature={record(features.vfs)}
-                  workspaces={workspaces}
-                  workspacesLoading={workspacesLoading}
-                  patch={(fn) => patchFeature("vfs", fn)}
-                />
-              )}
-              {name === "web" && <WebFields feature={record(features.web)} patch={(fn) => patchFeature("web", fn)} />}
-              {name === "subagents" && <SubagentFields feature={record(features.subagents)} profiles={profiles} patch={(fn) => patchFeature("subagents", fn)} />}
-              {name === "environments" && <EnvironmentFields feature={record(features.environments)} providers={environmentProviders} patch={(fn) => patchFeature("environments", fn)} />}
-              {name === "mcp" && <McpFields feature={record(features.mcp)} servers={mcpServers} patch={(fn) => patchFeature("mcp", fn)} />}
-            </FeaturePanel>
-          ))}
+              {metadataSetup}
+            </ExpandableSetupPanel>
+          )}
+          {retentionSetup && (
+            <ExpandableSetupPanel
+              title="Automatic deletion"
+              description={retentionDescription}
+              icon={CalendarClock}
+            >
+              {retentionSetup}
+            </ExpandableSetupPanel>
+          )}
         </div>
       </section>
     </div>
+  );
+}
+
+function ExpandableSetupPanel({
+  title,
+  description,
+  icon: Icon,
+  children,
+}: {
+  title: string;
+  description: string;
+  icon: typeof Tags;
+  children: ReactNode;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="min-w-0 max-w-full rounded-lg border">
+      <button
+        type="button"
+        aria-expanded={open}
+        className="flex min-h-16 w-full min-w-0 cursor-pointer items-center gap-3 rounded-md px-4 py-3 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        onClick={() => setOpen((value) => !value)}
+      >
+        <Icon className="size-4 shrink-0 text-muted-foreground" />
+        <span className="min-w-0 flex-1">
+          <span className="block text-sm font-medium">{title}</span>
+          <span className="block text-xs text-muted-foreground">{description}</span>
+        </span>
+        <span className="flex size-8 shrink-0 items-center justify-center" aria-hidden="true">
+          {open ? <ChevronDown /> : <ChevronRight />}
+        </span>
+      </button>
+      {open && <div className="min-w-0 border-t px-4 py-4">{children}</div>}
+    </div>
+  );
+}
+
+/**
+ * The environment capability and the environment a session should use are
+ * separate on the wire, but belong together in the editor.
+ */
+function EnvironmentFeatureEditor({
+  value,
+  providers = [],
+  disableReason,
+  children,
+  onChange,
+}: {
+  value?: unknown;
+  providers?: EnvironmentProviderOption[];
+  disableReason?: string;
+  children?: ReactNode;
+  onChange: (config: SessionConfig | undefined) => void;
+}) {
+  const config = normalizeSessionConfig(value) ?? {};
+  const features = record(config.features);
+  const enabled = "environments" in features;
+  const change = (mutate: (next: RecordValue) => void) => {
+    const next = structuredClone(config) as RecordValue;
+    mutate(next);
+    onChange(normalizeSessionConfig(next));
+  };
+  const setEnabled = (nextEnabled: boolean) => change((next) => {
+    const nextFeatures = record(next.features);
+    if (nextEnabled) nextFeatures.environments = {};
+    else delete nextFeatures.environments;
+    if (Object.keys(nextFeatures).length) next.features = nextFeatures;
+    else delete next.features;
+  });
+  const patch = (mutate: (feature: RecordValue) => void) => change((next) => {
+    const nextFeatures = record(next.features);
+    const feature = record(nextFeatures.environments);
+    mutate(feature);
+    nextFeatures.environments = feature;
+    next.features = nextFeatures;
+  });
+
+  return (
+    <FeaturePanel
+      name="environments"
+      enabled={enabled}
+      feature={record(features.environments)}
+      disableReason={disableReason}
+      onEnabledChange={setEnabled}
+    >
+      <div className="grid gap-4">
+        <EnvironmentFields
+          feature={record(features.environments)}
+          providers={providers}
+          patch={patch}
+        />
+        {children && <div className="grid gap-3 border-t pt-4">{children}</div>}
+      </div>
+    </FeaturePanel>
   );
 }
 
@@ -574,8 +724,6 @@ function ModelFields({ config, models, manualModel, onManualModelChange, pinnedA
     ]),
   ];
   const reasoningOptionsId = useId();
-  const supportsProcessingTier = supportsOpenAiProcessingTier({ model });
-  const processingTier = string(generation.processingTier) || "providerDefault";
   const updateReasoningEffort = (value: string | undefined) =>
     change((next) => {
       const nextGeneration = record(next.generation);
@@ -584,17 +732,10 @@ function ModelFields({ config, models, manualModel, onManualModelChange, pinnedA
       if (Object.keys(nextGeneration).length) next.generation = nextGeneration;
       else delete next.generation;
     });
-  const updateProcessingTier = (value: string | null) =>
-    change((next) => {
-      const nextGeneration = record(next.generation);
-      if (value && value !== "providerDefault") nextGeneration.processingTier = value;
-      else delete nextGeneration.processingTier;
-      if (Object.keys(nextGeneration).length) next.generation = nextGeneration;
-      else delete next.generation;
-    });
   return (
-    <div className="grid gap-3 border-b pb-5">
-      <Field>
+    <div className="grid gap-3">
+      <div className="grid gap-3 md:grid-cols-2">
+        <Field>
         <FieldLabel>Model</FieldLabel>
         <Combobox
           items={choiceKeys}
@@ -681,45 +822,30 @@ function ModelFields({ config, models, manualModel, onManualModelChange, pinnedA
               ? "Choose a provider-discovered model, or enter a route manually."
               : "No models were discovered. You can still enter a route manually."}
         </FieldDescription>
-      </Field>
-      <Field>
-        <FieldLabel>Reasoning effort</FieldLabel>
-        <Input
-          value={reasoningEffort}
-          list={reasoningOptions.length ? reasoningOptionsId : undefined}
-          onChange={(e) => updateReasoningEffort(e.target.value || undefined)}
-          placeholder="Provider default"
-        />
-        {reasoningOptions.length > 0 && (
-          <datalist id={reasoningOptionsId}>
-            {reasoningOptions.map((effort) => (
-              <option key={effort} value={effort} />
-            ))}
-          </datalist>
-        )}
-        <FieldDescription>
-          {currentModel?.capabilities.reasoningEfforts?.length
-            ? "Choose a known tier or enter any provider-supported value."
-            : "No tiers are known. Enter a provider-supported value, or leave unset for its default."}
-        </FieldDescription>
-      </Field>
-      {supportsProcessingTier && (
+        {currentModel && <ModelCapabilities option={currentModel} />}
+        </Field>
         <Field>
-          <FieldLabel>Processing tier</FieldLabel>
-          <Select value={processingTier} onValueChange={updateProcessingTier}>
-            <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
-            <SelectContent>
-              <SelectItem value="providerDefault">Provider default</SelectItem>
-              <SelectItem value="standard">Standard</SelectItem>
-              <SelectItem value="fast">Fast</SelectItem>
-              <SelectItem value="flex">Flex</SelectItem>
-            </SelectContent>
-          </Select>
+          <FieldLabel>Reasoning effort</FieldLabel>
+          <Input
+            value={reasoningEffort}
+            list={reasoningOptions.length ? reasoningOptionsId : undefined}
+            onChange={(e) => updateReasoningEffort(e.target.value || undefined)}
+            placeholder="Provider default"
+          />
+          {reasoningOptions.length > 0 && (
+            <datalist id={reasoningOptionsId}>
+              {reasoningOptions.map((effort) => (
+                <option key={effort} value={effort} />
+              ))}
+            </datalist>
+          )}
           <FieldDescription>
-            Applied to every run in this session. Fast prioritizes latency; Flex uses lower-priority processing.
+            {currentModel?.capabilities.reasoningEfforts?.length
+              ? "Choose a known tier or enter any provider-supported value."
+              : "No tiers are known. Enter a provider-supported value, or leave unset for its default."}
           </FieldDescription>
         </Field>
-      )}
+      </div>
       {selected === "manual" && (
         <div className="grid gap-3 sm:grid-cols-3">
           <Field><FieldLabel>Provider id</FieldLabel><Input value={string(model.providerId)} onChange={(e) => update("providerId", e.target.value)} placeholder="openai" /></Field>
@@ -727,7 +853,6 @@ function ModelFields({ config, models, manualModel, onManualModelChange, pinnedA
           <Field><FieldLabel>Model</FieldLabel><Input value={string(model.model)} onChange={(e) => update("model", e.target.value)} placeholder="gpt-5.5" /></Field>
         </div>
       )}
-      {currentModel && <ModelCapabilities option={currentModel} />}
     </div>
   );
 }
@@ -815,40 +940,25 @@ function ModelCapabilities({ option }: { option: ModelOption }) {
 }
 
 function AdvancedFields({ config, change }: { config: RecordValue; change: (fn: (next: RecordValue) => void) => void }) {
-  const generation = record(config.generation);
-  const hasGenerationOverrides = Object.keys(generation).some((key) => key !== "reasoningEffort");
-  const hasAdvancedSettings = hasGenerationOverrides || Object.keys(record(config.limits)).length > 0 || Object.keys(record(config.context)).length > 0;
-  const [open, setOpen] = useState(hasAdvancedSettings);
   return (
-    <div className="grid gap-3">
-      <Button
-        variant="ghost"
-        className="h-auto justify-start gap-2 px-0 py-0 text-left hover:bg-transparent"
-        onClick={() => setOpen((value) => !value)}
-        aria-expanded={open}
-      >
-        <SlidersHorizontal className="size-4 text-muted-foreground" />
-        <span>
-          <span className="block text-sm font-medium">Advanced</span>
-          <span className="block text-xs font-normal text-muted-foreground">
-            Generation, run limits, and context compaction.
-          </span>
-        </span>
-        {open ? <ChevronDown className="ml-auto" /> : <ChevronRight className="ml-auto" />}
-      </Button>
-      {open && (
-        <div className="ml-2 grid gap-5 border-l border-border/70 py-1 pl-5">
-          <GenerationFields config={config} change={change} />
-          <LimitsFields config={config} change={change} />
-          <ContextFields config={config} change={change} />
-        </div>
-      )}
-    </div>
+    <ExpandableSetupPanel
+      title="Model run controls"
+      description="Optional generation controls, run limits, and context compaction."
+      icon={SlidersHorizontal}
+    >
+      <div className="grid gap-5">
+        <GenerationFields config={config} change={change} />
+        <LimitsFields config={config} change={change} />
+        <ContextFields config={config} change={change} />
+      </div>
+    </ExpandableSetupPanel>
   );
 }
 
 function GenerationFields({ config, change }: { config: RecordValue; change: (fn: (next: RecordValue) => void) => void }) {
   const generation = record(config.generation);
+  const supportsProcessingTier = supportsOpenAiProcessingTier({ model: record(config.model) });
+  const processingTier = string(generation.processingTier) || "providerDefault";
   const update = (key: string, value: unknown) => change((next) => {
     const item = record(next.generation);
     if (value === undefined || value === "") delete item[key]; else item[key] = value;
@@ -882,6 +992,29 @@ function GenerationFields({ config, change }: { config: RecordValue; change: (fn
               </SelectContent>
             </Select>
           </Field>
+          {supportsProcessingTier && (
+            <Field>
+              <FieldLabel>Processing tier</FieldLabel>
+              <Select
+                value={processingTier}
+                onValueChange={(value) => update(
+                  "processingTier",
+                  value === "providerDefault" ? undefined : value,
+                )}
+              >
+                <SelectTrigger className="w-full"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="providerDefault">Provider default</SelectItem>
+                  <SelectItem value="standard">Standard</SelectItem>
+                  <SelectItem value="fast">Fast</SelectItem>
+                  <SelectItem value="flex">Flex</SelectItem>
+                </SelectContent>
+              </Select>
+              <FieldDescription>
+                Applied to every run. Fast prioritizes latency; Flex uses lower-priority processing.
+              </FieldDescription>
+            </Field>
+          )}
           <Field>
             <FieldLabel>Tool choice</FieldLabel>
             <Select value={toolChoiceType} onValueChange={(value) => update("toolChoice", value === "default" ? undefined : { type: value })}>
@@ -940,6 +1073,7 @@ function FeaturePanel({
   enabled,
   feature,
   disableReason,
+  expandable,
   onEnabledChange,
   children,
 }: {
@@ -947,47 +1081,60 @@ function FeaturePanel({
   enabled: boolean;
   feature: RecordValue;
   disableReason?: string;
+  expandable?: boolean;
   onEnabledChange: (enabled: boolean) => void;
   children?: React.ReactNode;
 }) {
-  const [open, setOpen] = useState(enabled);
+  const [open, setOpen] = useState(false);
   const info = featureInfo[name];
   const Icon = info.icon;
-  const configurable = Boolean(children);
+  const configurable = expandable ?? Boolean(children);
   useEffect(() => {
     if (!enabled) setOpen(false);
   }, [enabled]);
   return (
-    <div className={cn("rounded-lg border", enabled ? "border-border" : "border-dashed")}>
-      <div className="flex min-h-16 items-center gap-3 px-4 py-3">
-        <Switch
-          checked={enabled}
-          disabled={enabled && Boolean(disableReason)}
-          onCheckedChange={(checked) => onEnabledChange(checked === true)}
-          aria-label={`Enable ${info.title}`}
-        />
-        <Icon className="size-4 text-muted-foreground" />
-        <div className="min-w-0 flex-1">
-          <p className="text-sm font-medium">{info.title}</p>
-          <p className="text-xs text-muted-foreground">{info.description}</p>
-          {enabled && disableReason && (
-            <p className="mt-1 text-xs text-amber-700 dark:text-amber-400">
-              {disableReason}
-            </p>
-          )}
+    <div className={cn("min-w-0 max-w-full rounded-lg border", enabled ? "border-border" : "border-dashed")}>
+      <div className="flex min-w-0 min-h-16 items-stretch gap-3 px-4">
+        <div className="flex items-center">
+          <Switch
+            checked={enabled}
+            disabled={enabled && Boolean(disableReason)}
+            onCheckedChange={(checked) => {
+              const nextEnabled = checked === true;
+              setOpen(nextEnabled && configurable);
+              onEnabledChange(nextEnabled);
+            }}
+            aria-label={`Enable ${info.title}`}
+          />
         </div>
-        {enabled && configurable && (
-          <Button
-            variant="ghost"
-            size="icon-sm"
-            aria-label={`Configure ${info.title}`}
-            onClick={() => setOpen((value) => !value)}
-          >
-            {open ? <ChevronDown /> : <ChevronRight />}
-          </Button>
-        )}
+        <button
+          type="button"
+          disabled={!enabled || !configurable}
+          aria-expanded={enabled && configurable ? open : undefined}
+          className={cn(
+            "-mr-2 flex min-w-0 flex-1 items-center gap-3 rounded-md px-2 py-3 text-left outline-none focus-visible:ring-2 focus-visible:ring-ring",
+            enabled && configurable && "cursor-pointer",
+          )}
+          onClick={() => setOpen((value) => !value)}
+        >
+          <Icon className="size-4 shrink-0 text-muted-foreground" />
+          <div className="min-w-0 flex-1">
+            <p className="text-sm font-medium">{info.title}</p>
+            <p className="text-xs text-muted-foreground">{info.description}</p>
+            {enabled && disableReason && (
+              <p className="mt-1 text-xs text-amber-700 dark:text-amber-400">
+                {disableReason}
+              </p>
+            )}
+          </div>
+          {enabled && configurable && (
+            <span className="flex size-8 shrink-0 items-center justify-center" aria-hidden="true">
+              {open ? <ChevronDown /> : <ChevronRight />}
+            </span>
+          )}
+        </button>
       </div>
-      {enabled && configurable && open && <div className="border-t px-4 py-4">{children}</div>}
+      {enabled && configurable && open && <div className="min-w-0 border-t px-4 py-4">{children}</div>}
     </div>
   );
 }
@@ -1085,8 +1232,8 @@ function VfsFields({
       </div>
 
       <div className="grid gap-3 border-t pt-4">
-        <div className="flex items-center justify-between gap-3">
-          <div>
+        <div className="flex min-w-0 items-center justify-between gap-3">
+          <div className="min-w-0">
             <p className="text-sm font-medium">Workspace links</p>
             <p className="text-xs text-muted-foreground">
               Expose catalog workspaces or pinned snapshots at session paths.
@@ -1485,8 +1632,8 @@ function EnvironmentFields({
           Empty allows every registered provider. Selection resolves live universe environments.
         </FieldDescription>
       </Field>
-      <div className="flex items-start justify-between gap-4 rounded-lg border p-3">
-        <div className="grid gap-1">
+      <div className="flex min-w-0 max-w-full items-start justify-between gap-4 rounded-lg border p-3">
+        <div className="grid min-w-0 gap-1">
           <Label htmlFor={selectionToolsId}>Environment selection tools</Label>
           <p className="text-xs text-muted-foreground">
             Let the model list, activate, and deactivate allowed environments. Reading the active environment is always available.
@@ -1501,8 +1648,8 @@ function EnvironmentFields({
           })}
         />
       </div>
-      <div className="flex items-start justify-between gap-4 rounded-lg border p-3">
-        <div className="grid gap-1">
+      <div className="flex min-w-0 max-w-full items-start justify-between gap-4 rounded-lg border p-3">
+        <div className="grid min-w-0 gap-1">
           <Label htmlFor={jobsId}>Durable jobs</Label>
           <p className="text-xs text-muted-foreground">
             Allow the agent to use durable job tools on capable environments.
@@ -1562,8 +1709,8 @@ function McpFields({
 
   return (
     <div className="grid gap-3">
-      <div className="flex items-center justify-between gap-3">
-        <p className="text-xs text-muted-foreground">
+      <div className="flex min-w-0 items-center justify-between gap-3">
+        <p className="min-w-0 text-xs text-muted-foreground">
           Only declared servers can materialize remote tools.
         </p>
         <Button

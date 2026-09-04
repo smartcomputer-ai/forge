@@ -2479,8 +2479,26 @@
               }
             ]
           },
+          "metadata": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Descriptive metadata defaults copied to a session when it is created\nfrom this profile. Explicit `session/start` metadata wins key by key.\nApplying the profile to an existing session does not change metadata.",
+            "type": "object"
+          },
           "profileId": {
             "$ref": "#/components/schemas/ProfileId"
+          },
+          "retention": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProfileSessionRetention"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Creation-time session retention default. Absence keeps the tree until\nmanual deletion. Applying a profile to an existing session does not\nchange retention."
           },
           "revision": {
             "format": "uint64",
@@ -2545,8 +2563,26 @@
               }
             ]
           },
+          "metadata": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Descriptive metadata defaults copied to a session when it is created\nfrom this profile. Explicit `session/start` metadata wins key by key.\nApplying the profile to an existing session does not change metadata.",
+            "type": "object"
+          },
           "profileId": {
             "$ref": "#/components/schemas/ProfileId"
+          },
+          "retention": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProfileSessionRetention"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Creation-time session retention default. Absence keeps the tree until\nmanual deletion. Applying a profile to an existing session does not\nchange retention."
           }
         },
         "required": [
@@ -9544,6 +9580,24 @@
                 "type": "null"
               }
             ]
+          },
+          "metadata": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Descriptive metadata defaults copied to a session when it is created\nfrom this profile. Explicit `session/start` metadata wins key by key.\nApplying the profile to an existing session does not change metadata.",
+            "type": "object"
+          },
+          "retention": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProfileSessionRetention"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Creation-time session retention default. Absence keeps the tree until\nmanual deletion. Applying a profile to an existing session does not\nchange retention."
           }
         },
         "type": "object"
@@ -9786,9 +9840,10 @@
             ]
           },
           "deleteAfterCloseMs": {
-            "description": "Root-owned automatic deletion measured from close. Absent keeps the\nsession tree until manual deletion.",
+            "description": "Root-owned automatic deletion measured from close. Absent inherits a\nprofile default, explicit null keeps the tree, and a duration overrides\nthe profile.",
             "format": "uint64",
-            "minimum": 0,
+            "maximum": 3153600000000,
+            "minimum": 1,
             "type": [
               "integer",
               "null"
@@ -9799,6 +9854,17 @@
               "string",
               "null"
             ]
+          },
+          "environment": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SessionEnvironmentOverride"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Optional creation-time override for the selected profile's environment\nintent. Omit to use the profile's intent unchanged."
           },
           "metadata": {
             "additionalProperties": {
@@ -12244,6 +12310,23 @@
         ],
         "type": "object"
       },
+      "ProfileSessionRetention": {
+        "additionalProperties": false,
+        "description": "Root-session retention policy supplied by a profile at session creation.",
+        "properties": {
+          "deleteAfterCloseMs": {
+            "description": "Positive close-relative automatic-deletion duration.",
+            "format": "uint64",
+            "maximum": 3153600000000,
+            "minimum": 1,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "deleteAfterCloseMs"
+        ],
+        "type": "object"
+      },
       "ProfileSource": {
         "oneOf": [
           {
@@ -13156,6 +13239,41 @@
           "session"
         ],
         "type": "object"
+      },
+      "SessionEnvironmentOverride": {
+        "description": "Creation-time override for the environment intent carried by a profile.\nAbsence uses the profile unchanged; `none` suppresses its environment\nintent, while `existing` activates the specified universe environment.",
+        "oneOf": [
+          {
+            "additionalProperties": false,
+            "properties": {
+              "type": {
+                "const": "none",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "environmentId": {
+                "type": "string"
+              },
+              "type": {
+                "const": "existing",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "environmentId"
+            ],
+            "type": "object"
+          }
+        ]
       },
       "SessionEventKindView": {
         "oneOf": [
@@ -14990,6 +15108,10 @@
               "null"
             ]
           },
+          "excludeClosed": {
+            "description": "Exclude closed sessions. New sessions that have not run yet remain in\nthe result alongside open sessions.",
+            "type": "boolean"
+          },
           "limit": {
             "format": "uint32",
             "minimum": 0,
@@ -15002,7 +15124,7 @@
             "additionalProperties": {
               "type": "string"
             },
-            "description": "Only sessions carrying every listed key/value pair (AND semantics).\nCombines with the lineage filters.",
+            "description": "Only sessions matching every entry (AND semantics). A non-empty value\nrequires an exact key/value pair; an empty value requires key presence.\nCombines with the lineage filters.",
             "type": "object"
           },
           "parentSessionId": {
@@ -15306,9 +15428,10 @@
             ]
           },
           "deleteAfterCloseMs": {
-            "description": "Root-owned automatic deletion measured from close. Absent keeps the\nsession tree until manual deletion.",
+            "description": "Root-owned automatic deletion measured from close. Absent inherits a\nprofile default, explicit null keeps the tree, and a duration overrides\nthe profile.",
             "format": "uint64",
-            "minimum": 0,
+            "maximum": 3153600000000,
+            "minimum": 1,
             "type": [
               "integer",
               "null"
@@ -15319,6 +15442,17 @@
               "string",
               "null"
             ]
+          },
+          "environment": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SessionEnvironmentOverride"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Optional creation-time override for the selected profile's environment\nintent. Omit to use the profile's intent unchanged."
           },
           "metadata": {
             "additionalProperties": {
@@ -17323,7 +17457,7 @@
       "summary": "Inspect the Lightspeed protocol"
     },
     {
-      "description": "Creates a session with optional config/profile setup. Retrying an existing session id returns that session; creation settings apply only when it is first created.",
+      "description": "Creates a session with optional config/profile setup. Profile metadata and retention supply creation defaults; explicit start values override them. An existing-or-none environment override can replace the profile intent. Retrying an existing session id returns that session.",
       "name": "session/start",
       "paramStructure": "by-name",
       "params": [
@@ -17344,7 +17478,7 @@
       "summary": "Create or reopen a session"
     },
     {
-      "description": "Creates a session with an immutable lifecycle controller and/or workflow tools using explicit bound pull/push dispatch, start targets, and Accepted, Joined, or keyed-Promise completion. Retrying an existing session id requires the same managed-creation declaration; an ordinary session cannot be upgraded to managed.",
+      "description": "Creates a session with immutable lifecycle and workflow-tool declarations using explicit bound dispatch. Profile metadata, retention, and environment overrides follow session/start semantics. Retrying an id requires the same managed declaration; an ordinary session cannot be upgraded.",
       "name": "session/managed/start",
       "paramStructure": "by-name",
       "params": [

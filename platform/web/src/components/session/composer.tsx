@@ -79,13 +79,14 @@ export function SessionComposer({
       : "Message the agent…";
 
   return (
-    <div className="shrink-0 border-t px-4 py-3 md:px-8">
-      {banner}
-      {error && <p className="pb-2 text-xs text-destructive">{error}</p>}
-      {disabled && disabledReason && !banner && (
-        <p className="pb-2 text-xs text-muted-foreground">{disabledReason}</p>
-      )}
-      <div className="flex items-end gap-2">
+    <div className="shrink-0 border-t py-3">
+      <div className="mx-auto w-full max-w-5xl px-4 md:px-8">
+        {banner}
+        {error && <p className="pb-2 text-xs text-destructive">{error}</p>}
+        {disabled && disabledReason && !banner && (
+          <p className="pb-2 text-xs text-muted-foreground">{disabledReason}</p>
+        )}
+        <div className="flex items-end gap-2">
         <textarea
           disabled={disabled}
           value={text}
@@ -121,6 +122,7 @@ export function SessionComposer({
         >
           <ArrowUp />
         </Button>
+        </div>
       </div>
     </div>
   );

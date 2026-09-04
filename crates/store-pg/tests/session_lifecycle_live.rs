@@ -84,6 +84,7 @@ async fn pg_live_lifecycle_projection_rejects_managed_branches() {
             limit: 10,
             root_session_id: None,
             parent_session_id: None,
+            exclude_closed: false,
         })
         .await
         .expect("list sessions");

@@ -178,7 +178,6 @@ const MAX_RUN_DETAIL_LIMIT: usize = 512;
 const MAX_RUN_DETAIL_EVENTS: usize = 20_000;
 /// Resource bound for the opaque managed-controller run terminal token.
 const MAX_RUN_TERMINAL_NOTIFICATION_TOKEN_BYTES: usize = 512;
-const MAX_DELETE_AFTER_CLOSE_MS: u64 = 100 * 365 * 24 * 60 * 60 * 1_000;
 
 /// Default public base URL for the gateway-hosted OAuth callback; matches
 /// `DEFAULT_GATEWAY_BIND`. Hosted deployments must set the real public URL.
@@ -202,10 +201,10 @@ pub(super) fn validate_caller_metadata(
 
 fn validate_delete_after_close_ms(value: Option<u64>) -> Result<(), AgentApiError> {
     if let Some(value) = value
-        && !(1..=MAX_DELETE_AFTER_CLOSE_MS).contains(&value)
+        && !(1..=MAX_SESSION_DELETE_AFTER_CLOSE_MS).contains(&value)
     {
         return Err(AgentApiError::invalid_request(format!(
-            "deleteAfterCloseMs must be 1..={MAX_DELETE_AFTER_CLOSE_MS}"
+            "deleteAfterCloseMs must be 1..={MAX_SESSION_DELETE_AFTER_CLOSE_MS}"
         )));
     }
     Ok(())
@@ -968,7 +967,10 @@ impl GatewayAgentApi {
                 display_name: None,
                 config: None,
                 profile: Some(profile),
-                delete_after_close_ms: None,
+                environment: None,
+                // Delegated children inherit their retention root and never
+                // apply a profile's root-session default.
+                delete_after_close_ms: Some(None),
             },
             false,
             true,
@@ -994,6 +996,7 @@ impl GatewayAgentApi {
                 display_name: None,
                 config: None,
                 profile,
+                environment: None,
                 delete_after_close_ms: None,
             },
             close_on_terminal,
@@ -1145,10 +1148,10 @@ impl GatewayAgentApi {
             metadata,
             config,
             profile,
+            environment,
             delete_after_close_ms,
         } = params;
         validate_caller_metadata(&metadata)?;
-        validate_delete_after_close_ms(delete_after_close_ms)?;
         let workflow_tools = trusted_workflow_tools;
         let client_supplied_id = session_id.is_some();
         let session_id = match session_id {
@@ -1198,10 +1201,49 @@ impl GatewayAgentApi {
                 Err(error) => return Err(error),
             }
         }
-        let resolved_profile = match profile {
+        let mut resolved_profile = match profile {
             Some(source) => Some(self.resolve_profile_source(source).await?),
             None => None,
         };
+        if let Some(environment) = environment {
+            let environment = match environment {
+                SessionEnvironmentOverride::None {} => None,
+                SessionEnvironmentOverride::Existing { environment_id } => {
+                    Some(ProfileEnvironment::Existing { environment_id })
+                }
+            };
+            ::profiles::validate_profile_document(&ProfileDocument {
+                environment: environment.clone(),
+                ..Default::default()
+            })
+            .map_err(profiles::map_profile_error)?;
+            if let Some(profile) = resolved_profile.as_mut() {
+                profile.document.environment = environment;
+            } else if environment.is_some() {
+                resolved_profile = Some(profiles::ResolvedAgentProfile {
+                    profile_id: None,
+                    document: ProfileDocument {
+                        environment,
+                        ..Default::default()
+                    },
+                });
+            }
+        }
+        let effective_metadata = profiles::merge_profile_start_metadata(
+            resolved_profile
+                .as_ref()
+                .map(|profile| &profile.document.metadata),
+            metadata,
+        );
+        validate_caller_metadata(&effective_metadata)?;
+        let effective_delete_after_close_ms = profiles::merge_profile_start_retention(
+            resolved_profile
+                .as_ref()
+                .and_then(|profile| profile.document.retention.as_ref())
+                .map(|retention| retention.delete_after_close_ms),
+            delete_after_close_ms,
+        );
+        validate_delete_after_close_ms(effective_delete_after_close_ms)?;
         let start_config = self.merge_profile_start_config(
             resolved_profile
                 .as_ref()
@@ -1250,8 +1292,8 @@ impl GatewayAgentApi {
                 self.workflow_args(
                     session_id.clone(),
                     display_name,
-                    metadata,
-                    delete_after_close_ms,
+                    effective_metadata,
+                    effective_delete_after_close_ms,
                     session_config,
                     workflow_tools.clone(),
                     close_on_terminal,
@@ -2622,10 +2664,10 @@ impl AgentApiService for GatewayAgentApi {
     }
 
     /// Idempotent on a client-supplied session id: when the session already
-    /// exists, the existing session view is returned (any `config` in the
-    /// retried request is ignored; session config is applied only at
-    /// creation). This keeps a retried `session/start` + `session/runs/start` pair
-    /// safe end to end.
+    /// exists, the existing session view is returned (creation fields such as
+    /// config, metadata, profile, and environment override are ignored).
+    /// This keeps a retried `session/start` + `session/runs/start` pair safe
+    /// end to end.
     async fn start_session(
         &self,
         params: SessionStartParams,
@@ -2644,6 +2686,7 @@ impl AgentApiService for GatewayAgentApi {
             metadata,
             config,
             profile,
+            environment,
             delete_after_close_ms,
             workflow_tools,
         } = params;
@@ -2655,6 +2698,7 @@ impl AgentApiService for GatewayAgentApi {
                 metadata,
                 config,
                 profile,
+                environment,
                 delete_after_close_ms,
             },
             false,
@@ -2874,6 +2918,7 @@ impl AgentApiService for GatewayAgentApi {
                 limit,
                 root_session_id,
                 parent_session_id,
+                exclude_closed: params.exclude_closed,
                 metadata: params.metadata,
             })
             .await

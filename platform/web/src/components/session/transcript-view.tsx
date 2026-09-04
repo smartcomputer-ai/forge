@@ -139,11 +139,12 @@ export function QueuedRunsBar({
     return null;
   }
   return (
-    <div className="shrink-0 border-t bg-muted/40 px-4 py-2 md:px-8" aria-label="Queued messages">
-      <p className="pb-1 text-[10px] uppercase tracking-wide text-muted-foreground">
-        Queued — starts after the current run
-      </p>
-      <ul className="flex flex-col gap-1">
+    <div className="shrink-0 border-t bg-muted/40" aria-label="Queued messages">
+      <div className="mx-auto w-full max-w-5xl px-4 py-2 md:px-8">
+        <p className="pb-1 text-[10px] uppercase tracking-wide text-muted-foreground">
+          Queued — starts after the current run
+        </p>
+        <ul className="flex flex-col gap-1">
         {items.map((item, index) => (
           <li
             key={item.key}
@@ -174,7 +175,8 @@ export function QueuedRunsBar({
             )}
           </li>
         ))}
-      </ul>
+        </ul>
+      </div>
     </div>
   );
 }

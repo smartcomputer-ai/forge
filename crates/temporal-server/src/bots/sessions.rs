@@ -237,6 +237,7 @@ async fn list_descendants(
                 limit: Some(DESCENDANT_PAGE_LIMIT),
                 root_session_id: Some(root_session_id.to_owned()),
                 parent_session_id: None,
+                exclude_closed: false,
             })
             .await
             .map_err(|error| activity_error("list descendant sessions", error))?
@@ -282,14 +283,16 @@ fn bot_session_metadata(bot_id: &bots::BotId) -> BTreeMap<String, String> {
     ])
 }
 
-/// The profile the bot's session runs: the catalog profile's config and
-/// environment, with the composed (profile + bot) instructions inline so the
-/// session pins exactly what the controller resolved.
+/// The profile the bot's session runs: the catalog profile's creation defaults
+/// and environment, with the composed (profile + bot) instructions inline so
+/// the session pins exactly what the controller resolved.
 fn resolve_bot_profile(profile: &AgentProfile, instructions: String) -> InlineAgentProfile {
     InlineAgentProfile {
         display_name: profile.display_name.clone(),
         description: profile.description.clone(),
         document: ProfileDocument {
+            metadata: profile.document.metadata.clone(),
+            retention: profile.document.retention.clone(),
             config: profile.document.config.clone(),
             instructions: Some(ProfileInstructions::Text { text: instructions }),
             environment: profile.document.environment.clone(),
@@ -454,6 +457,7 @@ pub async fn ensure_session(
             profile: Some(ProfileSource::Inline {
                 profile: Box::new(resolved.clone()),
             }),
+            environment: None,
             delete_after_close_ms: None,
             workflow_tools: ManagedSessionWorkflowToolsInput {
                 version: MANAGED_TOOLS_VERSION,

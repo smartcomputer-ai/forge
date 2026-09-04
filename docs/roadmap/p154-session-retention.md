@@ -9,6 +9,10 @@
 - Also records a defect found while settling the vocabulary: the bot
   routed-session "TTL" is documented as an idle timer but runs from creation
   (see "Related defect").
+- Extended 2026-09-04 with profile creation defaults. A profile carries an
+  optional `retention: ProfileSessionRetention`; omission at session start
+  inherits it, an explicit duration overrides it, and explicit null keeps the
+  new root tree until manual deletion.
 
 ## Vocabulary
 
@@ -44,7 +48,8 @@ Automatic deletion and explicitly cascading manual deletion remove a selected
 session subtree through one shared lifecycle path, so rows, events, and
 checkpoints go together and every deleted session's owned environments are
 closed. Ordinary manual deletion remains a conservative one-session operation.
-The UI identifies the retention root and shows the tree's deletion deadline.
+Session settings identify the retention root and show the tree's deletion
+policy without crowding the primary list or detail header.
 
 ## Problem
 
@@ -80,8 +85,13 @@ intent and should record it on that root.
    There is no separate `keep` flag, zero-as-forever sentinel, or universe
    default.
 3. **The policy is available at creation and remains editable.**
+   `ProfileDocument.retention` may provide
+   `ProfileSessionRetention { deleteAfterCloseMs }` as a creation default;
+   applying a profile to an existing session never changes retention.
    `session/start` and `session/managed/start` accept
-   `deleteAfterCloseMs`. `session/retention/put {sessionId,
+   `deleteAfterCloseMs`: omission inherits the profile, explicit null keeps
+   the tree, and an explicit duration overrides the profile.
+   `session/retention/put {sessionId,
    deleteAfterCloseMs}` replaces it later. The mutation accepts only a
    retention root; targeting a descendant is rejected with its root id rather
    than silently changing an ancestor. Null clears the policy and keeps the
@@ -236,9 +246,13 @@ Bump `REQUIRED_SCHEMA_REVISION` and `LIGHTSPEED_SCHEMA_REVISION` together.
 
 ### API
 
+- `ProfileDocument.retention?: ProfileSessionRetention` where
+  `ProfileSessionRetention = { deleteAfterCloseMs }`. The nested document is
+  intentionally extensible and is used only when creating a root session.
 - `SessionStartParams.deleteAfterCloseMs` and
-  `ManagedSessionStartParams.deleteAfterCloseMs`: optional root-creation
-  settings; absent or null means no automatic deletion.
+  `ManagedSessionStartParams.deleteAfterCloseMs`: optional nullable
+  root-creation overrides; absent inherits the profile, null disables its
+  default, and a positive duration replaces it.
 - `session/retention/put`: `SessionRetentionPutParams {sessionId,
   deleteAfterCloseMs}` returning `{session: SessionSummaryView}`, like
   `session/rename`. The field is nullable and required in this full-document
@@ -309,10 +323,13 @@ Bump `REQUIRED_SCHEMA_REVISION` and `LIGHTSPEED_SCHEMA_REVISION` together.
 - Session page: an automatic-deletion control on roots, with "Keep until
   manually deleted" as the default. Descendants show "Retained with <root>"
   and link to the root rather than presenting an editable control.
-- Session page and sessions list: "Deletes in 3 days" from the effective
-  `retention.deleteAtMs`. When the root is still open, show "Deletes 3 days
-  after root closes". A past deadline blocked by an open descendant shows
-  "Deletion pending" rather than a negative duration.
+- Session settings show the effective policy and retention root. A root can
+  set or clear its close-relative duration; a descendant links to the root
+  rather than presenting an editable control. The primary sessions list and
+  detail header stay focused on identity, lifecycle state, and actions.
+- Profile, customized session-create, and bot-profile editors show Automatic
+  deletion as a collapsed card immediately after Session metadata. Clearing
+  the days field removes the profile retention section.
 - Manual deletion defaults to the selected session only. The UI offers an
   explicit "also delete forks and delegated children" option with a bounded
   descendant count. For any non-leaf target, it explains that cascade is
@@ -344,6 +361,9 @@ first.
 - A fresh session and a config-only clone each identify themselves as their
   retention root. A nested history fork and delegated sub-agent child identify
   the original owning root.
+- A root created from a profile inherits its retention default when the start
+  override is absent; a duration overrides it and explicit null clears it.
+  Delegated children ignore profile defaults and retain the parent root policy.
 - A root with `deleteAfterCloseMs = 3_600_000` is due after its close time is
   more than an hour old. Its descendants expose the same effective
   `deleteAtMs`; their own close times do not move it.

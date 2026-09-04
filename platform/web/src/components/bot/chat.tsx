@@ -61,7 +61,7 @@ export function BotChat({
           <>
             <span className="font-medium text-destructive">The main conversation could not be set up.</span>
             <span className="max-w-xl wrap-anywhere">{controller?.lastError ?? "The controller reported a problem."}</span>
-            <span>Fix the cause under Setup and save; the bot tries again on the next change.</span>
+            <span>Fix the cause in Bot settings and save; the bot tries again on the next change.</span>
           </>
         ) : (
           `Starting ${botLabel(bot)}'s main conversation…`

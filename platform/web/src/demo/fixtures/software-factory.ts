@@ -103,6 +103,19 @@ const ISSUE = "LIN-1421";
 const SPEC_PATH = "/specs/LIN-1421-rate-limits.md";
 const PLAN_PATH = "/specs/LIN-1421-plan.md";
 
+/// Deliberately realistic correlation data for exercising the sessions UI
+/// with the long identifiers produced by external evaluation harnesses.
+const EVALUATION_METADATA = {
+  agent: "lightspeed-software-factory-agent-with-provisioned-incus-environment",
+  campaign: "terminal-bench-lightspeed-rerun-hosted-20260904-113000-software-factory",
+  harborContextId: "802d0778-f22c-4a1e-ab4d-3da8486ab4d8",
+  job: "software-factory-regression-benchmark-linux-amd64-production-candidate",
+  owner: "platform-evaluations-and-agent-reliability",
+  repository: "acme/acme-web",
+  source: "harbor",
+  workflowRunId: "github-actions-9187-rerun-attempt-03-integration-and-browser-suite",
+} as const;
+
 const keyed = (botId: string, key: string): string => `bot:v1:${botId}:k-${key}-${hex(`${botId}:${key}`, 8)}`;
 const SESSION = {
   flaky: "session-flaky-scheduler",
@@ -282,6 +295,7 @@ function subagentSession(store: DemoStore, universe: UniverseState, init: Subage
     displayName: init.displayName,
     config: structuredClone(init.profile.config),
     instructions: init.profile.instructions,
+    metadata: structuredClone(init.parent.view.metadata ?? {}),
     origin,
     activeEnvironmentId: init.environmentId,
     createdAtMs: init.createdAtMs,
@@ -483,17 +497,24 @@ const CI_CONFIG: Record<string, unknown> = {
   },
 };
 
-/// What a session takes from a profile: its config, instructions, and the
-/// revision pinned on sub-agent origins.
+/// What a session takes from a profile: metadata defaults, config,
+/// instructions, and the revision pinned on sub-agent origins.
 interface ProfileSpec {
   profileId: string;
+  metadata?: Record<string, string>;
   config: Record<string, unknown>;
   instructions: string;
   revision: number;
 }
 const INTAKE_PROFILE: ProfileSpec = { profileId: PROFILE.intake, config: INTAKE_CONFIG, instructions: INTAKE_INSTRUCTIONS, revision: 3 };
 const PLANNER_PROFILE: ProfileSpec = { profileId: PROFILE.planner, config: PLANNER_CONFIG, instructions: PLANNER_INSTRUCTIONS, revision: 2 };
-const IMPLEMENTER_PROFILE: ProfileSpec = { profileId: PROFILE.implementer, config: IMPLEMENTER_CONFIG, instructions: IMPLEMENTER_INSTRUCTIONS, revision: 6 };
+const IMPLEMENTER_PROFILE: ProfileSpec = {
+  profileId: PROFILE.implementer,
+  metadata: { ...EVALUATION_METADATA, profileRole: "parallel-task-implementation-and-pull-request-authoring" },
+  config: IMPLEMENTER_CONFIG,
+  instructions: IMPLEMENTER_INSTRUCTIONS,
+  revision: 6,
+};
 const EXPLORER_PROFILE: ProfileSpec = { profileId: PROFILE.explorer, config: EXPLORER_CONFIG, instructions: EXPLORER_INSTRUCTIONS, revision: 5 };
 const TEST_WRITER_PROFILE: ProfileSpec = { profileId: PROFILE.tests, config: TEST_WRITER_CONFIG, instructions: TEST_WRITER_INSTRUCTIONS, revision: 2 };
 const REVIEWER_PROFILE: ProfileSpec = { profileId: PROFILE.reviewer, config: REVIEWER_CONFIG, instructions: REVIEWER_INSTRUCTIONS, revision: 5 };
@@ -528,6 +549,7 @@ function seedProfiles(universe: UniverseState): void {
       description: "Builds one task per session in a fresh Incus sandbox, delegating exploration and tests to sub-agents, and opens the pull request.",
       instructions: IMPLEMENTER_INSTRUCTIONS,
       config: IMPLEMENTER_CONFIG,
+      metadata: IMPLEMENTER_PROFILE.metadata,
       environment: IMPLEMENTER_ENVIRONMENT,
       revision: IMPLEMENTER_PROFILE.revision,
       createdAtMs: ago(30 * DAY_MS),
@@ -1649,6 +1671,12 @@ function seedSessions(store: DemoStore, universe: UniverseState): void {
   const flaky = newSession(store, universe, {
     id: SESSION.flaky,
     displayName: "Fix flaky scheduler test",
+    metadata: {
+      ...EVALUATION_METADATA,
+      harborSessionId: "fix-flaky-scheduler-test__CGQoz7Q__lightspeed-agent",
+      task: "repair-nondeterministic-retry-timing-and-audit-wall-clock-dependencies",
+      trial: "trial-20260904-113000-000042-attempt-03",
+    },
     config: EXPLORER_CONFIG,
     instructions: EXPLORER_INSTRUCTIONS,
     activeEnvironmentId: ENV.ci,
