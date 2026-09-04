@@ -369,6 +369,7 @@ async fn collect_sessions(
                 limit: Some(selection.limit),
                 root_session_id: selection.root_session_id.clone(),
                 parent_session_id: selection.parent_session_id.clone(),
+                exclude_closed: false,
                 metadata: selection.metadata.clone(),
             })
             .await

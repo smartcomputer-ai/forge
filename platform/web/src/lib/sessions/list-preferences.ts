@@ -97,7 +97,7 @@ export function readSessionMetadataFilter(
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {};
     return Object.fromEntries(
       Object.entries(parsed).filter(
-        ([key, value]) => key.length > 0 && typeof value === "string" && value.length > 0,
+        ([key, value]) => key.length > 0 && typeof value === "string",
       ),
     ) as Record<string, string>;
   } catch {
@@ -135,7 +135,7 @@ export function searchParamsWithMetadataFilter(
   const next = new URLSearchParams(current);
   next.delete("metadata");
   for (const [key, value] of Object.entries(filter)) {
-    next.append("metadata", `${key}=${value}`);
+    next.append("metadata", value ? `${key}=${value}` : key);
   }
   return next;
 }
@@ -143,8 +143,7 @@ export function searchParamsWithMetadataFilter(
 /** The value may itself contain `=`; only the first separator is structural. */
 export function parseMetadataPair(raw: string): { key: string; value: string } | null {
   const at = raw.indexOf("=");
-  if (at <= 0) return null;
-  const key = raw.slice(0, at).trim();
-  const value = raw.slice(at + 1).trim();
-  return key && value ? { key, value } : null;
+  const key = (at < 0 ? raw : raw.slice(0, at)).trim();
+  const value = at < 0 ? "" : raw.slice(at + 1).trim();
+  return key ? { key, value } : null;
 }

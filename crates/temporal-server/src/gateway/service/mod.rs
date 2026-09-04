@@ -2918,6 +2918,7 @@ impl AgentApiService for GatewayAgentApi {
                 limit,
                 root_session_id,
                 parent_session_id,
+                exclude_closed: params.exclude_closed,
                 metadata: params.metadata,
             })
             .await

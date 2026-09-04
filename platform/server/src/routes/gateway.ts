@@ -96,14 +96,15 @@ const sessionMetadataPutSchema = z.object({
   metadata: metadataSchema.default({}),
 });
 
-/// `?metadata=key=value`, repeatable, becomes the containment filter map the
-/// engine's `session/list` and `environments/list` accept.
+/// `?metadata=key` or `?metadata=key=value`, repeatable. An empty value means
+/// the session must carry the key; a non-empty value is an exact match.
 function metadataQueryFilter(values: string[] | undefined): Record<string, string> {
   const filter: Record<string, string> = {};
   for (const raw of values ?? []) {
     const at = raw.indexOf("=");
-    if (at <= 0 || at === raw.length - 1) continue;
-    filter[raw.slice(0, at)] = raw.slice(at + 1);
+    const key = (at < 0 ? raw : raw.slice(0, at)).trim();
+    if (!key) continue;
+    filter[key] = at < 0 ? "" : raw.slice(at + 1).trim();
   }
   return filter;
 }
@@ -467,6 +468,7 @@ export function gatewayRoutes(ctx: AppContext) {
     // Sub-agent lineage filters: children of a root or of a parent.
     const rootSessionId = c.req.query("rootSessionId") || null;
     const parentSessionId = c.req.query("parentSessionId") || null;
+    const excludeClosed = c.req.query("excludeClosed") === "true";
     const metadata = metadataQueryFilter(c.req.queries("metadata"));
     return withGateway(c, async () => {
       const client = engineClientFor(ctx, access.universe);
@@ -475,6 +477,7 @@ export function gatewayRoutes(ctx: AppContext) {
         limit,
         ...(rootSessionId ? { rootSessionId } : {}),
         ...(parentSessionId ? { parentSessionId } : {}),
+        ...(excludeClosed ? { excludeClosed: true } : {}),
         ...(Object.keys(metadata).length > 0 ? { metadata } : {}),
       });
       return c.json({

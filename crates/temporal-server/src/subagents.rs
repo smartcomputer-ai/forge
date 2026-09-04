@@ -908,6 +908,7 @@ mod tests {
                 limit: 10,
                 root_session_id: Some(SessionId::new("parent")),
                 parent_session_id: None,
+                exclude_closed: false,
             })
             .await
             .expect("list")

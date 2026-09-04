@@ -7455,9 +7455,15 @@ export interface SessionListParams {
    * Opaque cursor from the previous page's `nextCursor`.
    */
   cursor?: string | null;
+  /**
+   * Exclude closed sessions. New sessions that have not run yet remain in
+   * the result alongside open sessions.
+   */
+  excludeClosed?: boolean;
   limit?: number | null;
   /**
-   * Only sessions carrying every listed key/value pair (AND semantics).
+   * Only sessions matching every entry (AND semantics). A non-empty value
+   * requires an exact key/value pair; an empty value requires key presence.
    * Combines with the lineage filters.
    */
   metadata?: {

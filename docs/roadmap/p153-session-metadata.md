@@ -76,12 +76,14 @@ sessions to its environments.
    intentionally not part of `profiles/apply`, so later profile edits or
    reapplication do not mutate an existing session's descriptive identity.
 3. `session/list` filters by `metadata: {key: value}` with AND semantics:
-   a session matches when it carries every listed pair. The filter combines
-   with the existing `parentSessionId` and `rootSessionId` filters, and
-   results carry the map. There is no presence-only filter ("has key"): it
-   has no named user and would need the wider index (see Design).
+   an empty filter value requires that the key be present, while a non-empty
+   value requires the exact pair. Stored metadata values cannot be empty, so
+   this is unambiguous. The HTTP UI gateway accepts both `metadata=key` and
+   `metadata=key=` for presence-only matching. A session must match every
+   entry. The filter combines with the existing `parentSessionId` and
+   `rootSessionId` filters, and results carry the map.
 4. `environments/list` gains the same `metadata` filter with the same
-   semantics.
+   exact-pair semantics; presence-only matching is session-specific.
 5. There are no bulk operations. The filtered list is the primitive; the
    CLI and the UI loop over the ids they get back, which they need anyway
    to show a count before acting. Cleaning up after a campaign is
@@ -167,7 +169,8 @@ sessions to its environments.
   the map; `session close` and `session delete` accept the same filter and
   loop over the matches.
 - Platform sessions page: the list-header filter popover builds the `metadata`
-  query and shows the active pairs without adding metadata to every list row
+  query and shows the active entries; a bare key filters by presence and a
+  key/value entry filters exactly. It does not add metadata to every list row
   or the detail header. Session detail menus expose the full map without
   widening either header. The query is URL-backed so it survives list/detail
   navigation and can be bookmarked; filters and visibility preferences are
@@ -179,7 +182,8 @@ sessions to its environments.
   truncated `key=value` rows below the optional session id; this preference
   is also browser-local per universe. "Hide closed" and
   "Hide sub-agent sessions" are off by default, and the badge counts only
-  enabled hide-filters and metadata pairs;
+  enabled hide-filters and metadata pairs. Closed-session exclusion is sent
+  to `session/list` and applied before pagination;
   unnamed sessions use their id as the primary label regardless.
   A selection model over the filtered list provides close and delete actions
   that loop over the selection after a count confirmation. Selecting every

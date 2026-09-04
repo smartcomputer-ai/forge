@@ -130,6 +130,7 @@ import {
 /// New session (sub-agent tree expansion arrives with engine D1 parent
 /// linkage); detail = live transcript (long-poll tail) with a composer.
 const SESSION_LIST_REFRESH_MS = 5_000;
+const INLINE_SUBAGENT_LIMIT = 5;
 
 export function SessionsPage({ admin }: { admin: boolean }) {
   const { universe, slug, isLoading } = useActiveUniverse();
@@ -193,10 +194,15 @@ function SessionList({
   const [filterDraft, setFilterDraft] = useState("");
   const [metadataKeyDraft, setMetadataKeyDraft] = useState("");
   const filterEntries = Object.entries(metadataFilter);
+  const [preferences, setPreferences] = useState(() => readSessionListPreferences(universeId));
+  const { showClosed, showSubagents, showSessionIds, metadataKeys } = preferences;
   const listQuery = new URLSearchParams({ limit: "50" });
-  for (const [key, value] of filterEntries) listQuery.append("metadata", `${key}=${value}`);
+  if (!showClosed) listQuery.set("excludeClosed", "true");
+  for (const [key, value] of filterEntries) {
+    listQuery.append("metadata", value ? `${key}=${value}` : key);
+  }
   const pages = useInfiniteQuery({
-    queryKey: ["sessions", universeId, metadataFilter],
+    queryKey: ["sessions", universeId, metadataFilter, { showClosed }],
     queryFn: ({ pageParam }) =>
       api<SessionListPage>(
         "GET",
@@ -212,17 +218,13 @@ function SessionList({
     refetchIntervalInBackground: false,
   });
   const [createOpen, setCreateOpen] = useState(false);
-  const [preferences, setPreferences] = useState(() => readSessionListPreferences(universeId));
-  const { showClosed, showSubagents, showSessionIds, metadataKeys } = preferences;
   const [selecting, setSelecting] = useState(false);
   const [selectingAll, setSelectingAll] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(() => new Set());
   const [bulkNotice, setBulkNotice] = useState<string | null>(null);
 
   const allSessions = pages.data?.pages.flatMap((page) => page.sessions) ?? [];
-  const sessions = allSessions
-    .filter((session) => showClosed || session.lifecycleStatus !== "closed")
-    .filter((session) => showSubagents || !session.origin);
+  const sessions = allSessions.filter((session) => showSubagents || !session.origin);
   const tree = buildSessionTree(sessions);
   const visibleIds = sessions.map((session) => session.id);
   const selectedSessions = sessions.filter((session) => selected.has(session.id));
@@ -403,7 +405,7 @@ function SessionList({
             </div>
             <div className="grid gap-2 border-t pt-3">
               <div className="flex items-center justify-between gap-2">
-                <span className="text-xs font-medium">Metadata</span>
+                <span className="text-xs font-medium">Metadata filters</span>
                 {filterEntries.length > 0 && (
                   <button
                     type="button"
@@ -422,7 +424,7 @@ function SessionList({
                       variant="secondary"
                       className="max-w-full gap-1 font-mono text-[11px]"
                     >
-                      <span className="truncate">{key}={value}</span>
+                      <span className="truncate">{value ? `${key}=${value}` : key}</span>
                       <button
                         type="button"
                         onClick={() => removeFilter(key)}
@@ -439,7 +441,7 @@ function SessionList({
                 <Input
                   value={filterDraft}
                   onChange={(event) => setFilterDraft(event.target.value)}
-                  placeholder="key=value"
+                  placeholder="key or key=value"
                   aria-label="Metadata filter"
                   className="h-8 min-w-0 flex-1 font-mono text-xs"
                 />
@@ -452,10 +454,12 @@ function SessionList({
                   Add
                 </Button>
               </form>
-              <p className="text-xs text-muted-foreground">Matches every exact key/value pair.</p>
+              <p className="text-xs text-muted-foreground">
+                A key alone matches its presence. Key/value pairs match exactly.
+              </p>
             </div>
             <div className="grid gap-2 border-t pt-3">
-              <span className="text-xs font-medium">Display</span>
+              <h2 className="text-sm font-semibold">List Appearance</h2>
               <label className="flex cursor-pointer items-center gap-2 text-sm">
                 <Checkbox
                   checked={showSessionIds}
@@ -466,7 +470,7 @@ function SessionList({
                 />
                 Show session IDs
               </label>
-              <span className="mt-1 text-xs font-medium">Metadata keys</span>
+              <span className="mt-1 text-xs font-medium">Metadata keys to show</span>
               {metadataKeys.length > 0 && (
                 <div className="flex flex-wrap gap-1.5">
                   {metadataKeys.map((key) => (
@@ -594,12 +598,14 @@ function SessionList({
           <p className="p-4 text-sm text-muted-foreground">
             {filterEntries.length > 0
               ? "No sessions match this metadata filter."
+              : !showClosed
+                ? "No open sessions."
               : "No sessions yet — start one, or bind a chat."}
           </p>
         )}
-        {pages.data && !showClosed && allSessions.length > 0 && sessions.length === 0 && (
+        {pages.data && !showSubagents && allSessions.length > 0 && sessions.length === 0 && (
           <p className="p-4 text-sm text-muted-foreground">
-            No open sessions in the loaded results.
+            No top-level sessions in the loaded results.
           </p>
         )}
         <ul>
@@ -2225,51 +2231,189 @@ function SessionLineage({
   sessionHref?: (sessionId: string) => string;
 }) {
   const href = sessionHref ?? ((id: string) => `/u/${slug}/sessions/${id}`);
-  const children = useQuery({
-    queryKey: ["session-children", universeId, sessionId, runRevision],
+  const parentId = origin?.parentSessionId;
+  const parent = useQuery({
+    queryKey: ["session", universeId, parentId],
     queryFn: () =>
-      api<SessionListPage>(
+      api<SessionView>(
         "GET",
-        `/api/v1/universes/${universeId}/sessions?limit=50&parentSessionId=${encodeURIComponent(sessionId)}`,
+        `/api/v1/universes/${universeId}/sessions/${encodeURIComponent(parentId!)}`,
       ),
+    enabled: Boolean(parentId),
   });
-  const list = children.data?.sessions ?? [];
+  const children = useInfiniteQuery({
+    queryKey: ["session-children", universeId, sessionId, runRevision],
+    queryFn: ({ pageParam }) => {
+      const params = new URLSearchParams({ limit: "50", parentSessionId: sessionId });
+      if (pageParam) params.set("cursor", pageParam);
+      return api<SessionListPage>(
+        "GET",
+        `/api/v1/universes/${universeId}/sessions?${params.toString()}`,
+      );
+    },
+    initialPageParam: "",
+    getNextPageParam: (last) => last.nextCursor ?? undefined,
+  });
+  const list = children.data?.pages.flatMap((page) => page.sessions) ?? [];
+  const inlineChildren = list.slice(0, INLINE_SUBAGENT_LIMIT);
+  const overflowChildren = list.slice(INLINE_SUBAGENT_LIMIT);
+  const hiddenCount = overflowChildren.length;
+  const parentName = parent.data?.displayName?.trim();
+  const parentLabel = parentName || (parentId ? compactSessionId(parentId) : "");
+  const tagClass = "inline-flex min-w-0 max-w-64 items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium text-foreground transition-colors hover:bg-muted";
   if (!origin && list.length === 0) return null;
   return (
     <div className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 border-b bg-muted/30 px-4 py-1.5 text-xs text-muted-foreground">
       {origin && (
-        <span className="flex min-w-0 items-center gap-1">
-          <span>Sub-agent of</span>
-          <NavLink to={href(origin.parentSessionId)} className="truncate font-mono text-foreground hover:underline">
-            {origin.parentSessionId.slice(0, 18)}…
-          </NavLink>
-          <span>
-            · {origin.agent.profileId} (rev {origin.agent.revision}) · depth {origin.depth}
-            {origin.rootSessionId !== origin.parentSessionId ? ` · root ${origin.rootSessionId.slice(0, 12)}…` : ""}
-          </span>
+        <span className="flex min-w-0 flex-wrap items-center gap-1">
+          <span>Parent:</span>
+          <Tooltip>
+            <TooltipTrigger
+              render={<NavLink to={href(origin.parentSessionId)} className={tagClass} />}
+            >
+              <span className={cn("truncate", !parentName && "font-mono font-normal")}>
+                {parentLabel}
+              </span>
+              {parent.data?.status && (
+                <span
+                  className={cn(
+                    "size-1.5 shrink-0 rounded-full",
+                    parent.data.status === "closed" ? "bg-muted-foreground/50" : "bg-foreground",
+                  )}
+                  aria-hidden="true"
+                />
+              )}
+            </TooltipTrigger>
+            <TooltipContent className="max-w-sm items-start">
+              <LineageTooltipDetails
+                id={origin.parentSessionId}
+                status={parent.data
+                  ? (parent.data.status === "closed" ? "closed" : "open")
+                  : undefined}
+                origin={parent.data?.origin ?? null}
+              />
+            </TooltipContent>
+          </Tooltip>
         </span>
       )}
       {list.length > 0 && (
         <span className="flex min-w-0 flex-wrap items-center gap-1">
-          <span>Sub-agents ({list.length}{children.data?.nextCursor ? "+" : ""}):</span>
-          {list.map((child) => (
-            <NavLink
+          <span>Sub-agents ({list.length}{children.hasNextPage ? "+" : ""}):</span>
+          {inlineChildren.map((child) => (
+            <SubagentLineageLink
               key={child.id}
+              child={child}
               to={href(child.id)}
-              className={cn(
-                "rounded-full border px-2 py-0.5 font-mono text-foreground hover:bg-muted",
-                child.lifecycleStatus === "closed" && "text-muted-foreground",
-              )}
-              title={`${child.id} · ${child.origin?.agent.profileId ?? "sub-agent"} · ${child.lifecycleStatus}`}
-            >
-              {child.displayName ?? child.id.slice(0, 14)}
-              {child.lifecycleStatus !== "closed" ? " ●" : ""}
-            </NavLink>
+              className={tagClass}
+            />
           ))}
+          {(hiddenCount > 0 || children.hasNextPage) && (
+            <Popover>
+              <PopoverTrigger
+                render={
+                  <button
+                    type="button"
+                    className={tagClass}
+                    aria-label={`Show ${hiddenCount}${children.hasNextPage ? " or more" : ""} additional sub-agents`}
+                  />
+                }
+              >
+                +{hiddenCount}{children.hasNextPage ? "+" : ""}
+              </PopoverTrigger>
+              <PopoverContent align="start" className="w-80 p-2">
+                <div className="mb-1 px-2 py-1 text-xs font-medium text-muted-foreground">
+                  Additional sub-agents
+                </div>
+                <div className="max-h-72 overflow-y-auto">
+                  {overflowChildren.map((child) => (
+                    <SubagentLineageLink
+                      key={child.id}
+                      child={child}
+                      to={href(child.id)}
+                      className="flex min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-sm text-foreground transition-colors hover:bg-muted"
+                    />
+                  ))}
+                  {hiddenCount === 0 && children.isFetchingNextPage && (
+                    <p className="px-2 py-1.5 text-xs text-muted-foreground">Loading…</p>
+                  )}
+                </div>
+                {children.hasNextPage && (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="mt-1 w-full"
+                    disabled={children.isFetchingNextPage}
+                    onClick={() => void children.fetchNextPage()}
+                  >
+                    {children.isFetchingNextPage ? "Loading…" : "Load more sub-agents"}
+                  </Button>
+                )}
+              </PopoverContent>
+            </Popover>
+          )}
         </span>
       )}
     </div>
   );
+}
+
+function SubagentLineageLink({
+  child,
+  to,
+  className,
+}: {
+  child: SessionSummary;
+  to: string;
+  className: string;
+}) {
+  const childName = child.displayName?.trim();
+  return (
+    <Tooltip>
+      <TooltipTrigger render={<NavLink to={to} className={className} />}>
+        <span className={cn("min-w-0 flex-1 truncate", !childName && "font-mono font-normal")}>
+          {childName || compactSessionId(child.id)}
+        </span>
+        <span
+          className={cn(
+            "size-1.5 shrink-0 rounded-full",
+            child.lifecycleStatus === "closed" ? "bg-muted-foreground/50" : "bg-foreground",
+          )}
+          aria-hidden="true"
+        />
+      </TooltipTrigger>
+      <TooltipContent className="max-w-sm items-start">
+        <LineageTooltipDetails
+          id={child.id}
+          status={child.lifecycleStatus === "closed" ? "closed" : "open"}
+          origin={child.origin ?? null}
+        />
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
+function LineageTooltipDetails({
+  id,
+  status,
+  origin,
+}: {
+  id: string;
+  status?: "open" | "closed";
+  origin: SessionOrigin | null;
+}) {
+  return (
+    <span className="flex min-w-0 flex-col gap-0.5">
+      <span>Session ID: <span className="wrap-anywhere font-mono">{id}</span></span>
+      <span>Status: {status === "closed" ? "Closed" : status === "open" ? "Open" : "…"}</span>
+      <span>Profile: <span className="font-mono">{origin?.agent.profileId ?? "—"}</span></span>
+      <span>Depth: {origin?.depth ?? 0}</span>
+    </span>
+  );
+}
+
+function compactSessionId(id: string, length = 18): string {
+  return `${id.slice(0, length)}${id.length > length ? "…" : ""}`;
 }
 
 function relativeTime(ms: number): string {

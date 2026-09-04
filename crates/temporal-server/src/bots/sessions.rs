@@ -237,6 +237,7 @@ async fn list_descendants(
                 limit: Some(DESCENDANT_PAGE_LIMIT),
                 root_session_id: Some(root_session_id.to_owned()),
                 parent_session_id: None,
+                exclude_closed: false,
             })
             .await
             .map_err(|error| activity_error("list descendant sessions", error))?

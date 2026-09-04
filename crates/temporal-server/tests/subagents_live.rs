@@ -587,6 +587,7 @@ async fn list_children(
             limit: 50,
             root_session_id: None,
             parent_session_id: Some(parent.clone()),
+            exclude_closed: false,
         })
         .await?
         .sessions)
@@ -699,6 +700,7 @@ async fn run_agent_run_inline_live_client(
             limit: None,
             root_session_id: Some(session_id.as_str().to_owned()),
             parent_session_id: None,
+            exclude_closed: false,
         })
         .await?;
     assert_eq!(listed.result.sessions.len(), 1);

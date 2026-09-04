@@ -287,14 +287,17 @@ pub struct ListSessions {
     /// Only sessions whose origin names this parent.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_session_id: Option<SessionId>,
-    /// Only sessions carrying every listed key/value pair (containment).
-    /// Empty means no metadata filter.
+    /// Exclude closed sessions while retaining both new and open sessions.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub exclude_closed: bool,
+    /// Only sessions matching every entry. Empty values mean key presence;
+    /// non-empty values mean exact key/value containment. An empty map means
+    /// no metadata filter.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub metadata: BTreeMap<String, String>,
 }
 
-/// Containment match for metadata filters: every filter pair must be present
-/// on the record with the same value. An empty filter matches everything.
+/// Exact metadata containment match. An empty filter matches everything.
 pub fn metadata_matches(
     record: &BTreeMap<String, String>,
     filter: &BTreeMap<String, String>,
@@ -302,6 +305,22 @@ pub fn metadata_matches(
     filter
         .iter()
         .all(|(key, value)| record.get(key) == Some(value))
+}
+
+/// Session metadata filters additionally use an empty value as the
+/// unambiguous sentinel for key presence because stored metadata values may
+/// not be empty.
+pub fn session_metadata_matches(
+    record: &BTreeMap<String, String>,
+    filter: &BTreeMap<String, String>,
+) -> bool {
+    filter.iter().all(|(key, value)| {
+        if value.is_empty() {
+            record.contains_key(key)
+        } else {
+            record.get(key) == Some(value)
+        }
+    })
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -721,7 +740,10 @@ impl SessionStore for InMemorySessionStore {
                         .is_some_and(|origin| &origin.parent_session_id == parent)
                 })
             })
-            .filter(|record| metadata_matches(&record.metadata, &request.metadata))
+            .filter(|record| {
+                !request.exclude_closed || record.lifecycle_status != SessionLifecycleStatus::Closed
+            })
+            .filter(|record| session_metadata_matches(&record.metadata, &request.metadata))
             .filter(|record| {
                 request.cursor.as_ref().is_none_or(|cursor| {
                     (record.updated_at_ms, record.session_id.as_str())
@@ -1677,6 +1699,7 @@ mod tests {
                 limit: 2,
                 root_session_id: None,
                 parent_session_id: None,
+                exclude_closed: false,
             })
             .await
             .expect("first page");
@@ -1697,6 +1720,7 @@ mod tests {
                 limit: 2,
                 root_session_id: None,
                 parent_session_id: None,
+                exclude_closed: false,
             })
             .await
             .expect("second page");
@@ -1714,6 +1738,25 @@ mod tests {
         );
         assert!(second.next_cursor.is_none());
 
+        close_session(&store, "session-c").await;
+        let without_closed = store
+            .list_sessions(ListSessions {
+                metadata: Default::default(),
+                cursor: None,
+                limit: 1,
+                root_session_id: None,
+                parent_session_id: None,
+                exclude_closed: true,
+            })
+            .await
+            .expect("list without closed sessions");
+        assert_eq!(
+            without_closed.sessions[0].session_id.as_str(),
+            "session-b",
+            "lifecycle filtering happens before the page limit"
+        );
+        assert!(without_closed.next_cursor.is_some());
+
         assert!(matches!(
             store
                 .list_sessions(ListSessions {
@@ -1722,6 +1765,7 @@ mod tests {
                     limit: 0,
                     root_session_id: None,
                     parent_session_id: None,
+                    exclude_closed: false,
                 })
                 .await,
             Err(SessionStoreError::InvalidLimit { limit: 0 })
@@ -2000,6 +2044,7 @@ mod tests {
                 limit: 10,
                 root_session_id: Some(SessionId::new("root-a")),
                 parent_session_id: None,
+                exclude_closed: false,
             })
             .await
             .expect("list by root");
@@ -2011,6 +2056,7 @@ mod tests {
                 limit: 10,
                 root_session_id: None,
                 parent_session_id: Some(SessionId::new("root-a")),
+                exclude_closed: false,
             })
             .await
             .expect("list by parent");
@@ -2022,6 +2068,7 @@ mod tests {
                 limit: 10,
                 root_session_id: None,
                 parent_session_id: None,
+                exclude_closed: false,
             })
             .await
             .expect("list all");
@@ -2069,6 +2116,7 @@ mod tests {
             limit: 10,
             root_session_id: None,
             parent_session_id: None,
+            exclude_closed: false,
             metadata,
         };
         let by_job = store
@@ -2091,6 +2139,17 @@ mod tests {
             .await
             .expect("list by both");
         assert_eq!(both.sessions.len(), 1);
+        let by_present_key = store
+            .list_sessions(list(BTreeMap::from([("job".to_owned(), String::new())])))
+            .await
+            .expect("list by present key");
+        assert_eq!(by_present_key.sessions.len(), 1);
+        assert_eq!(by_present_key.sessions[0].session_id, labelled);
+        let missing_present_key = store
+            .list_sessions(list(BTreeMap::from([("trial".to_owned(), String::new())])))
+            .await
+            .expect("list by missing present key");
+        assert!(missing_present_key.sessions.is_empty());
         let missing = store
             .list_sessions(list(BTreeMap::from([("trial".to_owned(), "1".to_owned())])))
             .await

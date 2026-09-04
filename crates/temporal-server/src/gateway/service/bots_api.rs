@@ -522,6 +522,7 @@ impl GatewayAgentApi {
                         limit: Some(MAX_SESSION_LIST_LIMIT as u32),
                         root_session_id: Some(session.session_id.clone()),
                         parent_session_id: None,
+                        exclude_closed: false,
                     })
                     .await?;
                 descendants.extend(listed.result.sessions);

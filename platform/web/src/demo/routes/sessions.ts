@@ -34,13 +34,15 @@ interface ResolvedProfile {
   environment: ProfileEnvironment | null;
 }
 
-/// `?metadata=key=value`, repeatable, as the containment filter map.
+/// `?metadata=key` or `?metadata=key=value`, repeatable. Empty values request
+/// key presence; non-empty values request exact matches.
 function metadataQueryFilter(values: string[] | undefined): Record<string, string> {
   const filter: Record<string, string> = {};
   for (const raw of values ?? []) {
     const at = raw.indexOf("=");
-    if (at <= 0 || at === raw.length - 1) continue;
-    filter[raw.slice(0, at)] = raw.slice(at + 1);
+    const key = (at < 0 ? raw : raw.slice(0, at)).trim();
+    if (!key) continue;
+    filter[key] = at < 0 ? "" : raw.slice(at + 1).trim();
   }
   return filter;
 }
@@ -63,14 +65,18 @@ export function sessionRoutes(store: DemoStore): Hono {
     const offset = intQuery(c, "cursor", 0);
     const rootSessionId = c.req.query("rootSessionId") || null;
     const parentSessionId = c.req.query("parentSessionId") || null;
+    const excludeClosed = c.req.query("excludeClosed") === "true";
     const metadata = metadataQueryFilter(c.req.queries("metadata"));
     const all = [...universe.sessions.values()]
       .filter((record) => !rootSessionId || record.view.origin?.rootSessionId === rootSessionId)
       .filter(
         (record) => !parentSessionId || record.view.origin?.parentSessionId === parentSessionId,
       )
+      .filter((record) => !excludeClosed || record.view.status !== "closed")
       .filter((record) =>
-        Object.entries(metadata).every(([key, value]) => record.view.metadata?.[key] === value),
+        Object.entries(metadata).every(([key, value]) => value
+          ? record.view.metadata?.[key] === value
+          : Object.hasOwn(record.view.metadata ?? {}, key)),
       )
       .sort((a, b) => b.view.updatedAtMs - a.view.updatedAtMs);
     const page = all.slice(offset, offset + limit);

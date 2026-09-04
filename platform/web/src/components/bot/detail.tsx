@@ -73,6 +73,9 @@ export function conversationTabs(
   const active = new Set((controller.activeDeliveries ?? []).map((delivery) => delivery.sessionId));
   const sessions = controller.sessions ?? [];
   const labelOf = new Map(sessions.map((session) => [session.sessionId, session.kind === "main" ? "Main" : session.label]));
+  for (const child of state?.descendants ?? []) {
+    labelOf.set(child.id, child.displayName?.trim() || child.id.slice(0, 14));
+  }
   const ready = controller.setupStatus === "ready";
   const main: ConversationTab = {
     id: controller.mainSessionId,

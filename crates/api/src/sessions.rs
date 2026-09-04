@@ -855,7 +855,12 @@ pub struct SessionListParams {
     /// Only sub-agent sessions delegated directly by this session.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_session_id: Option<SessionId>,
-    /// Only sessions carrying every listed key/value pair (AND semantics).
+    /// Exclude closed sessions. New sessions that have not run yet remain in
+    /// the result alongside open sessions.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub exclude_closed: bool,
+    /// Only sessions matching every entry (AND semantics). A non-empty value
+    /// requires an exact key/value pair; an empty value requires key presence.
     /// Combines with the lineage filters.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub metadata: BTreeMap<String, String>,

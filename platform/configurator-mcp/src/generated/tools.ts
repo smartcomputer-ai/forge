@@ -1321,6 +1321,10 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
             "null"
           ]
         },
+        "excludeClosed": {
+          "description": "Exclude closed sessions. New sessions that have not run yet remain in\nthe result alongside open sessions.",
+          "type": "boolean"
+        },
         "limit": {
           "format": "uint32",
           "minimum": 0,
@@ -1333,7 +1337,7 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
           "additionalProperties": {
             "type": "string"
           },
-          "description": "Only sessions carrying every listed key/value pair (AND semantics).\nCombines with the lineage filters.",
+          "description": "Only sessions matching every entry (AND semantics). A non-empty value\nrequires an exact key/value pair; an empty value requires key presence.\nCombines with the lineage filters.",
           "type": "object"
         },
         "parentSessionId": {

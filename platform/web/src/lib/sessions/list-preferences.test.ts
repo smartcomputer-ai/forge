@@ -90,7 +90,9 @@ describe("session metadata filter query", () => {
   it("parses values containing equals signs", () => {
     expect(parseMetadataPair(" campaign = terminal=bench "))
       .toEqual({ key: "campaign", value: "terminal=bench" });
-    expect(parseMetadataPair("missing-value=")).toBeNull();
+    expect(parseMetadataPair("present-key")).toEqual({ key: "present-key", value: "" });
+    expect(parseMetadataPair("present-key=")).toEqual({ key: "present-key", value: "" });
+    expect(parseMetadataPair("=missing-key")).toBeNull();
   });
 
   it("round-trips repeated metadata parameters while preserving other query state", () => {
@@ -102,5 +104,11 @@ describe("session metadata filter query", () => {
     expect(params.getAll("metadata")).toEqual(["source=harbor", "campaign=nightly"]);
     expect(metadataFilterFromSearchParams(params))
       .toEqual({ source: "harbor", campaign: "nightly" });
+  });
+
+  it("round-trips presence-only metadata filters", () => {
+    const params = searchParamsWithMetadataFilter(new URLSearchParams(), { campaign: "" });
+    expect(params.getAll("metadata")).toEqual(["campaign"]);
+    expect(metadataFilterFromSearchParams(params)).toEqual({ campaign: "" });
   });
 });
