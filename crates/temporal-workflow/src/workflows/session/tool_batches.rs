@@ -10,10 +10,7 @@
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
-use engine::{
-    AWAIT_TOOL_NAME, ToolCallStatus, ToolExecutionSpec, ToolInvocationResult, ToolName,
-    ToolParallelism,
-};
+use engine::{ToolCallStatus, ToolExecutionSpec, ToolInvocationResult, ToolName, ToolParallelism};
 use futures::FutureExt;
 use futures::future::poll_fn;
 use temporalio_sdk::{ActivityExecutionError, CancellableFuture};
@@ -55,10 +52,13 @@ pub(super) async fn invoke_tool_batch(
 /// `await` defers the whole batch and admitted workflow-tool calls share
 /// batch-scoped emission ordering; both stay on the batch-unit activity.
 fn batch_requires_unit_execution(request: &ToolInvocationBatchRequest) -> bool {
-    request
-        .calls
-        .iter()
-        .any(|call| call.workflow_tool.is_some() || call.tool_name.as_str() == AWAIT_TOOL_NAME)
+    request.calls.iter().any(|call| {
+        call.workflow_tool.is_some()
+            || call
+                .tool_id
+                .as_ref()
+                .is_some_and(|id| id.as_str() == "concurrency.await")
+    })
 }
 
 async fn invoke_tool_batch_as_unit(
@@ -125,7 +125,7 @@ fn execution_groups(
     let mut last_parallel_safe = false;
     for (index, call) in request.calls.iter().enumerate() {
         let parallel_safe =
-            call_parallelism(state, &call.tool_name) == ToolParallelism::ParallelSafe;
+            call_parallelism(state, call.tool_id.as_ref()) == ToolParallelism::ParallelSafe;
         match groups.last_mut() {
             Some(group) if parallel_safe && last_parallel_safe => group.push(index),
             _ => groups.push(vec![index]),
@@ -251,7 +251,7 @@ fn call_activity<'a>(
     let execution = if call.remote_mcp.is_some() {
         ToolExecutionSpec::new(engine::ToolExecutionClass::RemoteInteractive, false)
     } else {
-        call_execution_spec(state, &call.tool_name)
+        call_execution_spec(state, call.tool_id.as_ref())
     };
     let call_request = request
         .call_request(index, execution)
@@ -449,20 +449,16 @@ fn boundary_call_status(error: &ActivityExecutionError) -> ToolCallStatus {
     }
 }
 
-fn call_execution_spec(state: &CoreAgentState, tool_name: &ToolName) -> ToolExecutionSpec {
-    state
-        .tooling
-        .tools
-        .get(tool_name)
+fn call_execution_spec(state: &CoreAgentState, tool_name: Option<&ToolName>) -> ToolExecutionSpec {
+    tool_name
+        .and_then(|id| state.tooling.tools.get(id))
         .map(|tool| tool.execution)
         .unwrap_or_default()
 }
 
-fn call_parallelism(state: &CoreAgentState, tool_name: &ToolName) -> ToolParallelism {
-    state
-        .tooling
-        .tools
-        .get(tool_name)
+fn call_parallelism(state: &CoreAgentState, tool_name: Option<&ToolName>) -> ToolParallelism {
+    tool_name
+        .and_then(|id| state.tooling.tools.get(id))
         .map(|tool| tool.parallelism)
         .unwrap_or(ToolParallelism::Exclusive)
 }
@@ -524,7 +520,13 @@ mod tests {
 
     fn call(name: &str, id: &str) -> ToolInvocationRequest {
         ToolInvocationRequest {
+            builtin: None,
             call_id: ToolCallId::new(id),
+            tool_id: Some(ToolName::new(if name == "await" {
+                "concurrency.await"
+            } else {
+                name
+            })),
             tool_name: ToolName::new(name),
             arguments_ref: BlobRef::from_bytes(b"{}"),
             workflow_tool: None,

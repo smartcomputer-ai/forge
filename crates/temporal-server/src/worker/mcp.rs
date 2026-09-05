@@ -314,13 +314,23 @@ impl NativeMcpRuntime {
             engine::RemoteMcpCallRuntime::Search {
                 targets,
                 approval_decision,
-            } if request.call.tool_name.as_str() == "mcp_find_tools" => {
+            } if request
+                .call
+                .tool_id
+                .as_ref()
+                .is_some_and(|id| id.as_str() == "mcp.find_tools") =>
+            {
                 self.find_tools(targets, arguments).await
             }
             engine::RemoteMcpCallRuntime::Search {
                 targets,
                 approval_decision,
-            } if request.call.tool_name.as_str() == "mcp_call" => {
+            } if request
+                .call
+                .tool_id
+                .as_ref()
+                .is_some_and(|id| id.as_str() == "mcp.call") =>
+            {
                 let object = arguments
                     .as_object()
                     .ok_or_else(|| "mcp_call arguments must be a JSON object".to_owned())?;

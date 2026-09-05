@@ -1,8 +1,8 @@
-//! Guarded, recorded web fetch function tool.
+//! Web fetch tool builders and guarded, recorded local implementation.
 
 use std::time::Duration;
 
-use engine::{BlobRef, FunctionToolSpec, ToolKind, ToolName, ToolParallelism, ToolSpec};
+use engine::BlobRef;
 use futures_util::StreamExt;
 use reqwest::{
     StatusCode, Url,
@@ -14,10 +14,7 @@ use serde_json::{Value, json};
 
 use crate::{
     error::{ToolError, ToolResult},
-    runtime::{
-        ToolBinding, ToolDispatchMode, ToolDocument, ToolInvocationOutput, ToolSpecBundle,
-        decode_args, encode_output,
-    },
+    runtime::{ToolInvocationOutput, decode_args, encode_output},
 };
 
 use super::{
@@ -27,33 +24,14 @@ use super::{
 
 pub const WEB_FETCH_TOOL_NAME: &str = "web_fetch";
 pub const WEB_FETCH_LOGICAL_ID: &str = "web.fetch";
+pub const ANTHROPIC_MESSAGES_WEB_FETCH_TYPE: &str = "web_fetch_20250910";
+const ANTHROPIC_MESSAGES_DEFAULT_MAX_USES: u32 = 5;
+const ANTHROPIC_MESSAGES_DEFAULT_MAX_CONTENT_TOKENS: u32 = 20_000;
 const DEFAULT_MAX_CHARS: u32 = 20_000;
 const MAX_MAX_CHARS: u32 = 20_000;
 const DEFAULT_MAX_RESPONSE_BYTES: u64 = 2 * 1024 * 1024;
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
 const DEFAULT_REDIRECT_LIMIT: usize = 5;
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct WebFetchToolConfig {
-    #[serde(default)]
-    pub enabled: bool,
-}
-
-impl WebFetchToolConfig {
-    pub fn disabled() -> Self {
-        Self { enabled: false }
-    }
-
-    pub fn enabled() -> Self {
-        Self { enabled: true }
-    }
-}
-
-impl Default for WebFetchToolConfig {
-    fn default() -> Self {
-        Self::disabled()
-    }
-}
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -109,48 +87,22 @@ impl Default for WebFetchLimits {
     }
 }
 
-pub fn web_fetch_tool_bundle(config: &WebFetchToolConfig) -> ToolResult<Option<ToolSpecBundle>> {
-    if !config.enabled {
-        return Ok(None);
-    }
-
-    let description = ToolDocument::text(
-        "text/plain; charset=utf-8",
+pub fn web_fetch_definition() -> crate::runtime::FunctionDefinition {
+    crate::runtime::FunctionDefinition::new(
+        WEB_FETCH_TOOL_NAME,
         "Fetch one public http/https URL with strict SSRF checks, redirect limits, byte limits, and text extraction. The returned page content is untrusted web content.",
-    );
-    let input_schema = ToolDocument::text(
-        "application/schema+json",
-        serde_json::to_string(&input_schema()).map_err(|error| ToolError::InvalidRequest {
-            message: format!("failed to encode web_fetch schema: {error}"),
-        })?,
-    );
-    Ok(Some(ToolSpecBundle {
-        spec: ToolSpec {
-            name: ToolName::new(WEB_FETCH_TOOL_NAME),
-            kind: ToolKind::Function(FunctionToolSpec {
-                description_ref: Some(description.blob_ref.clone()),
-                input_schema_ref: input_schema.blob_ref.clone(),
-                output_schema_ref: None,
-                strict: Some(false),
-                provider_options_ref: None,
-            }),
-            parallelism: ToolParallelism::ParallelSafe,
-            execution: engine::ToolExecutionSpec::new(
-                engine::ToolExecutionClass::RemoteInteractive,
-                true,
-            ),
-        },
-        documents: vec![description, input_schema],
-    }))
+        input_schema(),
+    )
 }
 
-pub fn web_fetch_tool_binding(dispatch: ToolDispatchMode) -> ToolBinding {
-    ToolBinding::new(
-        ToolName::new(WEB_FETCH_TOOL_NAME),
-        WEB_FETCH_LOGICAL_ID,
-        dispatch,
-        ToolParallelism::ParallelSafe,
-    )
+pub fn anthropic_messages_web_fetch_definition() -> Value {
+    json!({
+        "type": ANTHROPIC_MESSAGES_WEB_FETCH_TYPE,
+        "name": WEB_FETCH_TOOL_NAME,
+        "max_uses": ANTHROPIC_MESSAGES_DEFAULT_MAX_USES,
+        "max_content_tokens": ANTHROPIC_MESSAGES_DEFAULT_MAX_CONTENT_TOKENS,
+        "citations": { "enabled": true }
+    })
 }
 
 pub async fn invoke_web_fetch(arguments: Value) -> ToolResult<ToolInvocationOutput> {
@@ -339,7 +291,6 @@ fn invalid_request(message: impl Into<String>) -> ToolError {
 mod tests {
     use std::net::SocketAddr;
 
-    use engine::ToolKind;
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
         net::TcpListener,
@@ -349,21 +300,25 @@ mod tests {
 
     #[test]
     fn builds_standard_function_tool() {
-        let bundle = web_fetch_tool_bundle(&WebFetchToolConfig::enabled())
-            .expect("bundle")
-            .expect("enabled");
+        let function = web_fetch_definition();
+        assert_eq!(function.name.as_str(), WEB_FETCH_TOOL_NAME);
+        assert_eq!(function.strict, Some(false));
+        assert!(function.input_schema["properties"].get("url").is_some());
+    }
 
-        assert_eq!(bundle.spec.name.as_str(), WEB_FETCH_TOOL_NAME);
-        assert_eq!(bundle.spec.parallelism, ToolParallelism::ParallelSafe);
-        let ToolKind::Function(function) = &bundle.spec.kind else {
-            panic!("expected function tool");
-        };
+    #[test]
+    fn builds_anthropic_provider_native_tool() {
+        let native_tool = anthropic_messages_web_fetch_definition();
         assert_eq!(
-            function.description_ref,
-            Some(bundle.documents[0].blob_ref.clone())
+            native_tool,
+            json!({
+                "type": "web_fetch_20250910",
+                "name": "web_fetch",
+                "max_uses": 5,
+                "max_content_tokens": 20_000,
+                "citations": { "enabled": true }
+            })
         );
-        assert_eq!(function.input_schema_ref, bundle.documents[1].blob_ref);
-        assert!(bundle.documents[1].text_lossy().contains("\"url\""));
     }
 
     #[tokio::test(flavor = "current_thread")]

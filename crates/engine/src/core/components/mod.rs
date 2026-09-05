@@ -25,22 +25,23 @@ pub use approval::*;
 pub use command::*;
 pub use config::*;
 pub use context::{
-    ANTHROPIC_MESSAGES_COMPACTION_PROVIDER_KIND, ANTHROPIC_MESSAGES_MCP_TOOL_RESULT_PROVIDER_KIND,
+    ANTHROPIC_MESSAGES_CITED_TEXT_PROVIDER_KIND, ANTHROPIC_MESSAGES_COMPACTION_PROVIDER_KIND,
+    ANTHROPIC_MESSAGES_MCP_TOOL_RESULT_PROVIDER_KIND,
     ANTHROPIC_MESSAGES_MCP_TOOL_USE_PROVIDER_KIND,
     ANTHROPIC_MESSAGES_SERVER_TOOL_RESULT_PROVIDER_KIND,
     ANTHROPIC_MESSAGES_SERVER_TOOL_USE_PROVIDER_KIND, ContextCompactionStatus,
     ContextCompactionTrigger, ContextEntry, ContextEntryId, ContextEntryInput, ContextEntryKind,
     ContextEntrySource, ContextEvent, ContextMessageRole, ContextRemovalReason,
     ContextRewriteReason, ContextSnapshot, ContextState,
-    OPENAI_COMPLETIONS_COMPACTION_PROVIDER_KIND, OPENAI_RESPONSES_COMPACTION_PROVIDER_KIND,
-    OPENAI_RESPONSES_MCP_APPROVAL_REQUEST_PROVIDER_KIND, OPENAI_RESPONSES_MCP_CALL_PROVIDER_KIND,
-    OPENAI_RESPONSES_MCP_LIST_TOOLS_PROVIDER_KIND, OPENAI_RESPONSES_WEB_SEARCH_CALL_PROVIDER_KIND,
-    SKILL_ACTIVATION_CONTEXT_KEY_PREFIX, SKILL_ACTIVATION_PROVIDER_KIND_RUN,
-    SKILL_ACTIVATION_PROVIDER_KIND_SESSION, SKILL_CATALOG_CONTEXT_KEY,
-    SUBAGENT_CATALOG_CONTEXT_KEY, SUPERSEDED_CATALOG_CAP, TokenEstimate, TokenEstimateQuality,
-    VFS_CATALOG_CONTEXT_KEY, current_context_entry, is_run_scoped_skill_activation_entry,
-    is_supersedable_catalog_kind, is_superseded_context_entry, skill_activation_context_key,
-    validate_external_context_key,
+    OPENAI_COMPLETIONS_COMPACTION_PROVIDER_KIND, OPENAI_RESPONSES_CITED_TEXT_PROVIDER_KIND,
+    OPENAI_RESPONSES_COMPACTION_PROVIDER_KIND, OPENAI_RESPONSES_MCP_APPROVAL_REQUEST_PROVIDER_KIND,
+    OPENAI_RESPONSES_MCP_CALL_PROVIDER_KIND, OPENAI_RESPONSES_MCP_LIST_TOOLS_PROVIDER_KIND,
+    OPENAI_RESPONSES_WEB_SEARCH_CALL_PROVIDER_KIND, SKILL_ACTIVATION_CONTEXT_KEY_PREFIX,
+    SKILL_ACTIVATION_PROVIDER_KIND_RUN, SKILL_ACTIVATION_PROVIDER_KIND_SESSION,
+    SKILL_CATALOG_CONTEXT_KEY, SUBAGENT_CATALOG_CONTEXT_KEY, SUPERSEDED_CATALOG_CAP, TokenEstimate,
+    TokenEstimateQuality, VFS_CATALOG_CONTEXT_KEY, current_context_entry,
+    is_run_scoped_skill_activation_entry, is_supersedable_catalog_kind,
+    is_superseded_context_entry, skill_activation_context_key, validate_external_context_key,
 };
 pub use environment::{
     ENVIRONMENT_ACTIVATE_EFFECT_KIND, ENVIRONMENT_DEACTIVATE_EFFECT_KIND, EnvironmentEvent,
@@ -67,9 +68,9 @@ pub use run::{
 };
 pub use state::*;
 pub use tooling::{
-    ActiveToolBatch, CANCELLED_TOOL_RESULT_CONTENT, CompletedToolBatch, FunctionToolSpec,
-    ObservedToolCall, ProviderNativeToolExecution, ProviderNativeToolSpec, RemoteMcpApprovalPolicy,
-    RemoteMcpExecution, RemoteMcpExposure, RemoteMcpToolSpec, SecretRef,
+    ActiveToolBatch, BuiltinToolSpec, CANCELLED_TOOL_RESULT_CONTENT, CompletedToolBatch,
+    FunctionToolSpec, ObservedToolCall, ProviderNativeToolExecution, ProviderNativeToolSpec,
+    RemoteMcpApprovalPolicy, RemoteMcpExecution, RemoteMcpExposure, RemoteMcpToolSpec, SecretRef,
     TOOL_RUNTIME_BOUNDARY_FAILURE_CONTENT, ToolCallExecutionPolicy, ToolCallResult, ToolCallState,
     ToolCallStatus, ToolChoice, ToolConfigEvent, ToolEvent, ToolExecutionClass, ToolExecutionSpec,
     ToolKind, ToolParallelism, ToolPatch, ToolSpec, ToolingState, UNAVAILABLE_TOOL_RESULT_CONTENT,

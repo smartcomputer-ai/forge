@@ -13,7 +13,7 @@ use engine::{
     ContextMessageRole, LlmFinish, LlmGenerationFacts, LlmGenerationRequest, LlmGenerationResult,
     LlmGenerationStatus, LlmRequest, LlmUsage, OPENAI_COMPLETIONS_COMPACTION_PROVIDER_KIND,
     ObservedToolCall, ProviderApiKind, RemoteMcpExecution, RemoteMcpExposure, TokenEstimate,
-    TokenEstimateQuality, ToolCallId, ToolChoice, ToolKind, ToolName, ToolSpec, storage::BlobStore,
+    TokenEstimateQuality, ToolCallId, ToolChoice, ToolKind, ToolName, storage::BlobStore,
 };
 use llm_clients::{ApiResponse, openai::completions as oai_c};
 use serde_json::{Value, json};
@@ -179,7 +179,19 @@ impl LlmGenerationAdapter for OpenAiCompletionsLlmAdapter {
                 ),
             });
         }
-        let mut provider_request = self.materialize_create_request(&request.request).await?;
+        let mut catalog = crate::tool_catalog::ToolCatalog::resolve(
+            self.blobs.as_ref(),
+            &tools::runtime::ToolTarget::from(&request.request.model),
+            &request.request.tools,
+        )
+        .await?;
+        let mut provider_request = materialize_request_with_catalog(
+            self.blobs.as_ref(),
+            self.inventory.as_ref(),
+            &request.request,
+            &mut catalog,
+        )
+        .await?;
         // Route every turn of a session to the same prompt cache.
         provider_request.prompt_cache_key =
             Some(crate::prompt_cache::prompt_cache_key(&request.session_id));
@@ -198,7 +210,8 @@ impl LlmGenerationAdapter for OpenAiCompletionsLlmAdapter {
             )
             .await?;
         reject_failure_finish(&response)?;
-        let result = result_from_response(self.blobs.as_ref(), &request, &response).await?;
+        let mut result = result_from_response(self.blobs.as_ref(), &request, &response).await?;
+        catalog.normalize(&mut result);
         let debug_dumps = store_debug_dumps(
             self.blobs.as_ref(),
             request_dump,
@@ -260,6 +273,21 @@ async fn materialize_create_request_with_inventory(
     inventory: &dyn McpInventoryResolver,
     request: &LlmRequest,
 ) -> LlmAdapterResult<oai_c::CreateCompletionRequest> {
+    let mut catalog = crate::tool_catalog::ToolCatalog::resolve(
+        blobs,
+        &tools::runtime::ToolTarget::from(&request.model),
+        &request.tools,
+    )
+    .await?;
+    materialize_request_with_catalog(blobs, inventory, request, &mut catalog).await
+}
+
+async fn materialize_request_with_catalog(
+    blobs: &dyn BlobStore,
+    inventory: &dyn McpInventoryResolver,
+    request: &LlmRequest,
+    catalog: &mut crate::tool_catalog::ToolCatalog,
+) -> LlmAdapterResult<oai_c::CreateCompletionRequest> {
     if request.provider_response_id.is_some() {
         return Err(LlmAdapterError::InvalidProviderRequest {
             message: "Chat Completions has no provider response continuation; provider_response_id must be empty"
@@ -292,7 +320,7 @@ async fn materialize_create_request_with_inventory(
     )?;
     let parallel_tool_calls = params.parallel_tool_calls.or(request.parallel_tool_use);
 
-    let tools = materialize_tools(blobs, inventory, &request.tools).await?;
+    let tools = materialize_tools(inventory, catalog).await?;
     let (max_tokens, max_completion_tokens) = if dialect.uses_max_completion_tokens() {
         (None, request.output_limit.map(u64::from))
     } else {
@@ -303,7 +331,11 @@ async fn materialize_create_request_with_inventory(
         model: request.model.model.clone(),
         messages: materialize_messages(blobs, &request.context.entries, dialect).await?,
         tools,
-        tool_choice: materialize_tool_choice(request.tool_choice.as_ref(), dialect, &extra)?,
+        tool_choice: materialize_tool_choice(
+            catalog.tool_choice(request.tool_choice.as_ref())?.as_ref(),
+            dialect,
+            &extra,
+        )?,
         response_format: params.response_format,
         temperature: optional_f64(params.temperature.as_ref(), "temperature")?,
         top_p: optional_f64(params.top_p.as_ref(), "top_p")?,
@@ -709,27 +741,22 @@ fn part_with_extra(kind: &str, key: &str, value: Value) -> oai_c::CompletionCont
 }
 
 async fn materialize_tools(
-    blobs: &dyn BlobStore,
     inventory: &dyn McpInventoryResolver,
-    tools: &[ToolSpec],
+    catalog: &mut crate::tool_catalog::ToolCatalog,
 ) -> LlmAdapterResult<Option<Vec<oai_c::CompletionTool>>> {
     let mut materialized = Vec::new();
     let mut native_mcp_tool_count = 0usize;
-    for tool in tools {
+    for tool in &catalog.tools {
         match &tool.kind {
-            ToolKind::Function(function) => {
+            crate::tool_catalog::ResolvedToolKind::Function(function) => {
                 let mut definition = oai_c::CompletionFunction {
                     name: tool.name.as_str().to_owned(),
-                    description: match &function.description_ref {
-                        Some(blob_ref) => Some(read_text(blobs, blob_ref).await?),
-                        None => None,
-                    },
-                    parameters: Some(read_json(blobs, &function.input_schema_ref).await?),
+                    description: function.description.clone(),
+                    parameters: Some(function.input_schema.clone()),
                     strict: function.strict,
                     extra: Default::default(),
                 };
-                if let Some(options_ref) = &function.provider_options_ref {
-                    let options = read_json(blobs, options_ref).await?;
+                if let Some(options) = &function.provider_options {
                     let Some(options) = options.as_object() else {
                         return Err(LlmAdapterError::InvalidProviderRequest {
                             message: format!(
@@ -745,10 +772,10 @@ async fn materialize_tools(
                     function: definition,
                 });
             }
-            ToolKind::RemoteMcp(spec)
+            crate::tool_catalog::ResolvedToolKind::RemoteMcp(spec)
                 if spec.execution == RemoteMcpExecution::Native
                     && spec.exposure == RemoteMcpExposure::Search => {}
-            ToolKind::RemoteMcp(spec)
+            crate::tool_catalog::ResolvedToolKind::RemoteMcp(spec)
                 if spec.execution == RemoteMcpExecution::Native
                     && spec.exposure == RemoteMcpExposure::Inject =>
             {
@@ -762,7 +789,7 @@ async fn materialize_tools(
                 let advertised_count = native.len();
                 native.retain(|native_tool| {
                     let name = format!("{}__{}", tool.name, native_tool.remote_name);
-                    name.len() <= 64 && ToolName::try_new(name).is_ok()
+                    crate::tool_catalog::valid_exposed_name(&name)
                 });
                 let omitted_count = advertised_count - native.len();
                 if omitted_count != 0 {
@@ -783,6 +810,9 @@ async fn materialize_tools(
                 native_mcp_tool_count += native.len();
                 for native_tool in native {
                     let name = format!("{}__{}", tool.name, native_tool.remote_name);
+                    catalog
+                        .names
+                        .insert(ToolName::new(name.clone()), Some(tool.id.clone()))?;
                     materialized.push(oai_c::CompletionTool {
                         r#type: oai_c::CompletionToolType::Function,
                         function: oai_c::CompletionFunction {
@@ -797,7 +827,8 @@ async fn materialize_tools(
                     });
                 }
             }
-            ToolKind::ProviderNative(_) | ToolKind::RemoteMcp(_) => {
+            crate::tool_catalog::ResolvedToolKind::ProviderNative(_)
+            | crate::tool_catalog::ResolvedToolKind::RemoteMcp(_) => {
                 return Err(LlmAdapterError::InvalidProviderRequest {
                     message: format!(
                         "tool {} is not expressible by openai:completions",
@@ -1337,6 +1368,7 @@ async fn tool_call_context(
         },
         ObservedToolCall {
             call_id,
+            tool_id: Some(tool_name.clone()),
             tool_name,
             provider_kind: Some(OPENAI_COMPLETIONS_TOOL_CALL_PROVIDER_KIND.to_owned()),
             arguments_ref,
@@ -1391,6 +1423,7 @@ fn u64_to_u32(value: u64) -> u32 {
 
 #[cfg(test)]
 mod tests {
+    use engine::ToolSpec;
     use std::sync::{Arc, Mutex};
 
     use engine::{
@@ -1424,28 +1457,33 @@ mod tests {
     async fn native_mcp_is_available_on_openai_compatible_completions() {
         let blobs = InMemoryBlobStore::new();
         let tools = materialize_tools(
-            &blobs,
             &StaticMcpInventory,
-            &[ToolSpec {
-                name: ToolName::try_new("mcp_internal").expect("name"),
-                kind: ToolKind::RemoteMcp(engine::RemoteMcpToolSpec {
-                    server_id: "internal".to_owned(),
-                    record_revision: 2,
-                    server_label: "internal".to_owned(),
-                    server_url: "https://example.com/mcp".to_owned(),
-                    description_ref: None,
-                    allowed_tools: None,
-                    execution: RemoteMcpExecution::Native,
-                    exposure: RemoteMcpExposure::Inject,
-                    approval: engine::RemoteMcpApprovalPolicy::Never,
-                    defer_loading: None,
-                    auth_ref: None,
-                    auth_required: false,
-                    allow_private_network: false,
-                }),
-                execution: Default::default(),
-                parallelism: ToolParallelism::ParallelSafe,
-            }],
+            &mut crate::tool_catalog::ToolCatalog::resolve(
+                &blobs,
+                &tools::runtime::ToolTarget::api_kind(ProviderApiKind::OpenAiCompletions),
+                &[ToolSpec {
+                    name: ToolName::try_new("mcp_internal").expect("name"),
+                    kind: ToolKind::RemoteMcp(engine::RemoteMcpToolSpec {
+                        server_id: "internal".to_owned(),
+                        record_revision: 2,
+                        server_label: "internal".to_owned(),
+                        server_url: "https://example.com/mcp".to_owned(),
+                        description_ref: None,
+                        allowed_tools: None,
+                        execution: RemoteMcpExecution::Native,
+                        exposure: RemoteMcpExposure::Inject,
+                        approval: engine::RemoteMcpApprovalPolicy::Never,
+                        defer_loading: None,
+                        auth_ref: None,
+                        auth_required: false,
+                        allow_private_network: false,
+                    }),
+                    execution: Default::default(),
+                    parallelism: ToolParallelism::ParallelSafe,
+                }],
+            )
+            .await
+            .expect("catalog"),
         )
         .await
         .expect("materialize native MCP");

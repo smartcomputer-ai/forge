@@ -13,26 +13,38 @@ use serde_json::{Value, json};
 
 use crate::{
     error::{ToolError, ToolResult},
-    runtime::{ToolBinding, ToolDispatchMode, ToolInvocationOutput},
+    runtime::ToolInvocationOutput,
 };
-
-pub fn workflow_tool_tool_binding(binding: &WorkflowToolBinding) -> ToolBinding {
-    ToolBinding::new(
-        binding.definition.tool.name.clone(),
-        binding.definition.tool_id.as_str(),
-        ToolDispatchMode::WorkflowTool {
-            tool_id: binding.definition.tool_id.clone(),
-            binding_fingerprint: binding.binding_fingerprint.clone(),
-        },
-        binding.definition.tool.parallelism,
-    )
-}
 
 /// Validate every CAS document needed to present and invoke a workflow tool.
 pub async fn validate_workflow_tool_definition_documents(
     blobs: &dyn BlobStore,
     definition: &WorkflowToolDefinition,
 ) -> ToolResult<()> {
+    if let ToolKind::Builtin(spec) = &definition.tool.kind {
+        let target =
+            crate::runtime::ToolTarget::api_kind(engine::ProviderApiKind::OpenAiCompletions);
+        let resolved = crate::definitions::resolve(&definition.tool.name, spec, &target)?;
+        if resolved.is_empty()
+            || resolved
+                .iter()
+                .any(|tool| !matches!(tool.definition, crate::definitions::Definition::Function(_)))
+        {
+            return Err(ToolError::InvalidRequest {
+                message: "workflow tools require a client function definition".to_owned(),
+            });
+        }
+        for tool in resolved {
+            if let crate::definitions::Definition::Function(function) = tool.definition {
+                jsonschema::validator_for(&function.input_schema).map_err(|error| {
+                    ToolError::InvalidRequest {
+                        message: format!("invalid built-in input schema: {error}"),
+                    }
+                })?;
+            }
+        }
+        return Ok(());
+    }
     let ToolKind::Function(function) = &definition.tool.kind else {
         return Err(ToolError::InvalidRequest {
             message: format!(
@@ -71,18 +83,41 @@ pub async fn validate_workflow_tool_reply_schema(
 pub async fn validate_workflow_tool_arguments(
     blobs: &dyn BlobStore,
     binding: &WorkflowToolBinding,
-    arguments_ref: &BlobRef,
+    call: &ToolInvocationRequest,
 ) -> ToolResult<Value> {
-    let arguments = read_json(blobs, arguments_ref, "arguments").await?;
-    let ToolKind::Function(function) = &binding.definition.tool.kind else {
-        return Err(ToolError::InvalidRequest {
-            message: format!(
-                "workflow tool {} is not a function tool",
-                binding.definition.tool_id
-            ),
-        });
+    let arguments = read_json(blobs, &call.arguments_ref, "arguments").await?;
+    let schema = match &binding.definition.tool.kind {
+        ToolKind::Function(function) => {
+            read_json(blobs, &function.input_schema_ref, "input schema").await?
+        }
+        ToolKind::Builtin(spec) => {
+            let runtime = call
+                .builtin
+                .as_ref()
+                .ok_or_else(|| ToolError::InvalidRequest {
+                    message: "built-in workflow call is missing original turn inputs".to_owned(),
+                })?;
+            crate::definitions::resolve(
+                &binding.definition.tool.name,
+                spec,
+                &crate::runtime::ToolTarget::from(&runtime.model),
+            )?
+            .into_iter()
+            .find(|tool| tool.name == call.tool_name)
+            .and_then(|tool| match tool.definition {
+                crate::definitions::Definition::Function(function) => Some(function.input_schema),
+                _ => None,
+            })
+            .ok_or_else(|| ToolError::InvalidRequest {
+                message: "workflow call has no matching function presentation".to_owned(),
+            })?
+        }
+        _ => {
+            return Err(ToolError::InvalidRequest {
+                message: "workflow tool requires a function definition".to_owned(),
+            });
+        }
     };
-    let schema = read_json(blobs, &function.input_schema_ref, "input schema").await?;
     let validator =
         jsonschema::validator_for(&schema).map_err(|error| ToolError::InvalidRequest {
             message: format!(
@@ -132,7 +167,7 @@ pub async fn invoke_workflow_tool(
                 binding.definition.tool_id
             ),
         })?;
-    if call.tool_name != binding.definition.tool.name {
+    if call.tool_id.as_ref() != Some(&binding.definition.tool.name) {
         return Err(ToolError::InvalidRequest {
             message: format!(
                 "workflow tool {} is bound to tool {}, got {}",
@@ -140,7 +175,7 @@ pub async fn invoke_workflow_tool(
             ),
         });
     }
-    let arguments = validate_workflow_tool_arguments(blobs, binding, &call.arguments_ref).await?;
+    let arguments = validate_workflow_tool_arguments(blobs, binding, call).await?;
 
     let invocation_id = WorkflowToolInvocationId::for_call(
         binding.session_universe_id,
@@ -406,9 +441,7 @@ mod tests {
     use uuid::Uuid;
 
     use super::*;
-    use crate::toolset::{
-        ToolsetConfig, ToolsetEnvironment, materialize_workflow_tools, resolve_toolset,
-    };
+    use crate::toolset::{ToolsetConfig, register_toolset, register_workflow_tools};
 
     async fn binding(blobs: &dyn BlobStore) -> WorkflowToolBinding {
         let schema_ref = blobs
@@ -459,7 +492,9 @@ mod tests {
             .await
             .expect("arguments");
         let call = ToolInvocationRequest {
+            builtin: None,
             call_id: ToolCallId::new("call-1"),
+            tool_id: Some(ToolName::new("work_report")),
             tool_name: ToolName::new("work_report"),
             arguments_ref,
             workflow_tool: None,
@@ -562,7 +597,9 @@ mod tests {
             .await
             .expect("arguments");
         let call = ToolInvocationRequest {
+            builtin: None,
             call_id: ToolCallId::new("call-1"),
+            tool_id: Some(ToolName::new("request_approval")),
             tool_name: ToolName::new("request_approval"),
             arguments_ref,
             workflow_tool: None,
@@ -624,7 +661,9 @@ mod tests {
             .await
             .expect("arguments");
         let call = ToolInvocationRequest {
+            builtin: None,
             call_id: ToolCallId::new("call-1"),
+            tool_id: Some(ToolName::new("request_approval")),
             tool_name: ToolName::new("request_approval"),
             arguments_ref,
             workflow_tool: None,
@@ -673,7 +712,9 @@ mod tests {
         )
         .await;
         let call = |arguments_ref| ToolInvocationRequest {
+            builtin: None,
             call_id: ToolCallId::new("call-1"),
+            tool_id: Some(ToolName::new("request_approval")),
             tool_name: ToolName::new("request_approval"),
             arguments_ref,
             workflow_tool: None,
@@ -765,7 +806,9 @@ mod tests {
             .await
             .expect("arguments");
         let call = ToolInvocationRequest {
+            builtin: None,
             call_id: ToolCallId::new("call-1"),
+            tool_id: Some(ToolName::new("request_approval")),
             tool_name: ToolName::new("request_approval"),
             arguments_ref,
             workflow_tool: None,
@@ -809,7 +852,9 @@ mod tests {
         )
         .await;
         let call = |arguments_ref| ToolInvocationRequest {
+            builtin: None,
             call_id: ToolCallId::new("call-1"),
+            tool_id: Some(ToolName::new("request_approval")),
             tool_name: ToolName::new("request_approval"),
             arguments_ref,
             workflow_tool: None,
@@ -911,7 +956,9 @@ mod tests {
             .await
             .expect("arguments");
         let call = ToolInvocationRequest {
+            builtin: None,
             call_id: ToolCallId::new("call-1"),
+            tool_id: Some(ToolName::new("launch_job")),
             tool_name: ToolName::new("launch_job"),
             arguments_ref,
             workflow_tool: None,
@@ -1000,40 +1047,37 @@ mod tests {
             .put_bytes(br#"{"status":4}"#.to_vec())
             .await
             .expect("arguments");
-        let error = validate_workflow_tool_arguments(blobs.as_ref(), &binding, &arguments_ref)
-            .await
-            .expect_err("schema mismatch");
+        let error = validate_workflow_tool_arguments(
+            blobs.as_ref(),
+            &binding,
+            &ToolInvocationRequest {
+                builtin: None,
+                call_id: ToolCallId::new("invalid-call"),
+                tool_id: Some(binding.definition.tool.name.clone()),
+                tool_name: binding.definition.tool.name.clone(),
+                arguments_ref,
+                workflow_tool: None,
+                promise_control: None,
+                remote_mcp: None,
+            },
+        )
+        .await
+        .expect_err("schema mismatch");
         assert!(matches!(error, ToolError::InvalidRequest { .. }));
     }
 
     #[tokio::test]
-    async fn materialization_installs_function_spec_and_runtime_binding() {
+    async fn registration_installs_admitted_workflow_definition() {
         let blobs: Arc<dyn BlobStore> = Arc::new(InMemoryBlobStore::new());
         let binding = binding(blobs.as_ref()).await;
-        let target = crate::runtime::ToolTarget::api_kind(engine::ProviderApiKind::OpenAiResponses);
-        let mut toolset = resolve_toolset(
-            ToolsetEnvironment { target: &target },
-            &ToolsetConfig::empty(),
-        )
-        .expect("empty toolset");
+        let mut toolset = register_toolset(&ToolsetConfig::empty()).expect("empty toolset");
 
-        materialize_workflow_tools(&mut toolset, [&binding]).expect("materialize port");
+        register_workflow_tools(&mut toolset, [&binding]).expect("materialize port");
 
         assert_eq!(
             toolset.tools.get(&binding.definition.tool.name),
             Some(&binding.definition.tool)
         );
-        let runtime_binding = toolset
-            .catalog
-            .get(&binding.definition.tool.name)
-            .expect("runtime binding");
-        assert_eq!(
-            runtime_binding.dispatch,
-            ToolDispatchMode::WorkflowTool {
-                tool_id: binding.definition.tool_id.clone(),
-                binding_fingerprint: binding.binding_fingerprint.clone(),
-            }
-        );
-        assert!(materialize_workflow_tools(&mut toolset, [&binding]).is_err());
+        assert!(register_workflow_tools(&mut toolset, [&binding]).is_err());
     }
 }

@@ -1,25 +1,21 @@
 //! Generic promise/concurrency tool contracts.
 
 use engine::{
-    FunctionToolSpec, PromiseControlCallRuntime, PromiseControlStateRuntime, PromiseId,
-    PromiseOwnership, PromiseScope, PromiseStatus, RunId, ToolEffect, ToolKind, ToolName,
-    ToolParallelism, ToolSpec, promise_cancel_effect, promise_detach_effect,
+    PromiseControlCallRuntime, PromiseControlStateRuntime, PromiseId, PromiseOwnership,
+    PromiseScope, PromiseStatus, RunId, ToolEffect, ToolName, promise_cancel_effect,
+    promise_detach_effect,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use thiserror::Error;
 
-use crate::{
-    error::{ToolError, ToolResult},
-    runtime::{ToolBinding, ToolDispatchMode, ToolDocument, ToolSpecBundle},
-};
+use crate::error::{ToolError, ToolResult};
 
 pub const AWAIT_TOOL_NAME: &str = "await";
 pub const CANCEL_TOOL_NAME: &str = "cancel";
 pub const DETACH_TOOL_NAME: &str = "detach";
 pub const SLEEP_TOOL_NAME: &str = "sleep";
 
-pub const CONCURRENCY_LOGICAL_ID_PREFIX: &str = "concurrency.";
 pub const MAX_AWAIT_PROMISES: usize = 32;
 pub const MAX_CANCEL_PROMISES: usize = 32;
 pub const MAX_DETACH_PROMISES: usize = 32;
@@ -62,7 +58,7 @@ impl ConcurrencyToolsetConfig {
 pub fn is_concurrency_tool(tool_name: &ToolName) -> bool {
     matches!(
         tool_name.as_str(),
-        AWAIT_TOOL_NAME | CANCEL_TOOL_NAME | DETACH_TOOL_NAME | SLEEP_TOOL_NAME
+        "concurrency.await" | "concurrency.cancel" | "concurrency.detach" | "concurrency.sleep"
     )
 }
 
@@ -346,63 +342,37 @@ pub fn sleep_model_visible_text(output: &SleepOutput, ms: u64) -> String {
     )
 }
 
-pub fn concurrency_tool_bundles(
+pub fn concurrency_tool_definitions(
     config: &ConcurrencyToolsetConfig,
-) -> ToolResult<Vec<ToolSpecBundle>> {
+) -> ToolResult<Vec<crate::runtime::FunctionDefinition>> {
     if !config.enabled_or_timer() {
         return Ok(Vec::new());
     }
-    let mut bundles = vec![
-        function_bundle(
+    let mut definitions = vec![
+        function_definition(
             AWAIT_TOOL_NAME,
             "Park this run until the listed promises settle. Timeout returns a partial snapshot; remaining promises stay pending and re-awaitable.",
             await_input_schema(),
         )?,
-        function_bundle(
+        function_definition(
             CANCEL_TOOL_NAME,
             "Revoke pending promises held by this run. Cancellation is best-effort at the source and late source completions become no-ops.",
             promise_cancel_input_schema(),
         )?,
-        function_bundle(
+        function_definition(
             DETACH_TOOL_NAME,
             "Promote pending promises held by this run to session scope so they survive this run's terminal state.",
             promise_detach_input_schema(),
         )?,
     ];
     if config.timer {
-        bundles.push(function_bundle(
+        definitions.push(function_definition(
             SLEEP_TOOL_NAME,
             "Create a timer promise that resolves after the requested delay. Use await to park on the returned promise.",
             sleep_input_schema(),
         )?);
     }
-    Ok(bundles)
-}
-
-pub fn concurrency_tool_bindings(
-    dispatch: ToolDispatchMode,
-    config: &ConcurrencyToolsetConfig,
-) -> Vec<ToolBinding> {
-    if !config.enabled_or_timer() {
-        return Vec::new();
-    }
-    let mut tool_names = vec![AWAIT_TOOL_NAME, CANCEL_TOOL_NAME, DETACH_TOOL_NAME];
-    if config.timer {
-        tool_names.push(SLEEP_TOOL_NAME);
-    }
-    tool_names
-        .into_iter()
-        .map(|tool_name| concurrency_tool_binding(tool_name, dispatch.clone()))
-        .collect()
-}
-
-fn concurrency_tool_binding(tool_name: &str, dispatch: ToolDispatchMode) -> ToolBinding {
-    ToolBinding::new(
-        ToolName::new(tool_name),
-        format!("{CONCURRENCY_LOGICAL_ID_PREFIX}{tool_name}"),
-        dispatch,
-        ToolParallelism::Exclusive,
-    )
+    Ok(definitions)
 }
 
 fn validated_non_empty_promise_ids(
@@ -450,33 +420,16 @@ fn validated_promise_ids(
     Ok(promise_ids)
 }
 
-fn function_bundle(
+fn function_definition(
     tool_name: &'static str,
     description: &'static str,
     input_schema: Value,
-) -> ToolResult<ToolSpecBundle> {
-    let description = ToolDocument::text("text/plain; charset=utf-8", description);
-    let input_schema = ToolDocument::text(
-        "application/schema+json",
-        serde_json::to_string(&input_schema).map_err(|error| ToolError::InvalidRequest {
-            message: format!("failed to encode {tool_name} schema: {error}"),
-        })?,
-    );
-    Ok(ToolSpecBundle {
-        spec: ToolSpec {
-            name: ToolName::new(tool_name),
-            kind: ToolKind::Function(FunctionToolSpec {
-                description_ref: Some(description.blob_ref.clone()),
-                input_schema_ref: input_schema.blob_ref.clone(),
-                output_schema_ref: None,
-                strict: Some(false),
-                provider_options_ref: None,
-            }),
-            parallelism: ToolParallelism::Exclusive,
-            execution: engine::ToolExecutionSpec::default(),
-        },
-        documents: vec![description, input_schema],
-    })
+) -> ToolResult<crate::runtime::FunctionDefinition> {
+    Ok(crate::runtime::FunctionDefinition::new(
+        tool_name,
+        description,
+        input_schema,
+    ))
 }
 
 fn await_input_schema() -> Value {
@@ -898,10 +851,10 @@ mod tests {
     #[test]
     fn timer_config_adds_sleep_and_base_tools() {
         let bundles =
-            concurrency_tool_bundles(&ConcurrencyToolsetConfig::timer()).expect("bundles");
+            concurrency_tool_definitions(&ConcurrencyToolsetConfig::timer()).expect("bundles");
         let names = bundles
             .into_iter()
-            .map(|bundle| bundle.spec.name)
+            .map(|bundle| bundle.name)
             .collect::<Vec<_>>();
 
         assert!(names.contains(&ToolName::new(AWAIT_TOOL_NAME)));

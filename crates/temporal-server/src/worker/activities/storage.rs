@@ -1055,6 +1055,7 @@ mod tests {
                 tool_calls: vec![
                     ObservedToolCall {
                         call_id: engine::ToolCallId::new("report-call"),
+                        tool_id: Some(ToolName::new("work_report")),
                         tool_name: ToolName::new("work_report"),
                         provider_kind: None,
                         arguments_ref: BlobRef::from_bytes(b"{\"outcome\":\"complete\"}"),
@@ -1062,6 +1063,7 @@ mod tests {
                     },
                     ObservedToolCall {
                         call_id: engine::ToolCallId::new("approval-call"),
+                        tool_id: Some(ToolName::new("request_approval")),
                         tool_name: ToolName::new("request_approval"),
                         provider_kind: None,
                         arguments_ref: BlobRef::from_bytes(b"{\"reason\":\"ship it\"}"),

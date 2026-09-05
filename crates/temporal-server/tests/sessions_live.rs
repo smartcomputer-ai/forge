@@ -128,7 +128,48 @@ async fn temporal_live_openai_completions_tool_call_round_trip() -> anyhow::Resu
     require_openai_live_env()?;
 
     let activities = WorkerActivities::from_env().await?;
-    run_with_live_worker(activities, run_openai_completions_live_client).await
+    run_with_live_worker(activities, |client, queue, session_id| {
+        run_builtin_tool_live_client(client, queue, session_id, openai_completions_live_model())
+    })
+    .await
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires ./dev.sh infra, Postgres, Temporal, and OPENAI_API_KEY (costs real money)"]
+async fn temporal_live_openai_responses_tool_call_round_trip() -> anyhow::Result<()> {
+    let _lock = LIVE_TEST_LOCK.lock().await;
+    let _ = dotenvy::dotenv();
+    require_storage_live_env()?;
+    require_openai_live_env()?;
+    let activities = WorkerActivities::from_env().await?;
+    run_with_live_worker(activities, |client, queue, session_id| {
+        run_builtin_tool_live_client(client, queue, session_id, openai_live_model())
+    })
+    .await
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires ./dev.sh infra, Postgres, Temporal, and ANTHROPIC_API_KEY (costs real money)"]
+async fn temporal_live_anthropic_messages_tool_call_round_trip() -> anyhow::Result<()> {
+    let _lock = LIVE_TEST_LOCK.lock().await;
+    let _ = dotenvy::dotenv();
+    require_storage_live_env()?;
+    anyhow::ensure!(
+        std::env::var("ANTHROPIC_API_KEY").is_ok_and(|key| !key.trim().is_empty()),
+        "ANTHROPIC_API_KEY must be set to run the Anthropic live test"
+    );
+    let model = engine::ModelSelection {
+        api_kind: engine::ProviderApiKind::AnthropicMessages,
+        provider_id: "anthropic".to_owned(),
+        model: std::env::var("ANTHROPIC_MESSAGES_MODEL")
+            .or_else(|_| std::env::var("ANTHROPIC_LIVE_MODEL"))
+            .unwrap_or_else(|_| "claude-opus-5".to_owned()),
+    };
+    let activities = WorkerActivities::from_env().await?;
+    run_with_live_worker(activities, |client, queue, session_id| {
+        run_builtin_tool_live_client(client, queue, session_id, model)
+    })
+    .await
 }
 
 async fn run_checkpoint_and_bounded_reads_live_client(
@@ -397,17 +438,19 @@ async fn run_fake_live_client(
             .iter()
             .any(|entry| entry.kind == ContextEntryKindView::VfsCatalog)
     );
-    let selection_tool_names = [
-        tools::environment::control::ENVIRONMENT_LIST_TOOL_NAME,
-        tools::environment::control::ENVIRONMENT_ACTIVATE_TOOL_NAME,
-        tools::environment::control::ENVIRONMENT_DEACTIVATE_TOOL_NAME,
+    let selection_tool_ids = [
+        "environment.list",
+        "environment.activate",
+        "environment.deactivate",
     ];
     assert!(
-        enabled_view.active_tools.tools.iter().any(|tool| {
-            tool.tool_id == tools::environment::control::ENVIRONMENT_READ_TOOL_NAME
-        })
+        enabled_view
+            .active_tools
+            .tools
+            .iter()
+            .any(|tool| { tool.tool_id == "environment.read" })
     );
-    assert!(selection_tool_names.iter().all(|name| {
+    assert!(selection_tool_ids.iter().all(|name| {
         enabled_view
             .active_tools
             .tools
@@ -430,7 +473,7 @@ async fn run_fake_live_client(
         })
         .await?;
     let selection_enabled_view = read_session_view(&api, &session_id).await?;
-    assert!(selection_tool_names.iter().all(|name| {
+    assert!(selection_tool_ids.iter().all(|name| {
         selection_enabled_view
             .active_tools
             .tools
@@ -442,9 +485,7 @@ async fn run_fake_live_client(
             .active_tools
             .tools
             .iter()
-            .any(|tool| {
-                tool.tool_id == tools::environment::control::ENVIRONMENT_READ_TOOL_NAME
-            })
+            .any(|tool| { tool.tool_id == "environment.read" })
     );
 
     let mut disabled_config = selection_enabled_view
@@ -1186,13 +1227,13 @@ async fn run_openai_live_client(
     Ok(())
 }
 
-async fn run_openai_completions_live_client(
+async fn run_builtin_tool_live_client(
     client: Client,
     task_queue: String,
     session_id: SessionId,
+    model: engine::ModelSelection,
 ) -> anyhow::Result<()> {
     let store = pg_store_from_env().await?;
-    let model = openai_completions_live_model();
     let api = GatewayAgentApi::builder(client.clone(), store)
         .with_task_queue(task_queue)
         .with_default_model(model.clone())
@@ -1214,7 +1255,7 @@ async fn run_openai_completions_live_client(
         }),
         profile: Some(ProfileSource::Inline {
             profile: Box::new(InlineAgentProfile {
-                display_name: Some("OpenAI Completions tool live test".to_owned()),
+                display_name: Some("Built-in tool live test".to_owned()),
                 description: None,
                 document: ProfileDocument {
                     instructions: Some(ProfileInstructions::Text {
@@ -1236,18 +1277,16 @@ async fn run_openai_completions_live_client(
             session_id: session_id.as_str().to_owned(),
             source: RunStartSource::Input {
                 items: vec![InputItem::Text {
-                    text: "Call sleep with delay_ms=1, await the returned promise, then reply exactly: completions temporal tool ok".to_owned(),
+                    text: "Call sleep with delay_ms=1, await the returned promise, then reply exactly: temporal tool ok".to_owned(),
                 }],
             },
             config: None,
         })
         .await?;
     let run = wait_for_terminal_run(&api, &session_id, &run.result.run.id).await?;
-    let output = final_assistant_text(&run).expect("OpenAI Completions assistant output");
+    let output = final_assistant_text(&run).expect("assistant output");
     assert!(
-        output
-            .to_lowercase()
-            .contains("completions temporal tool ok"),
+        output.to_lowercase().contains("temporal tool ok"),
         "expected completion marker: {output}"
     );
     assert!(
@@ -1258,6 +1297,19 @@ async fn run_openai_completions_live_client(
         "expected sleep tool call in run entries: {:?}",
         run.entries
     );
+    for (name, id) in [
+        ("sleep", "concurrency.sleep"),
+        ("await", "concurrency.await"),
+    ] {
+        let call = run
+            .tool_batches
+            .iter()
+            .flat_map(|batch| &batch.calls)
+            .find(|call| call.tool_name == name)
+            .unwrap_or_else(|| panic!("expected {name} call"));
+        assert_eq!(call.tool_id.as_deref(), Some(id));
+        assert_eq!(call.status, api::ToolItemStatus::Succeeded);
+    }
     assert!(
         run.entries.iter().any(|entry| matches!(
             &entry.kind,
@@ -1273,7 +1325,7 @@ async fn run_openai_completions_live_client(
     let _ = handle
         .terminate(
             WorkflowTerminateOptions::builder()
-                .reason("agent openai completions live test cleanup")
+                .reason("agent built-in tool live test cleanup")
                 .build(),
         )
         .await;

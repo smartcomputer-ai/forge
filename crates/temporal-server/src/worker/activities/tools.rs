@@ -494,7 +494,7 @@ mod tests {
 
     use async_trait::async_trait;
     use engine::{
-        AWAIT_TOOL_NAME, AwaitMode, AwaitSpec, BlobRef, CoreAgentIoError, CoreAgentTools,
+        AwaitMode, AwaitSpec, BlobRef, CoreAgentIoError, CoreAgentTools,
         PromiseControlArgumentCall, RemoteMcpApprovalPolicy, RemoteMcpCallRuntime,
         RemoteMcpCallTarget, RunId, SessionId, ToolBatchId, ToolCallId, ToolInvocationRequest,
         ToolName, TurnId, storage::InMemoryBlobStore,
@@ -644,7 +644,9 @@ mod tests {
 
     fn runtime_call(call_id: &str, tool_name: &str) -> ToolInvocationRequest {
         ToolInvocationRequest {
+            builtin: None,
             call_id: ToolCallId::new(call_id),
+            tool_id: Some(ToolName::new(tool_name)),
             tool_name: ToolName::new(tool_name),
             arguments_ref: BlobRef::from_bytes(b"{}"),
             workflow_tool: None,
@@ -663,7 +665,9 @@ mod tests {
             .await
             .expect("native MCP arguments");
         ToolInvocationRequest {
+            builtin: None,
             call_id: ToolCallId::new(call_id),
+            tool_id: Some(ToolName::new("mcp_echo")),
             tool_name: ToolName::new("mcp_echo__hello"),
             arguments_ref,
             workflow_tool: None,
@@ -903,7 +907,7 @@ mod tests {
         let request = batch(vec![
             runtime_call("call_a", "work_report"),
             native_call(blobs.as_ref(), "call_m1", None).await,
-            runtime_call("call_await", AWAIT_TOOL_NAME),
+            runtime_call("call_await", "concurrency.await"),
         ]);
 
         let outcome = invoke_batch(&deps, request).await.expect("batch");
@@ -936,7 +940,7 @@ mod tests {
         let request = batch(vec![
             native_call(blobs.as_ref(), "call_m1", Some(false)).await,
             runtime_call("call_a", "work_report"),
-            runtime_call("call_await", AWAIT_TOOL_NAME),
+            runtime_call("call_await", "concurrency.await"),
         ]);
 
         let outcome = invoke_batch(&deps, request).await.expect("batch");

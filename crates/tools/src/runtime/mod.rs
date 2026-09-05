@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 
 use async_trait::async_trait;
-use engine::{BlobRef, ToolEffect, ToolName, ToolParallelism, WorkflowToolId};
+use engine::{ToolEffect, ToolName};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -15,36 +15,31 @@ pub mod target;
 pub use inline::InlineToolRuntime;
 pub use target::ToolTarget;
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ToolDocument {
-    pub blob_ref: BlobRef,
-    pub media_type: &'static str,
-    pub bytes: Vec<u8>,
+/// Runtime function definition. Code-owned tools render directly into this
+/// value; externally authored definitions are loaded from CAS by the adapter.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FunctionDefinition {
+    pub name: ToolName,
+    pub description: Option<String>,
+    pub input_schema: Value,
+    pub strict: Option<bool>,
+    pub provider_options: Option<Value>,
 }
 
-impl ToolDocument {
-    pub fn text(media_type: &'static str, text: impl Into<String>) -> Self {
-        let bytes = text.into().into_bytes();
+impl FunctionDefinition {
+    pub fn new(
+        name: impl Into<String>,
+        description: impl Into<String>,
+        input_schema: Value,
+    ) -> Self {
         Self {
-            blob_ref: BlobRef::from_bytes(&bytes),
-            media_type,
-            bytes,
+            name: ToolName::new(name),
+            description: Some(description.into()),
+            input_schema,
+            strict: Some(false),
+            provider_options: None,
         }
     }
-
-    pub fn blob_bytes(&self) -> Vec<u8> {
-        self.bytes.clone()
-    }
-
-    pub fn text_lossy(&self) -> String {
-        String::from_utf8_lossy(&self.bytes).into_owned()
-    }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ToolSpecBundle {
-    pub spec: engine::ToolSpec,
-    pub documents: Vec<ToolDocument>,
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -53,6 +48,31 @@ pub struct ToolCatalog {
 }
 
 impl ToolCatalog {
+    pub fn from_registrations(
+        tools: &BTreeMap<ToolName, engine::ToolSpec>,
+        target: &ToolTarget,
+    ) -> ToolResult<Self> {
+        let mut catalog = Self::new();
+        for tool in tools.values() {
+            if let engine::ToolKind::Builtin(spec) = &tool.kind {
+                for resolved in crate::definitions::resolve(&tool.name, spec, target)? {
+                    if let Some(binding) = resolved.binding {
+                        if catalog.get(&binding.tool_name).is_some() {
+                            return Err(ToolError::InvalidRequest {
+                                message: format!(
+                                    "duplicate exposed tool name {}",
+                                    binding.tool_name
+                                ),
+                            });
+                        }
+                        catalog.insert(binding);
+                    }
+                }
+            }
+        }
+        Ok(catalog)
+    }
+
     pub fn new() -> Self {
         Self::default()
     }
@@ -81,23 +101,14 @@ pub struct ToolBinding {
     /// Runtime-only schema adapter identity. The logical id remains stable
     /// across provider-native presentations.
     pub adapter_id: Option<String>,
-    pub dispatch: ToolDispatchMode,
-    pub parallelism: ToolParallelism,
 }
 
 impl ToolBinding {
-    pub fn new(
-        tool_name: ToolName,
-        logical_id: impl Into<String>,
-        dispatch: ToolDispatchMode,
-        parallelism: ToolParallelism,
-    ) -> Self {
+    pub fn new(tool_name: ToolName, logical_id: impl Into<String>) -> Self {
         Self {
             tool_name,
             logical_id: logical_id.into(),
             adapter_id: None,
-            dispatch,
-            parallelism,
         }
     }
 
@@ -105,15 +116,6 @@ impl ToolBinding {
         self.adapter_id = Some(adapter_id.into());
         self
     }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum ToolDispatchMode {
-    Local,
-    WorkflowTool {
-        tool_id: WorkflowToolId,
-        binding_fingerprint: String,
-    },
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

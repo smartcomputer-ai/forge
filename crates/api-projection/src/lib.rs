@@ -24,11 +24,15 @@ use api::{
     WorkflowToolTargetInput,
 };
 use engine::{
-    CompactionPolicy, ContextCompactionStatus, ContextCompactionTrigger, ContextEntry,
-    ContextEntryId, ContextEntryInput, ContextEntryKind, ContextEntrySource, ContextEvent,
-    ContextMessageRole, ContextRemovalReason, ContextRewriteReason, CoreAgentCodec, CoreAgentEntry,
-    CoreAgentEvent, CoreAgentJoins, CoreAgentLifecycleEvent, CoreAgentState, CoreAgentStatus,
-    EventSeq, LlmGenerationStatus, ModelSelection, OPENAI_RESPONSES_MCP_CALL_PROVIDER_KIND,
+    ANTHROPIC_MESSAGES_CITED_TEXT_PROVIDER_KIND,
+    ANTHROPIC_MESSAGES_SERVER_TOOL_RESULT_PROVIDER_KIND,
+    ANTHROPIC_MESSAGES_SERVER_TOOL_USE_PROVIDER_KIND, CompactionPolicy, ContextCompactionStatus,
+    ContextCompactionTrigger, ContextEntry, ContextEntryId, ContextEntryInput, ContextEntryKind,
+    ContextEntrySource, ContextEvent, ContextMessageRole, ContextRemovalReason,
+    ContextRewriteReason, CoreAgentCodec, CoreAgentEntry, CoreAgentEvent, CoreAgentJoins,
+    CoreAgentLifecycleEvent, CoreAgentState, CoreAgentStatus, EventSeq, LlmGenerationStatus,
+    ModelSelection, OPENAI_RESPONSES_CITED_TEXT_PROVIDER_KIND,
+    OPENAI_RESPONSES_MCP_CALL_PROVIDER_KIND, OPENAI_RESPONSES_WEB_SEARCH_CALL_PROVIDER_KIND,
     ObservedToolCall, ProviderApiKind, RunEvent, RunFailure, RunFailureKind, RunId, RunSource,
     RunStatus, SessionConfig, SessionId, SteeringId, ToolBatchId, ToolCallStatus, ToolChoice,
     ToolConfigEvent, ToolEvent, ToolKind, ToolParallelism, ToolSpec, TurnEvent, TurnId,
@@ -397,9 +401,11 @@ impl<'a> CoreAgentProjector<'a> {
         })
     }
 
-    /// Project one entry. `superseded_by` is the newer catalog version that
-    /// updated this one, known only when the caller holds the whole active
-    /// context (state views); event projections pass `None`.
+    /// Project one entry. Citations are attached by the group projections,
+    /// which can see the provider-native cited entry that follows a message.
+    /// `superseded_by` is the newer catalog version that updated this one,
+    /// known only when the caller holds the whole active context (state
+    /// views); event projections pass `None`.
     pub async fn project_context_entry(
         &self,
         entry: &ContextEntry,
@@ -443,6 +449,7 @@ impl<'a> CoreAgentProjector<'a> {
             text,
             text_truncated,
             display,
+            citations: Vec::new(),
             source: Some(context_entry_source_to_api(&entry.source)),
             supersedes: entry.supersedes.map(api_item_id),
             superseded_by: superseded_by.map(api_item_id),
@@ -466,10 +473,102 @@ impl<'a> CoreAgentProjector<'a> {
         entries: &[&ContextEntry],
     ) -> Result<Vec<ContextEntryView>, AgentApiError> {
         let superseded_by = superseded_by_map(entries);
-        try_join_all(entries.iter().map(|entry| {
+        self.project_context_entry_group(entries, &superseded_by)
+            .await
+    }
+
+    async fn project_context_event_entries(
+        &self,
+        entries: &[ContextEntry],
+    ) -> Result<Vec<ContextEntryView>, AgentApiError> {
+        self.project_context_entry_group(&entries.iter().collect::<Vec<_>>(), &BTreeMap::new())
+            .await
+    }
+
+    async fn project_context_entry_group(
+        &self,
+        entries: &[&ContextEntry],
+        superseded_by: &BTreeMap<ContextEntryId, ContextEntryId>,
+    ) -> Result<Vec<ContextEntryView>, AgentApiError> {
+        let mut views = try_join_all(entries.iter().map(|entry| {
             self.project_context_entry(entry, superseded_by.get(&entry.entry_id).copied())
         }))
-        .await
+        .await?;
+        self.attach_citations(entries, &mut views).await;
+        Ok(views)
+    }
+
+    /// A provider-native cited entry follows the assistant message it came
+    /// from. Its sources project onto that message; the native entry itself
+    /// stays a replay payload with no citations of its own.
+    async fn attach_citations(&self, entries: &[&ContextEntry], views: &mut [ContextEntryView]) {
+        for index in 1..entries.len() {
+            let entry = entries[index];
+            let message = entries[index - 1];
+            let is_message = matches!(
+                message.kind,
+                ContextEntryKind::Message {
+                    role: ContextMessageRole::Assistant
+                }
+            );
+            if !(is_message && message.source == entry.source) {
+                continue;
+            }
+            let citations = match entry.provider_kind.as_deref() {
+                Some(ANTHROPIC_MESSAGES_CITED_TEXT_PROVIDER_KIND) => {
+                    let Some(blocks) = self.read_context_json(entry).await else {
+                        continue;
+                    };
+                    let fetched_urls = if anthropic_has_document_citations(&blocks) {
+                        self.fetched_urls_before(entries, index).await
+                    } else {
+                        Vec::new()
+                    };
+                    anthropic_citations(&blocks, &fetched_urls)
+                }
+                Some(OPENAI_RESPONSES_CITED_TEXT_PROVIDER_KIND) => {
+                    let Some(item) = self.read_context_json(entry).await else {
+                        continue;
+                    };
+                    openai_citations(&item)
+                }
+                _ => continue,
+            };
+            views[index - 1].citations = citations;
+        }
+    }
+
+    /// URLs of the fetch results earlier in the same turn, in response order.
+    /// Anthropic fetch citations locate a document by that index instead of
+    /// naming its URL.
+    async fn fetched_urls_before(&self, entries: &[&ContextEntry], index: usize) -> Vec<String> {
+        let source = &entries[index].source;
+        let mut urls = Vec::new();
+        for entry in entries[..index].iter().filter(|entry| {
+            entry.source == *source
+                && entry.provider_kind.as_deref()
+                    == Some(ANTHROPIC_MESSAGES_SERVER_TOOL_RESULT_PROVIDER_KIND)
+        }) {
+            let Some(block) = self.read_context_json(entry).await else {
+                continue;
+            };
+            if block.get("type").and_then(Value::as_str) != Some("web_fetch_tool_result") {
+                continue;
+            }
+            if let Some(url) = block
+                .get("content")
+                .and_then(|content| content.get("url"))
+                .and_then(Value::as_str)
+            {
+                urls.push(url.to_owned());
+            }
+        }
+        urls
+    }
+
+    async fn read_context_json(&self, entry: &ContextEntry) -> Option<Value> {
+        let text = self.read_blob_text(&entry.content_ref).await.ok()?;
+        serde_json::from_str(&text).ok()
     }
 
     pub async fn project_input_entries(
@@ -798,10 +897,7 @@ impl<'a> CoreAgentProjector<'a> {
                     base_revision,
                     entries,
                 } => {
-                    let mut projected = Vec::with_capacity(entries.len());
-                    for entry in entries {
-                        projected.push(self.project_context_entry(entry, None).await?);
-                    }
+                    let projected = self.project_context_event_entries(entries).await?;
                     Ok(SessionEventKindView::ContextEntriesApplied {
                         base_revision: *base_revision,
                         revision: context_event_revision(*base_revision)?,
@@ -834,10 +930,7 @@ impl<'a> CoreAgentProjector<'a> {
                     key_prefix,
                     entries,
                 } => {
-                    let mut projected = Vec::with_capacity(entries.len());
-                    for entry in entries {
-                        projected.push(self.project_context_entry(entry, None).await?);
-                    }
+                    let projected = self.project_context_event_entries(entries).await?;
                     Ok(SessionEventKindView::ContextKeyPrefixReplaced {
                         base_revision: *base_revision,
                         revision: context_event_revision(*base_revision)?,
@@ -850,10 +943,7 @@ impl<'a> CoreAgentProjector<'a> {
                     entries,
                     reason,
                 } => {
-                    let mut projected = Vec::with_capacity(entries.len());
-                    for entry in entries {
-                        projected.push(self.project_context_entry(entry, None).await?);
-                    }
+                    let projected = self.project_context_event_entries(entries).await?;
                     Ok(SessionEventKindView::ContextStateReplaced {
                         base_revision: *base_revision,
                         revision: context_event_revision(*base_revision)?,
@@ -998,6 +1088,7 @@ impl<'a> CoreAgentProjector<'a> {
         try_join_all(calls.iter().map(|call| async move {
             let arguments = self.read_blob_text(&call.arguments_ref).await?;
             Ok(ToolCallEventView {
+                tool_id: call.tool_id.as_ref().map(|id| id.as_str().to_owned()),
                 call_id: call.call_id.as_str().to_owned(),
                 tool_name: call.tool_name.as_str().to_owned(),
                 arguments_ref: call.arguments_ref.as_str().to_owned(),
@@ -1035,6 +1126,7 @@ impl<'a> CoreAgentProjector<'a> {
                         let result = result_by_call.get(call.call_id.as_str());
                         let arguments = self.read_blob_text(&call.arguments_ref).await?;
                         Ok(ToolCallView {
+                            tool_id: call.tool_id.as_ref().map(|id| id.as_str().to_owned()),
                             call_id: call.call_id.as_str().to_owned(),
                             tool_name: call.tool_name.as_str().to_owned(),
                             arguments_ref: call.arguments_ref.as_str().to_owned(),
@@ -1170,12 +1262,20 @@ impl<'a> CoreAgentProjector<'a> {
         &self,
         item: &ContextEntry,
     ) -> Option<ProviderContextDisplayView> {
-        if item.provider_kind.as_deref() != Some(OPENAI_RESPONSES_MCP_CALL_PROVIDER_KIND) {
-            return None;
-        }
+        let display: fn(&Value) -> Option<ProviderContextDisplayView> = match item
+            .provider_kind
+            .as_deref()
+        {
+            Some(OPENAI_RESPONSES_MCP_CALL_PROVIDER_KIND) => openai_mcp_call_display,
+            Some(OPENAI_RESPONSES_WEB_SEARCH_CALL_PROVIDER_KIND) => openai_web_search_call_display,
+            Some(ANTHROPIC_MESSAGES_SERVER_TOOL_USE_PROVIDER_KIND) => {
+                anthropic_server_tool_use_display
+            }
+            _ => return None,
+        };
         let text = self.read_blob_text(&item.content_ref).await.ok()?;
         let value = serde_json::from_str::<Value>(&text).ok()?;
-        openai_mcp_call_display(&value)
+        display(&value)
     }
 
     async fn read_blob_text(&self, blob_ref: &engine::BlobRef) -> Result<String, AgentApiError> {
@@ -1193,6 +1293,133 @@ impl<'a> CoreAgentProjector<'a> {
         }
         format!("{:?}", failure.kind)
     }
+}
+
+fn citation_view(
+    url: &str,
+    title: Option<&str>,
+    cited_text: Option<&str>,
+) -> Option<api::CitationView> {
+    if !(url.starts_with("https://") || url.starts_with("http://")) {
+        return None;
+    }
+    Some(api::CitationView {
+        url: url.to_owned(),
+        title: title.map(ToOwned::to_owned),
+        cited_text: cited_text.map(ToOwned::to_owned),
+    })
+}
+
+fn anthropic_block_citations(blocks: &Value) -> impl Iterator<Item = &Value> {
+    blocks.as_array().into_iter().flatten().flat_map(|block| {
+        block
+            .get("citations")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+    })
+}
+
+fn anthropic_has_document_citations(blocks: &Value) -> bool {
+    anthropic_block_citations(blocks)
+        .any(|citation| citation.get("url").and_then(Value::as_str).is_none())
+}
+
+/// The sources cited across one message's text blocks, in block order and
+/// unique by URL. Search citations name their URL; fetch citations locate a
+/// document index among the turn's fetch results.
+fn anthropic_citations(blocks: &Value, fetched_urls: &[String]) -> Vec<api::CitationView> {
+    let mut seen = BTreeSet::new();
+    anthropic_block_citations(blocks)
+        .filter_map(|citation| {
+            let url = match citation.get("url").and_then(Value::as_str) {
+                Some(url) => url,
+                None => anthropic_fetched_citation_url(citation, fetched_urls)?,
+            };
+            if !seen.insert(url.to_owned()) {
+                return None;
+            }
+            citation_view(
+                url,
+                citation
+                    .get("title")
+                    .or_else(|| citation.get("document_title"))
+                    .and_then(Value::as_str),
+                citation.get("cited_text").and_then(Value::as_str),
+            )
+        })
+        .collect()
+}
+
+fn anthropic_fetched_citation_url<'a>(
+    citation: &Value,
+    fetched_urls: &'a [String],
+) -> Option<&'a str> {
+    if !matches!(
+        citation.get("type").and_then(Value::as_str),
+        Some("char_location" | "page_location" | "content_block_location")
+    ) {
+        return None;
+    }
+    let document_index = citation
+        .get("document_index")
+        .and_then(Value::as_u64)
+        .and_then(|index| usize::try_from(index).ok());
+    match document_index {
+        Some(index) => fetched_urls.get(index),
+        None if fetched_urls.len() == 1 => fetched_urls.first(),
+        None => None,
+    }
+    .map(String::as_str)
+}
+
+/// The sources an OpenAI message item cites, in annotation order and unique
+/// by URL. The cited text is the annotated span of the output text.
+fn openai_citations(item: &Value) -> Vec<api::CitationView> {
+    let mut seen = BTreeSet::new();
+    item.get("content")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|part| part.get("type").and_then(Value::as_str) == Some("output_text"))
+        .flat_map(|part| {
+            let text = part.get("text").and_then(Value::as_str);
+            part.get("annotations")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .map(move |annotation| (text, annotation))
+        })
+        .filter_map(|(text, annotation)| {
+            if annotation.get("type").and_then(Value::as_str) != Some("url_citation") {
+                return None;
+            }
+            let url = annotation.get("url").and_then(Value::as_str)?;
+            if !seen.insert(url.to_owned()) {
+                return None;
+            }
+            let cited_text = text.and_then(|text| openai_annotated_span(text, annotation));
+            citation_view(
+                url,
+                annotation.get("title").and_then(Value::as_str),
+                cited_text.as_deref(),
+            )
+        })
+        .collect()
+}
+
+fn openai_annotated_span(text: &str, annotation: &Value) -> Option<String> {
+    let start = usize::try_from(annotation.get("start_index")?.as_u64()?).ok()?;
+    let end = usize::try_from(annotation.get("end_index")?.as_u64()?).ok()?;
+    if start >= end {
+        return None;
+    }
+    let cited = text
+        .chars()
+        .skip(start)
+        .take(end - start)
+        .collect::<String>();
+    (!cited.is_empty()).then_some(cited)
 }
 
 fn run_failure_kind_to_api(kind: RunFailureKind) -> RunFailureKindView {
@@ -1229,9 +1456,6 @@ fn session_management_to_api(state: &CoreAgentState) -> Option<SessionManagement
 fn workflow_tool_declaration_to_api(
     binding: &engine::WorkflowToolBinding,
 ) -> Option<WorkflowToolDeclarationInput> {
-    let engine::ToolKind::Function(function) = &binding.definition.tool.kind else {
-        return None;
-    };
     Some(WorkflowToolDeclarationInput {
         definition: WorkflowToolDefinitionInput {
             tool_id: binding.definition.tool_id.as_str().to_owned(),
@@ -1239,21 +1463,24 @@ fn workflow_tool_declaration_to_api(
             semantic_type: binding.definition.semantic_type.clone(),
             tool: WorkflowToolSpecInput {
                 name: binding.definition.tool.name.as_str().to_owned(),
-                kind: WorkflowToolKindInput::Function {
-                    description_ref: function
-                        .description_ref
-                        .as_ref()
-                        .map(|value| value.as_str().to_owned()),
-                    input_schema_ref: function.input_schema_ref.as_str().to_owned(),
-                    output_schema_ref: function
-                        .output_schema_ref
-                        .as_ref()
-                        .map(|value| value.as_str().to_owned()),
-                    strict: function.strict,
-                    provider_options_ref: function
-                        .provider_options_ref
-                        .as_ref()
-                        .map(|value| value.as_str().to_owned()),
+                kind: match &binding.definition.tool.kind {
+                    engine::ToolKind::Function(function) => WorkflowToolKindInput::Function {
+                        description_ref: function
+                            .description_ref
+                            .as_ref()
+                            .map(|value| value.as_str().to_owned()),
+                        input_schema_ref: function.input_schema_ref.as_str().to_owned(),
+                        output_schema_ref: function
+                            .output_schema_ref
+                            .as_ref()
+                            .map(|value| value.as_str().to_owned()),
+                        strict: function.strict,
+                        provider_options_ref: function
+                            .provider_options_ref
+                            .as_ref()
+                            .map(|value| value.as_str().to_owned()),
+                    },
+                    _ => return None,
                 },
                 parallelism: tool_parallelism_to_api(binding.definition.tool.parallelism),
             },
@@ -1953,6 +2180,9 @@ fn tool_to_api(tool: &ToolSpec) -> ToolView {
 
 fn tool_kind_to_api(kind: &ToolKind) -> ToolKindView {
     match kind {
+        ToolKind::Builtin(builtin) => ToolKindView::Builtin {
+            settings: builtin.settings.clone(),
+        },
         ToolKind::Function(function) => ToolKindView::Function {
             description_ref: function
                 .description_ref
@@ -2289,6 +2519,74 @@ fn openai_mcp_call_display(value: &Value) -> Option<ProviderContextDisplayView> 
     })
 }
 
+/// A provider-hosted OpenAI web search shown as a tool step, so a transcript
+/// shows the search between the text it interrupts.
+fn openai_web_search_call_display(value: &Value) -> Option<ProviderContextDisplayView> {
+    if value.get("type").and_then(Value::as_str) != Some("web_search_call") {
+        return None;
+    }
+    let action = value.get("action");
+    let target = action
+        .and_then(|action| action.get("query").or_else(|| action.get("url")))
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned);
+    let raw_status = value.get("status").and_then(Value::as_str);
+    let status = match raw_status {
+        Some("in_progress" | "searching" | "queued") => ToolItemStatus::Running,
+        Some("failed" | "incomplete") => ToolItemStatus::Failed,
+        _ => ToolItemStatus::Succeeded,
+    };
+    let is_error = status == ToolItemStatus::Failed;
+    Some(ProviderContextDisplayView {
+        summary: ToolCallDisplayView {
+            group: ToolCallDisplayGroup::Explore,
+            verb: "Search".to_owned(),
+            target,
+            detail: is_error.then(|| raw_status.unwrap_or("failed").to_owned()),
+        },
+        tool_name: "web_search".to_owned(),
+        status,
+        is_error,
+        arguments: action.map(Value::to_string),
+        output: None,
+        error: None,
+    })
+}
+
+/// An Anthropic server tool call (`web_search`, `web_fetch`) shown as a tool
+/// step. Its result block is a separate entry that stays hidden: the payload
+/// is encrypted provider state, and what the model cited is on the message.
+fn anthropic_server_tool_use_display(value: &Value) -> Option<ProviderContextDisplayView> {
+    if value.get("type").and_then(Value::as_str) != Some("server_tool_use") {
+        return None;
+    }
+    let tool_name = json_field_text(value, "name")?;
+    let input = value.get("input");
+    let target = input
+        .and_then(|input| input.get("query").or_else(|| input.get("url")))
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned);
+    let verb = match tool_name.as_str() {
+        "web_search" => "Search",
+        "web_fetch" => "Fetch",
+        _ => "Run",
+    };
+    Some(ProviderContextDisplayView {
+        summary: ToolCallDisplayView {
+            group: ToolCallDisplayGroup::Explore,
+            verb: verb.to_owned(),
+            target,
+            detail: None,
+        },
+        tool_name,
+        status: ToolItemStatus::Succeeded,
+        is_error: false,
+        arguments: input.map(Value::to_string),
+        output: None,
+        error: None,
+    })
+}
+
 fn json_field_text(value: &Value, field: &str) -> Option<String> {
     let text = match value.get(field)? {
         Value::Null => return None,
@@ -2543,6 +2841,7 @@ mod tests {
 
     fn tool_call_with_status(status: ToolItemStatus) -> ToolCallView {
         ToolCallView {
+            tool_id: None,
             call_id: "call-1".to_owned(),
             tool_name: "read_file".to_owned(),
             arguments_ref: "sha256:args".to_owned(),
@@ -2678,6 +2977,26 @@ mod tests {
             },
         )
         .expect("joined binding");
+        let mut system_definition = binding.definition.clone();
+        system_definition.tool_id = engine::WorkflowToolId::new("subagent-run");
+        system_definition.semantic_type = "lightspeed.subagent.run.v1".to_owned();
+        system_definition.tool.name = engine::ToolName::new("subagent.run");
+        system_definition.tool.kind = ToolKind::Builtin(Default::default());
+        let system_binding = engine::WorkflowToolBinding::admit(
+            universe_id,
+            system_definition,
+            binding.target.clone(),
+            binding.completion.clone(),
+        )
+        .expect("system builtin binding");
+        state
+            .workflow_tools
+            .system_binding_ids
+            .insert(system_binding.definition.tool_id.clone());
+        state
+            .workflow_tools
+            .bindings
+            .insert(system_binding.definition.tool_id.clone(), system_binding);
         state
             .workflow_tools
             .bindings
@@ -3094,6 +3413,7 @@ mod tests {
                 text: None,
                 text_truncated: false,
                 display: None,
+                citations: Vec::new(),
                 source: Some(ContextEntrySourceView::AssistantOutput {
                     run_id: "run_7".to_owned(),
                     turn_id: "turn_8".to_owned(),
@@ -3165,6 +3485,7 @@ mod tests {
                     output: Some("Echoing your input: simba".to_owned()),
                     error: None,
                 }),
+                citations: Vec::new(),
                 source: Some(ContextEntrySourceView::AssistantOutput {
                     run_id: "run_7".to_owned(),
                     turn_id: "turn_8".to_owned(),
@@ -3172,6 +3493,295 @@ mod tests {
                 supersedes: None,
                 superseded_by: None,
             }
+        );
+    }
+
+    fn assistant_output_entry(
+        entry_id: u64,
+        kind: ContextEntryKind,
+        content_ref: BlobRef,
+        provider_kind: &str,
+    ) -> ContextEntry {
+        ContextEntry {
+            entry_id: ContextEntryId::new(entry_id),
+            key: None,
+            kind,
+            source: ContextEntrySource::AssistantOutput {
+                run_id: RunId::new(7),
+                turn_id: TurnId::new(8),
+            },
+            content_ref,
+            media_type: None,
+            preview: None,
+            provider_kind: Some(provider_kind.to_owned()),
+            provider_item_id: None,
+            token_estimate: None,
+            supersedes: None,
+        }
+    }
+
+    async fn json_entry(
+        blobs: &InMemoryBlobStore,
+        entry_id: u64,
+        provider_kind: &str,
+        value: serde_json::Value,
+    ) -> ContextEntry {
+        let content_ref = blobs
+            .put_bytes(serde_json::to_vec(&value).expect("encode provider JSON"))
+            .await
+            .expect("store provider JSON");
+        let mut entry = assistant_output_entry(
+            entry_id,
+            ContextEntryKind::ProviderOpaque,
+            content_ref,
+            provider_kind,
+        );
+        entry.media_type = Some("application/json".to_owned());
+        entry
+    }
+
+    async fn assistant_message(
+        blobs: &InMemoryBlobStore,
+        entry_id: u64,
+        text: &str,
+    ) -> ContextEntry {
+        let mut entry = assistant_output_entry(
+            entry_id,
+            ContextEntryKind::Message {
+                role: ContextMessageRole::Assistant,
+            },
+            blobs.insert_text(text).await,
+            "anthropic.messages.text",
+        );
+        entry.media_type = Some("text/plain".to_owned());
+        entry
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn anthropic_cited_blocks_project_sources_onto_the_preceding_message() {
+        let blobs = InMemoryBlobStore::new();
+        let projector = CoreAgentProjector::new(&blobs);
+        let message = assistant_message(&blobs, 43, "A sourced answer.").await;
+        let cited = json_entry(
+            &blobs,
+            44,
+            ANTHROPIC_MESSAGES_CITED_TEXT_PROVIDER_KIND,
+            serde_json::json!([{
+                "type": "text",
+                "text": "A sourced answer.",
+                "citations": [{
+                    "type": "web_search_result_location",
+                    "url": "https://example.com/source",
+                    "title": "Example source",
+                    "cited_text": "A sourced answer",
+                    "encrypted_index": "provider-only"
+                }, {
+                    "type": "web_search_result_location",
+                    "url": "https://example.com/source",
+                    "title": "Example source again",
+                    "encrypted_index": "provider-only"
+                }]
+            }]),
+        )
+        .await;
+
+        let projected = projector
+            .project_context_state(0, &[message, cited])
+            .await
+            .expect("project cited message");
+
+        assert_eq!(
+            projected.entries[0].text.as_deref(),
+            Some("A sourced answer.")
+        );
+        assert_eq!(
+            projected.entries[0].citations,
+            vec![api::CitationView {
+                url: "https://example.com/source".to_owned(),
+                title: Some("Example source".to_owned()),
+                cited_text: Some("A sourced answer".to_owned()),
+            }]
+        );
+        assert!(projected.entries[1].citations.is_empty());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn anthropic_fetch_citations_resolve_against_the_turn_fetch_result() {
+        let blobs = InMemoryBlobStore::new();
+        let projector = CoreAgentProjector::new(&blobs);
+        let fetched = json_entry(
+            &blobs,
+            42,
+            ANTHROPIC_MESSAGES_SERVER_TOOL_RESULT_PROVIDER_KIND,
+            serde_json::json!({
+                "type": "web_fetch_tool_result",
+                "tool_use_id": "srvtoolu_1",
+                "content": {
+                    "type": "web_fetch_result",
+                    "url": "https://example.com/fetched-source",
+                    "content": { "type": "document", "source": { "type": "text", "data": "body" } }
+                }
+            }),
+        )
+        .await;
+        let message = assistant_message(&blobs, 43, "A fetched answer.").await;
+        let cited = json_entry(
+            &blobs,
+            44,
+            ANTHROPIC_MESSAGES_CITED_TEXT_PROVIDER_KIND,
+            serde_json::json!([{
+                "type": "text",
+                "text": "A fetched answer.",
+                "citations": [{
+                    "type": "char_location",
+                    "document_index": 0,
+                    "document_title": "Fetched source",
+                    "cited_text": "A fetched answer"
+                }]
+            }]),
+        )
+        .await;
+
+        let projected = projector
+            .project_context_state(0, &[fetched, message, cited])
+            .await
+            .expect("project fetch citation");
+
+        assert_eq!(
+            projected.entries[1].citations,
+            vec![api::CitationView {
+                url: "https://example.com/fetched-source".to_owned(),
+                title: Some("Fetched source".to_owned()),
+                cited_text: Some("A fetched answer".to_owned()),
+            }]
+        );
+        assert!(projected.entries[0].citations.is_empty());
+        assert!(projected.entries[2].citations.is_empty());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn openai_cited_item_projects_sources_onto_the_preceding_message() {
+        let blobs = InMemoryBlobStore::new();
+        let projector = CoreAgentProjector::new(&blobs);
+        let mut message = assistant_message(&blobs, 43, "A sourced answer.").await;
+        message.provider_kind = Some("openai.responses.message".to_owned());
+        let cited = json_entry(
+            &blobs,
+            44,
+            OPENAI_RESPONSES_CITED_TEXT_PROVIDER_KIND,
+            serde_json::json!({
+                "type": "message",
+                "content": [{
+                    "type": "output_text",
+                    "text": "A sourced answer.",
+                    "annotations": [{
+                        "type": "url_citation",
+                        "start_index": 0,
+                        "end_index": 16,
+                        "url": "https://example.com/openai-source",
+                        "title": "OpenAI source"
+                    }]
+                }]
+            }),
+        )
+        .await;
+
+        let projected = projector
+            .project_event_kind(&CoreAgentEvent::Context(ContextEvent::EntriesApplied {
+                base_revision: 0,
+                entries: vec![message, cited],
+            }))
+            .await
+            .expect("project cited context event");
+
+        let SessionEventKindView::ContextEntriesApplied { entries, .. } = projected else {
+            panic!("expected context entries applied");
+        };
+        assert_eq!(
+            entries[0].citations,
+            vec![api::CitationView {
+                url: "https://example.com/openai-source".to_owned(),
+                title: Some("OpenAI source".to_owned()),
+                cited_text: Some("A sourced answer".to_owned()),
+            }]
+        );
+        assert!(entries[1].citations.is_empty());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn anthropic_server_tool_use_projects_as_a_search_step() {
+        let blobs = InMemoryBlobStore::new();
+        let content_ref = blobs
+            .put_bytes(
+                serde_json::to_vec(&serde_json::json!({
+                    "type": "server_tool_use",
+                    "id": "srvtoolu_1",
+                    "name": "web_search",
+                    "input": { "query": "lightspeed agent runtime" }
+                }))
+                .expect("encode server tool use"),
+            )
+            .await
+            .expect("store server tool use");
+        let projector = CoreAgentProjector::new(&blobs);
+        let item = assistant_output_entry(
+            44,
+            ContextEntryKind::ProviderOpaque,
+            content_ref,
+            ANTHROPIC_MESSAGES_SERVER_TOOL_USE_PROVIDER_KIND,
+        );
+
+        let view = projector
+            .project_context_entry(&item, None)
+            .await
+            .expect("project server tool use");
+
+        let display = view.display.expect("server tool display");
+        assert_eq!(display.tool_name, "web_search");
+        assert_eq!(display.status, ToolItemStatus::Succeeded);
+        assert_eq!(display.summary.verb, "Search");
+        assert_eq!(
+            display.summary.target.as_deref(),
+            Some("lightspeed agent runtime")
+        );
+        assert!(view.citations.is_empty());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn openai_web_search_call_projects_as_a_search_step() {
+        let blobs = InMemoryBlobStore::new();
+        let content_ref = blobs
+            .put_bytes(
+                serde_json::to_vec(&serde_json::json!({
+                    "id": "ws_1",
+                    "type": "web_search_call",
+                    "status": "completed",
+                    "action": { "type": "search", "query": "lightspeed agent runtime" }
+                }))
+                .expect("encode web search call"),
+            )
+            .await
+            .expect("store web search call");
+        let projector = CoreAgentProjector::new(&blobs);
+        let item = assistant_output_entry(
+            45,
+            ContextEntryKind::ProviderOpaque,
+            content_ref,
+            OPENAI_RESPONSES_WEB_SEARCH_CALL_PROVIDER_KIND,
+        );
+
+        let view = projector
+            .project_context_entry(&item, None)
+            .await
+            .expect("project web search call");
+
+        let display = view.display.expect("web search display");
+        assert_eq!(display.tool_name, "web_search");
+        assert_eq!(display.status, ToolItemStatus::Succeeded);
+        assert_eq!(display.summary.verb, "Search");
+        assert_eq!(
+            display.summary.target.as_deref(),
+            Some("lightspeed agent runtime")
         );
     }
 

@@ -357,7 +357,7 @@ impl WorkflowToolDefinition {
         }
         validate_semantic_type(&self.semantic_type)?;
         self.tool.validate()?;
-        if !matches!(self.tool.kind, ToolKind::Function(_)) {
+        if !matches!(self.tool.kind, ToolKind::Builtin(_) | ToolKind::Function(_)) {
             return Err(DomainError::InvariantViolation(format!(
                 "workflow tool {} must use a function tool",
                 self.tool_id
@@ -1622,11 +1622,11 @@ pub(crate) fn validate_emit_effect(
         .bindings
         .get(&invocation.tool_id)
         .expect("binding was validated above");
-    if call.call.tool_name != binding.definition.tool.name
+    if call.call.tool_id.as_ref() != Some(&binding.definition.tool.name)
         || call.call.arguments_ref != invocation.arguments_ref
     {
         return Err(DomainError::InvariantViolation(
-            "workflow tool emit effect does not match its admitted tool name and arguments"
+            "workflow tool emit effect does not match its admitted tool identity and arguments"
                 .to_owned(),
         ));
     }
@@ -1841,7 +1841,7 @@ fn validate_invocation_against_state(
         .bindings
         .get(&invocation.tool_id)
         .expect("binding was validated above");
-    if call.call.tool_name != binding.definition.tool.name
+    if call.call.tool_id.as_ref() != Some(&binding.definition.tool.name)
         || call.call.arguments_ref != invocation.arguments_ref
     {
         return Err(DomainError::InvariantViolation(
@@ -2183,27 +2183,35 @@ fn update_definition_fingerprint(
     update_digest_part(hasher, definition.semantic_type.as_bytes());
     update_digest_part(hasher, definition.tool.name.as_str().as_bytes());
 
-    let ToolKind::Function(function) = &definition.tool.kind else {
-        return Err(DomainError::InvariantViolation(format!(
-            "workflow tool {} fingerprint requires a function tool",
-            definition.tool_id
-        )));
-    };
-    update_digest_part(hasher, b"function");
-    update_optional_text(
-        hasher,
-        function.description_ref.as_ref().map(BlobRef::as_str),
-    );
-    update_digest_part(hasher, function.input_schema_ref.as_str().as_bytes());
-    update_optional_text(
-        hasher,
-        function.output_schema_ref.as_ref().map(BlobRef::as_str),
-    );
-    update_optional_bool(hasher, function.strict);
-    update_optional_text(
-        hasher,
-        function.provider_options_ref.as_ref().map(BlobRef::as_str),
-    );
+    if let ToolKind::Builtin(builtin) = &definition.tool.kind {
+        update_digest_part(hasher, b"builtin");
+        update_digest_part(
+            hasher,
+            &serde_json::to_vec(builtin).map_err(|error| {
+                DomainError::InvariantViolation(format!("encode built-in settings: {error}"))
+            })?,
+        );
+    } else if let ToolKind::Function(function) = &definition.tool.kind {
+        update_digest_part(hasher, b"function");
+        update_optional_text(
+            hasher,
+            function.description_ref.as_ref().map(BlobRef::as_str),
+        );
+        update_digest_part(hasher, function.input_schema_ref.as_str().as_bytes());
+        update_optional_text(
+            hasher,
+            function.output_schema_ref.as_ref().map(BlobRef::as_str),
+        );
+        update_optional_bool(hasher, function.strict);
+        update_optional_text(
+            hasher,
+            function.provider_options_ref.as_ref().map(BlobRef::as_str),
+        );
+    } else {
+        return Err(DomainError::InvariantViolation(
+            "workflow tool fingerprint requires a function definition".to_owned(),
+        ));
+    }
     update_digest_part(
         hasher,
         match definition.tool.parallelism {
@@ -2820,7 +2828,8 @@ mod tests {
         let universe_id = Uuid::from_u128(1);
         let controller = endpoint("controller::work-1");
         let session_id = SessionId::new("managed-session");
-        let definition = definition("report", "work_report");
+        let mut definition = definition("report", "internal.report");
+        definition.tool.kind = ToolKind::Builtin(crate::BuiltinToolSpec::default());
         let declaration = ManagedSessionWorkflowTools::v1(
             Some(controller.clone()),
             vec![tool_declaration(definition.clone(), controller.clone())],
@@ -2885,7 +2894,8 @@ mod tests {
             .iter()
             .map(|call_id| ObservedToolCall {
                 call_id: ToolCallId::new(*call_id),
-                tool_name: definition.tool.name.clone(),
+                tool_id: Some(definition.tool.name.clone()),
+                tool_name: ToolName::new("work_report"),
                 provider_kind: None,
                 arguments_ref: BlobRef::from_bytes(call_id.as_bytes()),
                 native_call_ref: None,

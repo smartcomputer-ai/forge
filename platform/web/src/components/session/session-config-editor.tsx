@@ -354,7 +354,7 @@ export function normalizeSessionConfig(value: unknown): SessionConfig | undefine
   return omitEmptyRecord(result);
 }
 
-function configError(config: SessionConfig | undefined): string | null {
+function configError(config: SessionConfig | undefined, pinnedApiKind?: string): string | null {
   if (!config) return null;
   const model = record(config.model);
   if (Object.keys(model).length && !["providerId", "apiKind", "model"].every((key) => string(model[key]))) {
@@ -363,6 +363,14 @@ function configError(config: SessionConfig | undefined): string | null {
   const toolChoice = record(record(config.generation).toolChoice);
   if (toolChoice.type === "specific" && !string(toolChoice.toolId)) {
     return "A specific tool choice needs a tool id.";
+  }
+  const search = record(record(record(config.features).web).search);
+  if (
+    (pinnedApiKind ?? string(model.apiKind)) === "anthropic:messages"
+    && stringList(search.allowedDomains).length
+    && stringList(search.blockedDomains).length
+  ) {
+    return "Anthropic web search accepts either allowed domains or blocked domains, not both.";
   }
   const mcp = record(record(config.features).mcp);
   if ("mcp" in record(config.features) && (!Array.isArray(mcp.servers) || mcp.servers.some((server) => !string(record(server).serverId)))) {
@@ -439,7 +447,7 @@ export function SessionConfigEditor({
   className,
 }: Props) {
   const config = normalizeSessionConfig(value) ?? {};
-  const error = configError(config);
+  const error = configError(config, pinnedApiKind);
   const [manualModel, setManualModel] = useState(false);
 
   useEffect(() => onValidityChange?.(error), [error, onValidityChange]);
@@ -527,7 +535,13 @@ export function SessionConfigEditor({
                     patch={(fn) => patchFeature("vfs", fn)}
                   />
                 )}
-                {name === "web" && <WebFields feature={record(features.web)} patch={(fn) => patchFeature("web", fn)} />}
+                {name === "web" && (
+                  <WebFields
+                    feature={record(features.web)}
+                    apiKind={pinnedApiKind ?? string(record(config.model).apiKind)}
+                    patch={(fn) => patchFeature("web", fn)}
+                  />
+                )}
                 {name === "subagents" && <SubagentFields feature={record(features.subagents)} profiles={profiles} patch={(fn) => patchFeature("subagents", fn)} />}
                 {name === "mcp" && <McpFields feature={record(features.mcp)} servers={mcpServers} patch={(fn) => patchFeature("mcp", fn)} />}
               </FeaturePanel>
@@ -1030,12 +1044,16 @@ function GenerationFields({ config, change }: { config: RecordValue; change: (fn
           </Field>
           {toolChoiceType === "specific" && (
             <Field className="sm:col-span-2">
-              <FieldLabel>Tool id</FieldLabel>
+              <FieldLabel>Tool ID</FieldLabel>
               <Input
                 value={string(toolChoice.toolId)}
                 onChange={(e) => update("toolChoice", { type: "specific", toolId: e.target.value })}
-                placeholder="tool id"
+                placeholder="env.run_process"
               />
+              <FieldDescription>
+                Use the enabled tool's registry ID, such as env.run_process or vfs.read_file.
+                Builtin tool names are resolved for the selected model. For custom functions, use the function name.
+              </FieldDescription>
             </Field>
           )}
       </div>
@@ -1395,10 +1413,26 @@ function nextWorkspaceLinkPath(links: RecordValue[]): string {
   return `/workspace-${suffix}`;
 }
 
-function WebFields({ feature, patch }: { feature: RecordValue; patch: (fn: (feature: RecordValue) => void) => void }) {
+function WebFields({
+  feature,
+  apiKind,
+  patch,
+}: {
+  feature: RecordValue;
+  apiKind: string;
+  patch: (fn: (feature: RecordValue) => void) => void;
+}) {
   const search = record(feature.search);
-  const fetchEnabled = "fetch" in feature; const searchEnabled = "search" in feature;
-  const setSubfeature = (name: "fetch" | "search", enabled: boolean) => patch((next) => { if (enabled) next[name] = {}; else { delete next[name]; if (!("fetch" in next) && !("search" in next)) next.search = {}; } });
+  const fetchEnabled = "fetch" in feature;
+  const searchEnabled = "search" in feature;
+  const exclusiveDomainFilters = apiKind === "anthropic:messages";
+  const setSubfeature = (name: "fetch" | "search", enabled: boolean) => patch((next) => {
+    if (enabled) next[name] = {};
+    else {
+      delete next[name];
+      if (!("fetch" in next) && !("search" in next)) next.search = {};
+    }
+  });
   return (
     <div className="grid gap-4">
       <div className="flex flex-wrap gap-x-6 gap-y-3">
@@ -1416,6 +1450,7 @@ function WebFields({ feature, patch }: { feature: RecordValue; patch: (fn: (feat
                 const item = record(next.search);
                 if (domains.length) item.allowedDomains = domains;
                 else delete item.allowedDomains;
+                if (exclusiveDomainFilters && domains.length) delete item.blockedDomains;
                 next.search = item;
               })}
               placeholder="All domains"
@@ -1431,6 +1466,7 @@ function WebFields({ feature, patch }: { feature: RecordValue; patch: (fn: (feat
                 const item = record(next.search);
                 if (domains.length) item.blockedDomains = domains;
                 else delete item.blockedDomains;
+                if (exclusiveDomainFilters && domains.length) delete item.allowedDomains;
                 next.search = item;
               })}
               placeholder="None"
@@ -1438,6 +1474,11 @@ function WebFields({ feature, patch }: { feature: RecordValue; patch: (fn: (feat
             <FieldDescription className="text-xs">Comma-separated domains. Empty blocks none.</FieldDescription>
           </Field>
         </div>
+      )}
+      {searchEnabled && exclusiveDomainFilters && (
+        <FieldDescription className="text-xs">
+          Anthropic accepts either an allowed-domain list or a blocked-domain list, not both.
+        </FieldDescription>
       )}
     </div>
   );

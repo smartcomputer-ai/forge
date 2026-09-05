@@ -7,20 +7,14 @@
 //! and `KillShell` are both `continue_process`), and a toolset may restrict
 //! the process tools to a one-shot shape that omits the handle path.
 
-use engine::{
-    FunctionToolSpec, ToolExecutionClass, ToolExecutionSpec, ToolKind, ToolName, ToolParallelism,
-    ToolSpec,
-};
+use engine::{ToolExecutionClass, ToolExecutionSpec, ToolName, ToolParallelism};
 use serde_json::Value;
 
 use crate::{
     environment::EnvironmentToolContext,
     error::{ToolError, ToolResult},
     fs::FsToolContext,
-    runtime::{
-        ToolBinding, ToolDispatchMode, ToolDocument, ToolInvocationOutput, ToolSpecBundle,
-        ToolTarget,
-    },
+    runtime::{ToolBinding, ToolInvocationOutput, ToolTarget},
 };
 
 mod canonical;
@@ -148,6 +142,10 @@ const ADAPTER_CLAUDE: &str = "claude";
 const ADAPTER_ONE_SHOT_SUFFIX: &str = "-oneshot";
 
 impl BuiltinTool {
+    pub fn with_surface(mut self, surface: BuiltinToolSurface) -> Self {
+        self.surface = surface;
+        self
+    }
     pub const fn environment(operation: BuiltinToolOperation, surface: BuiltinToolSurface) -> Self {
         Self {
             domain: BuiltinToolDomain::Environment,
@@ -581,46 +579,20 @@ impl BuiltinTool {
         }
     }
 
-    pub fn binding(self, target: &ToolTarget, dispatch: ToolDispatchMode) -> ToolBinding {
-        ToolBinding::new(
-            self.name(target),
-            self.logical_id(),
-            dispatch,
-            self.parallelism(),
-        )
-        .with_adapter_id(self.adapter_id())
+    pub fn binding(self, target: &ToolTarget) -> ToolBinding {
+        ToolBinding::new(self.name(target), self.logical_id()).with_adapter_id(self.adapter_id())
     }
 
-    pub fn spec_bundle(
+    pub fn definition(
         self,
         target: &ToolTarget,
         scoped_paths: bool,
-    ) -> ToolResult<ToolSpecBundle> {
-        let description =
-            ToolDocument::text("text/plain; charset=utf-8", self.description(scoped_paths)?);
-        let input_schema = ToolDocument::text(
-            "application/schema+json",
-            serde_json::to_string(&self.input_schema(target)?).map_err(|error| {
-                ToolError::InvalidRequest {
-                    message: format!("failed to encode tool schema: {error}"),
-                }
-            })?,
-        );
-        Ok(ToolSpecBundle {
-            spec: ToolSpec {
-                name: self.name(target),
-                kind: ToolKind::Function(FunctionToolSpec {
-                    description_ref: Some(description.blob_ref.clone()),
-                    input_schema_ref: input_schema.blob_ref.clone(),
-                    output_schema_ref: None,
-                    strict: Some(false),
-                    provider_options_ref: None,
-                }),
-                parallelism: self.parallelism(),
-                execution: self.execution_spec(),
-            },
-            documents: vec![description, input_schema],
-        })
+    ) -> ToolResult<crate::runtime::FunctionDefinition> {
+        Ok(crate::runtime::FunctionDefinition::new(
+            self.name_str(),
+            self.description(scoped_paths)?,
+            self.input_schema(target)?,
+        ))
     }
 
     fn description(self, scoped_paths: bool) -> ToolResult<String> {
@@ -685,7 +657,7 @@ impl BuiltinToolOperation {
 
 #[cfg(test)]
 mod tests {
-    use engine::{ProviderApiKind, ToolKind};
+    use engine::ProviderApiKind;
     use serde_json::json;
 
     use super::*;
@@ -741,26 +713,18 @@ mod tests {
     }
 
     #[test]
-    fn spec_bundle_uses_content_addressed_documents() {
-        let bundle = BuiltinTool::environment_canonical(BuiltinToolOperation::ReadFile)
-            .spec_bundle(&target(), true)
-            .expect("spec bundle");
-
-        let ToolKind::Function(function) = bundle.spec.kind else {
-            panic!("expected function tool");
-        };
-        assert_eq!(bundle.documents.len(), 2);
-        assert_eq!(
-            function.description_ref,
-            Some(bundle.documents[0].blob_ref.clone())
-        );
-        assert_eq!(function.input_schema_ref, bundle.documents[1].blob_ref);
+    fn definition_renders_description_and_schema_directly() {
+        let definition = BuiltinTool::environment_canonical(BuiltinToolOperation::ReadFile)
+            .definition(&target(), true)
+            .expect("definition");
         assert!(
-            bundle.documents[0]
-                .text_lossy()
+            definition
+                .description
+                .as_deref()
+                .unwrap()
                 .contains("configured filesystem scope")
         );
-        assert!(bundle.documents[1].text_lossy().contains("\"path\""));
+        assert!(definition.input_schema["properties"].get("path").is_some());
     }
 
     #[test]
@@ -828,7 +792,7 @@ mod tests {
             BuiltinToolSurface::ClaudeCodeLike,
         )
         .kill_variant();
-        let binding = kill.binding(&target, ToolDispatchMode::Local);
+        let binding = kill.binding(&target);
         assert_eq!(binding.tool_name.as_str(), "KillShell");
         assert_eq!(binding.adapter_id.as_deref(), Some("claude"));
         let resolved = BuiltinTool::from_binding(
@@ -845,7 +809,7 @@ mod tests {
             BuiltinToolSurface::CodexLike,
         )
         .with_one_shot(true);
-        let binding = one_shot.binding(&target, ToolDispatchMode::Local);
+        let binding = one_shot.binding(&target);
         assert_eq!(binding.adapter_id.as_deref(), Some("codex-oneshot"));
         let resolved = BuiltinTool::from_binding(
             &binding.logical_id,
@@ -865,8 +829,8 @@ mod tests {
         );
 
         assert_eq!(tool.name_str(), "Read");
-        let bundle = tool.spec_bundle(&target(), false).expect("spec bundle");
-        assert!(bundle.documents[1].text_lossy().contains("\"file_path\""));
+        let bundle = tool.definition(&target(), false).expect("spec bundle");
+        assert!(bundle.input_schema["properties"].get("file_path").is_some());
     }
 
     #[test]
@@ -883,8 +847,8 @@ mod tests {
         assert_eq!(vfs_tool.name_str(), "VfsListDir");
         assert_eq!(environment_tool.name_str(), "ListDir");
         for tool in [vfs_tool, environment_tool] {
-            let bundle = tool.spec_bundle(&target(), false).expect("spec bundle");
-            assert!(bundle.documents[1].text_lossy().contains("\"path\""));
+            let bundle = tool.definition(&target(), false).expect("spec bundle");
+            assert!(bundle.input_schema["properties"].get("path").is_some());
         }
     }
 
@@ -896,7 +860,7 @@ mod tests {
         );
 
         assert!(matches!(
-            tool.spec_bundle(&target(), false),
+            tool.definition(&target(), false),
             Err(ToolError::UnsupportedCapability { .. })
         ));
     }

@@ -4,5 +4,7 @@
 //! `api::AgentApiService` implementation.
 
 pub mod runner;
+mod tool_calls;
+pub use tool_calls::scripted_tool_id;
 
 pub use runner::*;

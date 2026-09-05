@@ -17,6 +17,7 @@ export type TranscriptEntry =
       text: string;
       contentRef: string;
       textTruncated: boolean;
+      citations?: Array<{ url: string; title?: string | null; citedText?: string | null }>;
       /// The run this entry belongs to, when the engine recorded one.
       runId?: string;
       /// A user message injected into a running run (steering) rather than
@@ -37,6 +38,8 @@ export type TranscriptEntry =
 
 export interface TranscriptToolCall {
   callId: string;
+  toolId?: string | null;
+  /// The original name returned by the model, preserved across model changes.
   toolName: string;
   status: ToolItemStatus;
   argumentsJson?: string | null;
@@ -557,6 +560,9 @@ function applyNonToolCallItem(
           text: item.text,
           contentRef: item.contentRef,
           textTruncated: item.textTruncated === true,
+          ...(kind.role === "assistant" && item.citations?.length
+            ? { citations: item.citations }
+            : {}),
           ...(runId ? { runId } : {}),
           ...(source?.type === "steering" ? { steering: true } : {}),
         });
@@ -700,6 +706,7 @@ function applyToolBatchStarted(
     if (state.toolCallByCallId.has(callId)) {
       updateToolCall(state, callId, (call) => ({
         ...call,
+        toolId: raw.toolId,
         toolName: raw.toolName,
         status: isTerminalToolStatus(call.status) ? call.status : "requested",
         argumentsJson: raw.arguments ?? call.argumentsJson,
@@ -708,6 +715,7 @@ function applyToolBatchStarted(
     } else {
       appendToolCall(state, entryIndex, {
         callId,
+        toolId: raw.toolId,
         toolName: raw.toolName,
         status: "requested",
         argumentsJson: raw.arguments,

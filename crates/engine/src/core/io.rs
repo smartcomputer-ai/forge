@@ -151,8 +151,12 @@ impl EnvironmentPolicyRuntime {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolInvocationRequest {
     pub call_id: ToolCallId,
+    pub tool_id: Option<ToolName>,
     pub tool_name: ToolName,
     pub arguments_ref: BlobRef,
+    /// Original turn inputs for the shared built-in resolver. Provider wire
+    /// names and arguments remain on the call; no execution catalog is rebuilt.
+    pub builtin: Option<BuiltinToolCallRuntime>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workflow_tool: Option<WorkflowToolCallRuntime>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -164,6 +168,12 @@ pub struct ToolInvocationRequest {
     /// way; absent for every other tool.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub remote_mcp: Option<RemoteMcpCallRuntime>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BuiltinToolCallRuntime {
+    pub spec: crate::BuiltinToolSpec,
+    pub model: crate::ModelSelection,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -201,10 +211,10 @@ pub enum PromiseControlKind {
 }
 
 impl PromiseControlKind {
-    fn for_tool_name(tool_name: &ToolName) -> Option<Self> {
-        match tool_name.as_str() {
-            "cancel" => Some(Self::Cancel),
-            "detach" => Some(Self::Detach),
+    fn for_tool_id(tool_id: &ToolName) -> Option<Self> {
+        match tool_id.as_str() {
+            "concurrency.cancel" => Some(Self::Cancel),
+            "concurrency.detach" => Some(Self::Detach),
             _ => None,
         }
     }
@@ -297,13 +307,14 @@ impl ToolInvocationBatchRequest {
             .calls
             .iter()
             .filter_map(|call| {
-                PromiseControlKind::for_tool_name(&call.tool_name).map(|kind| {
-                    PromiseControlArgumentCall {
+                call.tool_id
+                    .as_ref()
+                    .and_then(PromiseControlKind::for_tool_id)
+                    .map(|kind| PromiseControlArgumentCall {
                         call_id: call.call_id.clone(),
                         kind,
                         arguments_ref: call.arguments_ref.clone(),
-                    }
-                })
+                    })
             })
             .collect::<Vec<_>>();
         (!calls.is_empty()).then_some(PromiseControlArgumentRequest {
@@ -348,6 +359,7 @@ pub struct ToolInvocationCallRequest {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolCallSummary {
     pub call_id: ToolCallId,
+    pub tool_id: Option<ToolName>,
     pub tool_name: ToolName,
     pub arguments_ref: BlobRef,
 }
@@ -387,6 +399,7 @@ impl ToolInvocationBatchRequest {
             .filter(|(sibling_index, _)| *sibling_index != index)
             .map(|(_, sibling)| ToolCallSummary {
                 call_id: sibling.call_id.clone(),
+                tool_id: sibling.tool_id.clone(),
                 tool_name: sibling.tool_name.clone(),
                 arguments_ref: sibling.arguments_ref.clone(),
             })
@@ -638,7 +651,9 @@ mod tests {
             calls: call_ids
                 .iter()
                 .map(|call_id| ToolInvocationRequest {
+                    builtin: None,
                     call_id: ToolCallId::new(*call_id),
+                    tool_id: Some(ToolName::new("tool")),
                     tool_name: ToolName::new("tool"),
                     arguments_ref: BlobRef::from_bytes(call_id.as_bytes()),
                     workflow_tool: None,
@@ -735,7 +750,9 @@ mod promise_base_tests {
 
     fn call(id: &str) -> ToolInvocationRequest {
         ToolInvocationRequest {
+            builtin: None,
             call_id: ToolCallId::new(id),
+            tool_id: Some(ToolName::new("sleep")),
             tool_name: ToolName::new("sleep"),
             arguments_ref: BlobRef::from_bytes(b"{}"),
             workflow_tool: None,

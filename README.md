@@ -99,7 +99,9 @@ Lightspeed covers the table stakes of a modern agent harness. Everything below w
 
 - [x] **Virtual file system**: agents read and edit persistent files without an
   OS attached
-- [x] **Web access**: fetch, search, and extract tools
+- [x] **Web access**: provider-hosted search/fetch for Anthropic Messages,
+  hosted search for OpenAI Responses, and guarded local fetch/extraction on
+  non-Anthropic routes
 - [x] **Skills**, automatically discovered and loaded from the virtual filesystem
 - [x] **Hosted and native MCP**: connect local or remote servers with API keys
   or OAuth; Lightspeed handles tool discovery and approvals
@@ -170,6 +172,11 @@ Two more decisions make this practical inside a workflow engine:
 2. **Offloading to CAS.** Large payloads live in content-addressed storage,
    keeping workflow histories small. Blobs nothing reaches any more are
    collected after a grace period, so deleting sessions frees their storage.
+
+Built-in tools are registered by logical identity, such as `env.run_process`.
+The LLM activity selects their names, schemas, and argument adapters for the
+turn's model. Those definitions live in runtime code; externally authored tool
+definitions and conversation payloads continue to use CAS.
 
 The full design walk-through is in [docs/design.md](docs/design.md).
 

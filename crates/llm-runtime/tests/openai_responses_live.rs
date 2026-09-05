@@ -4,9 +4,9 @@ use std::sync::Arc;
 use engine::{
     BlobRef, CompactionPolicy, ContextEntry, ContextEntryId, ContextEntryKind, ContextEntrySource,
     ContextMessageRole, ContextSnapshot, LlmFinish, LlmGenerationRequest, LlmGenerationStatus,
-    LlmRequest, ModelSelection, OPENAI_RESPONSES_COMPACTION_PROVIDER_KIND,
-    OPENAI_RESPONSES_WEB_SEARCH_CALL_PROVIDER_KIND, ProviderApiKind, ProviderParams, RunId,
-    SessionId, ToolChoice, TurnId,
+    LlmRequest, ModelSelection, OPENAI_RESPONSES_CITED_TEXT_PROVIDER_KIND,
+    OPENAI_RESPONSES_COMPACTION_PROVIDER_KIND, OPENAI_RESPONSES_WEB_SEARCH_CALL_PROVIDER_KIND,
+    ProviderApiKind, ProviderParams, RunId, SessionId, ToolChoice, TurnId,
     storage::{BlobStore, InMemoryBlobStore},
 };
 use llm_clients::openai::responses::{Client, Config};
@@ -18,10 +18,7 @@ use llm_runtime::{
     },
 };
 use serde_json::{Value, json};
-use tools::web::search::{
-    OpenAiResponsesWebSearchConfig, WebSearchContextSize, WebSearchMode,
-    openai_responses_web_search_tool_bundle,
-};
+use tools::web::search::{OpenAiResponsesWebSearchConfig, WebSearchContextSize, WebSearchMode};
 
 mod support;
 
@@ -115,19 +112,6 @@ fn openai_params(params: &OpenAiResponsesParams) -> ProviderParams {
         ProviderApiKind::OpenAiResponses,
         serde_json::to_value(params).expect("serialize params"),
     )
-}
-
-async fn store_tool_documents(
-    blobs: &InMemoryBlobStore,
-    documents: &[tools::runtime::ToolDocument],
-) {
-    for document in documents {
-        let stored_ref = blobs
-            .put_bytes(document.blob_bytes())
-            .await
-            .expect("store tool document");
-        assert_eq!(stored_ref, document.blob_ref);
-    }
 }
 
 /// 32x32 solid red PNG.
@@ -711,19 +695,19 @@ async fn openai_responses_live_adapter_captures_provider_triggered_compaction() 
 
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "requires OPENAI_API_KEY and an OpenAI Responses model that supports hosted web_search (costs real money)"]
-async fn openai_responses_live_adapter_captures_web_search_call() {
+async fn openai_responses_live_adapter_captures_web_search_call_and_citations() {
     let blobs = Arc::new(InMemoryBlobStore::new());
-    let bundle = openai_responses_web_search_tool_bundle(&OpenAiResponsesWebSearchConfig {
+    let native = OpenAiResponsesWebSearchConfig {
         mode: WebSearchMode::Live,
         search_context_size: Some(WebSearchContextSize::Low),
         allowed_domains: vec!["developers.openai.com".to_string()],
         blocked_domains: Vec::new(),
         user_location: None,
         include_sources: true,
-    })
-    .expect("web search bundle")
+    }
+    .native_tool_json()
+    .expect("web search definition")
     .expect("enabled web search");
-    store_tool_documents(&blobs, &bundle.documents).await;
 
     let input_ref = text_blob(
         &blobs,
@@ -770,7 +754,19 @@ async fn openai_responses_live_adapter_captures_web_search_call() {
                 entries: vec![context_entry],
                 token_estimate: None,
             },
-            tools: vec![bundle.spec],
+            tools: vec![engine::ToolSpec {
+                name: engine::ToolName::new("web_search"),
+                kind: engine::ToolKind::ProviderNative(engine::ProviderNativeToolSpec {
+                    api_kind: ProviderApiKind::OpenAiResponses,
+                    native_tool_ref: blobs
+                        .put_bytes(serde_json::to_vec(&native).expect("native json"))
+                        .await
+                        .expect("native definition"),
+                    execution: engine::ProviderNativeToolExecution::ProviderHosted,
+                }),
+                parallelism: engine::ToolParallelism::ParallelSafe,
+                execution: Default::default(),
+            }],
             tool_choice: Some(ToolChoice::RequiredAny),
             output_limit: Some(1024),
             reasoning_effort: None,
@@ -799,6 +795,46 @@ async fn openai_responses_live_adapter_captures_web_search_call() {
                 == Some(OPENAI_RESPONSES_WEB_SEARCH_CALL_PROVIDER_KIND)),
         "expected provider-opaque web_search_call context item"
     );
+    let cited_index = execution
+        .result
+        .context_entries
+        .iter()
+        .position(|entry| {
+            entry.provider_kind.as_deref() == Some(OPENAI_RESPONSES_CITED_TEXT_PROVIDER_KIND)
+        })
+        .expect("expected provider-opaque cited text context item");
+    assert!(
+        cited_index > 0
+            && matches!(
+                execution.result.context_entries[cited_index - 1].kind,
+                ContextEntryKind::Message {
+                    role: ContextMessageRole::Assistant
+                }
+            ),
+        "cited item must follow its assistant message"
+    );
+    let cited_entry = &execution.result.context_entries[cited_index];
+    let cited_message = blobs
+        .read_text(&cited_entry.content_ref)
+        .await
+        .expect("native cited message");
+    let cited_message: Value =
+        serde_json::from_str(&cited_message).expect("native cited message JSON");
+    assert!(
+        cited_message
+            .get("content")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .flat_map(|part| {
+                part.get("annotations")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+            })
+            .any(|annotation| annotation.get("type") == Some(&json!("url_citation"))),
+        "expected native cited message to retain URL citations: {cited_message}"
+    );
     let raw_response = blobs
         .read_text(&dumps(&execution).raw_response_ref)
         .await
@@ -813,6 +849,105 @@ async fn openai_responses_live_adapter_captures_web_search_call() {
                 .any(|item| item.get("type") == Some(&json!("web_search_call")))),
         "expected raw response output to include web_search_call: {raw_response}"
     );
+    assert!(
+        raw_response
+            .get("output")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .flat_map(|item| {
+                item.get("content")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+            })
+            .flat_map(|part| {
+                part.get("annotations")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+            })
+            .any(|annotation| annotation.get("type") == Some(&json!("url_citation"))),
+        "expected raw response output to include url_citation annotations: {raw_response}"
+    );
+
+    // Force manual history replay (no previous_response_id) so the live API
+    // also validates that the exact cited output-message item is admissible as
+    // subsequent Responses input.
+    let mut followup_entries = execution.result.context_entries[cited_index - 1..=cited_index]
+        .iter()
+        .enumerate()
+        .map(|(index, entry)| ContextEntry {
+            key: None,
+            entry_id: ContextEntryId::new(index as u64 + 1),
+            kind: entry.kind.clone(),
+            source: ContextEntrySource::AssistantOutput {
+                run_id: RunId::new(1),
+                turn_id: TurnId::new(1),
+            },
+            content_ref: entry.content_ref.clone(),
+            media_type: entry.media_type.clone(),
+            preview: entry.preview.clone(),
+            provider_kind: entry.provider_kind.clone(),
+            provider_item_id: entry.provider_item_id.clone(),
+            token_estimate: entry.token_estimate.clone(),
+            supersedes: None,
+        })
+        .collect::<Vec<_>>();
+    followup_entries.push(ContextEntry {
+        key: None,
+        entry_id: ContextEntryId::new(3),
+        kind: ContextEntryKind::Message {
+            role: ContextMessageRole::User,
+        },
+        source: ContextEntrySource::RunInput {
+            run_id: RunId::new(2),
+            input_index: 0,
+        },
+        content_ref: text_blob(&blobs, "Reply with exactly: replay ok").await,
+        media_type: None,
+        preview: None,
+        provider_kind: None,
+        provider_item_id: None,
+        token_estimate: None,
+        supersedes: None,
+    });
+    let followup = adapter
+        .generate(LlmGenerationRequest {
+            session_id: SessionId::new("session-live-web-search-replay"),
+            run_id: RunId::new(2),
+            turn_id: TurnId::new(2),
+            request: LlmRequest {
+                model: ModelSelection {
+                    api_kind: ProviderApiKind::OpenAiResponses,
+                    provider_id: "openai".to_string(),
+                    model: live_web_search_model(),
+                },
+                request_fingerprint: "live-openai-responses-citation-replay".to_string(),
+                context: ContextSnapshot {
+                    api_kind: ProviderApiKind::OpenAiResponses,
+                    context_revision: 1,
+                    entries: followup_entries,
+                    token_estimate: None,
+                },
+                tools: Vec::new(),
+                tool_choice: None,
+                output_limit: Some(128),
+                reasoning_effort: None,
+                parallel_tool_use: None,
+                processing_tier: None,
+                provider_response_id: None,
+                compaction: None,
+                params: Some(openai_params(&OpenAiResponsesParams {
+                    store: Some(false),
+                    stream: Some(false),
+                    ..OpenAiResponsesParams::default()
+                })),
+            },
+        })
+        .await
+        .expect("replay cited response");
+    assert_eq!(followup.result.status, LlmGenerationStatus::Succeeded);
 }
 
 /// Live adapters run with debug dumps enabled so the tests can inspect the

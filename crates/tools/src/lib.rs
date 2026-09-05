@@ -6,6 +6,7 @@
 
 pub mod builtin;
 pub mod concurrency;
+pub mod definitions;
 pub mod environment;
 pub mod environment_protocol;
 pub mod error;

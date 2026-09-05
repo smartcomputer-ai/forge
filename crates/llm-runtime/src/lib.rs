@@ -47,3 +47,4 @@ pub use secrets::{
     SECRET_NAMESPACE_MCP_SERVER, SecretResolveError, SecretResolver, StaticSecretResolver,
     UnconfiguredSecretResolver,
 };
+mod tool_catalog;

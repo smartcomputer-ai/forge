@@ -47,6 +47,15 @@ async fn runner() -> (
 
 #[tokio::test(flavor = "current_thread")]
 async fn fake_llm_tool_loop_completes_a_run() {
+    assert_tool_loop(false).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn fake_llm_builtin_tool_loop_retains_identity_and_presentation() {
+    assert_tool_loop(true).await;
+}
+
+async fn assert_tool_loop(builtin: bool) {
     let (runner, session_id, blobs, _sessions) = runner().await;
     let schema_ref = blobs
         .put_bytes(fake_tool_input_schema())
@@ -73,7 +82,17 @@ async fn fake_llm_tool_loop_completes_a_run() {
             observed_at_ms: 11,
             command: CoreAgentCommand::ReplaceTools {
                 expected_revision: Some(0),
-                tools: fake_tool_set(schema_ref),
+                tools: if builtin {
+                    let tool = tools::definitions::register(
+                        "vfs.read_file",
+                        Default::default(),
+                        ToolParallelism::ParallelSafe,
+                        Default::default(),
+                    );
+                    BTreeMap::from([(tool.name.clone(), tool)])
+                } else {
+                    fake_tool_set(schema_ref)
+                },
             },
             max_steps: Some(64),
         })
@@ -103,6 +122,28 @@ async fn fake_llm_tool_loop_completes_a_run() {
 
     assert_eq!(outcome.quiescence, RunnerQuiescence::Idle);
     let completed = outcome.state.runs.completed.last().expect("completed run");
+    let calls = outcome
+        .emitted_entries
+        .iter()
+        .flat_map(|entry| match &entry.event {
+            engine::CoreAgentEvent::Tool(engine::ToolEvent::BatchStarted { calls, .. }) => {
+                calls.as_slice()
+            }
+            _ => &[],
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        calls.len(),
+        1,
+        "the fake must execute a tool before its final answer"
+    );
+    let (id, name) = if builtin {
+        ("vfs.read_file", "vfs_read_file")
+    } else {
+        (FAKE_TOOL_NAME, FAKE_TOOL_NAME)
+    };
+    assert_eq!(calls[0].tool_id.as_ref().map(ToolName::as_str), Some(id));
+    assert_eq!(calls[0].tool_name.as_str(), name);
     let output_ref = completed.output_ref.as_ref().expect("output ref");
     let output = blobs.read_text(output_ref).await.expect("read output");
     assert!(output.contains("Fake agent completed run"));

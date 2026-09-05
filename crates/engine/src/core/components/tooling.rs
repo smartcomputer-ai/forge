@@ -328,6 +328,8 @@ impl ToolPatch {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolSpec {
+    /// Admitted identity. Built-ins use logical ids; their exposed names are
+    /// chosen by the runtime for each model request.
     pub name: ToolName,
     pub kind: ToolKind,
     pub parallelism: ToolParallelism,
@@ -376,14 +378,14 @@ impl ToolExecutionSpec {
 impl ToolSpec {
     pub fn validate(&self) -> Result<(), DomainError> {
         match &self.kind {
-            ToolKind::Function(_) | ToolKind::ProviderNative(_) => Ok(()),
+            ToolKind::Builtin(_) | ToolKind::Function(_) | ToolKind::ProviderNative(_) => Ok(()),
             ToolKind::RemoteMcp(remote_mcp) => remote_mcp.validate(),
         }
     }
 
     pub fn invokes_client_effect(&self) -> bool {
         match &self.kind {
-            ToolKind::Function(_) => true,
+            ToolKind::Builtin(_) | ToolKind::Function(_) => true,
             ToolKind::ProviderNative(native) => {
                 native.execution == ProviderNativeToolExecution::ClientEffect
             }
@@ -408,9 +410,19 @@ pub(crate) fn validate_unique_tool_call_ids(calls: &[ObservedToolCall]) -> Resul
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolKind {
+    /// Code-owned definition resolved by the runtime for the turn's model.
+    Builtin(BuiltinToolSpec),
     Function(FunctionToolSpec),
     ProviderNative(ProviderNativeToolSpec),
     RemoteMcp(RemoteMcpToolSpec),
+}
+
+/// Small admitted settings for a code-owned tool. The tool's registry key is
+/// its logical identity; the runtime owns settings validation and presentation.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BuiltinToolSpec {
+    #[serde(default)]
+    pub settings: serde_json::Value,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -689,6 +701,9 @@ pub enum ToolParallelism {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ObservedToolCall {
     pub call_id: ToolCallId,
+    /// Admitted registry identity resolved by the response adapter. Absent for
+    /// an unadvertised name. The original name remains transcript data below.
+    pub tool_id: Option<ToolName>,
     pub tool_name: ToolName,
     pub provider_kind: Option<String>,
     pub arguments_ref: BlobRef,
@@ -1338,9 +1353,11 @@ fn initial_tool_call_execution_policy(
     turn_id: TurnId,
     call: &ObservedToolCall,
 ) -> Option<ToolCallExecutionPolicy> {
-    let invokes_client_effect = planned_tool_for_turn(state, turn_id, &call.tool_name)
-        .is_some_and(|tool| tool.invokes_client_effect())
-        || resolve_injected_native_mcp(state, &call.tool_name).is_some();
+    let invokes_client_effect = call
+        .tool_id
+        .as_ref()
+        .and_then(|tool_id| planned_tool_for_turn(state, turn_id, tool_id))
+        .is_some_and(|tool| tool.invokes_client_effect());
     if !invokes_client_effect {
         return None;
     }
@@ -1351,9 +1368,10 @@ fn initial_tool_call_execution_policy(
 
 pub fn remote_mcp_call_runtime(
     state: &CoreAgentState,
-    tool_name: &ToolName,
-    call_id: &ToolCallId,
+    call: &ObservedToolCall,
 ) -> Option<crate::RemoteMcpCallRuntime> {
+    let tool_id = call.tool_id.as_ref()?;
+    let call_id = &call.call_id;
     let approval_decision = state
         .runs
         .active
@@ -1375,14 +1393,16 @@ pub fn remote_mcp_call_runtime(
         })
         .flatten();
 
-    if let Some((spec, remote_tool_name)) = resolve_injected_native_mcp(state, tool_name) {
+    if let Some((spec, remote_tool_name)) =
+        resolve_injected_native_mcp(state, tool_id, &call.tool_name)
+    {
         return Some(crate::RemoteMcpCallRuntime::Injected {
             target: remote_mcp_target(spec),
             remote_tool_name,
             approval_decision,
         });
     }
-    if !matches!(tool_name.as_str(), "mcp_find_tools" | "mcp_call") {
+    if !matches!(tool_id.as_str(), "mcp.find_tools" | "mcp.call") {
         return None;
     }
     let targets = state
@@ -1407,30 +1427,28 @@ pub fn remote_mcp_call_runtime(
 
 fn resolve_injected_native_mcp<'a>(
     state: &'a CoreAgentState,
-    tool_name: &ToolName,
+    tool_id: &ToolName,
+    exposed_name: &ToolName,
 ) -> Option<(&'a RemoteMcpToolSpec, String)> {
-    state.tooling.tools.values().find_map(|tool| {
-        let ToolKind::RemoteMcp(spec) = &tool.kind else {
-            return None;
-        };
-        if spec.execution != RemoteMcpExecution::Native
-            || spec.exposure != RemoteMcpExposure::Inject
-        {
-            return None;
-        }
-        let prefix = format!("{}__", tool.name);
-        let remote_name = tool_name.as_str().strip_prefix(&prefix)?;
-        if remote_name.is_empty()
-            || spec
-                .allowed_tools
-                .as_ref()
-                .is_some_and(|allowed| !allowed.iter().any(|candidate| candidate == remote_name))
-        {
-            return None;
-        }
-        validate_remote_mcp_allowed_tool_name(remote_name).ok()?;
-        Some((spec, remote_name.to_owned()))
-    })
+    let tool = state.tooling.tools.get(tool_id)?;
+    let ToolKind::RemoteMcp(spec) = &tool.kind else {
+        return None;
+    };
+    if spec.execution != RemoteMcpExecution::Native || spec.exposure != RemoteMcpExposure::Inject {
+        return None;
+    }
+    let prefix = format!("{tool_id}__");
+    let remote_name = exposed_name.as_str().strip_prefix(&prefix)?;
+    if remote_name.is_empty()
+        || spec
+            .allowed_tools
+            .as_ref()
+            .is_some_and(|allowed| !allowed.iter().any(|name| name == remote_name))
+    {
+        return None;
+    }
+    validate_remote_mcp_allowed_tool_name(remote_name).ok()?;
+    Some((spec, remote_name.to_owned()))
 }
 
 fn remote_mcp_target(spec: &RemoteMcpToolSpec) -> crate::RemoteMcpCallTarget {
@@ -2134,6 +2152,7 @@ mod tests {
     fn unavailable_tool_results_reference_the_well_known_constant_blob() {
         let call = ObservedToolCall {
             call_id: crate::ToolCallId::new("call_1"),
+            tool_id: Some(ToolName::new("missing_tool")),
             tool_name: ToolName::new("missing_tool"),
             provider_kind: None,
             arguments_ref: BlobRef::from_bytes(b"{}"),

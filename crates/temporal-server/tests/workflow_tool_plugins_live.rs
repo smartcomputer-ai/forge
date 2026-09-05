@@ -515,12 +515,7 @@ impl WorkflowToolScriptedLlm {
         tool_name: &str,
         arguments: serde_json::Value,
     ) -> Result<LlmGenerationResult, CoreAgentIoError> {
-        if !request
-            .request
-            .tools
-            .iter()
-            .any(|tool| tool.name.as_str() == tool_name)
-        {
+        if test_support::scripted_tool_id(request, tool_name).is_none() {
             return Err(CoreAgentIoError::Failed {
                 message: format!("scripted workflow-tool test expected {tool_name} in the toolset"),
             });
@@ -560,6 +555,7 @@ impl WorkflowToolScriptedLlm {
                 usage: None,
                 tool_calls: vec![ObservedToolCall {
                     call_id,
+                    tool_id: test_support::scripted_tool_id(request, tool_name.as_str()),
                     tool_name,
                     provider_kind: Some("workflow-tool-script".to_owned()),
                     arguments_ref,

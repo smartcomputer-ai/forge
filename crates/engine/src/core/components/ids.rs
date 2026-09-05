@@ -181,12 +181,12 @@ fn validate_tool_name(kind: &'static str, value: &str) -> Result<(), StringIdErr
     crate::session::validate_string_id_length(kind, value, TOOL_NAME_MAX_LEN)?;
 
     for (index, ch) in value.char_indices() {
-        if !(ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-')) {
+        if !(ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.')) {
             return Err(StringIdError::InvalidCharacter {
                 kind,
                 index,
                 ch,
-                allowed: "ASCII letters, digits, '_', '-'",
+                allowed: "ASCII letters, digits, '_', '-', '.'",
             });
         }
     }
@@ -263,9 +263,9 @@ mod tests {
     }
 
     #[test]
-    fn tool_names_use_provider_safe_shape() {
+    fn tool_names_allow_logical_namespaces() {
         assert_eq!(ToolName::new("shell_tool-1").as_str(), "shell_tool-1");
-        assert!(ToolName::try_new("tool.name").is_err());
+        assert_eq!(ToolName::new("env.run_process").as_str(), "env.run_process");
         assert!(ToolName::try_new("tool:name").is_err());
         assert!(ToolName::try_new("tool/name").is_err());
         assert!(ToolName::try_new("tool name").is_err());
@@ -305,6 +305,6 @@ mod tests {
     #[test]
     fn string_id_deserialize_rejects_invalid_values() {
         assert!(serde_json::from_str::<SessionId>("\"session/name\"").is_err());
-        assert!(serde_json::from_str::<ToolName>("\"tool.name\"").is_err());
+        assert!(serde_json::from_str::<ToolName>("\"tool/name\"").is_err());
     }
 }

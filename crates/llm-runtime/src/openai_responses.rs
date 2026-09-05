@@ -6,12 +6,13 @@ use engine::{
     ContextCompactionResult, ContextCompactionStatus, ContextCompactionTask, ContextEntry,
     ContextEntryInput, ContextEntryKind, ContextMessageRole, LlmFinish, LlmGenerationFacts,
     LlmGenerationRequest, LlmGenerationResult, LlmGenerationStatus, LlmRequest, LlmUsage,
-    OPENAI_RESPONSES_COMPACTION_PROVIDER_KIND, OPENAI_RESPONSES_MCP_APPROVAL_REQUEST_PROVIDER_KIND,
-    OPENAI_RESPONSES_MCP_CALL_PROVIDER_KIND, OPENAI_RESPONSES_MCP_LIST_TOOLS_PROVIDER_KIND,
-    OPENAI_RESPONSES_WEB_SEARCH_CALL_PROVIDER_KIND, ObservedApprovalRequest, ObservedToolCall,
-    ProviderApiKind, ProviderNativeToolExecution, RemoteMcpApprovalPolicy, RemoteMcpExecution,
-    RemoteMcpExposure, RemoteMcpToolSpec, TokenEstimate, TokenEstimateQuality, ToolCallId,
-    ToolChoice, ToolKind, ToolName, ToolSpec, storage::BlobStore,
+    OPENAI_RESPONSES_CITED_TEXT_PROVIDER_KIND, OPENAI_RESPONSES_COMPACTION_PROVIDER_KIND,
+    OPENAI_RESPONSES_MCP_APPROVAL_REQUEST_PROVIDER_KIND, OPENAI_RESPONSES_MCP_CALL_PROVIDER_KIND,
+    OPENAI_RESPONSES_MCP_LIST_TOOLS_PROVIDER_KIND, OPENAI_RESPONSES_WEB_SEARCH_CALL_PROVIDER_KIND,
+    ObservedApprovalRequest, ObservedToolCall, ProviderApiKind, ProviderNativeToolExecution,
+    RemoteMcpApprovalPolicy, RemoteMcpExecution, RemoteMcpExposure, RemoteMcpToolSpec,
+    TokenEstimate, TokenEstimateQuality, ToolCallId, ToolChoice, ToolKind, ToolName, ToolSpec,
+    storage::BlobStore,
 };
 use llm_clients::{ApiResponse, openai::responses as oai};
 use serde_json::{Value, json};
@@ -165,7 +166,19 @@ impl LlmGenerationAdapter for OpenAiResponsesLlmAdapter {
             });
         }
 
-        let mut provider_request = self.materialize_create_request(&request.request).await?;
+        let mut catalog = crate::tool_catalog::ToolCatalog::resolve(
+            self.blobs.as_ref(),
+            &tools::runtime::ToolTarget::from(&request.request.model),
+            &request.request.tools,
+        )
+        .await?;
+        let mut provider_request = materialize_request_with_catalog(
+            self.blobs.as_ref(),
+            self.inventory.as_ref(),
+            &request.request,
+            &mut catalog,
+        )
+        .await?;
         // Route every turn of a session to the same prompt cache.
         provider_request.prompt_cache_key =
             Some(crate::prompt_cache::prompt_cache_key(&request.session_id));
@@ -186,7 +199,8 @@ impl LlmGenerationAdapter for OpenAiResponsesLlmAdapter {
                     .map(|endpoint| &endpoint.transport),
             )
             .await?;
-        let result = result_from_response(self.blobs.as_ref(), &request, &response).await?;
+        let mut result = result_from_response(self.blobs.as_ref(), &request, &response).await?;
+        catalog.normalize(&mut result);
         let debug_dumps = store_debug_dumps(
             self.blobs.as_ref(),
             request_dump,
@@ -248,6 +262,21 @@ async fn materialize_create_request_with_inventory(
     inventory: &dyn McpInventoryResolver,
     request: &LlmRequest,
 ) -> LlmAdapterResult<oai::CreateResponseRequest> {
+    let mut catalog = crate::tool_catalog::ToolCatalog::resolve(
+        blobs,
+        &tools::runtime::ToolTarget::from(&request.model),
+        &request.tools,
+    )
+    .await?;
+    materialize_request_with_catalog(blobs, inventory, request, &mut catalog).await
+}
+
+async fn materialize_request_with_catalog(
+    blobs: &dyn BlobStore,
+    inventory: &dyn McpInventoryResolver,
+    request: &LlmRequest,
+    catalog: &mut crate::tool_catalog::ToolCatalog,
+) -> LlmAdapterResult<oai::CreateResponseRequest> {
     let mut params = openai_responses_params(request.params.as_ref())?;
     // Materialize intent fields into provider params. Explicit per-run
     // provider params win: derived values never overwrite fields the params
@@ -270,7 +299,7 @@ async fn materialize_create_request_with_inventory(
         .cloned()
         .collect::<Vec<_>>();
     let input_items = materialize_input_items(blobs, &input_entries).await?;
-    let tools = materialize_tools(blobs, inventory, &request.tools).await?;
+    let tools = materialize_tools(blobs, inventory, catalog).await?;
 
     let mut extra = params.extra.clone();
     let service_tier = crate::params::take_openai_service_tier(&mut extra, params.service_tier)?
@@ -289,7 +318,10 @@ async fn materialize_create_request_with_inventory(
         instructions,
         previous_response_id: request.provider_response_id.clone(),
         tools: non_empty(tools),
-        tool_choice: request.tool_choice.as_ref().map(openai_tool_choice),
+        tool_choice: catalog
+            .tool_choice(request.tool_choice.as_ref())?
+            .as_ref()
+            .map(openai_tool_choice),
         reasoning: params.reasoning.as_ref().map(|reasoning| oai::Reasoning {
             effort: reasoning.effort.clone(),
             summary: reasoning.summary.clone(),
@@ -366,7 +398,13 @@ async fn materialize_input_items(
     entries: &[ContextEntry],
 ) -> LlmAdapterResult<Vec<oai::ResponseInputItem>> {
     let mut input: Vec<oai::ResponseInputItem> = Vec::with_capacity(entries.len());
-    for item in entries {
+    for (index, item) in entries.iter().enumerate() {
+        // The exact cited item follows the assistant message it came from
+        // and replays in its place, so the neutral text is skipped. Without
+        // it (a truncated turn, or a removed entry) the text replays as is.
+        if replaced_by_cited_item(item, entries.get(index + 1)) {
+            continue;
+        }
         let next = materialize_input_item(blobs, item).await?;
         // Consecutive same-role USER messages (for example an image entry
         // plus its caption) fold into one message with multiple content
@@ -538,6 +576,21 @@ async fn materialize_input_item(
     }
 }
 
+/// True when `entry` is the neutral text of an assistant message and `next`
+/// carries that message's exact provider item.
+fn replaced_by_cited_item(entry: &ContextEntry, next: Option<&ContextEntry>) -> bool {
+    matches!(
+        entry.kind,
+        ContextEntryKind::Message {
+            role: ContextMessageRole::Assistant
+        }
+    ) && next.is_some_and(|next| {
+        matches!(next.kind, ContextEntryKind::ProviderOpaque)
+            && next.provider_kind.as_deref() == Some(OPENAI_RESPONSES_CITED_TEXT_PROVIDER_KIND)
+            && next.source == entry.source
+    })
+}
+
 fn is_openai_raw_item(item: &ContextEntry) -> bool {
     matches!(
         item.kind,
@@ -551,12 +604,12 @@ fn is_openai_raw_item(item: &ContextEntry) -> bool {
 async fn materialize_tools(
     blobs: &dyn BlobStore,
     inventory: &dyn McpInventoryResolver,
-    tools: &[ToolSpec],
+    catalog: &mut crate::tool_catalog::ToolCatalog,
 ) -> LlmAdapterResult<Vec<oai::Tool>> {
-    let mut materialized = Vec::with_capacity(tools.len());
+    let mut materialized = Vec::with_capacity(catalog.tools.len());
     let mut native_mcp_tool_count = 0usize;
-    for tool in tools {
-        let ToolKind::RemoteMcp(spec) = &tool.kind else {
+    for tool in &catalog.tools {
+        let crate::tool_catalog::ResolvedToolKind::RemoteMcp(spec) = &tool.kind else {
             materialized.push(materialize_tool(blobs, tool).await?);
             continue;
         };
@@ -576,7 +629,7 @@ async fn materialize_tools(
                 let advertised_count = native.len();
                 native.retain(|native_tool| {
                     let name = format!("{}__{}", tool.name, native_tool.remote_name);
-                    name.len() <= 64 && ToolName::try_new(name).is_ok()
+                    crate::tool_catalog::valid_exposed_name(&name)
                 });
                 let omitted_count = advertised_count - native.len();
                 if omitted_count != 0 {
@@ -597,6 +650,9 @@ async fn materialize_tools(
                 native_mcp_tool_count += native.len();
                 for native_tool in native {
                     let name = format!("{}__{}", tool.name, native_tool.remote_name);
+                    catalog
+                        .names
+                        .insert(ToolName::new(name.clone()), Some(tool.id.clone()))?;
                     let mut function = oai::FunctionTool::new(name, native_tool.input_schema);
                     function.description = native_tool.description;
                     // MCP accepts general JSON Schema. OpenAI strict functions
@@ -611,20 +667,17 @@ async fn materialize_tools(
     Ok(materialized)
 }
 
-async fn materialize_tool(blobs: &dyn BlobStore, tool: &ToolSpec) -> LlmAdapterResult<oai::Tool> {
+async fn materialize_tool(
+    blobs: &dyn BlobStore,
+    tool: &crate::tool_catalog::ResolvedTool,
+) -> LlmAdapterResult<oai::Tool> {
     match &tool.kind {
-        ToolKind::Function(function) => {
-            let mut materialized = oai::FunctionTool::new(
-                tool.name.as_str(),
-                read_json(blobs, &function.input_schema_ref).await?,
-            );
-            materialized.description = match &function.description_ref {
-                Some(blob_ref) => Some(read_text(blobs, blob_ref).await?),
-                None => None,
-            };
+        crate::tool_catalog::ResolvedToolKind::Function(function) => {
+            let mut materialized =
+                oai::FunctionTool::new(tool.name.as_str(), function.input_schema.clone());
+            materialized.description = function.description.clone();
             materialized.strict = function.strict;
-            if let Some(provider_options_ref) = &function.provider_options_ref {
-                let options = read_json(blobs, provider_options_ref).await?;
+            if let Some(options) = &function.provider_options {
                 let Some(options) = options.as_object() else {
                     return Err(LlmAdapterError::InvalidProviderRequest {
                         message: format!(
@@ -639,7 +692,7 @@ async fn materialize_tool(blobs: &dyn BlobStore, tool: &ToolSpec) -> LlmAdapterR
             }
             Ok(oai::Tool::Function(materialized))
         }
-        ToolKind::ProviderNative(native) => {
+        crate::tool_catalog::ResolvedToolKind::ProviderNative(native) => {
             if native.api_kind != ProviderApiKind::OpenAiResponses {
                 return Err(LlmAdapterError::InvalidProviderRequest {
                     message: format!(
@@ -650,12 +703,14 @@ async fn materialize_tool(blobs: &dyn BlobStore, tool: &ToolSpec) -> LlmAdapterR
             }
             match native.execution {
                 ProviderNativeToolExecution::ProviderHosted
-                | ProviderNativeToolExecution::ClientEffect => Ok(oai::Tool::Raw(
-                    read_json(blobs, &native.native_tool_ref).await?,
-                )),
+                | ProviderNativeToolExecution::ClientEffect => {
+                    Ok(oai::Tool::Raw(native.definition.clone()))
+                }
             }
         }
-        ToolKind::RemoteMcp(remote_mcp) => materialize_remote_mcp_tool(blobs, remote_mcp).await,
+        crate::tool_catalog::ResolvedToolKind::RemoteMcp(remote_mcp) => {
+            materialize_remote_mcp_tool(blobs, remote_mcp).await
+        }
     }
 }
 
@@ -862,11 +917,10 @@ pub async fn result_from_response(
         let raw_item = raw_output_item(&response.raw_json, index, item)?;
         match item.r#type.as_str() {
             "message" => {
-                if let Some(context_entry) =
-                    assistant_context_entry(blobs, request, item, &response.parsed).await?
-                {
-                    context_entries.push(context_entry);
-                }
+                context_entries.extend(
+                    assistant_context_entries(blobs, request, item, &response.parsed, raw_item)
+                        .await?,
+                );
             }
             "function_call" => {
                 let (context_entry, tool_call) =
@@ -1132,12 +1186,13 @@ fn raw_output_item(
     })
 }
 
-async fn assistant_context_entry(
+async fn assistant_context_entries(
     blobs: &dyn BlobStore,
     _request: &LlmGenerationRequest,
     item: &oai::ResponseOutputItem,
     response: &oai::Response,
-) -> LlmAdapterResult<Option<ContextEntryInput>> {
+    raw_item: Value,
+) -> LlmAdapterResult<Vec<ContextEntryInput>> {
     let text = item
         .content
         .iter()
@@ -1174,11 +1229,11 @@ async fn assistant_context_entry(
         (text, PROVIDER_KIND_MESSAGE)
     };
     if text.is_empty() {
-        return Ok(None);
+        return Ok(Vec::new());
     }
 
     let content_ref = put_text(blobs, &text).await?;
-    Ok(Some(ContextEntryInput {
+    let mut entries = vec![ContextEntryInput {
         kind: ContextEntryKind::Message {
             role: ContextMessageRole::Assistant,
         },
@@ -1188,7 +1243,38 @@ async fn assistant_context_entry(
         provider_kind: Some(provider_kind.to_string()),
         provider_item_id: item.id.clone(),
         token_estimate: None,
-    }))
+    }];
+    // URL citations are annotations on the exact output item, so a cited
+    // message is followed by that item: it replays in place of the neutral
+    // text, and the API projects its sources onto the message.
+    if has_url_citations(&raw_item) {
+        entries.push(ContextEntryInput {
+            kind: ContextEntryKind::ProviderOpaque,
+            content_ref: put_json(blobs, &raw_item).await?,
+            media_type: Some(MEDIA_TYPE_JSON.to_owned()),
+            preview: Some("OpenAI Responses cited text".to_owned()),
+            provider_kind: Some(OPENAI_RESPONSES_CITED_TEXT_PROVIDER_KIND.to_owned()),
+            provider_item_id: item.id.clone(),
+            token_estimate: None,
+        });
+    }
+    Ok(entries)
+}
+
+fn has_url_citations(raw_item: &Value) -> bool {
+    raw_item
+        .get("content")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|part| part.get("type").and_then(Value::as_str) == Some("output_text"))
+        .flat_map(|part| {
+            part.get("annotations")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+        })
+        .any(|annotation| annotation.get("type").and_then(Value::as_str) == Some("url_citation"))
 }
 
 async fn function_call_context(
@@ -1242,6 +1328,7 @@ async fn function_call_context(
     };
     let tool_call = ObservedToolCall {
         call_id,
+        tool_id: Some(tool_name.clone()),
         tool_name,
         provider_kind: Some(PROVIDER_KIND_FUNCTION_CALL.to_string()),
         arguments_ref,
@@ -1445,10 +1532,7 @@ mod tests {
         SKILL_CATALOG_SCHEMA_VERSION, SkillCatalogSnapshot, SkillDependencies, SkillLocation,
         SkillMetadata, SkillScope, SkillSource, SkillTrustLevel,
     };
-    use tools::web::search::{
-        OpenAiResponsesWebSearchConfig, WebSearchContextSize, WebSearchMode,
-        openai_responses_web_search_tool_bundle,
-    };
+    use tools::web::search::{OpenAiResponsesWebSearchConfig, WebSearchContextSize, WebSearchMode};
 
     use super::*;
     use crate::executor::{LlmAdapterRegistry, LlmRuntime};
@@ -1500,10 +1584,17 @@ mod tests {
         let tools = materialize_tools(
             &blobs,
             &StaticMcpInventory,
-            &[
-                native_mcp_tool(RemoteMcpExposure::Inject),
-                native_mcp_tool(RemoteMcpExposure::Search),
-            ],
+            &mut crate::tool_catalog::ToolCatalog::resolve(
+                &blobs,
+                &tools::runtime::ToolTarget::api_kind(ProviderApiKind::OpenAiResponses),
+                &[native_mcp_tool(RemoteMcpExposure::Inject), {
+                    let mut tool = native_mcp_tool(RemoteMcpExposure::Search);
+                    tool.name = ToolName::new("mcp_other");
+                    tool
+                }],
+            )
+            .await
+            .expect("catalog"),
         )
         .await
         .expect("materialize native MCP");
@@ -1840,24 +1931,32 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn materialize_create_request_passes_provider_native_web_search_tool() {
         let blobs = InMemoryBlobStore::new();
-        let bundle = openai_responses_web_search_tool_bundle(&OpenAiResponsesWebSearchConfig {
+        let native = OpenAiResponsesWebSearchConfig {
             mode: WebSearchMode::Cached,
             search_context_size: Some(WebSearchContextSize::Low),
             allowed_domains: vec!["docs.rs".to_string()],
             blocked_domains: Vec::new(),
             user_location: None,
             include_sources: true,
-        })
-        .expect("web search bundle")
-        .expect("enabled web search");
-        for document in &bundle.documents {
-            let stored_ref = crate::blob_io::put_bytes(&blobs, document.blob_bytes())
-                .await
-                .expect("store native tool");
-            assert_eq!(stored_ref, document.blob_ref);
         }
+        .native_tool_json()
+        .expect("web search definition")
+        .expect("enabled web search");
+
         let mut request = intent_request(Vec::new());
-        request.tools = vec![bundle.spec];
+        request.tools = vec![engine::ToolSpec {
+            name: engine::ToolName::new("web_search"),
+            kind: engine::ToolKind::ProviderNative(engine::ProviderNativeToolSpec {
+                api_kind: ProviderApiKind::OpenAiResponses,
+                native_tool_ref: blobs
+                    .put_bytes(serde_json::to_vec(&native).expect("native json"))
+                    .await
+                    .expect("native definition"),
+                execution: engine::ProviderNativeToolExecution::ProviderHosted,
+            }),
+            parallelism: engine::ToolParallelism::ParallelSafe,
+            execution: Default::default(),
+        }];
         request.tool_choice = Some(ToolChoice::Auto);
         request.output_limit = Some(1024);
         request.params = Some(openai_params(&OpenAiResponsesParams {
@@ -2483,6 +2582,15 @@ mod tests {
             request: {
                 let mut request = intent_request(vec![context]);
                 request.output_limit = Some(256);
+                request.tools = vec![tools::definitions::register(
+                    "env.read_file",
+                    tools::definitions::BuiltinSettings {
+                        presentation: tools::toolset::BuiltinToolPresentation::Canonical,
+                        ..Default::default()
+                    },
+                    ToolParallelism::ParallelSafe,
+                    Default::default(),
+                )];
                 request
             },
         };
@@ -2503,6 +2611,10 @@ mod tests {
             Some(15)
         );
         assert_eq!(result.facts.tool_calls.len(), 1);
+        assert_eq!(
+            result.facts.tool_calls[0].tool_id,
+            Some(ToolName::new("env.read_file"))
+        );
         assert_eq!(
             result.facts.tool_calls[0].tool_name,
             ToolName::new("read_file")
@@ -2945,6 +3057,98 @@ mod tests {
             .await
             .expect("raw item");
         assert_eq!(retained, raw_item);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn cited_message_is_followed_by_its_exact_item_which_replays() {
+        let blobs = InMemoryBlobStore::new();
+        let raw_item = json!({
+            "id": "msg_1",
+            "type": "message",
+            "role": "assistant",
+            "status": "completed",
+            "content": [{
+                "type": "output_text",
+                "text": "OpenAI has citations.",
+                "annotations": [{
+                    "type": "url_citation",
+                    "start_index": 11,
+                    "end_index": 20,
+                    "url": "https://example.com/source",
+                    "title": "Example source"
+                }]
+            }]
+        });
+        let raw_json = json!({
+            "id": "resp_1",
+            "status": "completed",
+            "output": [raw_item.clone()]
+        });
+        let response = ApiResponse {
+            parsed: serde_json::from_value(raw_json.clone()).expect("response"),
+            raw_json,
+            status: 200,
+            headers: HeaderSnapshot::default(),
+        };
+        let request = LlmGenerationRequest {
+            session_id: SessionId::new("session-a"),
+            run_id: RunId::new(1),
+            turn_id: TurnId::new(1),
+            request: intent_request(Vec::new()),
+        };
+
+        let result = result_from_response(&blobs, &request, &response)
+            .await
+            .expect("result");
+
+        assert_eq!(result.context_entries.len(), 2);
+        let message = &result.context_entries[0];
+        assert!(matches!(
+            message.kind,
+            ContextEntryKind::Message {
+                role: ContextMessageRole::Assistant
+            }
+        ));
+        assert_eq!(
+            message.provider_kind.as_deref(),
+            Some(PROVIDER_KIND_MESSAGE)
+        );
+        assert_eq!(message.preview.as_deref(), Some("OpenAI has citations."));
+        let cited = &result.context_entries[1];
+        assert!(matches!(cited.kind, ContextEntryKind::ProviderOpaque));
+        assert_eq!(
+            cited.provider_kind.as_deref(),
+            Some(OPENAI_RESPONSES_CITED_TEXT_PROVIDER_KIND)
+        );
+        assert_eq!(
+            read_json(&blobs, &cited.content_ref)
+                .await
+                .expect("native cited item"),
+            raw_item
+        );
+
+        let retained = result
+            .context_entries
+            .iter()
+            .enumerate()
+            .map(|(index, entry)| retained_context_entry(index, entry))
+            .collect::<Vec<_>>();
+        let input = materialize_input_items(&blobs, &retained)
+            .await
+            .expect("materialize cited output");
+        assert_eq!(
+            serde_json::to_value(input).expect("input JSON"),
+            json!([raw_item])
+        );
+
+        // Without its exact item (a truncated turn keeps only the text), the
+        // message replays as plain assistant text.
+        let input = materialize_input_items(&blobs, &retained[..1])
+            .await
+            .expect("materialize plain output");
+        let input = serde_json::to_value(input).expect("input JSON");
+        assert_eq!(input[0]["role"], "assistant");
+        assert_eq!(input[0]["content"], "OpenAI has citations.");
     }
 
     #[tokio::test(flavor = "current_thread")]

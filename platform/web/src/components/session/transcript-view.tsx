@@ -44,6 +44,23 @@ export function TranscriptEntryView({
                 <Bubble variant="ghost" className="max-w-full">
                   <BubbleContent>
                     <MarkdownContent>{text}</MarkdownContent>
+                    {entry.citations?.length ? (
+                      <div className="mt-3 flex flex-wrap gap-2 border-t pt-3 pb-1 text-xs text-muted-foreground">
+                        <span className="font-medium">Sources</span>
+                        {entry.citations.map((citation, index) => (
+                          <a
+                            key={`${citation.url}:${index}`}
+                            href={citation.url}
+                            target="_blank"
+                            rel="noreferrer"
+                            title={citation.citedText ?? undefined}
+                            className="text-primary underline underline-offset-4"
+                          >
+                            {citation.title || citationHost(citation.url)}
+                          </a>
+                        ))}
+                      </div>
+                    ) : null}
                   </BubbleContent>
                 </Bubble>
               </MessageContent>
@@ -78,6 +95,14 @@ export function TranscriptEntryView({
           <MarkerContent>{entry.text}</MarkerContent>
         </Marker>
       );
+  }
+}
+
+function citationHost(url: string): string {
+  try {
+    return new URL(url).hostname || url;
+  } catch {
+    return url;
   }
 }
 

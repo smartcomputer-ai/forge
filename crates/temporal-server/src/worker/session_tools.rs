@@ -3,8 +3,8 @@ use std::{collections::BTreeMap, sync::Arc};
 use async_trait::async_trait;
 use engine::PromiseIdAllocator;
 use engine::{
-    CoreAgentIoError, CoreAgentTools, PromiseSource, ProviderApiKind, SessionId, ToolBatchOutcome,
-    ToolCallStatus, ToolInvocationBatchRequest, ToolInvocationBatchResult, ToolInvocationResult,
+    CoreAgentIoError, CoreAgentTools, PromiseSource, SessionId, ToolBatchOutcome, ToolCallStatus,
+    ToolInvocationBatchRequest, ToolInvocationBatchResult, ToolInvocationResult,
     promise_create_effect,
     storage::{BlobEdge, BlobGraphStore, BlobStore, BlobStoreError},
 };
@@ -23,32 +23,27 @@ use environments::{
 use store_pg::PgStore;
 use tools::{
     concurrency::{
-        AWAIT_TOOL_NAME, AwaitArgs, CANCEL_TOOL_NAME, CancelArgs, DETACH_TOOL_NAME, DetachArgs,
-        SLEEP_TOOL_NAME, SleepArgs, SleepOutput, cancel_promises_from_runtime,
+        AwaitArgs, CancelArgs, DetachArgs, SleepArgs, SleepOutput, cancel_promises_from_runtime,
         cancel_promises_model_visible_text, detach_promises_from_runtime,
         detach_promises_model_visible_text, is_concurrency_tool, sleep_model_visible_text,
     },
     environment::control::{
-        DEFAULT_ENVIRONMENT_LIST_LIMIT, ENVIRONMENT_ACTIVATE_TOOL_NAME,
-        ENVIRONMENT_DEACTIVATE_TOOL_NAME, ENVIRONMENT_LIST_TOOL_NAME, ENVIRONMENT_READ_TOOL_NAME,
-        EnvironmentActivateArgs, EnvironmentDeactivateArgs, EnvironmentListArgs,
-        EnvironmentReadArgs, MAX_ENVIRONMENT_LIST_LIMIT, is_environment_control_tool,
-        is_environment_selection_tool,
+        DEFAULT_ENVIRONMENT_LIST_LIMIT, EnvironmentActivateArgs, EnvironmentDeactivateArgs,
+        EnvironmentListArgs, EnvironmentReadArgs, MAX_ENVIRONMENT_LIST_LIMIT,
+        is_environment_control_tool, is_environment_selection_tool,
     },
     environment::jobs::{
-        JOB_READ_TOOL_NAME, JOB_RUN_WORKFLOW_SEMANTIC_TYPE, JOB_RUN_WORKFLOW_TOOL_ID,
+        JOB_RUN_WORKFLOW_SEMANTIC_TYPE, JOB_RUN_WORKFLOW_TOOL_ID,
         JOB_SUBMIT_WORKFLOW_SEMANTIC_TYPE, JOB_SUBMIT_WORKFLOW_TOOL_ID, JobHandle, JobHandleArg,
         JobReadArgs, JobSubmitExecutionContextV1, ModelJobResult, ModelJobResultSet,
-        NormalizeJobResultInput, is_environment_job_query_tool_name, normalize_job_result,
+        NormalizeJobResultInput, normalize_job_result,
     },
     environment_protocol::RemoteEnvironmentConnection,
     fs::{FsPath, FsToolContext, LinkedVfsFileSystem},
     limits::ToolLimits,
     runtime::InlineToolRuntime,
-    runtime::{ToolCatalog, ToolTarget},
+    runtime::ToolCatalog,
     subagents::{AgentCallArgs, SubagentExecutionContextV1, SubagentToolKind},
-    toolset::{EnvironmentToolsetConfig, ToolsetConfig, ToolsetEnvironment, resolve_toolset},
-    web::fetch::WebFetchToolConfig,
     workflow_tool::invoke_workflow_tool,
 };
 use vfs::{ResolvedWorkspaceLink, VfsCatalogError, VfsWorkspaceStore};
@@ -164,11 +159,11 @@ impl SessionTools {
         call: &engine::ToolInvocationRequest,
         promise_ids: &PromiseIdAllocator,
     ) -> Result<ToolInvocationResult, CoreAgentIoError> {
-        match call.tool_name.as_str() {
-            CANCEL_TOOL_NAME => self.invoke_cancel_call(call).await,
-            DETACH_TOOL_NAME => self.invoke_detach_call(request.run_id, call).await,
-            SLEEP_TOOL_NAME => self.invoke_sleep_call(call, promise_ids).await,
-            AWAIT_TOOL_NAME => {
+        match call.tool_id.as_ref().map(|id| id.as_str()) {
+            Some("concurrency.cancel") => self.invoke_cancel_call(call).await,
+            Some("concurrency.detach") => self.invoke_detach_call(request.run_id, call).await,
+            Some("concurrency.sleep") => self.invoke_sleep_call(call, promise_ids).await,
+            Some("concurrency.await") => {
                 failed_result(
                     self.blobs.as_ref(),
                     call.call_id.clone(),
@@ -180,7 +175,7 @@ impl SessionTools {
                 failed_result(
                     self.blobs.as_ref(),
                     call.call_id.clone(),
-                    format!("unknown concurrency tool {other}"),
+                    format!("unknown concurrency tool {other:?}"),
                 )
                 .await
             }
@@ -303,7 +298,11 @@ impl SessionTools {
         let await_calls = request
             .calls
             .iter()
-            .filter(|call| call.tool_name.as_str() == AWAIT_TOOL_NAME)
+            .filter(|call| {
+                call.tool_id
+                    .as_ref()
+                    .is_some_and(|id| id.as_str() == "concurrency.await")
+            })
             .cloned()
             .collect::<Vec<_>>();
         if await_calls.len() != 1 {
@@ -334,7 +333,12 @@ impl SessionTools {
             calls: request
                 .calls
                 .iter()
-                .filter(|call| call.tool_name.as_str() != AWAIT_TOOL_NAME)
+                .filter(|call| {
+                    !call
+                        .tool_id
+                        .as_ref()
+                        .is_some_and(|id| id.as_str() == "concurrency.await")
+                })
                 .cloned()
                 .collect(),
             ..request.clone()
@@ -406,8 +410,8 @@ impl SessionTools {
         call: &engine::ToolInvocationRequest,
         environments: &SessionEnvironmentManager,
     ) -> Result<ToolInvocationResult, CoreAgentIoError> {
-        match call.tool_name.as_str() {
-            JOB_READ_TOOL_NAME => {
+        match call.tool_id.as_ref().map(|id| id.as_str()) {
+            Some("env.job_read") => {
                 let args: JobReadArgs = self.read_tool_args(call).await?;
                 let result = self
                     .read_environment_jobs(
@@ -839,8 +843,8 @@ impl SessionTools {
         };
         let allowed = supplied_environment_policy(request)?;
         let active = request.active_environment_id.as_ref();
-        match call.tool_name.as_str() {
-            ENVIRONMENT_LIST_TOOL_NAME => {
+        match call.tool_id.as_ref().map(|id| id.as_str()) {
+            Some("environment.list") => {
                 let args: EnvironmentListArgs = self.read_tool_args(call).await?;
                 let limit = args
                     .limit
@@ -886,7 +890,7 @@ impl SessionTools {
                 )
                 .await
             }
-            ENVIRONMENT_READ_TOOL_NAME => {
+            Some("environment.read") => {
                 let args: EnvironmentReadArgs = self.read_tool_args(call).await?;
                 let environment_id = match environment_read_target(args, active) {
                     Ok(environment_id) => environment_id,
@@ -927,7 +931,7 @@ impl SessionTools {
                 )
                 .await
             }
-            ENVIRONMENT_ACTIVATE_TOOL_NAME => {
+            Some("environment.activate") => {
                 let args: EnvironmentActivateArgs = self.read_tool_args(call).await?;
                 let environment_id = match EnvironmentId::try_new(args.environment_id) {
                     Ok(id) => id,
@@ -979,7 +983,7 @@ impl SessionTools {
                 ));
                 Ok(result)
             }
-            ENVIRONMENT_DEACTIVATE_TOOL_NAME => {
+            Some("environment.deactivate") => {
                 let _: EnvironmentDeactivateArgs = self.read_tool_args(call).await?;
                 let output = serde_json::json!({ "active": false });
                 let mut result = self
@@ -992,7 +996,7 @@ impl SessionTools {
                 failed_result(
                     self.blobs.as_ref(),
                     call.call_id.clone(),
-                    format!("unknown environment control tool {other}"),
+                    format!("unknown environment control tool {other:?}"),
                 )
                 .await
             }
@@ -1174,7 +1178,6 @@ impl SessionTools {
         environments: &SessionEnvironmentManager,
         active_environment_id: Option<&EnvironmentId>,
     ) -> Result<InlineToolRuntime, CoreAgentIoError> {
-        let catalog = runtime_catalog(true, true)?;
         let vfs = if links.is_empty() {
             None
         } else {
@@ -1195,7 +1198,7 @@ impl SessionTools {
             environment,
             self.blobs.clone(),
             ToolLimits::default(),
-            catalog,
+            ToolCatalog::new(),
         ))
     }
 }
@@ -1341,55 +1344,32 @@ fn unsupported_environment_data_transport(transport: impl std::fmt::Display) -> 
     ))
 }
 
-fn runtime_catalog(
-    include_environment_tools: bool,
-    include_job_tools: bool,
-) -> Result<ToolCatalog, CoreAgentIoError> {
-    let mut catalog = ToolCatalog::new();
-    for api_kind in [
-        ProviderApiKind::OpenAiResponses,
-        ProviderApiKind::AnthropicMessages,
-        ProviderApiKind::OpenAiCompletions,
-    ] {
-        let target = ToolTarget::api_kind(api_kind);
-        let mut config = ToolsetConfig::workspace();
-        if include_environment_tools {
-            config.builtin.environment = EnvironmentToolsetConfig::basic();
-        }
-        if include_job_tools {
-            config.builtin.environment.job_read = true;
-        }
-        config.web_fetch = WebFetchToolConfig::enabled();
-        let toolset = resolve_toolset(ToolsetEnvironment { target: &target }, &config)
-            .map_err(|error| io_error(format!("build mounted vfs tool catalog: {error}")))?;
-        for binding in toolset.catalog.bindings() {
-            catalog.insert(binding.clone());
-        }
-    }
-    Ok(catalog)
-}
-
 #[async_trait]
 impl CoreAgentTools for SessionTools {
     async fn invoke_batch(
         &self,
         request: ToolInvocationBatchRequest,
     ) -> Result<ToolBatchOutcome, CoreAgentIoError> {
-        let routing_catalog = runtime_catalog(true, true)?;
         // One allocator per dispatch: every promise this batch's calls mint
         // is numbered from the engine's base, whichever call draws first.
         let promise_ids = PromiseIdAllocator::new(request.promise_id_base);
         let selection_calls = request
             .calls
             .iter()
-            .filter(|call| is_environment_selection_tool(&call.tool_name))
+            .filter(|call| {
+                call.tool_id
+                    .as_ref()
+                    .is_some_and(is_environment_selection_tool)
+            })
             .count();
         let mixes_environment_dependency = selection_calls > 0
             && request.calls.iter().any(|call| {
-                !is_environment_selection_tool(&call.tool_name)
-                    && routing_catalog.get(&call.tool_name).is_some_and(|binding| {
-                        binding.logical_id.starts_with("env.")
-                            && binding.logical_id != "env.job_read"
+                !call
+                    .tool_id
+                    .as_ref()
+                    .is_some_and(is_environment_selection_tool)
+                    && call.tool_id.as_ref().is_some_and(|id| {
+                        id.as_str().starts_with("env.") && id.as_str() != "env.job_read"
                     })
             });
         if selection_calls > 1 || mixes_environment_dependency {
@@ -1411,10 +1391,11 @@ impl CoreAgentTools for SessionTools {
                 results,
             }));
         }
-        let has_await_call = request
-            .calls
-            .iter()
-            .any(|call| call.tool_name.as_str() == AWAIT_TOOL_NAME);
+        let has_await_call = request.calls.iter().any(|call| {
+            call.tool_id
+                .as_ref()
+                .is_some_and(|id| id.as_str() == "concurrency.await")
+        });
         if has_await_call && request.calls.len() == 1 {
             return self.invoke_lone_await_batch(request).await;
         }
@@ -1422,8 +1403,11 @@ impl CoreAgentTools for SessionTools {
             return self.invoke_mixed_await_batch(request).await;
         }
         let has_generic_runtime_call = request.calls.iter().any(|call| {
-            !is_concurrency_tool(&call.tool_name)
-                && !is_environment_control_tool(&call.tool_name)
+            !call.tool_id.as_ref().is_some_and(is_concurrency_tool)
+                && !call
+                    .tool_id
+                    .as_ref()
+                    .is_some_and(is_environment_control_tool)
                 && call.workflow_tool.is_none()
         });
         let mut successful_workflow_siblings = BTreeMap::new();
@@ -1442,7 +1426,11 @@ impl CoreAgentTools for SessionTools {
                         )
                         .await?,
                     );
-                } else if is_environment_control_tool(&call.tool_name) {
+                } else if call
+                    .tool_id
+                    .as_ref()
+                    .is_some_and(is_environment_control_tool)
+                {
                     results.push(self.invoke_environment_control_call(&request, call).await?);
                 } else {
                     results.push(
@@ -1460,15 +1448,18 @@ impl CoreAgentTools for SessionTools {
         }
 
         let has_vfs_call = request.calls.iter().any(|call| {
-            routing_catalog
-                .get(&call.tool_name)
-                .is_some_and(|binding| binding.logical_id.starts_with("vfs."))
+            call.tool_id
+                .as_ref()
+                .is_some_and(|id| id.as_str().starts_with("vfs."))
         });
         let has_environment_call = request.calls.iter().any(|call| {
-            routing_catalog
-                .get(&call.tool_name)
-                .is_some_and(|binding| binding.logical_id.starts_with("env."))
-                || is_environment_job_query_tool_name(call.tool_name.as_str())
+            call.tool_id
+                .as_ref()
+                .is_some_and(|id| id.as_str().starts_with("env."))
+                || call
+                    .tool_id
+                    .as_ref()
+                    .is_some_and(|id| id.as_str() == "env.job_read")
         });
         let links = if has_vfs_call {
             vfs::resolve_workspace_links(
@@ -1505,18 +1496,25 @@ impl CoreAgentTools for SessionTools {
                         )
                         .await?,
                     );
-                } else if is_concurrency_tool(&call.tool_name) {
+                } else if call.tool_id.as_ref().is_some_and(is_concurrency_tool) {
                     results.push(
                         self.invoke_concurrency_call(&request, call, &promise_ids)
                             .await?,
                     );
-                } else if is_environment_control_tool(&call.tool_name) {
+                } else if call
+                    .tool_id
+                    .as_ref()
+                    .is_some_and(is_environment_control_tool)
+                {
                     results.push(self.invoke_environment_control_call(&request, call).await?);
                 } else if let Some(blocker) = environments.active_blocker().filter(|_| {
-                    is_environment_job_query_tool_name(call.tool_name.as_str())
-                        || routing_catalog
-                            .get(&call.tool_name)
-                            .is_some_and(|binding| binding.logical_id.starts_with("env."))
+                    call.tool_id
+                        .as_ref()
+                        .is_some_and(|id| id.as_str() == "env.job_read")
+                        || call
+                            .tool_id
+                            .as_ref()
+                            .is_some_and(|id| id.as_str().starts_with("env."))
                 }) {
                     // Batch-unit execution has no workflow-level readiness wait;
                     // report the blocker as an ordinary failed call.
@@ -1528,7 +1526,11 @@ impl CoreAgentTools for SessionTools {
                         )
                         .await?,
                     );
-                } else if is_environment_job_query_tool_name(call.tool_name.as_str()) {
+                } else if call
+                    .tool_id
+                    .as_ref()
+                    .is_some_and(|id| id.as_str() == "env.job_read")
+                {
                     results.push(
                         self.invoke_environment_job_call(&request, call, &environments)
                             .await?,
@@ -1599,7 +1601,12 @@ impl SessionTools {
         let call = request.call.clone();
         // Batch-unit tools never arrive here: the workflow routes batches
         // containing them through the batch activity.
-        if call.workflow_tool.is_some() || call.tool_name.as_str() == AWAIT_TOOL_NAME {
+        if call.workflow_tool.is_some()
+            || call
+                .tool_id
+                .as_ref()
+                .is_some_and(|id| id.as_str() == "concurrency.await")
+        {
             return failed_result(
                 self.blobs.as_ref(),
                 call.call_id,
@@ -1608,14 +1615,13 @@ impl SessionTools {
             .await
             .map(ToolCallExecution::Completed);
         }
-        let routing_catalog = runtime_catalog(true, true)?;
-        if let Some(message) = per_call_batch_rule_violation(&routing_catalog, &request) {
+        if let Some(message) = per_call_batch_rule_violation(&request) {
             return failed_result(self.blobs.as_ref(), call.call_id, message)
                 .await
                 .map(ToolCallExecution::Completed);
         }
         let batch_request = request.into_batch_request();
-        if is_concurrency_tool(&call.tool_name) {
+        if call.tool_id.as_ref().is_some_and(is_concurrency_tool) {
             // A per-call dispatch owns exactly one promise slot.
             let promise_ids = PromiseIdAllocator::new(batch_request.promise_id_base);
             return self
@@ -1623,19 +1629,28 @@ impl SessionTools {
                 .await
                 .map(ToolCallExecution::Completed);
         }
-        if is_environment_control_tool(&call.tool_name) {
+        if call
+            .tool_id
+            .as_ref()
+            .is_some_and(is_environment_control_tool)
+        {
             return self
                 .invoke_environment_control_call(&batch_request, &call)
                 .await
                 .map(ToolCallExecution::Completed);
         }
-        let is_job_call = is_environment_job_query_tool_name(call.tool_name.as_str());
-        let is_vfs_call = routing_catalog
-            .get(&call.tool_name)
-            .is_some_and(|binding| binding.logical_id.starts_with("vfs."));
-        let is_environment_call = routing_catalog
-            .get(&call.tool_name)
-            .is_some_and(|binding| binding.logical_id.starts_with("env."));
+        let is_job_call = call
+            .tool_id
+            .as_ref()
+            .is_some_and(|id| id.as_str() == "env.job_read");
+        let is_vfs_call = call
+            .tool_id
+            .as_ref()
+            .is_some_and(|id| id.as_str().starts_with("vfs."));
+        let is_environment_call = call
+            .tool_id
+            .as_ref()
+            .is_some_and(|id| id.as_str().starts_with("env."));
         let environments = if is_environment_call || is_job_call {
             let environments = self.environment_manager_for_session(&batch_request).await?;
             match environments.active_blocker() {
@@ -1814,31 +1829,33 @@ fn active_environment_blocker_message(blocker: &ActiveEnvironmentBlocker) -> Str
 /// calls participating in a violation fail; unrelated siblings execute
 /// normally.
 fn per_call_batch_rule_violation(
-    routing_catalog: &ToolCatalog,
     request: &engine::ToolInvocationCallRequest,
 ) -> Option<&'static str> {
     let call = &request.call;
-    let is_env_dependent = |tool_name: &engine::ToolName| {
-        routing_catalog.get(tool_name).is_some_and(|binding| {
-            binding.logical_id.starts_with("env.") && binding.logical_id != "env.job_read"
-        })
+    let is_env_dependent = |tool_id: Option<&engine::ToolName>| {
+        tool_id.is_some_and(|id| id.as_str().starts_with("env.") && id.as_str() != "env.job_read")
     };
-    let sibling_selection = request
-        .sibling_calls
-        .iter()
-        .any(|sibling| is_environment_selection_tool(&sibling.tool_name));
-    if is_environment_selection_tool(&call.tool_name)
+    let sibling_selection = request.sibling_calls.iter().any(|sibling| {
+        sibling
+            .tool_id
+            .as_ref()
+            .is_some_and(is_environment_selection_tool)
+    });
+    if call
+        .tool_id
+        .as_ref()
+        .is_some_and(is_environment_selection_tool)
         && (sibling_selection
             || request
                 .sibling_calls
                 .iter()
-                .any(|sibling| is_env_dependent(&sibling.tool_name)))
+                .any(|sibling| is_env_dependent(sibling.tool_id.as_ref())))
     {
         return Some(
             "environment activation/deactivation cannot share a batch with another selection or an environment-dependent tool",
         );
     }
-    if is_env_dependent(&call.tool_name) && sibling_selection {
+    if is_env_dependent(call.tool_id.as_ref()) && sibling_selection {
         return Some(
             "environment activation/deactivation cannot share a batch with another selection or an environment-dependent tool",
         );
@@ -1932,10 +1949,13 @@ fn io_error(error: impl std::fmt::Display) -> CoreAgentIoError {
 
 #[cfg(test)]
 mod tests {
+    use engine::ProviderApiKind;
     use std::{
         collections::BTreeMap,
         sync::{Arc, Mutex},
     };
+    use tools::concurrency::AWAIT_TOOL_NAME;
+    use tools::environment::control::ENVIRONMENT_LIST_TOOL_NAME;
 
     use crate::environment::RuntimeEnvironment;
     use engine::{
@@ -1983,6 +2003,38 @@ mod tests {
             .expect("visible ref")
     }
 
+    fn test_tool_id(name: &str) -> ToolName {
+        ToolName::new(match name {
+            "await" => "concurrency.await",
+            "cancel" => "concurrency.cancel",
+            "detach" => "concurrency.detach",
+            "sleep" => "concurrency.sleep",
+            "environment_read" => "environment.read",
+            "environment_list" => "environment.list",
+            "environment_activate" => "environment.activate",
+            "environment_deactivate" => "environment.deactivate",
+            "read_file" => "env.read_file",
+            "run_process" => "env.run_process",
+            "job_read" => "env.job_read",
+            "vfs_read_file" | "VfsRead" => "vfs.read_file",
+            "web_fetch" => "web.fetch",
+            other => other,
+        })
+    }
+
+    fn test_builtin_runtime() -> engine::BuiltinToolCallRuntime {
+        engine::BuiltinToolCallRuntime {
+            spec: engine::BuiltinToolSpec {
+                settings: serde_json::json!({"presentation":"canonical"}),
+            },
+            model: engine::ModelSelection {
+                api_kind: ProviderApiKind::OpenAiResponses,
+                provider_id: "test".into(),
+                model: "test".into(),
+            },
+        }
+    }
+
     fn per_call_request(
         tool_name: &str,
         arguments: &[u8],
@@ -1999,7 +2051,9 @@ mod tests {
             environment_policy: None,
             subagents_policy: None,
             call: engine::ToolInvocationRequest {
+                builtin: Some(test_builtin_runtime()),
                 call_id: ToolCallId::new("call_self"),
+                tool_id: Some(test_tool_id(tool_name)),
                 tool_name: ToolName::new(tool_name),
                 arguments_ref: BlobRef::from_bytes(arguments),
                 workflow_tool: None,
@@ -2011,6 +2065,7 @@ mod tests {
                 .enumerate()
                 .map(|(index, (name, arguments))| engine::ToolCallSummary {
                     call_id: ToolCallId::new(format!("call_sibling_{index}")),
+                    tool_id: Some(test_tool_id(name)),
                     tool_name: ToolName::new(*name),
                     arguments_ref: BlobRef::from_bytes(arguments),
                 })
@@ -2021,54 +2076,49 @@ mod tests {
 
     #[test]
     fn per_call_batch_rules_flag_only_participating_calls() {
-        let catalog = runtime_catalog(true, true).expect("routing catalog");
-
         // A selection call with an environment-dependent sibling fails, and
         // an environment-dependent call with a selection sibling fails.
         assert!(
-            per_call_batch_rule_violation(
-                &catalog,
-                &per_call_request("environment_activate", b"{}", &[("read_file", b"{}")]),
-            )
+            per_call_batch_rule_violation(&per_call_request(
+                "environment_activate",
+                b"{}",
+                &[("read_file", b"{}")]
+            ),)
             .is_some()
         );
         assert!(
-            per_call_batch_rule_violation(
-                &catalog,
-                &per_call_request("read_file", b"{}", &[("environment_activate", b"{}")]),
-            )
+            per_call_batch_rule_violation(&per_call_request(
+                "read_file",
+                b"{}",
+                &[("environment_activate", b"{}")]
+            ),)
             .is_some()
         );
         // Two selection calls in one batch both fail.
         assert!(
-            per_call_batch_rule_violation(
-                &catalog,
-                &per_call_request(
-                    "environment_activate",
-                    b"{}",
-                    &[("environment_deactivate", b"{}")],
-                ),
-            )
+            per_call_batch_rule_violation(&per_call_request(
+                "environment_activate",
+                b"{}",
+                &[("environment_deactivate", b"{}")],
+            ),)
             .is_some()
         );
         // An unrelated sibling in the same violating batch is untouched.
         assert!(
-            per_call_batch_rule_violation(
-                &catalog,
-                &per_call_request(
-                    "web_fetch",
-                    b"{}",
-                    &[("environment_activate", b"{}"), ("read_file", b"{}")],
-                ),
-            )
+            per_call_batch_rule_violation(&per_call_request(
+                "web_fetch",
+                b"{}",
+                &[("environment_activate", b"{}"), ("read_file", b"{}")],
+            ),)
             .is_none()
         );
         // A lone selection call is allowed.
         assert!(
-            per_call_batch_rule_violation(
-                &catalog,
-                &per_call_request("environment_activate", b"{}", &[("web_fetch", b"{}")]),
-            )
+            per_call_batch_rule_violation(&per_call_request(
+                "environment_activate",
+                b"{}",
+                &[("web_fetch", b"{}")]
+            ),)
             .is_none()
         );
     }
@@ -2237,7 +2287,9 @@ mod tests {
         let mut corrupt_binding = binding.clone();
         corrupt_binding.binding_fingerprint.push_str("-corrupt");
         let mut calls = vec![engine::ToolInvocationRequest {
+            builtin: None,
             call_id: ToolCallId::new("call-invalid-schema"),
+            tool_id: Some(binding.definition.tool.name.clone()),
             tool_name: binding.definition.tool.name.clone(),
             arguments_ref: invalid_arguments,
             workflow_tool: Some(engine::WorkflowToolCallRuntime::v1(
@@ -2248,7 +2300,9 @@ mod tests {
             remote_mcp: None,
         }];
         calls.push(engine::ToolInvocationRequest {
+            builtin: None,
             call_id: ToolCallId::new("call-name-mismatch"),
+            tool_id: Some(ToolName::new("other_tool")),
             tool_name: ToolName::new("other_tool"),
             arguments_ref: valid_arguments.clone(),
             workflow_tool: Some(engine::WorkflowToolCallRuntime::v1(
@@ -2259,7 +2313,9 @@ mod tests {
             remote_mcp: None,
         });
         calls.push(engine::ToolInvocationRequest {
+            builtin: None,
             call_id: ToolCallId::new("call-fingerprint-mismatch"),
+            tool_id: Some(binding.definition.tool.name.clone()),
             tool_name: binding.definition.tool.name.clone(),
             arguments_ref: valid_arguments.clone(),
             workflow_tool: Some(engine::WorkflowToolCallRuntime::v1(
@@ -2270,7 +2326,9 @@ mod tests {
             remote_mcp: None,
         });
         calls.push(engine::ToolInvocationRequest {
+            builtin: None,
             call_id: ToolCallId::new("call-missing-runtime"),
+            tool_id: Some(binding.definition.tool.name.clone()),
             tool_name: binding.definition.tool.name.clone(),
             arguments_ref: valid_arguments.clone(),
             workflow_tool: None,
@@ -2280,7 +2338,9 @@ mod tests {
         calls.extend(
             (0..engine::MAX_WORKFLOW_TOOL_EMISSIONS_PER_RUN - prior_emission_count).map(|index| {
                 engine::ToolInvocationRequest {
+                    builtin: None,
                     call_id: ToolCallId::new(format!("call-{index}")),
+                    tool_id: Some(binding.definition.tool.name.clone()),
                     tool_name: binding.definition.tool.name.clone(),
                     arguments_ref: valid_arguments.clone(),
                     workflow_tool: Some(engine::WorkflowToolCallRuntime::v1(
@@ -2293,7 +2353,9 @@ mod tests {
             }),
         );
         calls.push(engine::ToolInvocationRequest {
+            builtin: None,
             call_id: ToolCallId::new("call-over-cap"),
+            tool_id: Some(binding.definition.tool.name.clone()),
             tool_name: binding.definition.tool.name.clone(),
             arguments_ref: valid_arguments,
             workflow_tool: Some(engine::WorkflowToolCallRuntime::v1(
@@ -2461,7 +2523,9 @@ mod tests {
             .await
             .expect("put job arguments");
         let call = engine::ToolInvocationRequest {
+            builtin: None,
             call_id: ToolCallId::new("call-job-start"),
+            tool_id: Some(binding.definition.tool.name.clone()),
             tool_name: binding.definition.tool.name.clone(),
             arguments_ref: arguments_ref.clone(),
             workflow_tool: Some(engine::WorkflowToolCallRuntime::v1(binding.clone(), 0)),
@@ -2560,13 +2624,12 @@ mod tests {
     /// start-on-call recipe with joined completion.
     async fn agent_run_binding(blobs: &InMemoryBlobStore) -> engine::WorkflowToolBinding {
         let kind = tools::subagents::SubagentToolKind::Run;
-        let bundle = tools::subagents::subagent_tool_bundle(kind).expect("agent_run bundle");
-        for document in &bundle.documents {
-            blobs
-                .put_bytes(document.bytes.clone())
-                .await
-                .expect("put tool document");
-        }
+        let tool = tools::definitions::register(
+            "subagent.run",
+            Default::default(),
+            engine::ToolParallelism::ParallelSafe,
+            Default::default(),
+        );
         let recipe = b"test subagent recipe".to_vec();
         let recipe_fingerprint = temporal_workflow::workflow_tool_recipe_fingerprint(&recipe);
         let recipe_ref = blobs.put_bytes(recipe).await.expect("put subagent recipe");
@@ -2576,7 +2639,7 @@ mod tests {
                 tool_id: WorkflowToolId::new(kind.workflow_tool_id()),
                 revision: 1,
                 semantic_type: kind.semantic_type().to_owned(),
-                tool: bundle.spec,
+                tool,
             },
             engine::WorkflowToolTarget::Start {
                 start: engine::WorkflowStartRef {
@@ -2631,8 +2694,10 @@ mod tests {
             subagents_policy: policy,
             workspace_links: Vec::new(),
             calls: vec![engine::ToolInvocationRequest {
+                builtin: Some(test_builtin_runtime()),
                 call_id: ToolCallId::new("call-agent-run"),
-                tool_name: binding.definition.tool.name.clone(),
+                tool_id: Some(binding.definition.tool.name.clone()),
+                tool_name: ToolName::new("agent_run"),
                 arguments_ref,
                 workflow_tool: Some(engine::WorkflowToolCallRuntime::v1(binding.clone(), 0)),
                 promise_control: None,
@@ -3110,7 +3175,9 @@ mod tests {
             )),
             subagents_policy: None,
             call: engine::ToolInvocationRequest {
+                builtin: Some(test_builtin_runtime()),
                 call_id: ToolCallId::new("call-environment-list"),
+                tool_id: Some(test_tool_id(ENVIRONMENT_LIST_TOOL_NAME)),
                 tool_name: ToolName::new(ENVIRONMENT_LIST_TOOL_NAME),
                 arguments_ref,
                 workflow_tool: None,
@@ -3179,7 +3246,9 @@ mod tests {
             environment_policy: Some(engine::EnvironmentPolicyRuntime::new(None, None)),
             subagents_policy: None,
             call: engine::ToolInvocationRequest {
+                builtin: Some(test_builtin_runtime()),
                 call_id: ToolCallId::new("call-read-file"),
+                tool_id: Some(test_tool_id("read_file")),
                 tool_name: ToolName::new("read_file"),
                 arguments_ref,
                 workflow_tool: None,
@@ -3296,7 +3365,9 @@ mod tests {
             environment_policy: None,
             subagents_policy: None,
             call: engine::ToolInvocationRequest {
+                builtin: Some(test_builtin_runtime()),
                 call_id: ToolCallId::new("call-await"),
+                tool_id: Some(test_tool_id(AWAIT_TOOL_NAME)),
                 tool_name: ToolName::new(AWAIT_TOOL_NAME),
                 arguments_ref,
                 workflow_tool: None,
@@ -3349,7 +3420,9 @@ mod tests {
             subagents_policy: None,
             workspace_links: Vec::new(),
             calls: vec![engine::ToolInvocationRequest {
+                builtin: Some(test_builtin_runtime()),
                 call_id: ToolCallId::new("call-environment-list"),
+                tool_id: Some(test_tool_id(ENVIRONMENT_LIST_TOOL_NAME)),
                 tool_name: ToolName::new(ENVIRONMENT_LIST_TOOL_NAME),
                 arguments_ref,
                 workflow_tool: None,
@@ -3429,7 +3502,9 @@ mod tests {
                 subagents_policy: None,
                 workspace_links,
                 calls: vec![engine::ToolInvocationRequest {
+                    builtin: Some(test_builtin_runtime()),
                     call_id: ToolCallId::new("call_1"),
+                    tool_id: Some(test_tool_id("vfs_read_file")),
                     tool_name: ToolName::new("vfs_read_file"),
                     arguments_ref,
                     workflow_tool: None,
@@ -3470,7 +3545,16 @@ mod tests {
                 subagents_policy: None,
                 workspace_links,
                 calls: vec![engine::ToolInvocationRequest {
+                    builtin: Some(engine::BuiltinToolCallRuntime {
+                        spec: engine::BuiltinToolSpec::default(),
+                        model: engine::ModelSelection {
+                            api_kind: ProviderApiKind::AnthropicMessages,
+                            provider_id: "anthropic".into(),
+                            model: "claude-test".into(),
+                        },
+                    }),
                     call_id: ToolCallId::new("call_1"),
+                    tool_id: Some(test_tool_id("VfsRead")),
                     tool_name: ToolName::new("VfsRead"),
                     arguments_ref,
                     workflow_tool: None,
@@ -3518,7 +3602,9 @@ mod tests {
                 workspace_links,
                 calls: vec![
                     engine::ToolInvocationRequest {
+                        builtin: Some(test_builtin_runtime()),
                         call_id: ToolCallId::new("call_read"),
+                        tool_id: Some(test_tool_id("vfs_read_file")),
                         tool_name: ToolName::new("vfs_read_file"),
                         arguments_ref: read_args,
                         workflow_tool: None,
@@ -3526,9 +3612,11 @@ mod tests {
                         remote_mcp: None,
                     },
                     engine::ToolInvocationRequest {
+                        builtin: Some(test_builtin_runtime()),
                         call_id: ToolCallId::new("call_process"),
                         // The canonical surface takes argv; `exec_command` is
                         // the Codex-like shape and takes a shell string.
+                        tool_id: Some(test_tool_id("run_process")),
                         tool_name: ToolName::new("run_process"),
                         arguments_ref: process_args,
                         workflow_tool: None,
@@ -3649,7 +3737,9 @@ mod tests {
                 workspace_links: Vec::new(),
                 calls: vec![
                     engine::ToolInvocationRequest {
+                        builtin: Some(test_builtin_runtime()),
                         call_id: ToolCallId::new("call_wait"),
+                        tool_id: Some(test_tool_id(::tools::concurrency::AWAIT_TOOL_NAME)),
                         tool_name: ToolName::new(::tools::concurrency::AWAIT_TOOL_NAME),
                         arguments_ref: wait_args,
                         workflow_tool: None,
@@ -3657,7 +3747,9 @@ mod tests {
                         remote_mcp: None,
                     },
                     engine::ToolInvocationRequest {
+                        builtin: Some(test_builtin_runtime()),
                         call_id: ToolCallId::new("call_read"),
+                        tool_id: Some(test_tool_id("read_file")),
                         tool_name: ToolName::new("read_file"),
                         arguments_ref: read_args,
                         workflow_tool: None,
@@ -3748,7 +3840,9 @@ mod tests {
                 subagents_policy: None,
                 workspace_links: Vec::new(),
                 calls: vec![engine::ToolInvocationRequest {
+                    builtin: Some(test_builtin_runtime()),
                     call_id: ToolCallId::new("call_wait"),
+                    tool_id: Some(test_tool_id(::tools::concurrency::AWAIT_TOOL_NAME)),
                     tool_name: ToolName::new(::tools::concurrency::AWAIT_TOOL_NAME),
                     arguments_ref: wait_args,
                     workflow_tool: None,
@@ -3796,7 +3890,9 @@ mod tests {
                 subagents_policy: None,
                 workspace_links: Vec::new(),
                 calls: vec![engine::ToolInvocationRequest {
+                    builtin: Some(test_builtin_runtime()),
                     call_id: ToolCallId::new("call_cancel"),
+                    tool_id: Some(test_tool_id(::tools::concurrency::CANCEL_TOOL_NAME)),
                     tool_name: ToolName::new(::tools::concurrency::CANCEL_TOOL_NAME),
                     arguments_ref: cancel_args,
                     workflow_tool: None,
@@ -3849,7 +3945,9 @@ mod tests {
                 subagents_policy: None,
                 workspace_links: Vec::new(),
                 calls: vec![engine::ToolInvocationRequest {
+                    builtin: Some(test_builtin_runtime()),
                     call_id: ToolCallId::new("call_detach"),
+                    tool_id: Some(test_tool_id(::tools::concurrency::DETACH_TOOL_NAME)),
                     tool_name: ToolName::new(::tools::concurrency::DETACH_TOOL_NAME),
                     arguments_ref: detach_args,
                     workflow_tool: None,
@@ -3898,7 +3996,9 @@ mod tests {
             .await
             .expect("sleep args");
         let sleep_call = |id: &str| engine::ToolInvocationRequest {
+            builtin: Some(test_builtin_runtime()),
             call_id: ToolCallId::new(id),
+            tool_id: Some(test_tool_id(::tools::concurrency::SLEEP_TOOL_NAME)),
             tool_name: ToolName::new(::tools::concurrency::SLEEP_TOOL_NAME),
             arguments_ref: sleep_args.clone(),
             workflow_tool: None,
@@ -4002,7 +4102,9 @@ mod tests {
                 subagents_policy: None,
                 workspace_links: Vec::new(),
                 calls: vec![engine::ToolInvocationRequest {
+                    builtin: Some(test_builtin_runtime()),
                     call_id: ToolCallId::new("call_1"),
+                    tool_id: Some(test_tool_id("vfs_read_file")),
                     tool_name: ToolName::new("vfs_read_file"),
                     arguments_ref,
                     workflow_tool: None,
@@ -4045,7 +4147,9 @@ mod tests {
                 subagents_policy: None,
                 workspace_links: Vec::new(),
                 calls: vec![engine::ToolInvocationRequest {
+                    builtin: Some(test_builtin_runtime()),
                     call_id: ToolCallId::new("call_1"),
+                    tool_id: Some(test_tool_id("web_fetch")),
                     tool_name: ToolName::new("web_fetch"),
                     arguments_ref,
                     workflow_tool: None,

@@ -36,10 +36,7 @@ use tools::{
     fs::{FsPath, FsToolContext, ScopedLocalFileSystem},
     limits::ToolLimits,
     runtime::InlineToolRuntime,
-    runtime::ToolDocument,
-    toolset::{
-        BuiltinToolsetConfig, ResolvedToolset, ToolsetConfig, ToolsetEnvironment, resolve_toolset,
-    },
+    toolset::{BuiltinToolsetConfig, RegisteredToolset, ToolsetConfig, register_toolset},
 };
 
 const CASES_ROOT: &str = "crates/eval/cases";
@@ -856,10 +853,12 @@ async fn build_runtime(
         .with_environment_id("eval-environment")
         .with_filesystem(environment_fs_ctx)
         .with_process_cwd(environment_cwd);
-    let toolset = resolve_eval_toolset(&model, case)?;
-    store_tool_documents(blobs.as_ref(), &toolset.documents).await?;
-    let tool_id_by_name = toolset
-        .catalog
+    let toolset = register_eval_toolset(case)?;
+    let catalog = tools::runtime::ToolCatalog::from_registrations(
+        &toolset.tools,
+        &tools::runtime::ToolTarget::from(&model),
+    )?;
+    let tool_id_by_name = catalog
         .bindings()
         .map(|binding| {
             (
@@ -873,7 +872,7 @@ async fn build_runtime(
         Some(environment_ctx),
         blobs.clone(),
         ToolLimits::default(),
-        toolset.catalog.clone(),
+        catalog,
     ));
     let stores = RunnerStores::new(sessions.clone(), blobs.clone());
     let runner = SessionRunner::new(stores, llm_executor).with_tools(tool_executor);
@@ -889,7 +888,7 @@ async fn build_runtime(
     })
 }
 
-fn resolve_eval_toolset(model: &ModelSelection, case: &EvalCase) -> Result<ResolvedToolset> {
+fn register_eval_toolset(case: &EvalCase) -> Result<RegisteredToolset> {
     let mut config = ToolsetConfig::workspace();
     if let Some(allowed) = case.run.allowed_tools.as_ref() {
         if allowed.is_empty() {
@@ -911,13 +910,7 @@ fn resolve_eval_toolset(model: &ModelSelection, case: &EvalCase) -> Result<Resol
             BuiltinToolsetConfig::from_operations(environment_operations).environment;
         config.builtin = builtin;
     }
-    resolve_toolset(
-        ToolsetEnvironment {
-            target: &model.into(),
-        },
-        &config,
-    )
-    .context("build eval tools")
+    register_toolset(&config).context("build eval tools")
 }
 
 fn session_config(case: &EvalCase, model: ModelSelection) -> SessionConfig {
@@ -960,19 +953,6 @@ fn instruction_context_input(content_ref: engine::BlobRef) -> ContextEntryInput 
         provider_item_id: None,
         token_estimate: None,
     }
-}
-
-async fn store_tool_documents(blobs: &dyn BlobStore, documents: &[ToolDocument]) -> Result<()> {
-    for document in documents {
-        let blob_ref = blobs
-            .put_bytes(document.blob_bytes())
-            .await
-            .context("store tool document")?;
-        if blob_ref != document.blob_ref {
-            bail!("tool document blob ref mismatch");
-        }
-    }
-    Ok(())
 }
 
 fn collect_observations(
@@ -1364,6 +1344,7 @@ mod tests {
             text: text.map(str::to_owned),
             text_truncated: false,
             display: None,
+            citations: Vec::new(),
             source: None,
             supersedes: None,
             superseded_by: None,

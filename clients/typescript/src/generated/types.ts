@@ -9,6 +9,10 @@
  */
 export type ToolKindView =
   | {
+      settings: unknown;
+      type: "builtin";
+    }
+  | {
       descriptionRef?: string | null;
       inputSchemaRef: string;
       outputSchemaRef?: string | null;
@@ -1833,6 +1837,11 @@ export interface ContextView {
  * via the `definition` "ContextEntryView".
  */
 export interface ContextEntryView {
+  /**
+   * Sources this assistant message cites, derived from the provider-native
+   * cited entry that follows it. Empty for every other entry kind.
+   */
+  citations?: CitationView[];
   contentRef: string;
   display?: ProviderContextDisplayView | null;
   id: string;
@@ -1867,6 +1876,18 @@ export interface ContextEntryView {
    */
   textTruncated?: boolean;
   tokenEstimate?: TokenEstimateView | null;
+}
+/**
+ * A source the assistant cited, in the same shape for every provider. The
+ * exact provider output stays in a separate opaque context entry for replay.
+ *
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "CitationView".
+ */
+export interface CitationView {
+  citedText?: string | null;
+  title?: string | null;
+  url: string;
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
@@ -2279,8 +2300,7 @@ export interface WorkflowToolDefinitionInput {
 export interface WorkflowToolSpecInput {
   kind: WorkflowToolKindInput;
   /**
-   * Canonical effective-toolset name, also sent to the model and used for
-   * runtime dispatch.
+   * Function name exposed to the model and used as its registry identity.
    */
   name: string;
   parallelism?: ToolParallelismView & string;
@@ -2419,6 +2439,10 @@ export interface ToolCallEventView {
   argumentsRef: string;
   callId: string;
   display?: ToolCallDisplayView | null;
+  /**
+   * Admitted registry identity, absent when the model used an unavailable name.
+   */
+  toolId?: string | null;
   toolName: string;
 }
 /**
@@ -2497,6 +2521,10 @@ export interface ToolCallView {
    */
   startedAtMs?: number | null;
   status: ToolItemStatus;
+  /**
+   * Admitted registry identity, absent when the model used an unavailable name.
+   */
+  toolId?: string | null;
   toolName: string;
 }
 /**

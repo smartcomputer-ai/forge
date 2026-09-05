@@ -194,6 +194,20 @@ fn public_session_config_rejects_managed_workflow_tool_bindings() {
 }
 
 #[test]
+fn public_workflow_tool_input_rejects_runtime_builtin_definitions() {
+    let input = json!({
+        "name": "subagent.run",
+        "kind": { "type": "builtin", "settings": {} }
+    });
+    let error = serde_json::from_value::<WorkflowToolSpecInput>(input.clone())
+        .expect_err("runtime-owned definitions are not public workflow declarations");
+    assert_eq!(error.classify(), serde_json::error::Category::Data);
+    let schema = serde_json::to_value(schemars::schema_for!(WorkflowToolSpecInput))
+        .expect("workflow input schema");
+    assert!(!jsonschema::is_valid(&schema, &input));
+}
+
+#[test]
 fn managed_session_creation_exposes_targets_and_completion_contracts() {
     let params: ManagedSessionStartParams = serde_json::from_value(json!({
         "sessionId": "session_1",
@@ -1534,6 +1548,7 @@ fn tool_batch_started_event_can_inline_tool_arguments() {
             turn_id: "turn_1".to_owned(),
             batch_id: "tool_batch_1".to_owned(),
             calls: vec![ToolCallEventView {
+                tool_id: None,
                 call_id: "call_1".to_owned(),
                 tool_name: "read_file".to_owned(),
                 arguments_ref: "sha256:args".to_owned(),
@@ -1584,6 +1599,7 @@ fn provider_context_entry_serializes_debug_metadata() {
         text: None,
         text_truncated: false,
         display: None,
+        citations: Vec::new(),
         source: None,
         supersedes: None,
         superseded_by: None,
@@ -1637,6 +1653,7 @@ fn provider_context_entry_serializes_mcp_display() {
             output: Some("Echoing your input: simba".to_owned()),
             error: None,
         }),
+        citations: Vec::new(),
         source: None,
         supersedes: None,
         superseded_by: None,
@@ -1684,6 +1701,7 @@ fn run_view_can_expose_tool_batches() {
             turn_id: "turn_1".to_owned(),
             status: ToolItemStatus::Succeeded,
             calls: vec![ToolCallView {
+                tool_id: None,
                 started_at_ms: None,
                 completed_at_ms: None,
                 duration_ms: None,

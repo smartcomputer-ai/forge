@@ -87,8 +87,12 @@ fn managed_session_retry_requires_the_durable_creation_fingerprint() {
 #[test]
 fn legacy_subagent_bindings_retain_their_immutable_deadline_ceiling() {
     const LEGACY_CEILING_MS: u64 = 4 * 60 * 60 * 1_000;
-    let bundle = tools::subagents::subagent_tool_bundle(tools::subagents::SubagentToolKind::Run)
-        .expect("subagent tool bundle");
+    let tool = tools::definitions::register(
+        "subagent.run",
+        Default::default(),
+        engine::ToolParallelism::ParallelSafe,
+        Default::default(),
+    );
     let tool_id = WorkflowToolId::new(tools::subagents::AGENT_RUN_WORKFLOW_TOOL_ID);
     let binding = engine::WorkflowToolBinding::admit(
         uuid::Uuid::from_u128(1),
@@ -96,7 +100,7 @@ fn legacy_subagent_bindings_retain_their_immutable_deadline_ceiling() {
             tool_id: tool_id.clone(),
             revision: 1,
             semantic_type: tools::subagents::AGENT_RUN_WORKFLOW_SEMANTIC_TYPE.to_owned(),
-            tool: bundle.spec,
+            tool,
         },
         WorkflowToolTarget::Bound {
             receiver: WorkflowEndpointRef {
@@ -882,14 +886,11 @@ fn toolset_reconcile_patch_preserves_declared_remote_mcp_tools() {
             test_function_tool(old_tool_name.clone()),
         ),
     ]);
-    let toolset = ResolvedToolset {
+    let toolset = RegisteredToolset {
         tools: BTreeMap::from([(
             new_tool_name.clone(),
             test_function_tool(new_tool_name.clone()),
         )]),
-        documents: Vec::new(),
-        catalog: tools::runtime::ToolCatalog::new(),
-        provider_params_patch: tools::toolset::ProviderParamsPatch::default(),
     };
     let desired_mcp = BTreeMap::from([(
         remote_tool_name.clone(),
@@ -1496,48 +1497,67 @@ fn web_feature_grant_maps_search_and_fetch() {
 }
 
 #[test]
-fn web_search_rejects_explicit_enable_for_non_openai_responses() {
-    for (api_kind, provider_id, model) in [
-        (
-            ProviderApiKind::AnthropicMessages,
-            "anthropic",
-            "claude-test",
-        ),
-        (ProviderApiKind::OpenAiCompletions, "openai", "gpt-test"),
-    ] {
-        let config = engine_session_config_from_api(
-            api::SessionConfig {
-                features: Some(api::FeaturesConfig {
-                    web: Some(api::WebFeature {
-                        version: api::CURRENT_FEATURE_VERSION,
-                        fetch: None,
-                        search: Some(api::WebSearchFeature {
-                            allowed_domains: None,
-                            blocked_domains: Vec::new(),
-                        }),
+fn web_search_rejects_explicit_enable_for_unsupported_api_kind() {
+    let config = engine_session_config_from_api(
+        api::SessionConfig {
+            features: Some(api::FeaturesConfig {
+                web: Some(api::WebFeature {
+                    version: api::CURRENT_FEATURE_VERSION,
+                    fetch: None,
+                    search: Some(api::WebSearchFeature {
+                        allowed_domains: None,
+                        blocked_domains: Vec::new(),
                     }),
-                    ..api::FeaturesConfig::default()
                 }),
-                ..api::SessionConfig::default()
-            },
-            ModelSelection {
-                api_kind: api_kind.clone(),
-                provider_id: provider_id.to_owned(),
-                model: model.to_owned(),
-            },
-        )
-        .expect("map config");
+                ..api::FeaturesConfig::default()
+            }),
+            ..api::SessionConfig::default()
+        },
+        ModelSelection {
+            api_kind: ProviderApiKind::OpenAiCompletions,
+            provider_id: "openai".to_owned(),
+            model: "gpt-test".to_owned(),
+        },
+    )
+    .expect("map config");
 
-        let error = match config.validate() {
-            Ok(()) => panic!("web search must reject {api_kind:?}"),
-            Err(error) => error,
-        };
+    let error = config
+        .validate()
+        .expect_err("web search must reject OpenAI Completions");
+    assert!(matches!(
+        error,
+        engine::DomainError::ProviderCompatibility(_)
+    ));
+}
 
-        assert!(matches!(
-            error,
-            engine::DomainError::ProviderCompatibility(_)
-        ));
-    }
+#[test]
+fn web_search_accepts_anthropic_messages() {
+    let config = engine_session_config_from_api(
+        api::SessionConfig {
+            features: Some(api::FeaturesConfig {
+                web: Some(api::WebFeature {
+                    version: api::CURRENT_FEATURE_VERSION,
+                    fetch: Some(api::WebFetchFeature {}),
+                    search: Some(api::WebSearchFeature {
+                        allowed_domains: Some(vec!["docs.anthropic.com".to_owned()]),
+                        blocked_domains: Vec::new(),
+                    }),
+                }),
+                ..api::FeaturesConfig::default()
+            }),
+            ..api::SessionConfig::default()
+        },
+        ModelSelection {
+            api_kind: ProviderApiKind::AnthropicMessages,
+            provider_id: "anthropic".to_owned(),
+            model: "claude-test".to_owned(),
+        },
+    )
+    .expect("map config");
+
+    config
+        .validate()
+        .expect("Anthropic web tools are supported");
 }
 
 #[test]
@@ -2283,12 +2303,9 @@ fn test_mcp_server_put(server_id: &str, status: mcp::McpServerStatus) -> mcp::Pu
     }
 }
 
-fn empty_resolved_toolset() -> ResolvedToolset {
-    ResolvedToolset {
+fn empty_resolved_toolset() -> RegisteredToolset {
+    RegisteredToolset {
         tools: BTreeMap::new(),
-        documents: Vec::new(),
-        catalog: tools::runtime::ToolCatalog::new(),
-        provider_params_patch: tools::toolset::ProviderParamsPatch::default(),
     }
 }
 

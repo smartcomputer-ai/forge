@@ -18,7 +18,7 @@ use tools::{
     fs::tools::ReadFileResult,
     fs::{FsPath, FsToolContext, LinkedVfsFileSystem},
     runtime::InlineToolRuntime,
-    toolset::{ToolsetConfig, ToolsetEnvironment, resolve_toolset},
+    toolset::{ToolsetConfig, register_toolset},
 };
 use vfs::{
     CompareAndSetVfsWorkspaceHead, CreateInlineSnapshotRequest, CreateVfsWorkspaceRecord,
@@ -273,16 +273,10 @@ async fn openai_responses_live_selects_and_activates_the_matching_skill() {
         provider_id: "openai".to_string(),
         model: live_model(),
     };
-    let target = tools::runtime::ToolTarget::from(&model);
-    let toolset = resolve_toolset(
-        ToolsetEnvironment { target: &target },
-        &ToolsetConfig::workspace(),
-    )
-    .expect("toolset");
-    store_tool_documents(blobs.as_ref(), &toolset.documents).await;
+    let toolset = register_toolset(&ToolsetConfig::workspace()).expect("toolset");
     let tools = Arc::new(InlineToolRuntime::with_vfs_filesystem(
         fs_ctx,
-        toolset.catalog.clone(),
+        tools::runtime::ToolCatalog::default(),
     ));
 
     let llm = Arc::new(LlmRuntime::new(
@@ -363,9 +357,25 @@ async fn openai_responses_live_selects_and_activates_the_matching_skill() {
         run_failure_text(blobs.as_ref(), &outcome.state).await
     );
 
-    let _selected_call_id = selected_skill_read_call_id(blobs.as_ref(), &outcome.emitted_entries)
+    let selected_call_id = selected_skill_read_call_id(blobs.as_ref(), &outcome.emitted_entries)
         .await
         .expect("expected model to read matrix-migration SKILL.md");
+    let selected_call = outcome
+        .emitted_entries
+        .iter()
+        .find_map(|entry| {
+            let CoreAgentEvent::Tool(engine::ToolEvent::BatchStarted { calls, .. }) = &entry.event
+            else {
+                return None;
+            };
+            calls.iter().find(|call| call.call_id == selected_call_id)
+        })
+        .expect("admitted skill read call");
+    assert_eq!(
+        selected_call.tool_id.as_ref().map(|id| id.as_str()),
+        Some("vfs.read_file")
+    );
+    assert_eq!(selected_call.tool_name.as_str(), "vfs_read_file");
     assert!(
         !read_paths(blobs.as_ref(), &outcome.emitted_entries)
             .await
@@ -434,16 +444,6 @@ fn run_config() -> RunConfig {
             },
         )),
         tool_choice: None,
-    }
-}
-
-async fn store_tool_documents(blobs: &dyn BlobStore, documents: &[tools::runtime::ToolDocument]) {
-    for document in documents {
-        let blob_ref = blobs
-            .put_bytes(document.blob_bytes())
-            .await
-            .expect("store tool document");
-        assert_eq!(blob_ref, document.blob_ref);
     }
 }
 

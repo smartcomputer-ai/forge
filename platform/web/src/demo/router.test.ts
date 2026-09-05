@@ -12,6 +12,7 @@ import type {
   SessionView,
 } from "@/api";
 import { SOFTWARE_FACTORY_UNIVERSE_ID } from "./fixtures/software-factory";
+import { applyEvents, emptyTranscript } from "@/lib/sessions/transcript";
 
 /// Walks the demo router the way the UI does: every read path each page
 /// opens with must answer, and the live paths (a message, its tail, a bot
@@ -91,6 +92,30 @@ describe("demo router", () => {
           expect(result.status, `${universe.slug}: sessions/${session.id}${path}`).toBe(200);
         }
       }
+    }
+  });
+
+  it("serves builtin registry IDs alongside the recorded names in demo transcripts", async () => {
+    const { call } = await boot();
+    const response = await call(
+      "GET",
+      `/api/v1/universes/${SOFTWARE_FACTORY_UNIVERSE_ID}/sessions/session-flaky-scheduler/events?limit=200`,
+    );
+    expect(response.status).toBe(200);
+    const page = response.json as SessionEventsPage;
+    const calls = (page.events ?? []).flatMap((event) =>
+      event.kind.type === "toolBatchStarted" ? event.kind.calls : [],
+    );
+    expect(calls).toEqual(expect.arrayContaining([
+      expect.objectContaining({ toolId: "env.run_process", toolName: "exec_command" }),
+      expect.objectContaining({ toolId: "env.read_file", toolName: "read_file" }),
+    ]));
+    const transcript = applyEvents(emptyTranscript(), page.events ?? []);
+    const renderedCalls = transcript.entries.flatMap((entry) => entry.kind === "tool-group" ? entry.calls : []);
+    for (const call of calls) {
+      expect(renderedCalls).toEqual(expect.arrayContaining([
+        expect.objectContaining({ callId: call.callId, toolId: call.toolId, toolName: call.toolName }),
+      ]));
     }
   });
 

@@ -199,6 +199,7 @@ impl FakeLlm {
     async fn tool_call_result(
         &self,
         request: &LlmGenerationRequest,
+        tool_id: ToolName,
         tool_name: ToolName,
     ) -> Result<LlmGenerationResult, CoreAgentIoError> {
         let mut context_entries = Vec::with_capacity(self.parallel_tool_calls);
@@ -237,6 +238,7 @@ impl FakeLlm {
             });
             tool_calls.push(ObservedToolCall {
                 call_id,
+                tool_id: Some(tool_id.clone()),
                 tool_name: tool_name.clone(),
                 provider_kind: Some("fake".to_owned()),
                 arguments_ref,
@@ -340,8 +342,10 @@ impl CoreAgentLlm for FakeLlm {
         let result = if tool_result_count(&request) >= self.tool_rounds_before_final {
             self.final_result(&request).await
         } else {
-            match invocable_fake_tool(&request) {
-                Some(tool_name) => self.tool_call_result(&request, tool_name).await,
+            match invocable_fake_tool(&request)? {
+                Some((tool_id, tool_name)) => {
+                    self.tool_call_result(&request, tool_id, tool_name).await
+                }
                 None => self.final_result(&request).await,
             }
         };
@@ -483,18 +487,36 @@ fn tool_result_count(request: &LlmGenerationRequest) -> usize {
 /// preferring the canonical fake echo tool when it is registered. Returns
 /// `None` when the session has no client-invocable function tool, in which
 /// case the fake model answers directly.
-fn invocable_fake_tool(request: &LlmGenerationRequest) -> Option<ToolName> {
+fn invocable_fake_tool(
+    request: &LlmGenerationRequest,
+) -> Result<Option<(ToolName, ToolName)>, CoreAgentIoError> {
     let tools = &request.request.tools;
     if let Some(tool) = tools
         .iter()
         .find(|tool| tool.name.as_str() == FAKE_TOOL_NAME)
     {
-        return Some(tool.name.clone());
+        return Ok(Some((tool.name.clone(), tool.name.clone())));
     }
-    tools
-        .iter()
-        .find(|tool| matches!(tool.kind, ToolKind::Function(_)))
-        .map(|tool| tool.name.clone())
+    let target = tools::runtime::ToolTarget::from(&request.request.model);
+    for tool in tools {
+        match &tool.kind {
+            ToolKind::Function(_) => return Ok(Some((tool.name.clone(), tool.name.clone()))),
+            ToolKind::Builtin(spec) => {
+                let definitions =
+                    tools::definitions::resolve(&tool.name, spec, &target).map_err(io_error)?;
+                if let Some(definition) = definitions.into_iter().find(|definition| {
+                    matches!(
+                        definition.definition,
+                        tools::definitions::Definition::Function(_)
+                    )
+                }) {
+                    return Ok(Some((tool.name.clone(), definition.name)));
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(None)
 }
 
 fn io_error(error: impl std::fmt::Display) -> CoreAgentIoError {

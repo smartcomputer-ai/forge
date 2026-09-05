@@ -37,6 +37,13 @@ import {
 } from "@/components/ui/dialog";
 import { Field, FieldDescription, FieldLabel } from "@/components/ui/field";
 import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { LoadingNote, UniverseNotFound } from "@/components/page";
 import { useSessionConfigEditorOptions } from "@/lib/sessions/editor-options";
@@ -165,6 +172,7 @@ function ProfilePane({
       <NewProfileDialog
         universeId={universeId}
         slug={slug}
+        profiles={profiles.data ?? []}
         open={createOpen}
         onOpenChange={setCreateOpen}
       />
@@ -601,11 +609,13 @@ function ConfigSection({
 function NewProfileDialog({
   universeId,
   slug,
+  profiles,
   open,
   onOpenChange,
 }: {
   universeId: string;
   slug: string;
+  profiles: ProfileSummary[];
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
@@ -614,14 +624,21 @@ function NewProfileDialog({
   const [displayName, setDisplayName] = useState("");
   const [profileId, setProfileId] = useState("");
   const [idTouched, setIdTouched] = useState(false);
+  const [sourceProfileId, setSourceProfileId] = useState("");
   const [error, setError] = useState<string | null>(null);
 
   const create = useMutation({
-    mutationFn: () =>
-      api("PUT", `/api/v1/universes/${universeId}/profiles/${profileId}`, {
-        profileId,
-        ...(displayName ? { displayName } : {}),
-      }),
+    mutationFn: async () => {
+      let document = newProfileDocument(profileId, displayName);
+      if (sourceProfileId) {
+        const source = await api<ProfileDocument>(
+          "GET",
+          `/api/v1/universes/${universeId}/profiles/${encodeURIComponent(sourceProfileId)}`,
+        );
+        document = copiedProfileDocument(source, profileId, displayName);
+      }
+      return api("PUT", `/api/v1/universes/${universeId}/profiles/${profileId}`, document);
+    },
     onSuccess: async () => {
       await queryClient.invalidateQueries({ queryKey: ["profiles", universeId] });
       onOpenChange(false);
@@ -629,6 +646,7 @@ function NewProfileDialog({
       setDisplayName("");
       setProfileId("");
       setIdTouched(false);
+      setSourceProfileId("");
       setError(null);
       navigate(`/u/${slug}/profiles/${target}`);
     },
@@ -685,6 +703,35 @@ function NewProfileDialog({
               What bots and tooling reference — cannot be changed later.
             </FieldDescription>
           </Field>
+          <Field>
+            <FieldLabel htmlFor="new-profile-source">Start from</FieldLabel>
+            <Select
+              value={sourceProfileId}
+              onValueChange={(value) => setSourceProfileId((value as string) ?? "")}
+            >
+              <SelectTrigger id="new-profile-source" className="w-full">
+                <SelectValue>
+                  {sourceProfileId
+                    ? (profiles.find((profile) => profile.profileId === sourceProfileId)?.displayName
+                      ?? sourceProfileId)
+                    : "Empty profile"}
+                </SelectValue>
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="">Empty profile</SelectItem>
+                {profiles.map((profile) => (
+                  <SelectItem key={profile.profileId} value={profile.profileId}>
+                    {profile.displayName ?? profile.profileId}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <FieldDescription>
+              {sourceProfileId
+                ? "Copies the profile’s current setup once. Later changes to it are not inherited."
+                : "Starts with no profile configuration."}
+            </FieldDescription>
+          </Field>
           {error && <p className="text-sm text-destructive">{error}</p>}
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
@@ -698,4 +745,34 @@ function NewProfileDialog({
       </DialogContent>
     </Dialog>
   );
+}
+
+function newProfileDocument(profileId: string, displayName: string): ProfileDocument {
+  return {
+    profileId,
+    revision: 0,
+    ...(displayName ? { displayName } : {}),
+  };
+}
+
+/** A copied profile is a snapshot: registry identity and timestamps never carry over. */
+export function copiedProfileDocument(
+  source: ProfileDocument,
+  profileId: string,
+  displayName: string,
+): ProfileDocument {
+  const {
+    profileId: _sourceProfileId,
+    displayName: _sourceDisplayName,
+    revision: _sourceRevision,
+    createdAtMs: _sourceCreatedAtMs,
+    updatedAtMs: _sourceUpdatedAtMs,
+    ...document
+  } = structuredClone(source);
+  return {
+    ...document,
+    profileId,
+    revision: 0,
+    ...(displayName ? { displayName } : {}),
+  };
 }

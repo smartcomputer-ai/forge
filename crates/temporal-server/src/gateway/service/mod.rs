@@ -67,7 +67,6 @@ use parse::*;
 use provider_controllers::{
     ProviderControllerConnector, WebSocketProviderControllerConnector, finish_provider_controller,
 };
-use session_toolset::store_tool_documents;
 use skills::{
     active_skill_catalog_ref, active_skill_ids, active_skill_ids_after_remove,
     active_skill_ids_after_upsert, skill_activation_context_input,
@@ -129,17 +128,15 @@ use tools::{
         JOB_RUN_DEADLINE_AFTER_MS, JOB_RUN_WORKFLOW_SEMANTIC_TYPE, JOB_RUN_WORKFLOW_TOOL_ID,
         JOB_SUBMIT_WORKFLOW_SEMANTIC_TYPE, JOB_SUBMIT_WORKFLOW_TOOL_ID,
     },
-    runtime::{ToolDocument, ToolTarget},
     skills::{
         SkillCatalogSnapshot, SkillMetadata, configured_vfs_skill_root_specs,
         resolve_linked_vfs_skill_roots, skill_catalog_context_input,
     },
     toolset::{
-        ResolvedToolset, ToolsetConfig, ToolsetEnvironment, enable_concurrency_for_workflow_tools,
-        materialize_workflow_tools, resolve_toolset,
+        RegisteredToolset, ToolsetConfig, enable_concurrency_for_workflow_tools, register_toolset,
+        register_workflow_tools,
     },
-    web::fetch::WebFetchToolConfig,
-    web::search::OpenAiResponsesWebSearchConfig,
+    web::search::WebSearchToolConfig,
     workflow_tool::{
         validate_workflow_tool_definition_documents, validate_workflow_tool_reply_schema,
     },
@@ -899,13 +896,14 @@ impl GatewayAgentApi {
             Some(engine::VfsToolSurface::Edit) => tools::toolset::BuiltinToolsetConfig::workspace(),
         };
         if let Some(web) = features.web.as_ref() {
-            if web.search.is_some()
-                && session_config.model.api_kind == engine::ProviderApiKind::OpenAiResponses
-            {
-                config.openai_web_search = OpenAiResponsesWebSearchConfig::cached();
+            if let Some(search) = &web.search {
+                config.web.search = Some(WebSearchToolConfig::new(
+                    search.allowed_domains.clone().unwrap_or_default(),
+                    search.blocked_domains.clone(),
+                ));
             }
             if web.fetch.is_some() {
-                config.web_fetch = WebFetchToolConfig::enabled();
+                config.web.fetch = true;
             }
         }
         if features.timers.is_some() || features.subagents.is_some() {
@@ -1351,7 +1349,6 @@ impl GatewayAgentApi {
     async fn core_environment_job_workflow_tool_declarations(
         &self,
     ) -> Result<Vec<WorkflowToolDeclaration>, AgentApiError> {
-        let target = ToolTarget::api_kind(ProviderApiKind::OpenAiResponses);
         let recipe_bytes = serde_json::to_vec(&temporal_workflow::WorkflowToolRecipeV1 {
             workflow_type: "EnvironmentJobWorkflow".to_owned(),
             task_queue: self.task_queue.clone(),
@@ -1395,13 +1392,17 @@ impl GatewayAgentApi {
         ];
         let mut declarations = Vec::with_capacity(definitions.len());
         for (operation, tool_id, semantic_type, completion) in definitions {
-            let bundle = BuiltinTool::environment_canonical(operation)
-                .spec_bundle(&target, false)
-                .map_err(|error| {
-                    AgentApiError::internal(format!("build core {tool_id} tool: {error}"))
-                })?;
-            store_tool_documents(self.store.as_ref(), &bundle.documents).await?;
-            let tool = bundle.spec;
+            let builtin = BuiltinTool::environment_canonical(operation);
+            let tool = tools::definitions::register(
+                builtin.logical_id(),
+                tools::definitions::BuiltinSettings {
+                    presentation: tools::toolset::BuiltinToolPresentation::Canonical,
+                    unscoped_paths: true,
+                    ..Default::default()
+                },
+                builtin.parallelism(),
+                builtin.execution_spec(),
+            );
             declarations.push(WorkflowToolDeclaration::new(
                 WorkflowToolDefinition {
                     tool_id: WorkflowToolId::new(tool_id),
@@ -1462,19 +1463,21 @@ impl GatewayAgentApi {
         ];
         let mut declarations = Vec::with_capacity(definitions.len());
         for (kind, completion) in definitions {
-            let bundle = tools::subagents::subagent_tool_bundle(kind).map_err(|error| {
-                AgentApiError::internal(format!(
-                    "build core {} tool: {error}",
-                    kind.workflow_tool_id()
-                ))
-            })?;
-            store_tool_documents(self.store.as_ref(), &bundle.documents).await?;
+            let tool = tools::definitions::register(
+                match kind {
+                    tools::subagents::SubagentToolKind::Run => "subagent.run",
+                    tools::subagents::SubagentToolKind::Spawn => "subagent.spawn",
+                },
+                Default::default(),
+                engine::ToolParallelism::ParallelSafe,
+                Default::default(),
+            );
             declarations.push(WorkflowToolDeclaration::new(
                 WorkflowToolDefinition {
                     tool_id: WorkflowToolId::new(kind.workflow_tool_id()),
                     revision: 1,
                     semantic_type: kind.semantic_type().to_owned(),
-                    tool: bundle.spec,
+                    tool,
                 },
                 WorkflowToolTarget::Start {
                     start: WorkflowStartRef {
@@ -1678,14 +1681,12 @@ impl GatewayAgentApi {
             .filter(|binding| !is_core_environment_job_binding(binding))
             .collect::<Vec<_>>();
 
-        let target = ToolTarget::from(&session_config.model);
         let mut config = self.session_toolset_config(session_config, false, false);
         enable_concurrency_for_workflow_tools(&mut config, materialized_bindings.iter().copied());
-        let mut toolset = resolve_toolset(ToolsetEnvironment { target: &target }, &config)
-            .map_err(|error| {
-                AgentApiError::invalid_request(format!("build session tools: {error}"))
-            })?;
-        materialize_workflow_tools(&mut toolset, materialized_bindings.iter().copied()).map_err(
+        let mut toolset = register_toolset(&config).map_err(|error| {
+            AgentApiError::invalid_request(format!("build session tools: {error}"))
+        })?;
+        register_workflow_tools(&mut toolset, materialized_bindings.iter().copied()).map_err(
             |error| {
                 AgentApiError::invalid_request(format!("materialize workflow tool tools: {error}"))
             },

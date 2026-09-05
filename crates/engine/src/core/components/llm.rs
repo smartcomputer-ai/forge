@@ -307,7 +307,7 @@ fn active_tools(
                     .into());
                 }
             }
-            ToolKind::Function(_) => {}
+            ToolKind::Builtin(_) | ToolKind::Function(_) => {}
         }
         tools.push(tool.clone());
     }

@@ -675,8 +675,9 @@ async fn bots_live_close_and_delete_tear_down() -> anyhow::Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "requires the local stack and OPENAI_API_KEY"]
+#[ignore = "requires the local stack and OPENAI_API_KEY (costs real money)"]
 async fn bots_live_real_model_resolves_delivery() -> anyhow::Result<()> {
+    let _ = dotenvy::dotenv();
     require_openai_live_env()?;
     run_bots_live(Llm::Real, |api, _client| async move {
         let profile_id = create_profile(

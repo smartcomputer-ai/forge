@@ -6965,6 +6965,30 @@
         }
       ]
     },
+    "CitationView": {
+      "description": "A source the assistant cited, in the same shape for every provider. The\nexact provider output stays in a separate opaque context entry for replay.",
+      "properties": {
+        "citedText": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "title": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "url": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "url"
+      ],
+      "type": "object"
+    },
     "ClientCapabilities": {
       "properties": {
         "experimentalApi": {
@@ -7603,6 +7627,13 @@
     "ContextEntryView": {
       "description": "A session context entry, faithful to the stored engine entry: keyed,\nkind-tagged, ref-backed. Keys are a stable extension point — clients\nreconstruct derived surfaces (e.g. the prompted instruction set via the\n`prompt_instructions/` key prefix) by filtering on `key` and fetching\nbodies through `blobs/read`. `text` inlines blob content only for\nmessage and tool entries; every other kind is ref + preview.",
       "properties": {
+        "citations": {
+          "description": "Sources this assistant message cites, derived from the provider-native\ncited entry that follows it. Empty for every other entry kind.",
+          "items": {
+            "$ref": "#/definitions/CitationView"
+          },
+          "type": "array"
+        },
         "contentRef": {
           "type": "string"
         },
@@ -16202,6 +16233,13 @@
             }
           ]
         },
+        "toolId": {
+          "description": "Admitted registry identity, absent when the model used an unavailable name.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "toolName": {
           "type": "string"
         }
@@ -16282,6 +16320,13 @@
         },
         "status": {
           "$ref": "#/definitions/ToolItemStatus"
+        },
+        "toolId": {
+          "description": "Admitted registry identity, absent when the model used an unavailable name.",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "toolName": {
           "type": "string"
@@ -16381,6 +16426,21 @@
     },
     "ToolKindView": {
       "oneOf": [
+        {
+          "description": "Code-owned definition; names and schemas are resolved for each turn.",
+          "properties": {
+            "settings": true,
+            "type": {
+              "const": "builtin",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "settings"
+          ],
+          "type": "object"
+        },
         {
           "properties": {
             "descriptionRef": {
@@ -17303,7 +17363,7 @@
           "$ref": "#/definitions/WorkflowToolKindInput"
         },
         "name": {
-          "description": "Canonical effective-toolset name, also sent to the model and used for\nruntime dispatch.",
+          "description": "Function name exposed to the model and used as its registry identity.",
           "type": "string"
         },
         "parallelism": {

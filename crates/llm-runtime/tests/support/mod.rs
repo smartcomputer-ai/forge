@@ -61,18 +61,6 @@ pub fn deepseek_completions_live_model() -> String {
 }
 
 #[allow(dead_code)]
-pub fn deepseek_completions_live_client() -> CompletionsClient {
-    let api_key = env_or_dotenv_var("DEEPSEEK_API_KEY").expect(
-        "DEEPSEEK_API_KEY must be set in env or root .env to run DeepSeek completions live tests",
-    );
-    assert!(!api_key.trim().is_empty(), "DeepSeek API key is empty");
-    let mut config = CompletionsConfig::new(api_key);
-    config.base_url = env_or_dotenv_var("DEEPSEEK_BASE_URL")
-        .unwrap_or_else(|_| "https://api.deepseek.com".to_owned());
-    CompletionsClient::new(config).expect("DeepSeek Completions client")
-}
-
-#[allow(dead_code)]
 pub fn env_or_dotenv_var(name: &str) -> Result<String, std::env::VarError> {
     match std::env::var(name) {
         Ok(value) => Ok(value),
