@@ -1,6 +1,9 @@
 # Lightspeed Roadmap
 
 ## Work
+- [x] [P161](p161-postgres-schema-baseline.md) — consolidate the runtime
+  PostgreSQL schema into nine domain migrations, preserve the final relational
+  schema and ledger checks, and verify the reset local stack with store tests.
 - [x] [P159](p159-builtin-tool-registry-and-late-resolution.md) — built-in
   tool registry and late resolution (implemented 2026-09-05): admit stable
   internal identities and compact settings, resolve names,

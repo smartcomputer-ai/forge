@@ -125,22 +125,11 @@ CREATE INDEX IF NOT EXISTS auth_grants_status_idx
 CREATE INDEX IF NOT EXISTS auth_grants_provider_idx
     ON auth_grants (universe_id, provider_id, grant_id);
 
-DO $$
-BEGIN
-    IF NOT EXISTS (
-        SELECT 1
-        FROM pg_constraint
-        WHERE conname = 'mcp_servers_auth_grant_fk'
-          AND conrelid = 'mcp_servers'::regclass
-    ) THEN
-        ALTER TABLE mcp_servers
-            ADD CONSTRAINT mcp_servers_auth_grant_fk
-            FOREIGN KEY (universe_id, auth_grant_id)
-            REFERENCES auth_grants (universe_id, grant_id)
-            ON DELETE RESTRICT;
-    END IF;
-END
-$$;
+-- The MCP catalog is created before its referenced auth grants.
+ALTER TABLE mcp_servers
+    ADD CONSTRAINT mcp_servers_auth_grant_fk
+    FOREIGN KEY (universe_id, auth_grant_id)
+    REFERENCES auth_grants (universe_id, grant_id) ON DELETE RESTRICT;
 
 CREATE INDEX IF NOT EXISTS mcp_servers_auth_grant_idx
     ON mcp_servers (universe_id, auth_grant_id)
@@ -159,6 +148,10 @@ CREATE TABLE IF NOT EXISTS auth_clients (
     client_secret_secret_id text,
     token_endpoint_auth_method text NOT NULL DEFAULT 'client_secret_basic',
     scopes_default text[] NOT NULL DEFAULT '{}',
+    -- Public discovery facts; credentials remain in encrypted secret storage.
+    authorization_server_issuer text,
+    authorization_response_iss_parameter_supported boolean NOT NULL DEFAULT false,
+    authorization_server_scopes_supported text[] NOT NULL DEFAULT '{}',
     audience text,
     created_at_ms bigint NOT NULL,
     updated_at_ms bigint NOT NULL,
@@ -192,6 +185,8 @@ CREATE TABLE IF NOT EXISTS auth_clients (
                 'none'
             )
         ),
+    CONSTRAINT auth_clients_authorization_server_issuer_not_empty
+        CHECK (authorization_server_issuer IS NULL OR authorization_server_issuer <> ''),
     CONSTRAINT auth_clients_audience_not_empty
         CHECK (audience IS NULL OR audience <> ''),
     CONSTRAINT auth_clients_created_at_ms_nonnegative
@@ -212,6 +207,8 @@ CREATE TABLE IF NOT EXISTS auth_flows (
     principal_kind text NOT NULL DEFAULT 'universe_default',
     principal_id text,
     state_hash text NOT NULL,
+    expected_issuer text,
+    require_issuer boolean NOT NULL DEFAULT false,
     pkce_verifier_secret_id text NOT NULL,
     redirect_uri text NOT NULL,
     scopes text[] NOT NULL DEFAULT '{}',
@@ -242,6 +239,8 @@ CREATE TABLE IF NOT EXISTS auth_flows (
         ),
     CONSTRAINT auth_flows_principal_kind_known
         CHECK (principal_kind IN ('user', 'service_account', 'universe_default')),
+    CONSTRAINT auth_flows_expected_issuer_not_empty
+        CHECK (expected_issuer IS NULL OR expected_issuer <> ''),
     CONSTRAINT auth_flows_state_hash_not_empty
         CHECK (state_hash <> ''),
     CONSTRAINT auth_flows_pkce_verifier_secret_id_not_empty
@@ -345,3 +344,8 @@ COMMENT ON TABLE auth_clients IS
     'Universe-scoped OAuth client configurations; secrets live in auth_secrets.';
 COMMENT ON TABLE auth_flows IS
     'One-time authorization-code flows; stores the state hash, never the state or tokens.';
+
+COMMENT ON COLUMN auth_clients.authorization_server_issuer IS
+    'Public authorization-server issuer selected by rmcp discovery; never a credential.';
+COMMENT ON COLUMN auth_flows.expected_issuer IS
+    'Issuer frozen when the authorization request was created for RFC 9207 callback validation.';

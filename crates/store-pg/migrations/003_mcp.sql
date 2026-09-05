@@ -1,4 +1,4 @@
--- Remote MCP server catalog for direct provider-hosted MCP.
+-- Remote MCP server catalog for provider-hosted and native MCP execution.
 --
 -- Design notes:
 -- - This migration intentionally creates only the MCP catalog table.
@@ -15,12 +15,15 @@ CREATE TABLE IF NOT EXISTS mcp_servers (
     server_id text NOT NULL,
     display_name text,
     server_url text NOT NULL,
-    transport text NOT NULL DEFAULT 'auto',
+    transport text NOT NULL DEFAULT 'streamable_http',
     default_server_label text NOT NULL,
     description text,
     allowed_tools text[],
-    approval_default text NOT NULL DEFAULT 'provider_default',
+    approval_default text NOT NULL DEFAULT 'never',
     defer_loading_default boolean,
+    execution text NOT NULL DEFAULT 'provider',
+    exposure text NOT NULL DEFAULT 'inject',
+    allow_private_network boolean NOT NULL DEFAULT false,
     auth_policy text NOT NULL DEFAULT 'none',
     auth_metadata_json jsonb NOT NULL DEFAULT '{}',
     auth_grant_id text,
@@ -48,7 +51,7 @@ CREATE TABLE IF NOT EXISTS mcp_servers (
     CONSTRAINT mcp_servers_server_url_no_whitespace
         CHECK (server_url !~ '[[:space:][:cntrl:]]'),
     CONSTRAINT mcp_servers_transport_known
-        CHECK (transport IN ('streamable_http', 'sse', 'auto')),
+        CHECK (transport IN ('streamable_http')),
     CONSTRAINT mcp_servers_default_server_label_format
         CHECK (default_server_label ~ '^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$'),
     CONSTRAINT mcp_servers_description_not_empty
@@ -60,7 +63,13 @@ CREATE TABLE IF NOT EXISTS mcp_servers (
     CONSTRAINT mcp_servers_allowed_tools_no_empty
         CHECK (allowed_tools IS NULL OR array_position(allowed_tools, '') IS NULL),
     CONSTRAINT mcp_servers_approval_default_known
-        CHECK (approval_default IN ('provider_default', 'always', 'never')),
+        CHECK (approval_default IN ('always', 'never')),
+    CONSTRAINT mcp_servers_execution_known
+        CHECK (execution IN ('provider', 'native')),
+    CONSTRAINT mcp_servers_exposure_known
+        CHECK (exposure IN ('inject', 'search')),
+    CONSTRAINT mcp_servers_exposure_matches_execution
+        CHECK (execution = 'native' OR exposure = 'inject'),
     CONSTRAINT mcp_servers_auth_policy_known
         CHECK (
             auth_policy IN (
