@@ -113,16 +113,3 @@ impl GatewayAgentApi {
 pub(super) fn active_prompt_context_entries(state: &engine::CoreAgentState) -> Vec<&ContextEntry> {
     tools::prompts::active_prompt_instruction_entries(state)
 }
-
-#[cfg(test)]
-pub(super) fn prompt_report_ref(entry: &ContextEntry) -> Result<Option<BlobRef>, AgentApiError> {
-    if entry.provider_kind.as_deref() != Some(tools::prompts::PROMPT_INSTRUCTIONS_PROVIDER_KIND) {
-        return Ok(None);
-    }
-    let Some(value) = entry.provider_item_id.as_deref() else {
-        return Ok(None);
-    };
-    BlobRef::parse(value).map(Some).map_err(|error| {
-        AgentApiError::internal(format!("stored prompt report ref is invalid: {error}"))
-    })
-}

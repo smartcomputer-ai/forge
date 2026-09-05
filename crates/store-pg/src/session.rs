@@ -123,7 +123,7 @@ impl PgStore {
             committed.push(entry);
         }
         embedded
-            .verify_stored(&mut tx, self.config.universe_id, &request.session_id)
+            .record_roots(&mut tx, self.config.universe_id, &request.session_id)
             .await?;
 
         if let Some(last) = committed.last() {
@@ -139,8 +139,7 @@ impl PgStore {
                     lifecycle_status = $5,
                     closed_at_seq = $6,
                     managed = $7,
-                    closed_at_ms = $8,
-                    delete_at_ms = $9
+                    closed_at_ms = $8
                 WHERE universe_id = $1 AND session_id = $2
                 "#,
             )
@@ -155,7 +154,6 @@ impl PgStore {
             )?)
             .bind(record.managed)
             .bind(optional_u64_to_i64(record.closed_at_ms, "closed_at_ms")?)
-            .bind(optional_u64_to_i64(record.delete_at_ms, "delete_at_ms")?)
             .execute(&mut *tx)
             .await
             .map_err(|error| session_sql_error("update session head", error))?;
@@ -711,7 +709,7 @@ impl SessionStore for PgStore {
             .begin()
             .await
             .map_err(|error| session_sql_error("begin retention transaction", error))?;
-        let mut record = lock_session(
+        let record = lock_session(
             &mut tx,
             self.config.universe_id,
             session_id,
@@ -724,23 +722,10 @@ impl SessionStore for PgStore {
                 retention_root_session_id: record.retention_root_session_id,
             });
         }
-        record.delete_after_close_ms = delete_after_close_ms;
-        record.delete_at_ms = record
-            .closed_at_ms
-            .zip(delete_after_close_ms)
-            .map(|(closed_at_ms, duration_ms)| {
-                closed_at_ms.checked_add(duration_ms).ok_or_else(|| {
-                    SessionStoreError::InvalidRetention {
-                        message: "deleteAfterCloseMs overflows the deletion deadline".to_owned(),
-                    }
-                })
-            })
-            .transpose()?;
         let query = format!(
             r#"
             UPDATE sessions
-            SET delete_after_close_ms = $3,
-                delete_at_ms = $4
+            SET delete_after_close_ms = $3
             WHERE universe_id = $1 AND session_id = $2
             RETURNING {SESSION_COLUMNS}
             "#,
@@ -749,10 +734,9 @@ impl SessionStore for PgStore {
             .bind(self.config.universe_id)
             .bind(session_id.as_str())
             .bind(optional_u64_to_i64(
-                record.delete_after_close_ms,
+                delete_after_close_ms,
                 "delete_after_close_ms",
             )?)
-            .bind(optional_u64_to_i64(record.delete_at_ms, "delete_at_ms")?)
             .fetch_one(&mut *tx)
             .await
             .map_err(|error| session_sql_error("set session retention", error))?;
@@ -1673,7 +1657,7 @@ async fn append_events_in_tx(
         committed.push(entry);
     }
     embedded
-        .verify_stored(tx, universe_id, &record.session_id)
+        .record_roots(tx, universe_id, &record.session_id)
         .await?;
 
     if let Some(last) = committed.last() {
@@ -1685,8 +1669,7 @@ async fn append_events_in_tx(
                 lifecycle_status = $5,
                 closed_at_seq = $6,
                 managed = $7,
-                closed_at_ms = $8,
-                delete_at_ms = $9
+                closed_at_ms = $8
             WHERE universe_id = $1 AND session_id = $2
             "#,
         )
@@ -1701,7 +1684,6 @@ async fn append_events_in_tx(
         )?)
         .bind(record.managed)
         .bind(optional_u64_to_i64(record.closed_at_ms, "closed_at_ms")?)
-        .bind(optional_u64_to_i64(record.delete_at_ms, "delete_at_ms")?)
         .execute(&mut **tx)
         .await
         .map_err(|error| session_sql_error("update session head", error))?;
@@ -1710,11 +1692,8 @@ async fn append_events_in_tx(
     Ok((record, committed))
 }
 
-/// Blob refs embedded in the entries of one append. The event rows themselves
-/// keep these blobs alive: the store exposes every ref an entry embeds as a
-/// generated column, so nothing has to be registered. What the append must
-/// guarantee is that each ref names a blob the catalog holds, because a
-/// dangling ref would otherwise only fail later, at read time.
+/// Distinct refs in an append. The store derives FK-backed roots inside the
+/// append transaction; callers never register roots separately.
 #[derive(Default)]
 struct EmbeddedBlobRefs {
     refs: BTreeSet<BlobRef>,
@@ -1725,7 +1704,7 @@ impl EmbeddedBlobRefs {
         self.refs.extend(collect_blob_refs(entry_json));
     }
 
-    async fn verify_stored(
+    async fn record_roots(
         self,
         tx: &mut Transaction<'_, Postgres>,
         universe_id: Uuid,
@@ -1737,24 +1716,39 @@ impl EmbeddedBlobRefs {
         let candidates = self
             .refs
             .iter()
-            .map(|blob_ref| blob_ref.as_str().to_owned())
+            .map(|blob_ref| blob_ref.as_str()[7..].to_owned())
             .collect::<Vec<_>>();
         let missing: Vec<String> = sqlx::query_scalar(
             r#"
-            SELECT r.blob_ref
-            FROM unnest($2::text[]) AS r(blob_ref)
-            WHERE NOT EXISTS (
-                SELECT 1 FROM cas_blobs AS b
-                WHERE b.universe_id = $1 AND b.blob_ref = r.blob_ref
+            WITH requested AS (
+                SELECT digest FROM unnest($3::text[]) AS candidate(digest)
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM cas_session_roots r
+                    WHERE r.universe_id = $1 AND r.session_id = $2
+                      AND r.digest = candidate.digest
+                )
+            ), held AS MATERIALIZED (
+                SELECT b.digest FROM cas_blobs b
+                JOIN requested r ON r.digest = b.digest
+                WHERE b.universe_id = $1
+                ORDER BY b.digest
+                FOR KEY SHARE OF b
+            ), inserted AS (
+                INSERT INTO cas_session_roots (universe_id, session_id, digest)
+                SELECT $1, $2, digest FROM held
+                ON CONFLICT DO NOTHING
             )
-            ORDER BY r.blob_ref
+            SELECT 'sha256:' || digest FROM requested
+            WHERE digest NOT IN (SELECT digest FROM held)
+            ORDER BY digest
             "#,
         )
         .bind(universe_id)
+        .bind(session_id.as_str())
         .bind(&candidates)
         .fetch_all(&mut **tx)
         .await
-        .map_err(|error| session_sql_error("verify event blob refs", error))?;
+        .map_err(|error| session_sql_error("record event blob roots", error))?;
         if missing.is_empty() {
             return Ok(());
         }

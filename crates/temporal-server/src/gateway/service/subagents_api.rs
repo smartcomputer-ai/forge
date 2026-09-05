@@ -35,7 +35,9 @@ impl GatewayAgentApi {
             return Ok(());
         };
         let target_ref = match &command {
-            CoreAgentCommand::UpsertContext { entry, .. } => Some(entry.content_ref.clone()),
+            CoreAgentCommand::UpsertContext { entry, .. } => {
+                Some(entry.content.content_ref.clone())
+            }
             _ => None,
         };
         let baseline_failures = self
@@ -191,5 +193,5 @@ pub(super) fn active_subagent_catalog_ref(state: &engine::CoreAgentState) -> Opt
                 .is_some_and(|key| key.as_str() == engine::SUBAGENT_CATALOG_CONTEXT_KEY)
                 && matches!(entry.kind, ContextEntryKind::SubagentCatalog)
         })
-        .map(|entry| entry.content_ref.clone())
+        .map(|entry| entry.content.content_ref.clone())
 }

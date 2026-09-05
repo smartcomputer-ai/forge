@@ -172,11 +172,13 @@ async fn media_message_input(
         kind: ContextEntryKind::Message {
             role: ContextMessageRole::User,
         },
-        content_ref: blob_ref,
-        media_type: Some(mime),
+        content: engine::ContentRef {
+            content_ref: blob_ref,
+            media_type: Some(mime),
+            provider_kind: None,
+        },
         preview: Some(preview),
-        provider_kind: None,
-        provider_item_id: None,
+        provenance_ref: None,
         token_estimate: None,
     })
 }
@@ -245,11 +247,13 @@ pub(super) fn catalog_input(title: String, content_ref: BlobRef) -> ContextEntry
         kind: ContextEntryKind::Catalog {
             title: title.clone(),
         },
-        content_ref,
-        media_type: Some("text/markdown".to_owned()),
+        content: engine::ContentRef {
+            content_ref,
+            media_type: Some("text/markdown".to_owned()),
+            provider_kind: None,
+        },
         preview: Some(title),
-        provider_kind: None,
-        provider_item_id: None,
+        provenance_ref: None,
         token_estimate: None,
     }
 }
@@ -259,11 +263,9 @@ pub(super) fn user_message_input(content_ref: BlobRef) -> ContextEntryInput {
         kind: ContextEntryKind::Message {
             role: ContextMessageRole::User,
         },
-        content_ref,
-        media_type: Some("text/plain".to_owned()),
+        content: engine::ContentRef::text(content_ref),
         preview: None,
-        provider_kind: None,
-        provider_item_id: None,
+        provenance_ref: None,
         token_estimate: None,
     }
 }

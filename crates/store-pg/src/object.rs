@@ -65,8 +65,9 @@ pub(crate) fn direct_blob_key(
     Ok(prefixed_key(
         config,
         &format!(
-            "universes/{}/cas/blobs/sha256/{prefix}/{digest}.bin",
-            config.universe_id
+            "universes/{}/cas/blobs/sha256/{prefix}/{digest}/{}.bin",
+            config.universe_id,
+            Uuid::new_v4().simple()
         ),
     ))
 }

@@ -170,11 +170,13 @@ async fn anthropic_messages_live_core_session_uses_public_remote_mcp() {
                         kind: ContextEntryKind::Message {
                             role: ContextMessageRole::User,
                         },
-                        content_ref: input_ref,
-                        media_type: None,
+                        content: engine::ContentRef {
+                            content_ref: input_ref,
+                            media_type: None,
+                            provider_kind: None,
+                        },
                         preview: None,
-                        provider_kind: None,
-                        provider_item_id: None,
+                        provenance_ref: None,
                         token_estimate: None,
                     }],
                 },
@@ -301,12 +303,7 @@ async fn assistant_text(blobs: &dyn BlobStore, entries: &[engine::CoreAgentEntry
                         role: engine::ContextMessageRole::Assistant
                     }
                 ) {
-                    text.push_str(
-                        &blobs
-                            .read_text(&item.content_ref)
-                            .await
-                            .expect("assistant text"),
-                    );
+                    text.push_str(&support::content_text(blobs, &item.content).await);
                     text.push('\n');
                 }
             }
@@ -326,14 +323,14 @@ async fn mcp_context_items(
         {
             for item in entries {
                 if matches!(
-                    item.provider_kind.as_deref(),
+                    item.content.provider_kind.as_deref(),
                     Some(
                         engine::ANTHROPIC_MESSAGES_MCP_TOOL_USE_PROVIDER_KIND
                             | engine::ANTHROPIC_MESSAGES_MCP_TOOL_RESULT_PROVIDER_KIND
                     )
                 ) {
                     let bytes = blobs
-                        .read_bytes(&item.content_ref)
+                        .read_bytes(&item.content.content_ref)
                         .await
                         .expect("MCP context bytes");
                     items.push(serde_json::from_slice(&bytes).expect("MCP context JSON"));
@@ -355,14 +352,14 @@ async fn tool_search_context_items(
         {
             for item in entries {
                 if matches!(
-                    item.provider_kind.as_deref(),
+                    item.content.provider_kind.as_deref(),
                     Some(
                         engine::ANTHROPIC_MESSAGES_SERVER_TOOL_USE_PROVIDER_KIND
                             | engine::ANTHROPIC_MESSAGES_SERVER_TOOL_RESULT_PROVIDER_KIND
                     )
                 ) {
                     let bytes = blobs
-                        .read_bytes(&item.content_ref)
+                        .read_bytes(&item.content.content_ref)
                         .await
                         .expect("tool-search context bytes");
                     items.push(serde_json::from_slice(&bytes).expect("tool-search context JSON"));

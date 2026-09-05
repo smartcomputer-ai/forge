@@ -176,7 +176,7 @@ describe("LightspeedClient", () => {
       kind: {
         type: "runCompleted",
         runId: "run_1",
-        outputRef: "blob_output",
+        output: { contentRef: "blob_output", mediaType: "application/json", providerKind: "anthropic.messages.text_blocks" },
       },
     };
     const pages = [
@@ -198,7 +198,7 @@ describe("LightspeedClient", () => {
               sessionId: "session_1",
               observedAtMs: 900,
               joins: { runId: "other_run" },
-              kind: { type: "runCompleted", runId: "other_run", outputRef: null },
+              kind: { type: "runCompleted", runId: "other_run", output: null },
             } satisfies SessionEventView,
             terminalEvent,
           ],
@@ -228,7 +228,7 @@ describe("LightspeedClient", () => {
 
     expect(result.state).toMatchObject({
       status: "completed",
-      outputRef: "blob_output",
+      output: { contentRef: "blob_output", mediaType: "application/json", providerKind: "anthropic.messages.text_blocks" },
     });
     expect(result.cursor).toEqual({ seq: 3 });
     expect(requests.map((request) => request.params)).toEqual([

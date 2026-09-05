@@ -169,7 +169,7 @@ pub struct AgentActiveRunSummary {
     pub run_id: u64,
     pub status: RunStatus,
     pub submission_id: Option<SubmissionId>,
-    pub output_ref: Option<BlobRef>,
+    pub output: Option<engine::ContentRef>,
     pub active_turn_id: Option<u64>,
     pub active_tool_batch_id: Option<u64>,
 }
@@ -186,7 +186,7 @@ pub struct AgentCompletedRunSummary {
     pub run_id: u64,
     pub status: RunStatus,
     pub submission_id: Option<SubmissionId>,
-    pub output_ref: Option<BlobRef>,
+    pub output: Option<engine::ContentRef>,
     pub failure_message_ref: Option<BlobRef>,
 }
 
@@ -517,7 +517,7 @@ pub struct SubagentChildRef {
 pub enum SubagentTerminal {
     Run {
         status: engine::RunStatus,
-        output_ref: Option<BlobRef>,
+        output: Option<engine::ContentRef>,
         failure_message_ref: Option<BlobRef>,
     },
     Deadline,

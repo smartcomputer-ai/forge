@@ -388,11 +388,7 @@ async fn context_append_result(
         .into_iter()
         .next();
     let activation_text = if is_audio_transcript_entry(input) {
-        let text = store
-            .read_text(&input.content_ref)
-            .await
-            .map_err(map_input_blob_store_error)?;
-        Some(crate::transcript::transcript_activation_text(&text).to_owned())
+        api_projection::project_content_text(store, &input.content).await?
     } else if context_append_entry_has_activation_text(input) {
         // The submitted text is reused when it produced this exact entry so
         // plain-text appends do not pay a blob read per response entry.
@@ -400,7 +396,7 @@ async fn context_append_result(
             Some(text) => Some(text.to_owned()),
             None => Some(
                 store
-                    .read_text(&input.content_ref)
+                    .read_text(&input.content.content_ref)
                     .await
                     .map_err(map_input_blob_store_error)?,
             ),
@@ -444,6 +440,7 @@ fn context_append_entry_has_activation_text(input: &ContextEntryInput) -> bool {
         }
     ) && input.preview.is_none()
         && input
+            .content
             .media_type
             .as_deref()
             .map(|media_type| {
@@ -470,11 +467,9 @@ fn context_append_failed_result(
 fn active_entry_input(entry: &ContextEntry) -> ContextEntryInput {
     ContextEntryInput {
         kind: entry.kind.clone(),
-        content_ref: entry.content_ref.clone(),
-        media_type: entry.media_type.clone(),
+        content: entry.content.clone(),
         preview: entry.preview.clone(),
-        provider_kind: entry.provider_kind.clone(),
-        provider_item_id: entry.provider_item_id.clone(),
+        provenance_ref: entry.provenance_ref.clone(),
         token_estimate: entry.token_estimate.clone(),
     }
 }
@@ -486,15 +481,17 @@ fn active_context_entry_matches_input(active: &ContextEntry, input: &ContextEntr
 
 fn audio_input_matches_transcript(input: &ContextEntryInput, active: &ContextEntryInput) -> bool {
     input
+        .content
         .media_type
         .as_deref()
         .is_some_and(|mime| mime.trim().to_ascii_lowercase().starts_with("audio/"))
         && is_audio_transcript_entry(active)
-        && active.provider_item_id.as_deref() == Some(input.content_ref.as_str())
+        && active.provenance_ref.as_ref() == Some(&input.content.content_ref)
 }
 
 fn is_audio_transcript_entry(input: &ContextEntryInput) -> bool {
-    input.provider_kind.as_deref() == Some(crate::transcript::AUDIO_TRANSCRIPT_PROVIDER_KIND)
+    input.content.provider_kind.as_deref()
+        == Some(llm_clients::content::AUDIO_TRANSCRIPT_PROVIDER_KIND)
 }
 
 fn input_admission_failure_from_api_error(error: AgentApiError) -> InputAdmissionFailureView {
@@ -1283,20 +1280,22 @@ impl GatewayAgentApi {
             self.validate_managed_session_materialization(&session_config, workflow_tools)
                 .await?;
         }
+        let args = self.workflow_args(
+            session_id.clone(),
+            display_name,
+            effective_metadata,
+            effective_delete_after_close_ms,
+            session_config,
+            workflow_tools.clone(),
+            close_on_terminal,
+            auto_reject_approvals,
+        );
+        self.refresh_input_blob_grace(&args).await?;
         let started = self
             .client
             .start_workflow(
                 AgentSessionWorkflow::run,
-                self.workflow_args(
-                    session_id.clone(),
-                    display_name,
-                    effective_metadata,
-                    effective_delete_after_close_ms,
-                    session_config,
-                    workflow_tools.clone(),
-                    close_on_terminal,
-                    auto_reject_approvals,
-                ),
+                args,
                 WorkflowStartOptions::new(
                     self.task_queue.clone(),
                     self.workflow_id_for(&session_id),
@@ -1897,6 +1896,7 @@ impl GatewayAgentApi {
                 entries: &entries,
                 run_id,
                 status: metadata.status,
+                output: metadata.output,
                 source: metadata.source,
                 started_at_ms: metadata.started_at_ms,
                 completed_at_ms: metadata.completed_at_ms,
@@ -1963,6 +1963,7 @@ pub(super) struct LoadedSession {
 }
 
 struct RunProjectionMetadata<'a> {
+    output: Option<&'a engine::ContentRef>,
     status: api::RunStatus,
     first_seq: engine::EventSeq,
     terminal_seq: Option<engine::EventSeq>,
@@ -1985,6 +1986,7 @@ fn run_projection_metadata(
             status: core_run_status_to_api_status(run.status),
             first_seq: run.first_seq,
             terminal_seq: Some(run.terminal_seq),
+            output: run.output.as_ref(),
             source: &run.source,
             started_at_ms: run.started_at_ms,
             completed_at_ms: Some(run.completed_at_ms),
@@ -2000,6 +2002,7 @@ fn run_projection_metadata(
                     status: core_run_status_to_api_status(run.status),
                     first_seq: run.first_seq,
                     terminal_seq: None,
+                    output: None,
                     source: &run.source,
                     started_at_ms: run.started_at_ms,
                     completed_at_ms: None,
@@ -2016,6 +2019,7 @@ fn run_projection_metadata(
                     status: api::RunStatus::Queued,
                     first_seq: run.first_seq,
                     terminal_seq: None,
+                    output: None,
                     source: &run.source,
                     started_at_ms: None,
                     completed_at_ms: None,
@@ -3244,7 +3248,8 @@ impl AgentApiService for GatewayAgentApi {
                         .filter(|active| active_context_entry_matches_input(active, &input))
                     {
                         let effective = active_entry_input(active);
-                        let text = text.filter(|_| effective.content_ref == input.content_ref);
+                        let text = text
+                            .filter(|_| effective.content.content_ref == input.content.content_ref);
                         ordered.push(PreparedAppend::Ready {
                             key,
                             input: effective,
@@ -3289,7 +3294,7 @@ impl AgentApiService for GatewayAgentApi {
                         Some(ContextAppendWaitOutcome::Applied { entry }) => {
                             let text = text
                                 .as_deref()
-                                .filter(|_| entry.content_ref == input.content_ref);
+                                .filter(|_| entry.content.content_ref == input.content.content_ref);
                             context_append_result(
                                 self.store.as_ref(),
                                 key.as_str().to_owned(),
@@ -3676,8 +3681,13 @@ impl AgentApiService for GatewayAgentApi {
                             approval_request_id: provider_request_id.clone(),
                             approve,
                         },
-                        content_ref: response_ref,
-                        media_type: Some("application/json".to_owned()),
+                        content: engine::ContentRef {
+                            content_ref: response_ref,
+                            media_type: Some("application/json".to_owned()),
+                            provider_kind: Some(
+                                "openai.responses.mcp_approval_response".to_owned(),
+                            ),
+                        },
                         preview: Some(
                             if approve {
                                 "MCP tool call approved"
@@ -3686,8 +3696,7 @@ impl AgentApiService for GatewayAgentApi {
                             }
                             .to_owned(),
                         ),
-                        provider_kind: Some("openai.responses.mcp_approval_response".to_owned()),
-                        provider_item_id: None,
+                        provenance_ref: None,
                         token_estimate: None,
                     })
                 }

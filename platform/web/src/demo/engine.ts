@@ -66,7 +66,7 @@ export function contextMessage(
 ): ContextEntryView {
   return {
     id,
-    contentRef: `blob:${id}`,
+    content: { contentRef: `blob:${id}`, mediaType: "text/plain", providerKind: null },
     kind: { type: "message", role },
     text,
     ...(source ? { source } : {}),
@@ -74,7 +74,7 @@ export function contextMessage(
 }
 
 export function contextToolCall(id: string, callId: string, name: string): ContextEntryView {
-  return { id, contentRef: `blob:${id}`, kind: { type: "toolCall", callId, name } } as ContextEntryView;
+  return { id, content: { contentRef: `blob:${id}`, mediaType: "text/plain", providerKind: null }, kind: { type: "toolCall", callId, name } } as ContextEntryView;
 }
 
 export function contextToolResult(
@@ -85,14 +85,14 @@ export function contextToolResult(
 ): ContextEntryView {
   return {
     id,
-    contentRef: `blob:${id}`,
+    content: { contentRef: `blob:${id}`, mediaType: "text/plain", providerKind: null },
     kind: { type: "toolResult", callId, isError },
     text: output,
   } as ContextEntryView;
 }
 
-export function contextReasoning(id: string, preview: string): ContextEntryView {
-  return { id, contentRef: `blob:${id}`, kind: { type: "reasoningState" }, preview };
+export function contextReasoning(id: string, text: string): ContextEntryView {
+  return { id, content: { contentRef: `blob:${id}`, mediaType: "text/plain", providerKind: null }, kind: { type: "reasoningState" }, text };
 }
 
 /// Applies entries to the active context and records the event.
@@ -106,6 +106,8 @@ export function applyEntries(
   const revision = baseRevision + 1;
   session.activeContext.revision = revision;
   session.activeContext.entries.push(...entries);
+  const run = joins.runId ? session.runs.get(joins.runId) : undefined;
+  if (run) run.entries = [...(run.entries ?? []), ...entries];
   return pushEvent(session, { type: "contextEntriesApplied", baseRevision, revision, entries }, joins, at);
 }
 
@@ -243,8 +245,7 @@ export function setInstructions(store: DemoStore, session: SessionRecord, text: 
       id: "default-instructions",
       key: DEFAULT_INSTRUCTIONS_KEY,
       kind: { type: "instructions" },
-      contentRef: store.defaultInstructionsRef,
-      mediaType: "text/plain",
+      content: { contentRef: store.defaultInstructionsRef, mediaType: "text/plain", providerKind: null },
       preview: "Default instructions",
     },
   ];
@@ -253,8 +254,7 @@ export function setInstructions(store: DemoStore, session: SessionRecord, text: 
       id: store.nextId("instructions"),
       key: PROFILE_INSTRUCTIONS_KEY,
       kind: { type: "instructions" },
-      contentRef: store.putText(text),
-      mediaType: "text/plain",
+      content: { contentRef: store.putText(text), mediaType: "text/plain", providerKind: null },
       preview: "Profile instructions",
     });
   }
@@ -266,7 +266,7 @@ export function setInstructions(store: DemoStore, session: SessionRecord, text: 
 export function inputSource(store: DemoStore, text: string): RunAcceptedSourceView {
   return {
     type: "input",
-    entries: [{ contentRef: store.putText(text), kind: { type: "message", role: "user" }, preview: text }],
+    entries: [{ content: { contentRef: store.putText(text), mediaType: "text/plain", providerKind: null }, kind: { type: "message", role: "user" }, preview: text }],
   };
 }
 
@@ -413,7 +413,7 @@ export function finishRun(
   run.completedAtMs = at;
   const joins = { runId: run.id };
   if (status === "completed") {
-    pushEvent(session, { type: "runCompleted", runId: run.id, outputRef: null }, joins, at);
+    completeRunOutput(session, run, at);
   } else if (status === "cancelled") {
     pushEvent(session, { type: "runCancelled", runId: run.id }, joins, at);
   } else {
@@ -427,6 +427,15 @@ export function finishRun(
   if (session.view.status !== "closed") session.view.status = "idle";
   const next = session.queue.shift();
   if (next) next.begin();
+}
+
+function completeRunOutput(session: SessionRecord, run: RunView, at: number): void {
+  const message = run.entries?.slice().reverse().find(
+    (entry) => entry.kind.type === "message" && entry.kind.role === "assistant",
+  );
+  run.output = message?.content;
+  run.outputText = message?.text;
+  pushEvent(session, { type: "runCompleted", runId: run.id, output: run.output ?? null }, { runId: run.id }, at);
 }
 
 /// `session/runs/cancel`: a queued run is cancelled outright; an active one
@@ -471,7 +480,7 @@ export function steerRun(
       type: "runSteeringAccepted",
       runId,
       steeringId,
-      input: [{ contentRef: store.putText(text), kind: { type: "message", role: "user" }, preview: text }],
+      input: [{ content: { contentRef: store.putText(text), mediaType: "text/plain", providerKind: null }, kind: { type: "message", role: "user" }, preview: text }],
     },
     { runId },
   );
@@ -883,7 +892,7 @@ export function appendScriptedRun(store: DemoStore, session: SessionRecord, scri
           type: "runSteeringAccepted",
           runId: run.id,
           steeringId,
-          input: [{ contentRef: store.putText(text), kind: { type: "message", role: "user" }, preview: text }],
+          input: [{ content: { contentRef: store.putText(text), mediaType: "text/plain", providerKind: null }, kind: { type: "message", role: "user" }, preview: text }],
         },
         runJoins,
         clock,
@@ -915,7 +924,7 @@ export function appendScriptedRun(store: DemoStore, session: SessionRecord, scri
     );
   } else {
     run.status = "completed";
-    pushEvent(session, { type: "runCompleted", runId: run.id, outputRef: null }, runJoins, clock);
+    completeRunOutput(session, run, clock);
   }
   return run;
 }

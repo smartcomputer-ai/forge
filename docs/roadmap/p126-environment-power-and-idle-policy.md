@@ -315,6 +315,10 @@ changed (paused VMs still count as running instances there).
 - `EnvironmentResolver::selectable`: powered-down provisioned environment
   with `running` in `power_states` → set desired `running` + `NotReady`
   (decision 3); providers without power control keep the reachability probe.
+- `environment_read` adds a `status_message` when wake-on-use applies,
+  explaining that environment tools automatically wake it and wait until
+  ready. The raw status is preserved; `environment_list` stays compact
+  without the message. Focused unit coverage checks both tool outputs.
 - Gateway: `environments/power/put`, `environments/idle-policy/put`,
   `idlePolicy` on create and on the profile applier, view mapping; ingress
   may be configured on paused/suspended environments too.

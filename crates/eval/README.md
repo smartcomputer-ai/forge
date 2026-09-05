@@ -7,10 +7,11 @@ Prompt-level eval harness for Lightspeed agent workflows.
 - `cargo run -p eval -- list`
 - `cargo run -p eval -- case read-file`
 - `cargo run -p eval -- all --runs 3`
+- `cargo run -p eval -- --provider openai-completions all`
 - `cargo run -p eval -- --provider anthropic all`
 
-`case` and `all` execute live provider calls. OpenAI Responses runs require
-`OPENAI_API_KEY`; Anthropic Messages runs require `ANTHROPIC_API_KEY`.
+`case` and `all` execute live provider calls. OpenAI Responses and Chat Completions
+runs require `OPENAI_API_KEY`; Anthropic Messages runs require `ANTHROPIC_API_KEY`.
 Provider base-URL overrides and the existing provider-specific live-model
 environment variables are honored. Cases may declare a `providers` allowlist
 when a tool is intentionally absent from one provider-native surface.

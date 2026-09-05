@@ -178,6 +178,21 @@ The LLM activity selects their names, schemas, and argument adapters for the
 turn's model. Those definitions live in runtime code; externally authored tool
 definitions and conversation payloads continue to use CAS.
 
+CAS collection runs hourly with a seven-day default grace. Transactional roots
+retain session and bot content, while scans of up to 100,000 rows per universe,
+in small pages within a time budget, reclaim abandoned and released blobs.
+Profiles borrow CAS refs; use inline text or content retained by another durable
+resource. See [storage design](docs/design.md) and
+[configuration](docs/variables.md) for retention behavior.
+
+Context entries and run outputs share a content descriptor: the CAS reference
+and its encoding. Display text and citations are derived from the original
+payload, preserving native provider data for replay. API message and reasoning
+views include full visible text; detailed run reads also include the terminal
+output independently of active context. Tool payloads retain bounded previews
+and can be expanded through raw blob reads. Optional provenance links
+an entry to its source audio, prompt assembly report, or skill catalog.
+
 The full design walk-through is in [docs/design.md](docs/design.md).
 
 <p align="center">

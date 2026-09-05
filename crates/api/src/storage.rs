@@ -1,7 +1,9 @@
 use super::*;
 
 /// `blobs/put` is batch-native: pass one item to store a single blob. Results
-/// come back in request order.
+/// come back in request order. Uploads are eligible for collection after the
+/// deployment's grace period unless retained by a durable resource. Reads do
+/// not extend retention; admitting an existing ref refreshes its grace.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct BlobPutParams {
@@ -33,6 +35,16 @@ pub struct BlobPutResponse {
 #[serde(rename_all = "camelCase")]
 pub struct BlobReadParams {
     pub blob_ref: String,
+}
+
+/// Immutable content and its encoding. A reference can name plain text,
+/// provider-native JSON, or media; it does not imply a UTF-8 text payload.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ContentRefView {
+    pub content_ref: String,
+    pub media_type: Option<String>,
+    pub provider_kind: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

@@ -159,29 +159,28 @@ events it reads by reference.
 
 ### Schema
 
-The session row gains the close projection, immutable tree root, and root-only
-policy/deadline:
+The core schema baseline defines the close projection, immutable tree root,
+and root-only policy/deadline directly on the session row. Relevant column and
+constraint definitions:
 
 ```sql
-ALTER TABLE sessions ADD COLUMN IF NOT EXISTS closed_at_ms bigint;
-UPDATE sessions SET closed_at_ms = updated_at_ms
-    WHERE closed_at_seq IS NOT NULL AND closed_at_ms IS NULL;
-ALTER TABLE sessions DROP CONSTRAINT IF EXISTS sessions_closed_at_pair;
-ALTER TABLE sessions ADD CONSTRAINT sessions_closed_at_pair
-    CHECK ((closed_at_ms IS NULL) = (closed_at_seq IS NULL));
+closed_at_ms bigint,
+retention_root_session_id text NOT NULL,
+delete_after_close_ms bigint,
+delete_at_ms bigint GENERATED ALWAYS AS
+    (closed_at_ms + delete_after_close_ms) STORED,
 
-ALTER TABLE sessions ADD COLUMN IF NOT EXISTS retention_root_session_id text;
-ALTER TABLE sessions ADD COLUMN IF NOT EXISTS delete_after_close_ms bigint;
-ALTER TABLE sessions ADD COLUMN IF NOT EXISTS delete_at_ms bigint;
+CONSTRAINT sessions_closed_at_pair
+    CHECK ((closed_at_ms IS NULL) = (closed_at_seq IS NULL)),
+CONSTRAINT sessions_delete_after_close_positive
+    CHECK (delete_after_close_ms IS NULL OR delete_after_close_ms > 0),
+CONSTRAINT sessions_retention_policy_on_root
+    CHECK (retention_root_session_id = session_id OR delete_after_close_ms IS NULL)
+```
 
-ALTER TABLE sessions ADD CONSTRAINT sessions_delete_after_close_positive
-    CHECK (delete_after_close_ms IS NULL OR delete_after_close_ms > 0);
-ALTER TABLE sessions ADD CONSTRAINT sessions_retention_policy_on_root
-    CHECK (
-        retention_root_session_id = session_id
-        OR (delete_after_close_ms IS NULL AND delete_at_ms IS NULL)
-    );
+The retention indexes are:
 
+```sql
 CREATE INDEX IF NOT EXISTS sessions_retention_root_idx
     ON sessions (universe_id, retention_root_session_id, session_id);
 CREATE INDEX IF NOT EXISTS sessions_retention_due_idx
@@ -189,17 +188,17 @@ CREATE INDEX IF NOT EXISTS sessions_retention_due_idx
     WHERE lifecycle_status = 'closed' AND delete_at_ms IS NOT NULL;
 ```
 
-The migration backfills `retention_root_session_id` by walking history-fork
-and `origin.parentSessionId` ancestry. Fresh sessions and clones resolve to
-themselves. It then makes the column non-null. Existing rows leave
-`delete_after_close_ms` and `delete_at_ms` null, so introducing the feature
-never schedules existing data for deletion.
+Fresh sessions and clones resolve the retention root to themselves; history
+forks and delegated children inherit their owner's root. The original upgrade
+backfill was removed when the greenfield schema was consolidated into the core
+baseline; existing development databases are recreated for that baseline.
 
-`delete_at_ms` is a materialized derivative, not an independently writable
-policy. The store computes it with checked arithmetic whenever a root's close
-time or policy changes, and keeps it null otherwise. Materializing the root
-deadline gives the reaper a direct ordered index. Descendant API views obtain
-the effective policy and deadline by joining their stored root id.
+PostgreSQL generates `delete_at_ms` from the close time and retention duration.
+The stored result gives the reaper a direct ordered index without requiring
+writers to synchronize another field. Null inputs clear the deadline for open
+sessions, roots without a policy, and descendants. PostgreSQL rejects bigint
+overflow atomically. Descendant API views obtain the effective policy and
+deadline by joining their stored root id.
 
 The reaper query reads only roots with a due deadline:
 
@@ -225,11 +224,12 @@ Bump `REQUIRED_SCHEMA_REVISION` and `LIGHTSPEED_SCHEMA_REVISION` together.
   History-fork and delegated-child creation lock their source/parent and copy
   its root id. Creation also locks the retention root so it cannot commit a
   new tree member concurrently with deletion.
-- The close and reopen paths maintain `closed_at_ms`; when the affected row is
-  a retention root they also derive or clear `delete_at_ms` in the same write.
-- `set_session_retention` locks the root, rejects a descendant target, replaces
-  the nullable duration without touching the event log or `updatedAtMs`, and
-  recomputes `delete_at_ms` atomically.
+- The close and reopen paths maintain `closed_at_ms`; PostgreSQL generates or
+  clears `delete_at_ms` in the same write. The in-memory store maintains the
+  equivalent derived value in its record projection.
+- `set_session_retention` locks the root, rejects a descendant target, and
+  replaces the nullable duration without touching the event log or `updatedAtMs`.
+  PostgreSQL generates the deadline and returns it with the updated record.
 - `list_retention_roots_due_for_deletion(now_ms, limit)` uses the
   universe-scoped query above.
 - `delete_closed_sessions(session_id, cascade, due_at_or_before)` returns the

@@ -2874,11 +2874,13 @@ mod tests {
                             kind: ContextEntryKind::Message {
                                 role: ContextMessageRole::User,
                             },
-                            content_ref: BlobRef::from_bytes(b"input"),
-                            media_type: None,
+                            content: crate::ContentRef {
+                                content_ref: BlobRef::from_bytes(b"input"),
+                                media_type: None,
+                                provider_kind: None,
+                            },
                             preview: None,
-                            provider_kind: None,
-                            provider_item_id: None,
+                            provenance_ref: None,
                             token_estimate: None,
                         }],
                     },

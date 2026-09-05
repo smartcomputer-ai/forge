@@ -29,11 +29,13 @@ fn entry(id: u64, kind: ContextEntryKind, content_ref: engine::BlobRef) -> Conte
         source: ContextEntrySource::Runtime {
             label: "live-prompt".to_owned(),
         },
-        content_ref,
-        media_type: None,
+        content: engine::ContentRef {
+            content_ref,
+            media_type: None,
+            provider_kind: None,
+        },
         preview: None,
-        provider_kind: None,
-        provider_item_id: None,
+        provenance_ref: None,
         token_estimate: None,
         supersedes: None,
     }
@@ -76,10 +78,7 @@ async fn answer(blobs: Arc<InMemoryBlobStore>, request: LlmGenerationRequest) ->
         blobs.clone(),
     );
     let execution = adapter.generate(request).await.expect("generate");
-    blobs
-        .read_text(&execution.result.context_entries[0].content_ref)
-        .await
-        .expect("answer")
+    support::content_text(blobs.as_ref(), &execution.result.context_entries[0].content).await
 }
 
 #[tokio::test(flavor = "current_thread")]

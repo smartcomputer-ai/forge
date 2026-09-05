@@ -42,13 +42,6 @@ pub const PROFILE_SCHEMA_SQL: &str = include_str!("../migrations/006_agent_profi
 pub const API_KEYS_SCHEMA_SQL: &str = include_str!("../migrations/007_api_keys.sql");
 pub const BOTS_SCHEMA_SQL: &str = include_str!("../migrations/008_bots.sql");
 pub const CHANNELS_SCHEMA_SQL: &str = include_str!("../migrations/009_channels.sql");
-pub const MCP_RUNTIME_SCHEMA_SQL: &str = include_str!("../migrations/010_mcp_runtime.sql");
-pub const SESSION_CHECKPOINTS_SCHEMA_SQL: &str =
-    include_str!("../migrations/011_session_checkpoints.sql");
-pub const ENVIRONMENT_REGISTRATION_SCHEMA_SQL: &str =
-    include_str!("../migrations/012_environment_registration.sql");
-pub const SESSION_METADATA_SCHEMA_SQL: &str =
-    include_str!("../migrations/013_session_metadata.sql");
 
 pub const DEFAULT_INLINE_THRESHOLD_BYTES: usize = 64 * 1024;
 
@@ -348,7 +341,10 @@ impl PgStore {
 
 pub use api_keys::PgApiKeyStore;
 pub use blob_cache::BlobCache;
-pub use cas_sweep::{CasObjectDeletion, CasSweepCandidate, CasSweepError};
+pub use cas_sweep::{
+    CasObjectDeletion, CasSweepCandidate, CasSweepCursor, CasSweepError, CasSweepLeader,
+    CasSweepPage,
+};
 pub use channels::list_channel_accounts_all;
 pub use environment_registration::{
     find_registered_environment_universe, find_registration_key_universe,

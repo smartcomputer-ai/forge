@@ -4,8 +4,8 @@ use std::sync::Arc;
 use engine::{
     BlobRef, CompactionPolicy, ContextEntry, ContextEntryId, ContextEntryKind, ContextEntrySource,
     ContextMessageRole, ContextSnapshot, LlmFinish, LlmGenerationRequest, LlmGenerationStatus,
-    LlmRequest, ModelSelection, OPENAI_RESPONSES_CITED_TEXT_PROVIDER_KIND,
-    OPENAI_RESPONSES_COMPACTION_PROVIDER_KIND, OPENAI_RESPONSES_WEB_SEARCH_CALL_PROVIDER_KIND,
+    LlmRequest, ModelSelection, OPENAI_RESPONSES_COMPACTION_PROVIDER_KIND,
+    OPENAI_RESPONSES_MESSAGE_PROVIDER_KIND, OPENAI_RESPONSES_WEB_SEARCH_CALL_PROVIDER_KIND,
     ProviderApiKind, ProviderParams, RunId, SessionId, ToolChoice, TurnId,
     storage::{BlobStore, InMemoryBlobStore},
 };
@@ -153,11 +153,13 @@ async fn openai_responses_live_fast_mode_reports_effective_service_tier() {
                         run_id: RunId::new(1),
                         input_index: 0,
                     },
-                    content_ref: input_ref,
-                    media_type: None,
+                    content: engine::ContentRef {
+                        content_ref: input_ref,
+                        media_type: None,
+                        provider_kind: None,
+                    },
                     preview: None,
-                    provider_kind: None,
-                    provider_item_id: None,
+                    provenance_ref: None,
                     token_estimate: None,
                     supersedes: None,
                 }],
@@ -231,11 +233,13 @@ async fn openai_responses_live_adapter_describes_image_input() {
                 run_id: RunId::new(1),
                 input_index: 0,
             },
-            content_ref: image_ref,
-            media_type: Some("image/png".to_owned()),
+            content: engine::ContentRef {
+                content_ref: image_ref,
+                media_type: Some("image/png".to_owned()),
+                provider_kind: None,
+            },
             preview: Some("[image: red.png]".to_owned()),
-            provider_kind: None,
-            provider_item_id: None,
+            provenance_ref: None,
             token_estimate: None,
             supersedes: None,
         },
@@ -249,11 +253,13 @@ async fn openai_responses_live_adapter_describes_image_input() {
                 run_id: RunId::new(1),
                 input_index: 1,
             },
-            content_ref: question_ref,
-            media_type: None,
+            content: engine::ContentRef {
+                content_ref: question_ref,
+                media_type: None,
+                provider_kind: None,
+            },
             preview: None,
-            provider_kind: None,
-            provider_item_id: None,
+            provenance_ref: None,
             token_estimate: None,
             supersedes: None,
         },
@@ -311,12 +317,10 @@ async fn openai_responses_live_adapter_describes_image_input() {
                 }
             )
         })
-        .map(|entry| entry.content_ref.clone())
+        .map(|entry| entry.content.clone())
         .expect("assistant entry");
-    let answer = blobs
-        .read_text(&assistant_ref)
+    let answer = support::content_text(blobs.as_ref(), &assistant_ref)
         .await
-        .expect("assistant text")
         .to_lowercase();
     assert!(
         answer.contains("red"),
@@ -383,11 +387,13 @@ async fn openai_responses_live_adapter_reads_pdf_document_input() {
                 run_id: RunId::new(1),
                 input_index: 0,
             },
-            content_ref: pdf_ref,
-            media_type: Some("application/pdf".to_owned()),
+            content: engine::ContentRef {
+                content_ref: pdf_ref,
+                media_type: Some("application/pdf".to_owned()),
+                provider_kind: None,
+            },
             preview: Some("[document: magic.pdf]".to_owned()),
-            provider_kind: None,
-            provider_item_id: None,
+            provenance_ref: None,
             token_estimate: None,
             supersedes: None,
         },
@@ -401,11 +407,13 @@ async fn openai_responses_live_adapter_reads_pdf_document_input() {
                 run_id: RunId::new(1),
                 input_index: 1,
             },
-            content_ref: question_ref,
-            media_type: None,
+            content: engine::ContentRef {
+                content_ref: question_ref,
+                media_type: None,
+                provider_kind: None,
+            },
             preview: None,
-            provider_kind: None,
-            provider_item_id: None,
+            provenance_ref: None,
             token_estimate: None,
             supersedes: None,
         },
@@ -463,12 +471,10 @@ async fn openai_responses_live_adapter_reads_pdf_document_input() {
                 }
             )
         })
-        .map(|entry| entry.content_ref.clone())
+        .map(|entry| entry.content.clone())
         .expect("assistant entry");
-    let answer = blobs
-        .read_text(&assistant_ref)
+    let answer = support::content_text(blobs.as_ref(), &assistant_ref)
         .await
-        .expect("assistant text")
         .to_lowercase();
     assert!(
         answer.contains("tangerine"),
@@ -495,11 +501,13 @@ async fn openai_responses_live_adapter_generates_result() {
             run_id: RunId::new(1),
             input_index: 0,
         },
-        content_ref: input_ref,
-        media_type: None,
+        content: engine::ContentRef {
+            content_ref: input_ref,
+            media_type: None,
+            provider_kind: None,
+        },
         preview: None,
-        provider_kind: None,
-        provider_item_id: None,
+        provenance_ref: None,
         token_estimate: None,
         supersedes: None,
     };
@@ -572,14 +580,11 @@ async fn openai_responses_live_adapter_generates_result() {
         .find_map(|item| match item.kind {
             ContextEntryKind::Message {
                 role: ContextMessageRole::Assistant,
-            } => Some(item.content_ref.clone()),
+            } => Some(item.content.clone()),
             _ => None,
         })
         .expect("assistant context item");
-    let assistant_text = blobs
-        .read_text(&assistant_ref)
-        .await
-        .expect("assistant text");
+    let assistant_text = support::content_text(blobs.as_ref(), &assistant_ref).await;
     assert!(
         assistant_text.to_lowercase().contains("lightspeed"),
         "expected assistant output to contain lightspeed, got {assistant_text:?}"
@@ -622,11 +627,13 @@ async fn openai_responses_live_adapter_captures_provider_triggered_compaction() 
             run_id: RunId::new(1),
             input_index: 0,
         },
-        content_ref: input_ref,
-        media_type: None,
+        content: engine::ContentRef {
+            content_ref: input_ref,
+            media_type: None,
+            provider_kind: None,
+        },
         preview: None,
-        provider_kind: None,
-        provider_item_id: None,
+        provenance_ref: None,
         token_estimate: None,
         supersedes: None,
     };
@@ -678,12 +685,13 @@ async fn openai_responses_live_adapter_captures_provider_triggered_compaction() 
         .context_entries
         .iter()
         .find(|entry| {
-            entry.provider_kind.as_deref() == Some(OPENAI_RESPONSES_COMPACTION_PROVIDER_KIND)
+            entry.content.provider_kind.as_deref()
+                == Some(OPENAI_RESPONSES_COMPACTION_PROVIDER_KIND)
         })
         .expect("expected provider-triggered compaction context entry");
     assert!(matches!(compaction.kind, ContextEntryKind::ProviderOpaque));
     let raw = blobs
-        .read_text(&compaction.content_ref)
+        .read_text(&compaction.content.content_ref)
         .await
         .expect("raw compaction item");
     let raw: Value = serde_json::from_str(&raw).expect("raw compaction JSON");
@@ -724,11 +732,13 @@ async fn openai_responses_live_adapter_captures_web_search_call_and_citations() 
             run_id: RunId::new(1),
             input_index: 0,
         },
-        content_ref: input_ref,
-        media_type: None,
+        content: engine::ContentRef {
+            content_ref: input_ref,
+            media_type: None,
+            provider_kind: None,
+        },
         preview: None,
-        provider_kind: None,
-        provider_item_id: None,
+        provenance_ref: None,
         token_estimate: None,
         supersedes: None,
     };
@@ -791,7 +801,7 @@ async fn openai_responses_live_adapter_captures_web_search_call_and_citations() 
             .result
             .context_entries
             .iter()
-            .any(|entry| entry.provider_kind.as_deref()
+            .any(|entry| entry.content.provider_kind.as_deref()
                 == Some(OPENAI_RESPONSES_WEB_SEARCH_CALL_PROVIDER_KIND)),
         "expected provider-opaque web_search_call context item"
     );
@@ -800,22 +810,18 @@ async fn openai_responses_live_adapter_captures_web_search_call_and_citations() 
         .context_entries
         .iter()
         .position(|entry| {
-            entry.provider_kind.as_deref() == Some(OPENAI_RESPONSES_CITED_TEXT_PROVIDER_KIND)
+            entry.content.provider_kind.as_deref() == Some(OPENAI_RESPONSES_MESSAGE_PROVIDER_KIND)
         })
-        .expect("expected provider-opaque cited text context item");
-    assert!(
-        cited_index > 0
-            && matches!(
-                execution.result.context_entries[cited_index - 1].kind,
-                ContextEntryKind::Message {
-                    role: ContextMessageRole::Assistant
-                }
-            ),
-        "cited item must follow its assistant message"
-    );
+        .expect("expected native assistant message");
+    assert!(matches!(
+        execution.result.context_entries[cited_index].kind,
+        ContextEntryKind::Message {
+            role: ContextMessageRole::Assistant
+        }
+    ));
     let cited_entry = &execution.result.context_entries[cited_index];
     let cited_message = blobs
-        .read_text(&cited_entry.content_ref)
+        .read_text(&cited_entry.content.content_ref)
         .await
         .expect("native cited message");
     let cited_message: Value =
@@ -874,7 +880,7 @@ async fn openai_responses_live_adapter_captures_web_search_call_and_citations() 
     // Force manual history replay (no previous_response_id) so the live API
     // also validates that the exact cited output-message item is admissible as
     // subsequent Responses input.
-    let mut followup_entries = execution.result.context_entries[cited_index - 1..=cited_index]
+    let mut followup_entries = execution.result.context_entries[cited_index..=cited_index]
         .iter()
         .enumerate()
         .map(|(index, entry)| ContextEntry {
@@ -885,11 +891,9 @@ async fn openai_responses_live_adapter_captures_web_search_call_and_citations() 
                 run_id: RunId::new(1),
                 turn_id: TurnId::new(1),
             },
-            content_ref: entry.content_ref.clone(),
-            media_type: entry.media_type.clone(),
+            content: entry.content.clone(),
             preview: entry.preview.clone(),
-            provider_kind: entry.provider_kind.clone(),
-            provider_item_id: entry.provider_item_id.clone(),
+            provenance_ref: entry.provenance_ref.clone(),
             token_estimate: entry.token_estimate.clone(),
             supersedes: None,
         })
@@ -904,11 +908,13 @@ async fn openai_responses_live_adapter_captures_web_search_call_and_citations() 
             run_id: RunId::new(2),
             input_index: 0,
         },
-        content_ref: text_blob(&blobs, "Reply with exactly: replay ok").await,
-        media_type: None,
+        content: engine::ContentRef {
+            content_ref: text_blob(&blobs, "Reply with exactly: replay ok").await,
+            media_type: None,
+            provider_kind: None,
+        },
         preview: None,
-        provider_kind: None,
-        provider_item_id: None,
+        provenance_ref: None,
         token_estimate: None,
         supersedes: None,
     });

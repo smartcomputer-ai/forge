@@ -2,31 +2,31 @@ import { useState, type ReactNode } from "react";
 import { Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 
-export type FullTextLoader = (contentRef: string) => Promise<string>;
+export type FullTextLoader = (blobRef: string) => Promise<string>;
 
 export function ExpandableContent({
   text,
   truncated = false,
-  contentRef,
+  blobRef,
   loadFullText,
   children,
 }: {
   text: string;
   truncated?: boolean;
-  contentRef?: string;
+  blobRef?: string;
   loadFullText?: FullTextLoader;
   children: (text: string) => ReactNode;
 }) {
   const [fullText, setFullText] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const expandable = truncated && Boolean(contentRef && loadFullText);
+  const expandable = truncated && Boolean(blobRef && loadFullText);
 
   const expand = () => {
-    if (!contentRef || !loadFullText || loading) return;
+    if (!blobRef || !loadFullText || loading) return;
     setLoading(true);
     setError(null);
-    void loadFullText(contentRef)
+    void loadFullText(blobRef)
       .then(setFullText)
       .catch((reason: unknown) => {
         setError(reason instanceof Error ? reason.message : String(reason));

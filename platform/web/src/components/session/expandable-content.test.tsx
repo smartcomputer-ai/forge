@@ -8,7 +8,7 @@ describe("ExpandableContent", () => {
     const html = renderToString(createElement(ExpandableContent, {
       text: "bounded preview",
       truncated: true,
-      contentRef: "sha256:full",
+      blobRef: "sha256:full",
       loadFullText: async () => "complete body",
       children: (text: string) => createElement("pre", null, text),
     }));

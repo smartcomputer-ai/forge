@@ -224,7 +224,7 @@ pub(crate) fn classify_emission(
             token,
             run_id,
             status,
-            output_ref,
+            output,
             failure_message_ref,
         } => {
             // The token is the reply promise id, unique to this invocation,
@@ -244,7 +244,7 @@ pub(crate) fn classify_emission(
             (expected_token == Some(token.as_str()) && from_child).then_some(
                 SignalEffect::Terminal(SubagentTerminal::Run {
                     status,
-                    output_ref,
+                    output,
                     failure_message_ref,
                 }),
             )
@@ -372,7 +372,7 @@ mod tests {
             token.to_owned(),
             RunId::new(run_id),
             RunStatus::Completed,
-            Some(BlobRef::from_bytes(b"\"done\"")),
+            Some(engine::ContentRef::text(BlobRef::from_bytes(b"\"done\""))),
             None,
         )
     }
@@ -413,7 +413,7 @@ mod tests {
     fn expected_terminal() -> SignalEffect {
         SignalEffect::Terminal(SubagentTerminal::Run {
             status: RunStatus::Completed,
-            output_ref: Some(BlobRef::from_bytes(b"\"done\"")),
+            output: Some(engine::ContentRef::text(BlobRef::from_bytes(b"\"done\""))),
             failure_message_ref: None,
         })
     }

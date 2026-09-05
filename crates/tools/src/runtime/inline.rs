@@ -632,7 +632,7 @@ mod tests {
             .iter()
             .find_map(|entry| {
                 matches!(entry.kind, ContextEntryKind::ToolResult { .. })
-                    .then(|| entry.content_ref.clone())
+                    .then(|| entry.content.content_ref.clone())
             })
             .expect("visible ref")
     }

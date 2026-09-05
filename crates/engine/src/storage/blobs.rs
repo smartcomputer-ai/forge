@@ -881,6 +881,27 @@ mod tests {
     }
 
     #[test]
+    fn context_content_and_provenance_are_both_cas_roots() {
+        let payload = BlobRef::from_bytes(b"transcript");
+        let origin = BlobRef::from_bytes(b"source audio");
+        let input = crate::ContextEntryInput {
+            kind: crate::ContextEntryKind::Message {
+                role: crate::ContextMessageRole::User,
+            },
+            content: crate::ContentRef::text(payload.clone()),
+            preview: None,
+            provenance_ref: Some(origin.clone()),
+            token_estimate: None,
+        };
+        let value = serde_json::to_value(&input).expect("serialize input");
+        assert_eq!(collect_blob_refs(&value), BTreeSet::from([payload, origin]));
+        assert_eq!(
+            serde_json::from_value::<crate::ContextEntryInput>(value).unwrap(),
+            input
+        );
+    }
+
+    #[test]
     fn engine_blob_refs_match_the_core_constants() {
         assert_eq!(
             engine_blob_refs(),

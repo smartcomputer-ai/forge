@@ -13,6 +13,7 @@ import type {
 } from "@/api";
 import { SOFTWARE_FACTORY_UNIVERSE_ID } from "./fixtures/software-factory";
 import { applyEvents, emptyTranscript } from "@/lib/sessions/transcript";
+import { appendScriptedRun } from "./engine";
 
 /// Walks the demo router the way the UI does: every read path each page
 /// opens with must answer, and the live paths (a message, its tail, a bot
@@ -58,6 +59,35 @@ const universeReads = [
 ];
 
 describe("demo router", () => {
+  it("keeps full run output after its entries leave active context", async () => {
+    const { store } = await boot();
+    const universe = store.universe(SOFTWARE_FACTORY_UNIVERSE_ID)!;
+    const session = universe.sessions.get("session-flaky-scheduler")!;
+    const text = "A complete response. ".repeat(700);
+    const run = appendScriptedRun(store, session, {
+      at: Date.now(),
+      user: "Explain the result",
+      steps: [{ thinking: text, text }],
+    });
+    const assistant = run.entries?.slice().reverse().find(
+      (entry) => entry.kind.type === "message" && entry.kind.role === "assistant",
+    );
+    session.activeContext.entries = [];
+    expect(run.output).toEqual(assistant?.content);
+    expect(run.outputText).toBe(text);
+    expect(run.entries?.find((entry) => entry.kind.type === "reasoningState")?.text).toBe(text);
+    expect(session.events.at(-1)?.kind).toEqual({ type: "runCompleted", runId: run.id, output: run.output });
+  });
+
+  it("reads the original bytes of a large tool result for expansion", async () => {
+    const { store, call } = await boot();
+    const text = "full tool result ".repeat(700);
+    const blobRef = store.putText(text);
+    const result = await call("GET", `/api/v1/universes/${SOFTWARE_FACTORY_UNIVERSE_ID}/blobs/${encodeURIComponent(blobRef)}`);
+    expect(result.status).toBe(200);
+    expect(result.json).toEqual({ blobRef, bytesBase64: btoa(text), bytes: text.length });
+  });
+
   it("signs the visitor in as a platform admin without a login", async () => {
     const { call } = await boot();
     const session = await call("GET", "/api/auth/get-session");

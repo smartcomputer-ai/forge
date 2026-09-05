@@ -17,32 +17,15 @@ impl AgentSessionWorkflow {
             ));
             return;
         }
-        let (promise_id, resolution) = match envelope.body {
-            engine::EmissionBody::RunTerminal {
-                token,
-                status,
-                output_ref,
-                failure_message_ref,
-                ..
-            } => {
-                let resolution = match status {
-                    RunStatus::Completed => engine::PromiseResolution::Resolved {
-                        payload_ref: output_ref,
-                    },
-                    // A failed or externally-cancelled source is a failed
-                    // promise for the holder; promise `cancelled` is reserved
-                    // for the holder's own revocation.
-                    _ => engine::PromiseResolution::Failed {
-                        error_ref: failure_message_ref,
-                    },
-                };
-                let Ok(promise_id) = engine::PromiseId::try_new(token.clone()) else {
-                    self.last_error = Some(format!(
-                        "run-terminal emission carries a malformed promise token {token:?}"
-                    ));
-                    return;
-                };
-                (promise_id, resolution)
+        match envelope.body {
+            engine::EmissionBody::RunTerminal { .. } => {
+                // A receiving workflow interprets the typed run output and then
+                // sends an authorized SourceResolution. Dropping its encoding
+                // here would expose provider JSON as an ordinary tool result.
+                self.last_error = Some(
+                    "session workflow requires source resolutions, not run-terminal notifications"
+                        .to_owned(),
+                );
             }
             engine::EmissionBody::SourceResolution {
                 promise_id,
@@ -57,29 +40,19 @@ impl AgentSessionWorkflow {
                         resolution,
                         producer: envelope.producer,
                     });
-                return;
             }
             engine::EmissionBody::ToolInvocation { invocation, .. } => {
                 self.last_error = Some(format!(
                     "session workflow cannot receive workflow tool invocation {}",
                     invocation.invocation_id
                 ));
-                return;
             }
             engine::EmissionBody::InvocationCancellation { invocation_id, .. } => {
                 self.last_error = Some(format!(
                     "session workflow cannot receive workflow tool cancellation {invocation_id}"
                 ));
-                return;
             }
-        };
-        self.pending_admissions.push(AgentAdmission {
-            command: CoreAgentCommand::ResolvePromise {
-                promise_id,
-                resolution,
-            },
-            correlation_token: None,
-        });
+        }
     }
 
     /// Outbound push delivery: when a run carrying notify-intents reaches a
@@ -167,7 +140,7 @@ impl AgentSessionWorkflow {
                         intent.token.clone(),
                         run_id,
                         record.status,
-                        record.output_ref.clone(),
+                        record.output.clone(),
                         record
                             .failure
                             .as_ref()
@@ -220,7 +193,7 @@ impl AgentSessionWorkflow {
                     run_id: run.run_id.as_u64(),
                     status: run.status,
                     submission_id: run.submission_id.clone(),
-                    output_ref: run.output_ref.clone(),
+                    output: run.output.clone(),
                     active_turn_id: run.active_turn_id.map(|id| id.as_u64()),
                     active_tool_batch_id: run.active_tool_batch_id.map(|id| id.as_u64()),
                 }),
@@ -248,7 +221,7 @@ impl AgentSessionWorkflow {
                         .get(&run.run_id.as_u64())
                         .cloned()
                         .flatten(),
-                    output_ref: run.output_ref.clone(),
+                    output: run.output.clone(),
                     failure_message_ref: run
                         .failure
                         .as_ref()

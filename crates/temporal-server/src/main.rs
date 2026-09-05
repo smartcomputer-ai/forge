@@ -228,6 +228,8 @@ async fn run_cas_sweep(dry_run: bool) -> anyhow::Result<()> {
     println!("dry_run: {dry_run}");
     println!("grace_ms: {}", grace.as_millis());
     println!("universes_scanned: {}", stats.universes_scanned);
+    println!("rows_scanned: {}", stats.rows_scanned);
+    println!("leader_busy: {}", stats.leader_busy);
     println!("candidates: {}", stats.candidates);
     println!("rows_deleted: {}", stats.rows_deleted);
     println!("bytes_freed: {}", stats.bytes_freed);

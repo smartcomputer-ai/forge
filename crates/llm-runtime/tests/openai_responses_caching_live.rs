@@ -101,11 +101,13 @@ fn entry(
         entry_id: ContextEntryId::new(id),
         kind,
         source,
-        content_ref,
-        media_type: None,
+        content: engine::ContentRef {
+            content_ref,
+            media_type: None,
+            provider_kind: None,
+        },
         preview: None,
-        provider_kind: None,
-        provider_item_id: None,
+        provenance_ref: None,
         token_estimate: None,
         supersedes: None,
     }
@@ -164,12 +166,12 @@ fn retained_context_entry(id: u64, item: &ContextEntryInput) -> ContextEntry {
                 turn_id: TurnId::new(1),
             },
         },
-        item.content_ref.clone(),
+        item.content.content_ref.clone(),
     );
-    retained.media_type = item.media_type.clone();
+    retained.content.media_type = item.content.media_type.clone();
     retained.preview = item.preview.clone();
-    retained.provider_kind = item.provider_kind.clone();
-    retained.provider_item_id = item.provider_item_id.clone();
+    retained.content.provider_kind = item.content.provider_kind.clone();
+    retained.provenance_ref = item.provenance_ref.clone();
     retained.token_estimate = item.token_estimate.clone();
     retained
 }

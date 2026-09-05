@@ -96,11 +96,13 @@ fn entry(
         entry_id: ContextEntryId::new(id),
         kind,
         source,
-        content_ref,
-        media_type: None,
+        content: engine::ContentRef {
+            content_ref,
+            media_type: None,
+            provider_kind: None,
+        },
         preview: None,
-        provider_kind: None,
-        provider_item_id: None,
+        provenance_ref: None,
         token_estimate: None,
         supersedes: None,
     }
@@ -135,12 +137,12 @@ fn catalog_entry(id: u64, content_ref: BlobRef, supersedes: Option<u64>) -> Cont
     let mut entry = entry(
         id,
         ContextEntryKind::Catalog {
-            title: "Bot directory".to_string(),
+            title: "Warehouse delivery schedule".to_string(),
         },
         ContextEntrySource::ContextEdit,
         content_ref,
     );
-    entry.key = Some(ContextEntryKey::new("bot:directory"));
+    entry.key = Some(ContextEntryKey::new("warehouse:delivery_schedule"));
     entry.supersedes = supersedes.map(ContextEntryId::new);
     entry
 }
@@ -159,12 +161,12 @@ fn retained_context_entry(id: u64, item: &ContextEntryInput) -> ContextEntry {
                 turn_id: TurnId::new(1),
             },
         },
-        item.content_ref.clone(),
+        item.content.content_ref.clone(),
     );
-    retained.media_type = item.media_type.clone();
+    retained.content.media_type = item.content.media_type.clone();
     retained.preview = item.preview.clone();
-    retained.provider_kind = item.provider_kind.clone();
-    retained.provider_item_id = item.provider_item_id.clone();
+    retained.content.provider_kind = item.content.provider_kind.clone();
+    retained.provenance_ref = item.provenance_ref.clone();
     retained.token_estimate = item.token_estimate.clone();
     retained
 }
@@ -213,6 +215,7 @@ fn adapter(blobs: Arc<InMemoryBlobStore>) -> AnthropicMessagesLlmAdapter {
 
 async fn generate(
     adapter: &AnthropicMessagesLlmAdapter,
+    blobs: &InMemoryBlobStore,
     turn_id: u64,
     request: LlmRequest,
 ) -> (LlmUsage, Vec<ContextEntryInput>) {
@@ -220,7 +223,7 @@ async fn generate(
         .generate(generation_request(turn_id, request))
         .await
         .expect("generate");
-    assert_eq!(execution.result.status, LlmGenerationStatus::Succeeded);
+    assert_succeeded(blobs, &execution.result).await;
     let usage = execution
         .result
         .facts
@@ -228,6 +231,14 @@ async fn generate(
         .clone()
         .expect("usage reported");
     (usage, execution.result.context_entries)
+}
+
+async fn assert_succeeded(blobs: &InMemoryBlobStore, result: &engine::LlmGenerationResult) {
+    let failure = match result.failure_ref.as_ref() {
+        Some(reference) => blobs.read_text(reference).await.expect("failure details"),
+        None => format!("finish={:?}", result.facts.finish),
+    };
+    assert_eq!(result.status, LlmGenerationStatus::Succeeded, "{failure}");
 }
 
 fn cached(usage: &LlmUsage) -> u32 {
@@ -251,12 +262,13 @@ async fn anthropic_caching_live_second_turn_reads_the_prefix() {
     let instructions_ref = text_blob(&blobs, &long_instructions()).await;
     let first_ref = text_blob(
         &blobs,
-        "Item 17 needs a status line. Reply in one sentence.",
+        "Please summarize the stock record for warehouse bay 17, including the item name, quantity, and inspection status.",
     )
     .await;
 
     let (first, retained) = generate(
         &adapter,
+        &blobs,
         1,
         intent_request(
             vec![
@@ -285,9 +297,13 @@ async fn anthropic_caching_live_second_turn_reads_the_prefix() {
     let next_id = entries.len() as u64 + 1;
     entries.push(user_entry(
         next_id,
-        text_blob(&blobs, "Now item 18. One sentence.").await,
+        text_blob(
+            &blobs,
+            "Give the same warehouse inventory summary for bay 18.",
+        )
+        .await,
     ));
-    let (second, _) = generate(&adapter, 2, intent_request(entries, None)).await;
+    let (second, _) = generate(&adapter, &blobs, 2, intent_request(entries, None)).await;
     assert_cached_share("second turn", cached(&second), prompt(&first));
 }
 
@@ -343,6 +359,7 @@ async fn anthropic_caching_live_tool_round_trip_keeps_the_prefix_warm() {
         .generate(generation_request(1, request))
         .await
         .expect("generate tool call");
+    assert_succeeded(&blobs, &execution.result).await;
     let first = execution.result.facts.usage.clone().expect("usage");
     let tool_call = execution
         .result
@@ -378,11 +395,11 @@ async fn anthropic_caching_live_tool_round_trip_keeps_the_prefix_warm() {
         },
         text_blob(&blobs, "11°C and sunny").await,
     );
-    result_entry.media_type = Some("text/plain".to_owned());
+    result_entry.content.media_type = Some("text/plain".to_owned());
     entries.push(result_entry);
     let mut followup = intent_request(entries, None);
     followup.tools = vec![tool];
-    let (second, _) = generate(&adapter, 2, followup).await;
+    let (second, _) = generate(&adapter, &blobs, 2, followup).await;
     assert_cached_share("after the tool round trip", cached(&second), prompt(&first));
 }
 
@@ -395,16 +412,21 @@ async fn anthropic_caching_live_superseded_catalog_keeps_the_prefix_warm() {
     let blobs = Arc::new(InMemoryBlobStore::new());
     let adapter = adapter(blobs.clone());
     let instructions_ref = text_blob(&blobs, &long_instructions()).await;
-    let v1_ref = text_blob(&blobs, "- infra: accepts events addressed by you").await;
-    let v2_ref = text_blob(
+    let v1_ref = text_blob(
         &blobs,
-        "- infra: accepts events addressed by you\n- comms: subscribes to what you publish",
+        "The Zurich warehouse receives cardboard cartons from Monday through Friday.",
     )
     .await;
-    let first_ref = text_blob(&blobs, "Who can you reach? One sentence.").await;
+    let v2_ref = text_blob(
+        &blobs,
+        "The Zurich warehouse receives cardboard cartons from Monday through Friday. The Bern warehouse receives cardboard cartons on Mondays.",
+    )
+    .await;
+    let first_ref = text_blob(&blobs, "Write a one-sentence delivery plan for sending cardboard cartons to our Zurich warehouse using the provided delivery schedule.").await;
 
     let (first, retained) = generate(
         &adapter,
+        &blobs,
         1,
         intent_request(
             vec![
@@ -432,9 +454,13 @@ async fn anthropic_caching_live_superseded_catalog_keeps_the_prefix_warm() {
     entries.push(catalog_entry(next_id, v2_ref, Some(2)));
     entries.push(user_entry(
         next_id + 1,
-        text_blob(&blobs, "And now? One sentence.").await,
+        text_blob(
+            &blobs,
+            "Update the delivery plan to include the Bern warehouse from the revised schedule.",
+        )
+        .await,
     ));
-    let (second, _) = generate(&adapter, 2, intent_request(entries, None)).await;
+    let (second, _) = generate(&adapter, &blobs, 2, intent_request(entries, None)).await;
     assert_cached_share("after the catalog update", cached(&second), prompt(&first));
 }
 
@@ -452,11 +478,12 @@ async fn anthropic_caching_live_one_hour_ttl_is_accepted() {
     };
     let (first, _) = generate(
         &adapter,
+        &blobs,
         1,
         intent_request(
             vec![
                 instructions_entry(1, instructions_ref),
-                user_entry(2, text_blob(&blobs, "Item 5. One sentence.").await),
+                user_entry(2, text_blob(&blobs, "Please summarize the stock record for warehouse bay 5, including the item name, quantity, and inspection status.").await),
             ],
             Some(params),
         ),

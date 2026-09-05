@@ -809,7 +809,7 @@ async fn pg_live_blobs_use_inline_and_object_storage() {
 
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "requires ./dev.sh infra or compatible Postgres + MinIO env"]
-async fn pg_live_event_appends_expose_blob_refs_and_reject_missing_blobs() {
+async fn pg_live_event_appends_record_roots_and_reject_missing_blobs() {
     let store = live_store("graph", 1024).await;
     let session_id = SessionId::new("session-graph");
     store
@@ -870,7 +870,7 @@ async fn pg_live_event_appends_expose_blob_refs_and_reject_missing_blobs() {
         "second is embedded by seq 2 and 3"
     );
 
-    // A later append shows up in the generated column like any other.
+    // A later append retains the same session root without duplication.
     store
         .append(AppendSessionEvents {
             session_id: session_id.clone(),
@@ -887,6 +887,12 @@ async fn pg_live_event_appends_expose_blob_refs_and_reject_missing_blobs() {
     assert_eq!(
         events_embedding(&store, &session_id, &first).await,
         vec![1, 2, 4]
+    );
+
+    assert_eq!(
+        session_root_count(&store, &session_id).await,
+        2,
+        "one root per session and digest"
     );
 
     // A ref the catalog does not hold fails the whole append and writes
@@ -1152,6 +1158,12 @@ async fn pg_live_sweep_frees_only_unreachable_blobs_after_grace() {
     .execute(store.pool())
     .await
     .expect("insert bot event");
+    // This fixture writes the event directly; production insertion records these
+    // roots in the same transaction (covered by the bot-store live tests).
+    sqlx::query("INSERT INTO cas_bot_event_roots (universe_id, bot_id, event_id, digest) SELECT $1, 'sweep-bot', 'evt-1', unnest($2::text[])")
+        .bind(universe_id)
+        .bind([&bot_document, &bot_prompt, &bot_media].map(digest))
+        .execute(store.pool()).await.expect("fixture bot roots");
     store
         .record_blob_edges(vec![BlobEdge::contains(parent.clone(), child.clone())])
         .await
@@ -1454,8 +1466,7 @@ async fn put_blob(store: &PgStore, content: &str) -> BlobRef {
         .expect("put blob")
 }
 
-/// Sequence numbers of the session's own rows whose generated `blob_refs`
-/// column contains `blob_ref`: exactly what keeps the blob alive.
+/// Inspect event JSON independently of the store-maintained roots.
 async fn events_embedding(store: &PgStore, session_id: &SessionId, blob_ref: &BlobRef) -> Vec<i64> {
     sqlx::query_scalar(
         r#"
@@ -1463,7 +1474,9 @@ async fn events_embedding(store: &PgStore, session_id: &SessionId, blob_ref: &Bl
         FROM session_events
         WHERE universe_id = $1
           AND session_id = $2
-          AND blob_refs @> jsonb_build_array($3::text)
+          AND jsonb_path_query_array(entry_json,
+              '$.** ? (@.type() == "string" && @ like_regex "^sha256:[0-9a-f]{64}$")')
+              @> jsonb_build_array($3::text)
         ORDER BY seq
         "#,
     )
@@ -3202,4 +3215,344 @@ fn unquote_dotenv_value(value: &str) -> String {
         }
     }
     value.to_string()
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires Postgres + MinIO"]
+async fn pg_live_delayed_object_deletion_cannot_delete_a_reupload() {
+    let store = live_store("sweep-reupload", 8).await;
+    let bytes = b"object reuploaded after catalog deletion".to_vec();
+    let blob_ref = store.put_bytes(bytes.clone()).await.expect("initial put");
+    age_all_blobs(&store, 1_000).await;
+    let removed = store
+        .delete_dead_blobs(std::slice::from_ref(&blob_ref), 2_000, &[])
+        .await
+        .expect("delete old catalog row");
+    let old_key = removed[0].object_key.clone().expect("object key");
+    assert_eq!(
+        store.put_bytes(bytes.clone()).await.expect("reupload"),
+        blob_ref
+    );
+    let layout = blob_layout(&store, &blob_ref).await;
+    assert_ne!(layout.object_key.as_deref(), Some(old_key.as_str()));
+    let cleanup = store.delete_blob_objects(&[old_key]).await;
+    assert!(cleanup.failures.is_empty());
+    // A separate store has no cached bytes to mask object loss.
+    let cold = PgStore::with_object_store(
+        store.pool().clone(),
+        live_object_store(),
+        store.config().clone(),
+    );
+    assert_eq!(
+        cold.read_bytes(&blob_ref)
+            .await
+            .expect("cold read after cleanup"),
+        bytes
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires Postgres + MinIO"]
+async fn pg_live_sweep_pages_advance_past_live_rows_and_wrap() {
+    let store = live_store("sweep-pages", 1024).await;
+    let live = put_blob(&store, "old pinned blob").await;
+    let dead = put_blob(&store, "later unreachable blob").await;
+    age_all_blobs(&store, 1_000).await;
+    sqlx::query("UPDATE cas_blobs SET touched_at_ms = 1001 WHERE universe_id = $1 AND digest = $2")
+        .bind(store.config().universe_id)
+        .bind(digest(&dead))
+        .execute(store.pool())
+        .await
+        .expect("order rows");
+    let pinned = [live.clone()];
+    let first = store
+        .scan_sweep_candidates(2_000, &pinned, None, 1)
+        .await
+        .expect("first page");
+    assert_eq!(first.scanned, 1);
+    assert!(first.candidates.is_empty());
+    let second = store
+        .scan_sweep_candidates(2_000, &pinned, first.next_cursor.as_ref(), 1)
+        .await
+        .expect("second page");
+    assert_eq!(second.scanned, 1);
+    assert_eq!(second.candidates[0].blob_ref, dead);
+    let end = store
+        .scan_sweep_candidates(2_000, &pinned, second.next_cursor.as_ref(), 1)
+        .await
+        .expect("end page");
+    assert_eq!(end.scanned, 0);
+    assert!(end.next_cursor.is_none());
+    let wrapped = store
+        .scan_sweep_candidates(2_000, &[], end.next_cursor.as_ref(), 1)
+        .await
+        .expect("wrapped page");
+    assert_eq!(
+        wrapped.candidates[0].blob_ref, live,
+        "released roots are revisited"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires Postgres + MinIO"]
+async fn pg_live_admission_touch_refreshes_grace_and_rejects_missing_refs() {
+    let store = live_store("admission-touch", 1024).await;
+    let first = put_blob(&store, "first input").await;
+    let second = put_blob(&store, "second input").await;
+    age_all_blobs(&store, 1_000).await;
+    store
+        .touch_blob_refs(&[first.clone(), first.clone(), second.clone()])
+        .await
+        .expect("batched touch");
+    assert!(
+        store
+            .delete_dead_blobs(&[first, second], 2_000, &[])
+            .await
+            .expect("sweep")
+            .is_empty()
+    );
+    let missing = BlobRef::from_bytes(b"missing input");
+    assert!(
+        matches!(store.touch_blob_refs(std::slice::from_ref(&missing)).await,
+        Err(engine::storage::BlobStoreError::NotFound { blob_ref }) if blob_ref == missing)
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires Postgres + MinIO"]
+async fn pg_live_concurrent_deletion_rolls_back_session_attachment() {
+    let store = live_store("attach-race", 1024).await;
+    let blob_ref = put_blob(&store, "attachment racing a delete").await;
+    let session_id = SessionId::new("attach-race");
+    store
+        .create_session(CreateSession {
+            session_id: session_id.clone(),
+            metadata: Default::default(),
+            display_name: None,
+            origin: None,
+            delete_after_close_ms: None,
+            created_at_ms: 1,
+        })
+        .await
+        .expect("create session");
+    let mut deleting = store.pool().begin().await.expect("begin deletion");
+    sqlx::query("SELECT digest FROM cas_blobs WHERE universe_id = $1 AND digest = $2 FOR UPDATE")
+        .bind(store.config().universe_id)
+        .bind(digest(&blob_ref))
+        .execute(&mut *deleting)
+        .await
+        .expect("lock blob");
+    let appender = store.clone();
+    let append_id = session_id.clone();
+    let append_ref = blob_ref.clone();
+    let append = tokio::spawn(async move {
+        appender
+            .append(AppendSessionEvents {
+                session_id: append_id,
+                expected_head: None,
+                events: vec![ref_event(2, serde_json::json!({"content_ref": append_ref}))],
+            })
+            .await
+    });
+    // Wait until the real append has inserted its events and is trying to
+    // acquire its blob lock. This makes the destructive interleaving explicit.
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            let blocked: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock' AND query LIKE '%WITH requested AS%')")
+                .fetch_one(&mut *deleting).await.expect("inspect blocked append");
+            if blocked { break; }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            sqlx::query("SELECT pg_stat_clear_snapshot()").execute(&mut *deleting).await.expect("refresh activity snapshot");
+        }
+    }).await.expect("append must lock the blob before committing");
+    sqlx::query("DELETE FROM cas_blobs WHERE universe_id = $1 AND digest = $2")
+        .bind(store.config().universe_id)
+        .bind(digest(&blob_ref))
+        .execute(&mut *deleting)
+        .await
+        .expect("delete blob");
+    deleting.commit().await.expect("commit deletion");
+    assert!(
+        matches!(append.await.expect("append task"), Err(SessionStoreError::MissingBlobs { blob_refs, .. }) if blob_refs == vec![blob_ref])
+    );
+    assert!(
+        store.head(&session_id).await.expect("head").is_none(),
+        "no dangling event commits"
+    );
+    assert_eq!(session_root_count(&store, &session_id).await, 0);
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires Postgres + MinIO"]
+async fn pg_live_sweep_leadership_is_exclusive_and_released_on_drop() {
+    let store = live_store("sweep-leader", 1024).await;
+    let mut leader = store_pg::CasSweepLeader::try_acquire(store.pool())
+        .await
+        .expect("acquire")
+        .expect("leader");
+    assert!(
+        store_pg::CasSweepLeader::try_acquire(store.pool())
+            .await
+            .expect("competing acquire")
+            .is_none()
+    );
+    leader.check().await.expect("leader connection");
+    drop(leader);
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            if let Some(_next) = store_pg::CasSweepLeader::try_acquire(store.pool())
+                .await
+                .expect("successor acquire")
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("leadership must be released on drop");
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires Postgres + MinIO"]
+async fn pg_live_profile_refs_are_borrowed_and_do_not_prevent_collection() {
+    let store = live_store("profile-borrowed", 1024).await;
+    let blob_ref = put_blob(&store, "borrowed profile instructions").await;
+    let id = api::ProfileId::new("borrowed");
+    store
+        .put_agent_profile(
+            api::AgentProfileInput {
+                profile_id: id.clone(),
+                display_name: None,
+                description: None,
+                document: api::ProfileDocument {
+                    instructions: Some(api::ProfileInstructions::TextRef {
+                        blob_ref: blob_ref.to_string(),
+                    }),
+                    ..Default::default()
+                },
+            },
+            None,
+            1,
+        )
+        .await
+        .expect("create profile");
+    age_all_blobs(&store, 1_000).await;
+    assert_eq!(
+        store
+            .delete_dead_blobs(&[blob_ref], 2_000, &[])
+            .await
+            .expect("sweep")
+            .len(),
+        1
+    );
+    store
+        .read_agent_profile(&id)
+        .await
+        .expect("profile still exists");
+}
+
+async fn session_root_count(store: &PgStore, session_id: &SessionId) -> i64 {
+    sqlx::query_scalar(
+        "SELECT count(*) FROM cas_session_roots WHERE universe_id = $1 AND session_id = $2",
+    )
+    .bind(store.config().universe_id)
+    .bind(session_id.as_str())
+    .fetch_one(store.pool())
+    .await
+    .expect("count session roots")
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires Postgres + MinIO"]
+async fn pg_live_concurrent_holder_commit_blocks_a_stale_sweep() {
+    let store = live_store("holder-wins", 1024).await;
+    let blob_ref = put_blob(&store, "holder commits after sweep snapshot").await;
+    let session_id = SessionId::new("holder-wins");
+    store
+        .create_session(CreateSession {
+            session_id: session_id.clone(),
+            metadata: Default::default(),
+            display_name: None,
+            origin: None,
+            delete_after_close_ms: None,
+            created_at_ms: 1,
+        })
+        .await
+        .expect("create session");
+    age_all_blobs(&store, 1_000).await;
+    // Hold the same locks an append takes, then let a real sweep take its
+    // snapshot before this holder commits. The FK must catch that stale read.
+    let mut attaching = store.pool().begin().await.expect("attachment transaction");
+    sqlx::query(
+        "SELECT digest FROM cas_blobs WHERE universe_id = $1 AND digest = $2 FOR KEY SHARE",
+    )
+    .bind(store.config().universe_id)
+    .bind(digest(&blob_ref))
+    .execute(&mut *attaching)
+    .await
+    .expect("hold blob");
+    sqlx::query(
+        "INSERT INTO cas_session_roots (universe_id, session_id, digest) VALUES ($1, $2, $3)",
+    )
+    .bind(store.config().universe_id)
+    .bind(session_id.as_str())
+    .bind(digest(&blob_ref))
+    .execute(&mut *attaching)
+    .await
+    .expect("insert holder");
+    let sweeper = store.clone();
+    let candidate = blob_ref.clone();
+    let sweep =
+        tokio::spawn(async move { sweeper.delete_dead_blobs(&[candidate], 2_000, &[]).await });
+    tokio::time::timeout(std::time::Duration::from_millis(800), async {
+        loop {
+            let blocked: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock' AND query LIKE '%DELETE FROM cas_blobs AS b%')")
+                .fetch_one(&mut *attaching).await.expect("inspect blocked sweep");
+            if blocked { break; }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            sqlx::query("SELECT pg_stat_clear_snapshot()").execute(&mut *attaching).await.expect("refresh activity snapshot");
+        }
+    }).await.expect("sweep must wait for attachment");
+    attaching.commit().await.expect("commit holder");
+    assert!(matches!(
+        sweep.await.expect("sweep task"),
+        Err(store_pg::CasSweepError::HolderConflict { .. })
+    ));
+    assert!(store.has_blob(&blob_ref).await.expect("held blob survives"));
+    assert_eq!(session_root_count(&store, &session_id).await, 1);
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires Postgres + MinIO"]
+async fn pg_live_concurrent_puts_leave_one_readable_object() {
+    use futures_util::TryStreamExt;
+    let store = live_store("concurrent-puts", 8).await;
+    let bytes = b"the same concurrent object upload".to_vec();
+    let expected = BlobRef::from_bytes(&bytes);
+    let results =
+        futures_util::future::join_all((0..16).map(|_| store.put_bytes(bytes.clone()))).await;
+    for result in results {
+        assert_eq!(result.expect("concurrent put"), expected);
+    }
+    let prefix = object_store::path::Path::from(store_pg::universe_cas_object_prefix(
+        &store.config().object_prefix,
+        store.config().universe_id,
+    ));
+    let objects = live_object_store()
+        .list(Some(&prefix))
+        .try_collect::<Vec<_>>()
+        .await
+        .expect("list uploads");
+    assert_eq!(
+        objects.len(),
+        1,
+        "losing uploads must clean up their private keys"
+    );
+    let cold = PgStore::with_object_store(
+        store.pool().clone(),
+        live_object_store(),
+        store.config().clone(),
+    );
+    assert_eq!(cold.read_bytes(&expected).await.expect("cold read"), bytes);
 }

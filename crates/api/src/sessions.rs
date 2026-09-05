@@ -1260,7 +1260,7 @@ pub enum SessionEventKindView {
     },
     RunCompleted {
         run_id: RunId,
-        output_ref: Option<String>,
+        output: Option<crate::ContentRefView>,
     },
     /// The run ended in failure. `kind` is the engine's classification;
     /// `message` is free text for display.

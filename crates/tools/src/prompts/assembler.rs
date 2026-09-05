@@ -248,11 +248,13 @@ pub fn prompt_source_instructions_context_input(
 ) -> ContextEntryInput {
     ContextEntryInput {
         kind: ContextEntryKind::Instructions,
-        content_ref,
-        media_type: Some("text/markdown".to_owned()),
+        content: engine::ContentRef {
+            content_ref,
+            media_type: Some("text/markdown".to_owned()),
+            provider_kind: Some(PROMPT_INSTRUCTIONS_PROVIDER_KIND.to_owned()),
+        },
         preview: Some(preview.into()),
-        provider_kind: Some(PROMPT_INSTRUCTIONS_PROVIDER_KIND.to_owned()),
-        provider_item_id: Some(report_ref.as_str().to_owned()),
+        provenance_ref: Some(report_ref),
         token_estimate: None,
     }
 }
@@ -272,7 +274,7 @@ pub fn active_prompt_instruction_inputs(
 pub fn active_prompt_instruction_refs(state: &CoreAgentState) -> Vec<(ContextEntryKey, BlobRef)> {
     active_prompt_instruction_entries(state)
         .into_iter()
-        .filter_map(|entry| Some((entry.key.clone()?, entry.content_ref.clone())))
+        .filter_map(|entry| Some((entry.key.clone()?, entry.content.content_ref.clone())))
         .collect()
 }
 
@@ -723,11 +725,9 @@ fn fingerprint_input_key(input: &PromptSourceFingerprintInput) -> String {
 fn context_entry_input_from_active(entry: &ContextEntry) -> ContextEntryInput {
     ContextEntryInput {
         kind: entry.kind.clone(),
-        content_ref: entry.content_ref.clone(),
-        media_type: entry.media_type.clone(),
+        content: entry.content.clone(),
         preview: entry.preview.clone(),
-        provider_kind: entry.provider_kind.clone(),
-        provider_item_id: entry.provider_item_id.clone(),
+        provenance_ref: entry.provenance_ref.clone(),
         token_estimate: entry.token_estimate.clone(),
     }
 }

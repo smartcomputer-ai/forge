@@ -15,8 +15,6 @@ export type TranscriptEntry =
       key: string;
       role: "user" | "assistant";
       text: string;
-      contentRef: string;
-      textTruncated: boolean;
       citations?: Array<{ url: string; title?: string | null; citedText?: string | null }>;
       /// The run this entry belongs to, when the engine recorded one.
       runId?: string;
@@ -558,8 +556,6 @@ function applyNonToolCallItem(
           key: item.id,
           role: kind.role,
           text: item.text,
-          contentRef: item.contentRef,
-          textTruncated: item.textTruncated === true,
           ...(kind.role === "assistant" && item.citations?.length
             ? { citations: item.citations }
             : {}),
@@ -569,7 +565,7 @@ function applyNonToolCallItem(
       }
       break;
     case "reasoningState": {
-      const text = (item.preview ?? item.text ?? "").trim();
+      const text = (item.text ?? item.preview ?? "").trim();
       if (displayableReasoningText(text)) {
         state.entries.push({ kind: "reasoning", key: item.id, text });
       }
@@ -628,7 +624,7 @@ function applyNonToolCallItem(
         ...call,
         status: item.display?.status ?? (isError ? "failed" : "succeeded"),
         output: item.display?.output ?? item.text,
-        outputContentRef: item.contentRef,
+        outputContentRef: item.content.contentRef,
         outputTruncated: item.textTruncated === true,
         error: item.display?.error ?? (isError ? item.display?.output ?? item.text : null),
         isError,

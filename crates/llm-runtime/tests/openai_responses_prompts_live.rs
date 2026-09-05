@@ -304,11 +304,13 @@ async fn openai_responses_live_uses_vfs_prompt_instructions() {
                         kind: ContextEntryKind::Message {
                             role: ContextMessageRole::User,
                         },
-                        content_ref: input_ref,
-                        media_type: None,
+                        content: engine::ContentRef {
+                            content_ref: input_ref,
+                            media_type: None,
+                            provider_kind: None,
+                        },
                         preview: None,
-                        provider_kind: None,
-                        provider_item_id: None,
+                        provenance_ref: None,
                         token_estimate: None,
                     }],
                 },
@@ -409,12 +411,7 @@ async fn assistant_text(blobs: &dyn BlobStore, entries: &[engine::CoreAgentEntry
                         role: engine::ContextMessageRole::Assistant
                     }
                 ) {
-                    text.push_str(
-                        &blobs
-                            .read_text(&item.content_ref)
-                            .await
-                            .expect("assistant text"),
-                    );
+                    text.push_str(&support::content_text(blobs, &item.content).await);
                     text.push('\n');
                 }
             }
