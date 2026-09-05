@@ -125,18 +125,42 @@ pub fn truncation_failure_text(
 /// assistant's partial text. Tool calls have no results to replay against,
 /// and thinking or provider-opaque blocks from an unfinished turn are not
 /// replay-safe.
-pub fn partial_output_entries(
+pub async fn partial_output_entries(
+    blobs: &dyn BlobStore,
     entries: Vec<engine::ContextEntryInput>,
-) -> Vec<engine::ContextEntryInput> {
-    entries
-        .into_iter()
-        .filter(|entry| {
-            matches!(
-                entry.kind,
-                engine::ContextEntryKind::Message {
-                    role: engine::ContextMessageRole::Assistant
+) -> LlmAdapterResult<Vec<engine::ContextEntryInput>> {
+    let mut partial = Vec::new();
+    for mut entry in entries {
+        if !matches!(
+            entry.kind,
+            engine::ContextEntryKind::Message {
+                role: engine::ContextMessageRole::Assistant
+            }
+        ) {
+            continue;
+        }
+        if entry.content.media_type.as_deref() == Some("application/json") {
+            let raw = crate::blob_io::read_json(blobs, &entry.content.content_ref).await?;
+            let text = match entry.content.provider_kind.as_deref() {
+                Some(engine::ANTHROPIC_MESSAGES_TEXT_BLOCKS_PROVIDER_KIND) => {
+                    llm_clients::content::anthropic_text_blocks(&raw)
                 }
-            )
-        })
-        .collect()
+                Some(engine::OPENAI_RESPONSES_MESSAGE_PROVIDER_KIND) => {
+                    llm_clients::content::openai_response_message(&raw)
+                }
+                Some(llm_clients::content::OPENAI_COMPLETIONS_MESSAGE_PROVIDER_KIND) => {
+                    llm_clients::content::openai_completion_message(&raw)
+                }
+                _ => None,
+            }
+            .ok_or_else(|| crate::error::LlmAdapterError::InvalidProviderRequest {
+                message: "invalid partial assistant content".to_owned(),
+            })?;
+            entry.content.content_ref = crate::blob_io::put_text(blobs, &text).await?;
+            entry.content.media_type = Some("text/plain".to_owned());
+            entry.content.provider_kind = None;
+        }
+        partial.push(entry);
+    }
+    Ok(partial)
 }

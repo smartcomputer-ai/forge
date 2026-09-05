@@ -37,6 +37,13 @@ for each model. Transcripts preserve each call's original `toolName` alongside
 its optional admitted `toolId`; the UI does not resolve historical names again.
 Demo tool fixtures record these identities explicitly as well.
 
+Context views and run outputs share a content descriptor. Assistant messages,
+reasoning, and audio transcripts can reference JSON; API views include their
+full projected text. Detailed run reads include `output` and `outputText` even
+after the message leaves active context. The transcript renders messages and
+reasoning directly. Tool previews stay bounded and expand their original bytes
+through `blobs/read`.
+
 The authoritative configuration reference is
 [`docs/variables.md`](../docs/variables.md), with separate sections for the
 Platform server, connector host, Configurator MCP, and development-only

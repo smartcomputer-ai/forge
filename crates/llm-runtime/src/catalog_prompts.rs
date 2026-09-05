@@ -53,11 +53,13 @@ mod tests {
                 title: "Bot directory".to_owned(),
             },
             source: ContextEntrySource::ContextEdit,
-            content_ref: BlobRef::from_bytes(b"body"),
-            media_type: None,
+            content: engine::ContentRef {
+                content_ref: BlobRef::from_bytes(b"body"),
+                media_type: None,
+                provider_kind: None,
+            },
             preview: None,
-            provider_kind: None,
-            provider_item_id: None,
+            provenance_ref: None,
             token_estimate: None,
             supersedes: supersedes.map(ContextEntryId::new),
         }

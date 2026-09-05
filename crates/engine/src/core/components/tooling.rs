@@ -830,11 +830,9 @@ fn tool_result_context_input_exists(
             return false;
         }
         if entry.kind != input.kind
-            || entry.content_ref != input.content_ref
-            || entry.media_type != input.media_type
+            || entry.content != input.content
             || entry.preview != input.preview
-            || entry.provider_kind != input.provider_kind
-            || entry.provider_item_id != input.provider_item_id
+            || entry.provenance_ref != input.provenance_ref
             || entry.token_estimate != input.token_estimate
         {
             return false;
@@ -873,9 +871,9 @@ fn tool_result_context_inputs(
     }
     for input in &mut inputs {
         if matches!(input.kind, ContextEntryKind::ToolResult { .. })
-            && input.provider_kind.is_none()
+            && input.content.provider_kind.is_none()
         {
-            input.provider_kind = provider_kind.map(ToOwned::to_owned);
+            input.content.provider_kind = provider_kind.map(ToOwned::to_owned);
         }
     }
     Ok(inputs)
@@ -1546,11 +1544,13 @@ fn cancelled_tool_result(call: &ObservedToolCall) -> ToolCallResult {
                 call_id: call.call_id.clone(),
                 is_error: status.is_error(),
             },
-            content_ref: error_ref.clone(),
-            media_type: None,
+            content: crate::ContentRef {
+                content_ref: error_ref.clone(),
+                media_type: None,
+                provider_kind: call.provider_kind.clone(),
+            },
             preview: None,
-            provider_kind: call.provider_kind.clone(),
-            provider_item_id: None,
+            provenance_ref: None,
             token_estimate: None,
         }],
         error_ref: Some(error_ref),
@@ -1573,11 +1573,13 @@ fn unavailable_tool_result(call: &ObservedToolCall) -> ToolCallResult {
                 call_id: call.call_id.clone(),
                 is_error: status.is_error(),
             },
-            content_ref: error_ref.clone(),
-            media_type: None,
+            content: crate::ContentRef {
+                content_ref: error_ref.clone(),
+                media_type: None,
+                provider_kind: call.provider_kind.clone(),
+            },
             preview: None,
-            provider_kind: call.provider_kind.clone(),
-            provider_item_id: None,
+            provenance_ref: None,
             token_estimate: None,
         }],
         error_ref: Some(error_ref),
@@ -2169,11 +2171,13 @@ mod tests {
                     call_id: call.call_id.clone(),
                     is_error: true,
                 },
-                content_ref: expected.clone(),
-                media_type: None,
+                content: crate::ContentRef {
+                    content_ref: expected.clone(),
+                    media_type: None,
+                    provider_kind: None
+                },
                 preview: None,
-                provider_kind: None,
-                provider_item_id: None,
+                provenance_ref: None,
                 token_estimate: None,
             }]
         );

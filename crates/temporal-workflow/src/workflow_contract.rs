@@ -214,7 +214,7 @@ fn vectors() -> Value {
             VECTOR_TOKEN.to_owned(),
             run_id,
             RunStatus::Completed,
-            Some(BlobRef::from_bytes(b"output")),
+            Some(engine::ContentRef::text(BlobRef::from_bytes(b"output"))),
             None,
         ),
         EmissionEnvelope::source_resolution(

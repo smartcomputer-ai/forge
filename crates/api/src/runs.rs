@@ -53,7 +53,8 @@ pub struct RunReadParams {
 /// run's events, so partial pages would silently lose cross-event state; a
 /// run whose interval exceeds the server's detail ceiling is rejected with a
 /// typed error and remains readable through `session/events/read`. Inline
-/// entry text is bounded; full bodies stay blob-addressed via `contentRef`.
+/// message and reasoning text is complete. Tool and catalog previews are bounded;
+/// their full bodies remain available through `blobs/read`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct RunReadResponse {

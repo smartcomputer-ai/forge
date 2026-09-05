@@ -28,9 +28,8 @@ pub const SKILL_ACTIVATION_PROVIDER_KIND_SESSION: &str = "lightspeed.skill.activ
 pub const OPENAI_RESPONSES_COMPACTION_PROVIDER_KIND: &str = "openai.responses.compaction";
 pub const OPENAI_COMPLETIONS_COMPACTION_PROVIDER_KIND: &str = "openai.completions.compaction";
 pub const OPENAI_RESPONSES_WEB_SEARCH_CALL_PROVIDER_KIND: &str = "openai.responses.web_search_call";
-/// Exact OpenAI Responses assistant message item carrying URL citations. It
-/// follows the assistant message it annotates and is what replays to OpenAI.
-pub const OPENAI_RESPONSES_CITED_TEXT_PROVIDER_KIND: &str = "openai.responses.cited_text";
+/// Exact OpenAI Responses assistant message, including text and annotations.
+pub const OPENAI_RESPONSES_MESSAGE_PROVIDER_KIND: &str = "openai.responses.message";
 pub const OPENAI_RESPONSES_MCP_LIST_TOOLS_PROVIDER_KIND: &str = "openai.responses.mcp_list_tools";
 pub const OPENAI_RESPONSES_MCP_CALL_PROVIDER_KIND: &str = "openai.responses.mcp_call";
 pub const OPENAI_RESPONSES_MCP_APPROVAL_REQUEST_PROVIDER_KIND: &str =
@@ -40,10 +39,9 @@ pub const ANTHROPIC_MESSAGES_SERVER_TOOL_USE_PROVIDER_KIND: &str =
     "anthropic.messages.server_tool_use";
 pub const ANTHROPIC_MESSAGES_SERVER_TOOL_RESULT_PROVIDER_KIND: &str =
     "anthropic.messages.server_tool_result";
-/// Exact Anthropic text blocks of one assistant message that carry citations.
-/// It follows the assistant message it annotates and is what replays to
-/// Anthropic.
-pub const ANTHROPIC_MESSAGES_CITED_TEXT_PROVIDER_KIND: &str = "anthropic.messages.cited_text";
+/// Exact consecutive Anthropic text blocks of one assistant message, including
+/// citation metadata required for replay.
+pub const ANTHROPIC_MESSAGES_TEXT_BLOCKS_PROVIDER_KIND: &str = "anthropic.messages.text_blocks";
 pub const ANTHROPIC_MESSAGES_MCP_TOOL_USE_PROVIDER_KIND: &str = "anthropic.messages.mcp_tool_use";
 pub const ANTHROPIC_MESSAGES_MCP_TOOL_RESULT_PROVIDER_KIND: &str =
     "anthropic.messages.mcp_tool_result";
@@ -173,16 +171,12 @@ pub struct ContextEntry {
     pub kind: ContextEntryKind,
     /// Provenance for deterministic planning, projection grouping, and audit.
     pub source: ContextEntrySource,
-    /// CAS ref for the provider-native or Lightspeed-native payload.
-    pub content_ref: BlobRef,
-    /// Optional MIME hint for renderers that need to distinguish text, JSON, files, etc.
-    pub media_type: Option<String>,
+    /// Immutable payload reference and encoding, also used for run outputs.
+    pub content: crate::ContentRef,
     /// Short display text for projections and logs; not authoritative model input.
     pub preview: Option<String>,
-    /// Provider-specific category for opaque/native entries that need round-tripping.
-    pub provider_kind: Option<String>,
-    /// Provider-assigned item id when preserving native conversation/state identity.
-    pub provider_item_id: Option<String>,
+    /// Immutable artifact recording this entry's origin or construction.
+    pub provenance_ref: Option<BlobRef>,
     /// Optional accounting estimate used by context planning.
     pub token_estimate: Option<TokenEstimate>,
     /// The earlier version of this keyed catalog that this entry replaces
@@ -196,11 +190,10 @@ pub struct ContextEntry {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContextEntryInput {
     pub kind: ContextEntryKind,
-    pub content_ref: BlobRef,
-    pub media_type: Option<String>,
+    pub content: crate::ContentRef,
     pub preview: Option<String>,
-    pub provider_kind: Option<String>,
-    pub provider_item_id: Option<String>,
+    /// Immutable artifact recording this entry's origin or construction.
+    pub provenance_ref: Option<BlobRef>,
     pub token_estimate: Option<TokenEstimate>,
 }
 
@@ -217,11 +210,9 @@ impl ContextEntryInput {
             key,
             kind: self.kind,
             source,
-            content_ref: self.content_ref,
-            media_type: self.media_type,
+            content: self.content,
             preview: self.preview,
-            provider_kind: self.provider_kind,
-            provider_item_id: self.provider_item_id,
+            provenance_ref: self.provenance_ref,
             token_estimate: self.token_estimate,
             supersedes,
         }
@@ -1023,7 +1014,7 @@ fn latest_provider_compaction_entry(state: &CoreAgentState) -> Option<&ContextEn
 }
 
 fn is_provider_compaction_entry(entry: &ContextEntry) -> bool {
-    match entry.provider_kind.as_deref() {
+    match entry.content.provider_kind.as_deref() {
         // OpenAI Responses returns an opaque encrypted compaction item.
         Some(OPENAI_RESPONSES_COMPACTION_PROVIDER_KIND) => {
             matches!(entry.kind, ContextEntryKind::ProviderOpaque)
@@ -1107,7 +1098,7 @@ pub fn skill_activation_context_key(catalog_id: &str, skill_id: &SkillId) -> Con
 
 pub fn is_run_scoped_skill_activation_entry(entry: &ContextEntry) -> bool {
     matches!(entry.kind, ContextEntryKind::SkillActivation { .. })
-        && entry.provider_kind.as_deref() == Some(SKILL_ACTIVATION_PROVIDER_KIND_RUN)
+        && entry.content.provider_kind.as_deref() == Some(SKILL_ACTIVATION_PROVIDER_KIND_RUN)
 }
 
 pub(crate) fn expire_run_scoped_context_entries(
@@ -1505,11 +1496,9 @@ fn validate_entry_matches_input(
         )));
     }
     if entry.kind != input.kind
-        || entry.content_ref != input.content_ref
-        || entry.media_type != input.media_type
+        || entry.content != input.content
         || entry.preview != input.preview
-        || entry.provider_kind != input.provider_kind
-        || entry.provider_item_id != input.provider_item_id
+        || entry.provenance_ref != input.provenance_ref
         || entry.token_estimate != input.token_estimate
     {
         return Err(DomainError::InvariantViolation(format!(
@@ -1668,11 +1657,9 @@ fn context_key_starts_with(key: &ContextEntryKey, key_prefix: &ContextEntryKey) 
 fn context_entry_input_from_active(entry: &ContextEntry) -> ContextEntryInput {
     ContextEntryInput {
         kind: entry.kind.clone(),
-        content_ref: entry.content_ref.clone(),
-        media_type: entry.media_type.clone(),
+        content: entry.content.clone(),
         preview: entry.preview.clone(),
-        provider_kind: entry.provider_kind.clone(),
-        provider_item_id: entry.provider_item_id.clone(),
+        provenance_ref: entry.provenance_ref.clone(),
         token_estimate: entry.token_estimate.clone(),
     }
 }

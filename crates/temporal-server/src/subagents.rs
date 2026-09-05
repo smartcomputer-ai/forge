@@ -357,11 +357,15 @@ impl SubagentService {
         let (status, output, error) = match terminal {
             SubagentTerminal::Run {
                 status,
-                output_ref,
+                output,
                 failure_message_ref,
             } => {
-                let output = match output_ref.as_ref() {
-                    Some(output_ref) => Some(self.read_text(output_ref).await?),
+                let output = match output.as_ref() {
+                    Some(output) => {
+                        api_projection::project_content_text(self.blobs.as_ref(), output)
+                            .await?
+                            .map(|text| truncate_utf8(text, MAX_SUBAGENT_OUTPUT_BYTES))
+                    }
                     None => None,
                 };
                 let failure = match failure_message_ref.as_ref() {
@@ -458,8 +462,8 @@ impl SubagentService {
             .map_err(|error| AgentApiError::invalid_request(format!("invalid JSON blob: {error}")))
     }
 
-    /// Run output blobs hold either a JSON string, another JSON value, or
-    /// raw text; the envelope carries text either way, bounded.
+    /// Failure payloads may carry a JSON string or raw diagnostic text. Run
+    /// output uses the content descriptor projection instead.
     async fn read_text(&self, blob_ref: &BlobRef) -> Result<String, AgentApiError> {
         let bytes = self
             .blobs
@@ -1168,9 +1172,9 @@ mod tests {
     async fn resolve_maps_a_completed_run_to_a_resolved_envelope_and_closes_the_child() {
         let runtime = Arc::new(FakeChildRuntime::default());
         let h = harness(runtime).await;
-        let output_ref = h
+        let output = h
             .blobs
-            .put_bytes(b"\"looks good\"".to_vec())
+            .put_bytes(b"looks good".to_vec())
             .await
             .expect("put output");
 
@@ -1180,7 +1184,7 @@ mod tests {
                 child_ref(),
                 SubagentTerminal::Run {
                     status: RunStatus::Completed,
-                    output_ref: Some(output_ref),
+                    output: Some(engine::ContentRef::text(output)),
                     failure_message_ref: None,
                 },
             )
@@ -1201,6 +1205,37 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn native_child_output_projects_text_without_exposing_provider_metadata() {
+        let h = harness(Arc::new(FakeChildRuntime::default())).await;
+        let bytes = serde_json::to_vec(&serde_json::json!([
+            {"type":"text", "text":"Answer: "},
+            {"type":"text", "text":"42", "citations":[{"encrypted_index":"provider-only"}]}
+        ]))
+        .unwrap();
+        let content_ref = h.blobs.put_bytes(bytes).await.unwrap();
+        let resolution = h
+            .service
+            .resolve(
+                child_ref(),
+                SubagentTerminal::Run {
+                    status: RunStatus::Completed,
+                    output: Some(engine::ContentRef {
+                        content_ref,
+                        media_type: Some("application/json".into()),
+                        provider_kind: Some(
+                            engine::ANTHROPIC_MESSAGES_TEXT_BLOCKS_PROVIDER_KIND.into(),
+                        ),
+                    }),
+                    failure_message_ref: None,
+                },
+            )
+            .await
+            .unwrap();
+        let envelope = envelope_of(&h.blobs, &resolution).await;
+        assert_eq!(envelope.output.as_deref(), Some("Answer: 42"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn resolve_maps_failed_cancelled_and_deadline_terminals_to_failed_envelopes() {
         let runtime = Arc::new(FakeChildRuntime::default());
         let h = harness(runtime).await;
@@ -1216,7 +1251,7 @@ mod tests {
                 child_ref(),
                 SubagentTerminal::Run {
                     status: RunStatus::Failed,
-                    output_ref: None,
+                    output: None,
                     failure_message_ref: Some(failure_ref),
                 },
             )
@@ -1233,7 +1268,7 @@ mod tests {
                 child_ref(),
                 SubagentTerminal::Run {
                     status: RunStatus::Cancelled,
-                    output_ref: None,
+                    output: None,
                     failure_message_ref: None,
                 },
             )

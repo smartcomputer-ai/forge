@@ -6,9 +6,9 @@ use engine::{
     ContextCompactionResult, ContextCompactionStatus, ContextCompactionTask, ContextEntry,
     ContextEntryInput, ContextEntryKind, ContextMessageRole, LlmFinish, LlmGenerationFacts,
     LlmGenerationRequest, LlmGenerationResult, LlmGenerationStatus, LlmRequest, LlmUsage,
-    OPENAI_RESPONSES_CITED_TEXT_PROVIDER_KIND, OPENAI_RESPONSES_COMPACTION_PROVIDER_KIND,
-    OPENAI_RESPONSES_MCP_APPROVAL_REQUEST_PROVIDER_KIND, OPENAI_RESPONSES_MCP_CALL_PROVIDER_KIND,
-    OPENAI_RESPONSES_MCP_LIST_TOOLS_PROVIDER_KIND, OPENAI_RESPONSES_WEB_SEARCH_CALL_PROVIDER_KIND,
+    OPENAI_RESPONSES_COMPACTION_PROVIDER_KIND, OPENAI_RESPONSES_MCP_APPROVAL_REQUEST_PROVIDER_KIND,
+    OPENAI_RESPONSES_MCP_CALL_PROVIDER_KIND, OPENAI_RESPONSES_MCP_LIST_TOOLS_PROVIDER_KIND,
+    OPENAI_RESPONSES_MESSAGE_PROVIDER_KIND, OPENAI_RESPONSES_WEB_SEARCH_CALL_PROVIDER_KIND,
     ObservedApprovalRequest, ObservedToolCall, ProviderApiKind, ProviderNativeToolExecution,
     RemoteMcpApprovalPolicy, RemoteMcpExecution, RemoteMcpExposure, RemoteMcpToolSpec,
     TokenEstimate, TokenEstimateQuality, ToolCallId, ToolChoice, ToolKind, ToolName, ToolSpec,
@@ -379,7 +379,7 @@ async fn materialize_instructions(
     let mut parts = Vec::new();
     for entry in entries {
         if matches!(entry.kind, ContextEntryKind::Instructions) {
-            let text = read_text(blobs, &entry.content_ref).await?;
+            let text = read_text(blobs, &entry.content.content_ref).await?;
             let text = text.trim();
             if !text.is_empty() {
                 parts.push(text.to_owned());
@@ -398,13 +398,7 @@ async fn materialize_input_items(
     entries: &[ContextEntry],
 ) -> LlmAdapterResult<Vec<oai::ResponseInputItem>> {
     let mut input: Vec<oai::ResponseInputItem> = Vec::with_capacity(entries.len());
-    for (index, item) in entries.iter().enumerate() {
-        // The exact cited item follows the assistant message it came from
-        // and replays in its place, so the neutral text is skipped. Without
-        // it (a truncated turn, or a removed entry) the text replays as is.
-        if replaced_by_cited_item(item, entries.get(index + 1)) {
-            continue;
-        }
+    for item in entries {
         let next = materialize_input_item(blobs, item).await?;
         // Consecutive same-role USER messages (for example an image entry
         // plus its caption) fold into one message with multiple content
@@ -447,9 +441,13 @@ async fn materialize_input_item(
     blobs: &dyn BlobStore,
     item: &ContextEntry,
 ) -> LlmAdapterResult<oai::ResponseInputItem> {
-    if is_openai_raw_item(item) {
+    if is_openai_raw_item(item)
+        || (item.content.media_type.as_deref() == Some(MEDIA_TYPE_JSON)
+            && item.content.provider_kind.as_deref()
+                == Some(OPENAI_RESPONSES_MESSAGE_PROVIDER_KIND))
+    {
         return Ok(oai::ResponseInputItem::Raw(
-            read_json(blobs, &item.content_ref).await?,
+            read_json(blobs, &item.content.content_ref).await?,
         ));
     }
 
@@ -459,8 +457,9 @@ async fn materialize_input_item(
                 ContextMessageRole::User => oai::MessageRole::User,
                 ContextMessageRole::Assistant => oai::MessageRole::Assistant,
             };
-            if let Some(mime) = crate::blob_io::image_media_type(item.media_type.as_deref()) {
-                let data = crate::blob_io::read_base64(blobs, &item.content_ref).await?;
+            if let Some(mime) = crate::blob_io::image_media_type(item.content.media_type.as_deref())
+            {
+                let data = crate::blob_io::read_base64(blobs, &item.content.content_ref).await?;
                 return Ok(oai::ResponseInputItem::Message(oai::InputMessage {
                     role,
                     content: oai::InputMessageContent::Parts(vec![oai::InputContent::InputImage {
@@ -471,11 +470,13 @@ async fn materialize_input_item(
                     extra: Default::default(),
                 }));
             }
-            if let Some(document) =
-                crate::blob_io::document_entry(item.media_type.as_deref(), item.preview.as_deref())
-            {
+            if let Some(document) = crate::blob_io::document_entry(
+                item.content.media_type.as_deref(),
+                item.preview.as_deref(),
+            ) {
                 let part = if document.is_pdf {
-                    let data = crate::blob_io::read_base64(blobs, &item.content_ref).await?;
+                    let data =
+                        crate::blob_io::read_base64(blobs, &item.content.content_ref).await?;
                     oai::InputContent::InputFile {
                         r#type: oai::InputFileContentType::InputFile,
                         filename: Some(document.name.unwrap_or_else(|| "document.pdf".to_owned())),
@@ -485,7 +486,7 @@ async fn materialize_input_item(
                 } else {
                     // The Responses API takes files as PDF only; text-based
                     // documents are inlined with their name as a header.
-                    let text = read_text(blobs, &item.content_ref).await?;
+                    let text = read_text(blobs, &item.content.content_ref).await?;
                     let header = match document.name {
                         Some(name) => format!("[document: {name}]"),
                         None => "[document]".to_owned(),
@@ -501,7 +502,7 @@ async fn materialize_input_item(
                     extra: Default::default(),
                 }));
             }
-            let text = read_text(blobs, &item.content_ref).await?;
+            let text = crate::blob_io::read_message_text(blobs, &item.content).await?;
             Ok(oai::ResponseInputItem::Message(oai::InputMessage {
                 role,
                 content: oai::InputMessageContent::Text(text),
@@ -509,7 +510,7 @@ async fn materialize_input_item(
             }))
         }
         ContextEntryKind::ToolResult { call_id, .. } => {
-            let output = read_text(blobs, &item.content_ref).await?;
+            let output = read_text(blobs, &item.content.content_ref).await?;
             Ok(oai::ResponseInputItem::FunctionCallOutput(
                 oai::FunctionCallOutput {
                     r#type: oai::FunctionCallOutputType::FunctionCallOutput,
@@ -525,7 +526,8 @@ async fn materialize_input_item(
         }),
         ContextEntryKind::VfsCatalog => {
             let catalog =
-                crate::environment_prompts::read_vfs_catalog(blobs, &item.content_ref).await?;
+                crate::environment_prompts::read_vfs_catalog(blobs, &item.content.content_ref)
+                    .await?;
             Ok(developer_message(crate::catalog_prompts::catalog_text(
                 item,
                 crate::environment_prompts::vfs_catalog_text(&catalog),
@@ -533,7 +535,7 @@ async fn materialize_input_item(
         }
         ContextEntryKind::SkillCatalog => {
             let catalog =
-                crate::skill_prompts::read_skill_catalog(blobs, &item.content_ref).await?;
+                crate::skill_prompts::read_skill_catalog(blobs, &item.content.content_ref).await?;
             Ok(developer_message(crate::catalog_prompts::catalog_text(
                 item,
                 crate::skill_prompts::skill_catalog_text(&catalog),
@@ -541,17 +543,19 @@ async fn materialize_input_item(
         }
         ContextEntryKind::SubagentCatalog => {
             let catalog =
-                crate::subagent_prompts::read_subagent_catalog(blobs, &item.content_ref).await?;
+                crate::subagent_prompts::read_subagent_catalog(blobs, &item.content.content_ref)
+                    .await?;
             Ok(developer_message(crate::catalog_prompts::catalog_text(
                 item,
                 crate::subagent_prompts::subagent_catalog_text(&catalog),
             )))
         }
         ContextEntryKind::Catalog { .. } => Ok(developer_message(
-            crate::catalog_prompts::external_catalog_text(blobs, item, &item.content_ref).await?,
+            crate::catalog_prompts::external_catalog_text(blobs, item, &item.content.content_ref)
+                .await?,
         )),
         ContextEntryKind::SkillActivation { skill_id, .. } => {
-            let text = read_text(blobs, &item.content_ref).await?;
+            let text = read_text(blobs, &item.content.content_ref).await?;
             Ok(oai::ResponseInputItem::Message(oai::InputMessage {
                 role: oai::MessageRole::Developer,
                 content: oai::InputMessageContent::Text(
@@ -563,7 +567,7 @@ async fn materialize_input_item(
         ContextEntryKind::ToolCall { .. }
         | ContextEntryKind::ReasoningState
         | ContextEntryKind::ProviderOpaque => Ok(oai::ResponseInputItem::Raw(
-            read_json(blobs, &item.content_ref).await?,
+            read_json(blobs, &item.content.content_ref).await?,
         )),
         ContextEntryKind::McpApprovalResponse {
             approval_request_id,
@@ -576,21 +580,6 @@ async fn materialize_input_item(
     }
 }
 
-/// True when `entry` is the neutral text of an assistant message and `next`
-/// carries that message's exact provider item.
-fn replaced_by_cited_item(entry: &ContextEntry, next: Option<&ContextEntry>) -> bool {
-    matches!(
-        entry.kind,
-        ContextEntryKind::Message {
-            role: ContextMessageRole::Assistant
-        }
-    ) && next.is_some_and(|next| {
-        matches!(next.kind, ContextEntryKind::ProviderOpaque)
-            && next.provider_kind.as_deref() == Some(OPENAI_RESPONSES_CITED_TEXT_PROVIDER_KIND)
-            && next.source == entry.source
-    })
-}
-
 fn is_openai_raw_item(item: &ContextEntry) -> bool {
     matches!(
         item.kind,
@@ -598,7 +587,7 @@ fn is_openai_raw_item(item: &ContextEntry) -> bool {
             | ContextEntryKind::ReasoningState
             | ContextEntryKind::ProviderOpaque
             | ContextEntryKind::McpApprovalResponse { .. }
-    ) && item.media_type.as_deref() == Some(MEDIA_TYPE_JSON)
+    ) && item.content.media_type.as_deref() == Some(MEDIA_TYPE_JSON)
 }
 
 async fn materialize_tools(
@@ -934,10 +923,10 @@ pub async fn result_from_response(
                 }
             }
             "compaction" | "compaction_summary" | "context_compaction" => {
-                context_entries.push(compaction_context_entry(blobs, item, raw_item).await?);
+                context_entries.push(compaction_context_entry(blobs, raw_item).await?);
             }
             "web_search_call" => {
-                context_entries.push(web_search_call_context_entry(blobs, item, raw_item).await?);
+                context_entries.push(web_search_call_context_entry(blobs, raw_item).await?);
             }
             "mcp_list_tools" | "mcp_call" => {
                 context_entries.push(mcp_context_entry(blobs, item, raw_item).await?);
@@ -994,7 +983,7 @@ pub async fn result_from_response(
             (
                 LlmGenerationStatus::Failed,
                 Some(failure_ref),
-                partial_output_entries(context_entries),
+                partial_output_entries(blobs, context_entries).await?,
                 Vec::new(),
             )
         } else {
@@ -1106,7 +1095,7 @@ pub async fn result_from_compact_response(
             item.r#type.as_str(),
             "compaction" | "compaction_summary" | "context_compaction"
         ) {
-            context_entries.push(compaction_context_entry(blobs, item, raw_item).await?);
+            context_entries.push(compaction_context_entry(blobs, raw_item).await?);
         }
     }
     if context_entries.is_empty() {
@@ -1232,49 +1221,41 @@ async fn assistant_context_entries(
         return Ok(Vec::new());
     }
 
-    let content_ref = put_text(blobs, &text).await?;
-    let mut entries = vec![ContextEntryInput {
+    // Incomplete/test responses can expose response-wide text without a native
+    // message body. Preserve that text explicitly; normal messages stay native.
+    let native = llm_clients::content::openai_response_message(&raw_item)
+        .is_some_and(|native_text| !native_text.is_empty());
+    Ok(vec![ContextEntryInput {
         kind: ContextEntryKind::Message {
             role: ContextMessageRole::Assistant,
         },
-        content_ref,
-        media_type: Some(MEDIA_TYPE_TEXT.to_string()),
-        preview: Some(text),
-        provider_kind: Some(provider_kind.to_string()),
-        provider_item_id: item.id.clone(),
+        content: engine::ContentRef {
+            content_ref: if native {
+                put_json(blobs, &raw_item).await?
+            } else {
+                put_text(blobs, &text).await?
+            },
+            media_type: Some(
+                if native {
+                    MEDIA_TYPE_JSON
+                } else {
+                    MEDIA_TYPE_TEXT
+                }
+                .to_owned(),
+            ),
+            provider_kind: Some(
+                if native {
+                    OPENAI_RESPONSES_MESSAGE_PROVIDER_KIND
+                } else {
+                    provider_kind
+                }
+                .to_owned(),
+            ),
+        },
+        preview: Some(text.chars().take(256).collect()),
+        provenance_ref: None,
         token_estimate: None,
-    }];
-    // URL citations are annotations on the exact output item, so a cited
-    // message is followed by that item: it replays in place of the neutral
-    // text, and the API projects its sources onto the message.
-    if has_url_citations(&raw_item) {
-        entries.push(ContextEntryInput {
-            kind: ContextEntryKind::ProviderOpaque,
-            content_ref: put_json(blobs, &raw_item).await?,
-            media_type: Some(MEDIA_TYPE_JSON.to_owned()),
-            preview: Some("OpenAI Responses cited text".to_owned()),
-            provider_kind: Some(OPENAI_RESPONSES_CITED_TEXT_PROVIDER_KIND.to_owned()),
-            provider_item_id: item.id.clone(),
-            token_estimate: None,
-        });
-    }
-    Ok(entries)
-}
-
-fn has_url_citations(raw_item: &Value) -> bool {
-    raw_item
-        .get("content")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter(|part| part.get("type").and_then(Value::as_str) == Some("output_text"))
-        .flat_map(|part| {
-            part.get("annotations")
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten()
-        })
-        .any(|annotation| annotation.get("type").and_then(Value::as_str) == Some("url_citation"))
+    }])
 }
 
 async fn function_call_context(
@@ -1319,11 +1300,13 @@ async fn function_call_context(
             call_id: call_id.clone(),
             name: tool_name.clone(),
         },
-        content_ref: native_call_ref.clone(),
-        media_type: Some(MEDIA_TYPE_JSON.to_string()),
+        content: engine::ContentRef {
+            content_ref: native_call_ref.clone(),
+            media_type: Some(MEDIA_TYPE_JSON.to_string()),
+            provider_kind: Some(PROVIDER_KIND_FUNCTION_CALL.to_string()),
+        },
         preview: None,
-        provider_kind: Some(PROVIDER_KIND_FUNCTION_CALL.to_string()),
-        provider_item_id: call.item_id.map(ToOwned::to_owned),
+        provenance_ref: None,
         token_estimate: None,
     };
     let tool_call = ObservedToolCall {
@@ -1343,62 +1326,62 @@ async fn reasoning_context_entry(
     item: &oai::ResponseOutputItem,
     raw_item: Value,
 ) -> LlmAdapterResult<Option<ContextEntryInput>> {
-    let summaries = item
-        .summary
-        .iter()
-        .chain(item.content.iter())
-        .filter_map(|content| content.text.as_deref())
-        .collect::<Vec<_>>();
-    let text = summaries.join("\n");
+    let text = llm_clients::content::openai_response_reasoning(&raw_item).unwrap_or_default();
     let content_ref = put_json(blobs, &raw_item).await?;
     Ok(Some(ContextEntryInput {
         kind: ContextEntryKind::ReasoningState,
-        content_ref,
-        media_type: Some(MEDIA_TYPE_JSON.to_string()),
+        content: engine::ContentRef {
+            content_ref,
+            media_type: Some(MEDIA_TYPE_JSON.to_string()),
+            provider_kind: Some(
+                llm_clients::content::OPENAI_RESPONSES_REASONING_PROVIDER_KIND.to_owned(),
+            ),
+        },
         preview: Some(if text.is_empty() {
             item.id
                 .as_deref()
                 .map(|id| format!("reasoning state {id}"))
                 .unwrap_or_else(|| "reasoning state".to_string())
         } else {
-            text
+            text.chars().take(256).collect()
         }),
-        provider_kind: Some("openai.responses.reasoning".to_string()),
-        provider_item_id: item.id.clone(),
+        provenance_ref: None,
         token_estimate: None,
     }))
 }
 
 async fn compaction_context_entry(
     blobs: &dyn BlobStore,
-    item: &oai::ResponseOutputItem,
     raw_item: Value,
 ) -> LlmAdapterResult<ContextEntryInput> {
     let content_ref = put_json(blobs, &raw_item).await?;
     Ok(ContextEntryInput {
         kind: ContextEntryKind::ProviderOpaque,
-        content_ref,
-        media_type: Some(MEDIA_TYPE_JSON.to_string()),
+        content: engine::ContentRef {
+            content_ref,
+            media_type: Some(MEDIA_TYPE_JSON.to_string()),
+            provider_kind: Some(OPENAI_RESPONSES_COMPACTION_PROVIDER_KIND.to_string()),
+        },
         preview: Some("OpenAI Responses compaction item".to_string()),
-        provider_kind: Some(OPENAI_RESPONSES_COMPACTION_PROVIDER_KIND.to_string()),
-        provider_item_id: item.id.clone(),
+        provenance_ref: None,
         token_estimate: None,
     })
 }
 
 async fn web_search_call_context_entry(
     blobs: &dyn BlobStore,
-    item: &oai::ResponseOutputItem,
     raw_item: Value,
 ) -> LlmAdapterResult<ContextEntryInput> {
     let content_ref = put_json(blobs, &raw_item).await?;
     Ok(ContextEntryInput {
         kind: ContextEntryKind::ProviderOpaque,
-        content_ref,
-        media_type: Some(MEDIA_TYPE_JSON.to_string()),
+        content: engine::ContentRef {
+            content_ref,
+            media_type: Some(MEDIA_TYPE_JSON.to_string()),
+            provider_kind: Some(OPENAI_RESPONSES_WEB_SEARCH_CALL_PROVIDER_KIND.to_string()),
+        },
         preview: Some("OpenAI Responses web search call".to_string()),
-        provider_kind: Some(OPENAI_RESPONSES_WEB_SEARCH_CALL_PROVIDER_KIND.to_string()),
-        provider_item_id: item.id.clone(),
+        provenance_ref: None,
         token_estimate: None,
     })
 }
@@ -1421,11 +1404,13 @@ async fn mcp_context_entry(
     let content_ref = put_json(blobs, &raw_item).await?;
     Ok(ContextEntryInput {
         kind: ContextEntryKind::ProviderOpaque,
-        content_ref,
-        media_type: Some(MEDIA_TYPE_JSON.to_string()),
+        content: engine::ContentRef {
+            content_ref,
+            media_type: Some(MEDIA_TYPE_JSON.to_string()),
+            provider_kind: Some(provider_kind.to_string()),
+        },
         preview: Some(mcp_preview(item, &raw_item)),
-        provider_kind: Some(provider_kind.to_string()),
-        provider_item_id: item.id.clone(),
+        provenance_ref: None,
         token_estimate: None,
     })
 }
@@ -1670,11 +1655,9 @@ mod tests {
                     turn_id: TurnId::new(1),
                 },
             },
-            content_ref: item.content_ref.clone(),
-            media_type: item.media_type.clone(),
+            content: item.content.clone(),
             preview: item.preview.clone(),
-            provider_kind: item.provider_kind.clone(),
-            provider_item_id: item.provider_item_id.clone(),
+            provenance_ref: item.provenance_ref.clone(),
             token_estimate: item.token_estimate.clone(),
             supersedes: None,
         }
@@ -1817,11 +1800,9 @@ mod tests {
             entry_id: ContextEntryId::new(1),
             kind: ContextEntryKind::Instructions,
             source: ContextEntrySource::ContextEdit,
-            content_ref: instructions_ref,
-            media_type: Some("text/plain".to_owned()),
+            content: engine::ContentRef::text(instructions_ref),
             preview: None,
-            provider_kind: None,
-            provider_item_id: None,
+            provenance_ref: None,
             token_estimate: None,
             supersedes: None,
         };
@@ -1835,11 +1816,13 @@ mod tests {
                 run_id: RunId::new(1),
                 input_index: 0,
             },
-            content_ref: input_ref,
-            media_type: None,
+            content: engine::ContentRef {
+                content_ref: input_ref,
+                media_type: None,
+                provider_kind: None,
+            },
             preview: None,
-            provider_kind: None,
-            provider_item_id: None,
+            provenance_ref: None,
             token_estimate: None,
             supersedes: None,
         };
@@ -2075,11 +2058,13 @@ mod tests {
                 run_id: RunId::new(1),
                 approval_id: engine::ApprovalId::try_new("approval_1").expect("approval id"),
             },
-            content_ref: response_ref,
-            media_type: Some(MEDIA_TYPE_JSON.to_owned()),
+            content: engine::ContentRef {
+                content_ref: response_ref,
+                media_type: Some(MEDIA_TYPE_JSON.to_owned()),
+                provider_kind: None,
+            },
             preview: None,
-            provider_kind: None,
-            provider_item_id: Some("mcpr_1".to_owned()),
+            provenance_ref: None,
             token_estimate: None,
             supersedes: None,
         };
@@ -2439,11 +2424,13 @@ mod tests {
             source: ContextEntrySource::Runtime {
                 label: "skills.catalog.vfs".to_string(),
             },
-            content_ref: catalog_ref,
-            media_type: None,
+            content: engine::ContentRef {
+                content_ref: catalog_ref,
+                media_type: None,
+                provider_kind: None,
+            },
             preview: None,
-            provider_kind: None,
-            provider_item_id: None,
+            provenance_ref: None,
             token_estimate: None,
             supersedes: None,
         };
@@ -2457,11 +2444,13 @@ mod tests {
                 run_id: RunId::new(1),
                 input_index: 0,
             },
-            content_ref: input_ref,
-            media_type: None,
+            content: engine::ContentRef {
+                content_ref: input_ref,
+                media_type: None,
+                provider_kind: None,
+            },
             preview: None,
-            provider_kind: None,
-            provider_item_id: None,
+            provenance_ref: None,
             token_estimate: None,
             supersedes: None,
         };
@@ -2475,11 +2464,13 @@ mod tests {
             source: ContextEntrySource::Runtime {
                 label: "skills.activation".to_string(),
             },
-            content_ref: activation_ref,
-            media_type: None,
+            content: engine::ContentRef {
+                content_ref: activation_ref,
+                media_type: None,
+                provider_kind: None,
+            },
             preview: None,
-            provider_kind: None,
-            provider_item_id: None,
+            provenance_ref: None,
             token_estimate: None,
             supersedes: None,
         };
@@ -2520,11 +2511,13 @@ mod tests {
                 run_id: RunId::new(1),
                 input_index: 0,
             },
-            content_ref: input_ref,
-            media_type: None,
+            content: engine::ContentRef {
+                content_ref: input_ref,
+                media_type: None,
+                provider_kind: None,
+            },
             preview: None,
-            provider_kind: None,
-            provider_item_id: None,
+            provenance_ref: None,
             token_estimate: None,
             supersedes: None,
         };
@@ -2638,9 +2631,9 @@ mod tests {
             "tool-call arguments must remain CAS-backed instead of being copied into preview",
         );
         assert_eq!(
-            blobs
-                .read_text(&result.context_entries[0].content_ref)
+            api_projection::project_content_text(&blobs, &result.context_entries[0].content)
                 .await
+                .expect("project message")
                 .expect("assistant text"),
             "I'll inspect it."
         );
@@ -2659,7 +2652,7 @@ mod tests {
         assert_eq!(
             followup_json["input"],
             json!([
-                { "role": "assistant", "content": "I'll inspect it." },
+                { "id": "msg_1", "type": "message", "role": "assistant", "content": [{ "type": "output_text", "text": "I'll inspect it." }] },
                 {
                     "id": "fc_1",
                     "type": "function_call",
@@ -2686,11 +2679,13 @@ mod tests {
                 run_id: RunId::new(1),
                 input_index: 0,
             },
-            content_ref: input_ref,
-            media_type: None,
+            content: engine::ContentRef {
+                content_ref: input_ref,
+                media_type: None,
+                provider_kind: None,
+            },
             preview: None,
-            provider_kind: None,
-            provider_item_id: None,
+            provenance_ref: None,
             token_estimate: None,
             supersedes: None,
         };
@@ -2749,12 +2744,17 @@ mod tests {
         let entry = &result.context_entries[0];
         assert!(matches!(entry.kind, ContextEntryKind::ProviderOpaque));
         assert_eq!(
-            entry.provider_kind.as_deref(),
+            entry.content.provider_kind.as_deref(),
             Some(OPENAI_RESPONSES_COMPACTION_PROVIDER_KIND)
         );
-        assert_eq!(entry.provider_item_id.as_deref(), Some("cmp_1"));
         assert_eq!(
-            crate::blob_io::read_json(blobs.as_ref(), &entry.content_ref)
+            read_json(blobs.as_ref(), &entry.content.content_ref)
+                .await
+                .expect("native item")["id"],
+            "cmp_1"
+        );
+        assert_eq!(
+            crate::blob_io::read_json(blobs.as_ref(), &entry.content.content_ref)
                 .await
                 .expect("blob")["encrypted_content"],
             json!("opaque")
@@ -2994,13 +2994,12 @@ mod tests {
         assert_eq!(result.context_entries.len(), 1);
         let entry = &result.context_entries[0];
         assert!(matches!(entry.kind, ContextEntryKind::ProviderOpaque));
-        assert_eq!(entry.media_type.as_deref(), Some(MEDIA_TYPE_JSON));
+        assert_eq!(entry.content.media_type.as_deref(), Some(MEDIA_TYPE_JSON));
         assert_eq!(
-            entry.provider_kind.as_deref(),
+            entry.content.provider_kind.as_deref(),
             Some(OPENAI_RESPONSES_COMPACTION_PROVIDER_KIND)
         );
-        assert_eq!(entry.provider_item_id.as_deref(), Some("cmp_1"));
-        let retained: Value = read_json(&blobs, &entry.content_ref)
+        let retained: Value = read_json(&blobs, &entry.content.content_ref)
             .await
             .expect("raw item");
         assert_eq!(retained, raw_item);
@@ -3047,20 +3046,19 @@ mod tests {
         assert_eq!(result.context_entries.len(), 1);
         let entry = &result.context_entries[0];
         assert!(matches!(entry.kind, ContextEntryKind::ProviderOpaque));
-        assert_eq!(entry.media_type.as_deref(), Some(MEDIA_TYPE_JSON));
+        assert_eq!(entry.content.media_type.as_deref(), Some(MEDIA_TYPE_JSON));
         assert_eq!(
-            entry.provider_kind.as_deref(),
+            entry.content.provider_kind.as_deref(),
             Some(OPENAI_RESPONSES_WEB_SEARCH_CALL_PROVIDER_KIND)
         );
-        assert_eq!(entry.provider_item_id.as_deref(), Some("ws_1"));
-        let retained: Value = read_json(&blobs, &entry.content_ref)
+        let retained: Value = read_json(&blobs, &entry.content.content_ref)
             .await
             .expect("raw item");
         assert_eq!(retained, raw_item);
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn cited_message_is_followed_by_its_exact_item_which_replays() {
+    async fn message_is_one_native_item_which_replays() {
         let blobs = InMemoryBlobStore::new();
         let raw_item = json!({
             "id": "msg_1",
@@ -3101,7 +3099,7 @@ mod tests {
             .await
             .expect("result");
 
-        assert_eq!(result.context_entries.len(), 2);
+        assert_eq!(result.context_entries.len(), 1);
         let message = &result.context_entries[0];
         assert!(matches!(
             message.kind,
@@ -3109,21 +3107,11 @@ mod tests {
                 role: ContextMessageRole::Assistant
             }
         ));
-        assert_eq!(
-            message.provider_kind.as_deref(),
-            Some(PROVIDER_KIND_MESSAGE)
-        );
         assert_eq!(message.preview.as_deref(), Some("OpenAI has citations."));
-        let cited = &result.context_entries[1];
-        assert!(matches!(cited.kind, ContextEntryKind::ProviderOpaque));
         assert_eq!(
-            cited.provider_kind.as_deref(),
-            Some(OPENAI_RESPONSES_CITED_TEXT_PROVIDER_KIND)
-        );
-        assert_eq!(
-            read_json(&blobs, &cited.content_ref)
+            read_json(&blobs, &message.content.content_ref)
                 .await
-                .expect("native cited item"),
+                .expect("native message"),
             raw_item
         );
 
@@ -3141,11 +3129,14 @@ mod tests {
             json!([raw_item])
         );
 
-        // Without its exact item (a truncated turn keeps only the text), the
-        // message replays as plain assistant text.
-        let input = materialize_input_items(&blobs, &retained[..1])
+        // A truncated turn strips native metadata and retains only safe text.
+        let partial = partial_output_entries(&blobs, result.context_entries)
             .await
-            .expect("materialize plain output");
+            .expect("partial output");
+        let entry = retained_context_entry(0, &partial[0]);
+        let input = materialize_input_items(&blobs, &[entry])
+            .await
+            .expect("partial replay");
         let input = serde_json::to_value(input).expect("input JSON");
         assert_eq!(input[0]["role"], "assistant");
         assert_eq!(input[0]["content"], "OpenAI has citations.");
@@ -3224,25 +3215,25 @@ mod tests {
         ));
         for entry in &result.context_entries {
             assert!(matches!(entry.kind, ContextEntryKind::ProviderOpaque));
-            assert_eq!(entry.media_type.as_deref(), Some(MEDIA_TYPE_JSON));
+            assert_eq!(entry.content.media_type.as_deref(), Some(MEDIA_TYPE_JSON));
         }
         assert_eq!(
-            result.context_entries[0].provider_kind.as_deref(),
+            result.context_entries[0].content.provider_kind.as_deref(),
             Some(engine::OPENAI_RESPONSES_MCP_LIST_TOOLS_PROVIDER_KIND)
         );
         assert_eq!(
-            result.context_entries[1].provider_kind.as_deref(),
+            result.context_entries[1].content.provider_kind.as_deref(),
             Some(engine::OPENAI_RESPONSES_MCP_CALL_PROVIDER_KIND)
         );
         assert_eq!(
-            result.context_entries[2].provider_kind.as_deref(),
+            result.context_entries[2].content.provider_kind.as_deref(),
             Some(engine::OPENAI_RESPONSES_MCP_APPROVAL_REQUEST_PROVIDER_KIND)
         );
         assert_eq!(
             result.context_entries[1].preview.as_deref(),
             Some("OpenAI Responses MCP tool call: echo.echo")
         );
-        let retained: Value = read_json(&blobs, &result.context_entries[1].content_ref)
+        let retained: Value = read_json(&blobs, &result.context_entries[1].content.content_ref)
             .await
             .expect("raw MCP call");
         assert_eq!(retained, call_item);
@@ -3307,11 +3298,13 @@ mod tests {
                 run_id: RunId::new(1),
                 input_index: id as u32 - 1,
             },
-            content_ref,
-            media_type: media_type.map(str::to_owned),
+            content: engine::ContentRef {
+                content_ref,
+                media_type: media_type.map(str::to_owned),
+                provider_kind: None,
+            },
             preview: None,
-            provider_kind: None,
-            provider_item_id: None,
+            provenance_ref: None,
             token_estimate: None,
             supersedes: None,
         };
@@ -3353,11 +3346,13 @@ mod tests {
                 run_id: RunId::new(1),
                 input_index: 0,
             },
-            content_ref: pdf_ref,
-            media_type: Some("application/pdf".to_owned()),
+            content: engine::ContentRef {
+                content_ref: pdf_ref,
+                media_type: Some("application/pdf".to_owned()),
+                provider_kind: None,
+            },
             preview: Some("[document: offer.pdf]".to_owned()),
-            provider_kind: None,
-            provider_item_id: None,
+            provenance_ref: None,
             token_estimate: None,
             supersedes: None,
         }];
@@ -3390,11 +3385,13 @@ mod tests {
                 run_id: RunId::new(1),
                 input_index: 0,
             },
-            content_ref: doc_ref,
-            media_type: Some("text/markdown".to_owned()),
+            content: engine::ContentRef {
+                content_ref: doc_ref,
+                media_type: Some("text/markdown".to_owned()),
+                provider_kind: None,
+            },
             preview: Some("[document: notes.md]".to_owned()),
-            provider_kind: None,
-            provider_item_id: None,
+            provenance_ref: None,
             token_estimate: None,
             supersedes: None,
         }];
@@ -3457,7 +3454,17 @@ mod tests {
             }
         ));
         assert_eq!(entry.preview.as_deref(), Some("I can't help with that."));
-        assert_eq!(entry.provider_kind.as_deref(), Some(PROVIDER_KIND_REFUSAL));
+        assert_eq!(
+            entry.content.provider_kind.as_deref(),
+            Some(OPENAI_RESPONSES_MESSAGE_PROVIDER_KIND)
+        );
+        assert_eq!(
+            api_projection::project_content_text(&blobs, &entry.content)
+                .await
+                .expect("project refusal")
+                .as_deref(),
+            Some("I can't help with that.")
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -3563,11 +3570,13 @@ mod tests {
                 run_id: RunId::new(1),
                 turn_id: TurnId::new(1),
             },
-            content_ref,
-            media_type: None,
+            content: engine::ContentRef {
+                content_ref,
+                media_type: None,
+                provider_kind: None,
+            },
             preview: None,
-            provider_kind: None,
-            provider_item_id: None,
+            provenance_ref: None,
             token_estimate: None,
             supersedes: None,
         };
@@ -3606,11 +3615,13 @@ mod tests {
                 run_id: RunId::new(1),
                 input_index: 0,
             },
-            content_ref,
-            media_type: Some("image/png".to_owned()),
+            content: engine::ContentRef {
+                content_ref,
+                media_type: Some("image/png".to_owned()),
+                provider_kind: None,
+            },
             preview: Some("[image: photo.png]".to_owned()),
-            provider_kind: None,
-            provider_item_id: None,
+            provenance_ref: None,
             token_estimate: None,
             supersedes: None,
         };
@@ -3642,11 +3653,13 @@ mod tests {
                 title: "Bot directory".to_string(),
             },
             source: ContextEntrySource::ContextEdit,
-            content_ref,
-            media_type: Some("text/markdown".to_string()),
+            content: engine::ContentRef {
+                content_ref,
+                media_type: Some("text/markdown".to_string()),
+                provider_kind: None,
+            },
             preview: None,
-            provider_kind: None,
-            provider_item_id: None,
+            provenance_ref: None,
             token_estimate: None,
             supersedes: supersedes.map(ContextEntryId::new),
         }
@@ -3676,11 +3689,13 @@ mod tests {
                 run_id: RunId::new(1),
                 input_index: 0,
             },
-            content_ref: input_ref,
-            media_type: None,
+            content: engine::ContentRef {
+                content_ref: input_ref,
+                media_type: None,
+                provider_kind: None,
+            },
             preview: None,
-            provider_kind: None,
-            provider_item_id: None,
+            provenance_ref: None,
             token_estimate: None,
             supersedes: None,
         };

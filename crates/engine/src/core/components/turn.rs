@@ -211,7 +211,7 @@ pub enum TurnStatus {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TurnOutcome {
-    FinalOutput { output_ref: Option<BlobRef> },
+    FinalOutput { output: Option<crate::ContentRef> },
     ToolCallsQueued,
     ContextUpdateRequired,
     ApprovalsRequested,

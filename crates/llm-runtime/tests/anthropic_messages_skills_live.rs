@@ -1,7 +1,7 @@
 //! Live engine-loop test proving the skill catalog flow works end to end on
 //! the Anthropic Messages adapter: the catalog lowers as a user message, the
 //! model picks the matching skill, reads its SKILL.md through the fs file
-//! tool, and answers with the hidden marker.
+//! tool, and follows its migration preparation instructions.
 
 use std::{
     collections::BTreeMap,
@@ -35,7 +35,7 @@ mod support;
 
 use support::retrying_anthropic_messages_client;
 
-const LIVE_MARKER: &str = "LIVE-ANTHROPIC-SKILL-MATRIX-4217";
+const MIGRATION_FIRST_STEP: &str = "Create an immutable checkpoint of the matrix before migration.";
 
 fn live_model() -> String {
     env_or_dotenv_var("ANTHROPIC_MESSAGES_MODEL")
@@ -203,7 +203,7 @@ impl VfsWorkspaceStore for LiveVfsCatalog {
 
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "requires ANTHROPIC_API_KEY (costs real money)"]
-async fn anthropic_messages_live_selects_and_activates_the_matching_skill() {
+async fn anthropic_messages_live_selects_and_reads_the_matching_skill() {
     let sessions = Arc::new(InMemorySessionStore::new());
     let blobs = Arc::new(InMemoryBlobStore::new());
     let vfs = Arc::new(LiveVfsCatalog::default());
@@ -224,20 +224,20 @@ async fn anthropic_messages_live_selects_and_activates_the_matching_skill() {
             InlineFile::new(
                 "matrix-migration/SKILL.md",
                 format!(
-                    "---\nname: matrix-migration-marker\ndescription: Use when a matrix migration asks for the hidden live activation marker.\nshort_description: Matrix migration marker retrieval\n---\n\n# Matrix migration marker\n\nWhen this skill is loaded for a matrix migration request, reply with exactly MARKER={LIVE_MARKER}.\n"
+                    "---\nname: matrix-migration\ndescription: Use to prepare a matrix migration and protect the source data.\nshort_description: Matrix migration preparation\n---\n\n# Matrix migration preparation\n\nFor a one-line preparation step, use exactly this checklist item: {MIGRATION_FIRST_STEP}\n"
                 )
                 .into_bytes(),
             )
             .unwrap(),
             InlineFile::new(
                 "deploy-review/SKILL.md",
-                b"---\nname: deploy-review\ndescription: Use when reviewing deployment risks and rollout plans.\nshort_description: Deployment review\n---\n\nThis is a decoy for deployment risk review. It contains DECOY-DEPLOY-1111 and is not about matrix migration markers.\n"
+                b"---\nname: deploy-review\ndescription: Use when reviewing deployment risks and rollout plans.\nshort_description: Deployment review\n---\n\nReview canary rollout and rollback plans before deployment.\n"
                     .to_vec(),
             )
             .unwrap(),
             InlineFile::new(
                 "invoice-audit/SKILL.md",
-                b"---\nname: invoice-audit\ndescription: Use when auditing invoice line items and payment status.\nshort_description: Invoice audit\n---\n\nThis is a decoy for invoice work. It contains DECOY-INVOICE-2222 and is not about matrix migration markers.\n"
+                b"---\nname: invoice-audit\ndescription: Use when auditing invoice line items and payment status.\nshort_description: Invoice audit\n---\n\nMatch invoice line items to purchase orders before approving payment.\n"
                     .to_vec(),
             )
             .unwrap(),
@@ -315,7 +315,7 @@ async fn anthropic_messages_live_selects_and_activates_the_matching_skill() {
 
     let input_ref = blobs
         .put_bytes(
-            b"Use the Lightspeed skill catalog. Read exactly one SKILL.md: the skill relevant to a matrix migration hidden live activation marker. Then reply exactly MARKER=<the marker from that skill>. Do not use deployment or invoice skills."
+            b"Read the relevant SKILL.md from the skill catalog and use it to write a one-line preparation step for a matrix migration."
                 .to_vec(),
         )
         .await
@@ -332,11 +332,13 @@ async fn anthropic_messages_live_selects_and_activates_the_matching_skill() {
                         kind: ContextEntryKind::Message {
                             role: ContextMessageRole::User,
                         },
-                        content_ref: input_ref,
-                        media_type: None,
+                        content: engine::ContentRef {
+                            content_ref: input_ref,
+                            media_type: None,
+                            provider_kind: None,
+                        },
                         preview: None,
-                        provider_kind: None,
-                        provider_item_id: None,
+                        provenance_ref: None,
                         token_estimate: None,
                     }],
                 },
@@ -397,8 +399,8 @@ async fn anthropic_messages_live_selects_and_activates_the_matching_skill() {
 
     let assistant_text = assistant_text(blobs.as_ref(), &outcome.emitted_entries).await;
     assert!(
-        assistant_text.contains(&format!("MARKER={LIVE_MARKER}")),
-        "assistant did not use hidden skill marker; assistant={assistant_text:?}"
+        assistant_text.contains(MIGRATION_FIRST_STEP),
+        "assistant did not follow the migration skill; assistant={assistant_text:?}"
     );
 }
 
@@ -495,12 +497,7 @@ async fn assistant_text(blobs: &dyn BlobStore, entries: &[engine::CoreAgentEntry
                         role: engine::ContextMessageRole::Assistant
                     }
                 ) {
-                    text.push_str(
-                        &blobs
-                            .read_text(&item.content_ref)
-                            .await
-                            .expect("assistant text"),
-                    );
+                    text.push_str(&support::content_text(blobs, &item.content).await);
                     text.push('\n');
                 }
             }

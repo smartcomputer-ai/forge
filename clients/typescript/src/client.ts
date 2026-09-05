@@ -2,6 +2,7 @@ import type {
   AgentApiOutcomeOfRunStartResponse,
   AgentApiOutcomeOfSessionEventsReadResponse,
   EventCursor,
+  ContentRefView,
   InputItem,
   RunStartConfig,
   RunStartParams,
@@ -52,7 +53,7 @@ export type RunTerminalState =
   | {
       status: "completed";
       event: SessionEventView;
-      outputRef: string | null;
+      output: ContentRefView | null;
     }
   | {
       status: "failed";
@@ -270,7 +271,7 @@ function terminalStateForRun(event: SessionEventView, runId: string): RunTermina
   switch (kind.type) {
     case "runCompleted":
       return kind.runId === runId
-        ? { status: "completed", event, outputRef: kind.outputRef ?? null }
+        ? { status: "completed", event, output: kind.output ?? null }
         : null;
     case "runFailed":
       return kind.runId === runId ? { status: "failed", event, message: kind.message } : null;

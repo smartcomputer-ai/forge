@@ -1117,13 +1117,25 @@ async fn rpc(
     }
 }
 
-/// Deliberate bounded bulk transfers. Blob reads have no smaller page to
-/// retry with, while MCP discovery is already constrained by the
-/// discoverer's typed 16 MiB decoded-inventory limit.
+/// Full message projections and blob reads cannot be shortened with a smaller
+/// page when a single message is large. Their payloads remain complete; list
+/// responses retain the generic budget, and tools retain bounded previews.
+/// MCP discovery has its own typed decoded-inventory limit.
 fn response_budget_exempt(method: &str) -> bool {
     matches!(
         method,
-        api::METHOD_BLOBS_READ | api::METHOD_MCP_SERVERS_TOOLS_DISCOVER
+        api::METHOD_BLOBS_READ
+            | api::METHOD_MCP_SERVERS_TOOLS_DISCOVER
+            | api::METHOD_SESSION_READ
+            | api::METHOD_SESSION_EVENTS_READ
+            | api::METHOD_SESSION_RUNS_READ
+            | api::METHOD_SESSION_RUNS_START
+            | api::METHOD_SESSION_RUNS_CANCEL
+            | api::METHOD_SESSION_RUNS_APPROVALS_DECIDE
+            | api::METHOD_SESSION_RUNS_STEER
+            | api::METHOD_SESSION_ENVIRONMENTS_ACTIVATE
+            | api::METHOD_SESSION_ENVIRONMENTS_DEACTIVATE
+            | api::METHOD_SESSION_PROFILES_APPLY
     )
 }
 
@@ -1295,12 +1307,16 @@ mod tests {
     }
 
     #[test]
-    fn only_deliberate_bulk_methods_are_response_budget_exempt() {
+    fn full_message_views_and_bulk_reads_are_response_budget_exempt() {
         assert!(response_budget_exempt(api::METHOD_BLOBS_READ));
         assert!(response_budget_exempt(
             api::METHOD_MCP_SERVERS_TOOLS_DISCOVER
         ));
-        assert!(!response_budget_exempt(api::METHOD_SESSION_READ));
+        assert!(response_budget_exempt(api::METHOD_SESSION_READ));
+        assert!(response_budget_exempt(api::METHOD_SESSION_EVENTS_READ));
+        assert!(response_budget_exempt(api::METHOD_SESSION_RUNS_READ));
+        assert!(!response_budget_exempt(api::METHOD_SESSION_LIST));
+        assert!(!response_budget_exempt(api::METHOD_SESSION_RUNS_LIST));
     }
 
     #[test]

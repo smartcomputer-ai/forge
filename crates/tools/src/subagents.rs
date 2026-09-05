@@ -210,11 +210,13 @@ impl SubagentCatalogSnapshot {
 pub fn subagent_catalog_context_input(catalog_ref: BlobRef) -> ContextEntryInput {
     ContextEntryInput {
         kind: ContextEntryKind::SubagentCatalog,
-        content_ref: catalog_ref,
-        media_type: Some("application/json".to_owned()),
+        content: engine::ContentRef {
+            content_ref: catalog_ref,
+            media_type: Some("application/json".to_owned()),
+            provider_kind: None,
+        },
         preview: Some("Sub-agent catalog".to_owned()),
-        provider_kind: None,
-        provider_item_id: None,
+        provenance_ref: None,
         token_estimate: None,
     }
 }

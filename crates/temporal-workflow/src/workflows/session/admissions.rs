@@ -142,6 +142,7 @@ pub(super) fn command_needs_input_preprocessing(command: &CoreAgentCommand) -> b
 
 fn is_audio_input(input: &ContextEntryInput) -> bool {
     input
+        .content
         .media_type
         .as_deref()
         .map(|mime| mime.trim().to_ascii_lowercase().starts_with("audio/"))
@@ -385,11 +386,9 @@ fn active_instruction_inputs(
                         key,
                         ContextEntryInput {
                             kind: entry.kind.clone(),
-                            content_ref: entry.content_ref.clone(),
-                            media_type: entry.media_type.clone(),
+                            content: entry.content.clone(),
                             preview: entry.preview.clone(),
-                            provider_kind: entry.provider_kind.clone(),
-                            provider_item_id: entry.provider_item_id.clone(),
+                            provenance_ref: entry.provenance_ref.clone(),
                             token_estimate: entry.token_estimate.clone(),
                         },
                     )
@@ -416,7 +415,7 @@ fn active_context_ref(
                 .is_some_and(|entry_key| entry_key.as_str() == key)
                 && entry.kind == kind
         })
-        .map(|entry| entry.content_ref.clone())
+        .map(|entry| entry.content.content_ref.clone())
 }
 
 #[cfg(test)]
@@ -428,11 +427,13 @@ mod tests {
         let key = ContextEntryKey::new("client.audio");
         let entry = ContextEntryInput {
             kind: engine::ContextEntryKind::ProviderOpaque,
-            content_ref: BlobRef::from_bytes(b"transcribed"),
-            media_type: Some("application/json".to_owned()),
+            content: engine::ContentRef {
+                content_ref: BlobRef::from_bytes(b"transcribed"),
+                media_type: Some("application/json".to_owned()),
+                provider_kind: None,
+            },
             preview: None,
-            provider_kind: None,
-            provider_item_id: None,
+            provenance_ref: None,
             token_estimate: None,
         };
 

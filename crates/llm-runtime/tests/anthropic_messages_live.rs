@@ -2,13 +2,14 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use engine::{
-    ANTHROPIC_MESSAGES_CITED_TEXT_PROVIDER_KIND, ANTHROPIC_MESSAGES_COMPACTION_PROVIDER_KIND,
+    ANTHROPIC_MESSAGES_COMPACTION_PROVIDER_KIND,
     ANTHROPIC_MESSAGES_SERVER_TOOL_RESULT_PROVIDER_KIND,
-    ANTHROPIC_MESSAGES_SERVER_TOOL_USE_PROVIDER_KIND, BlobRef, ContextCompactionRequest,
-    ContextCompactionStatus, ContextCompactionTask, ContextEntry, ContextEntryId,
-    ContextEntryInput, ContextEntryKind, ContextEntrySource, ContextMessageRole, ContextSnapshot,
-    LlmFinish, LlmGenerationRequest, LlmGenerationResult, LlmGenerationStatus, LlmRequest,
-    ModelSelection, ProviderApiKind, RunId, SessionId, ToolChoice, ToolName, TurnId,
+    ANTHROPIC_MESSAGES_SERVER_TOOL_USE_PROVIDER_KIND, ANTHROPIC_MESSAGES_TEXT_BLOCKS_PROVIDER_KIND,
+    BlobRef, ContextCompactionRequest, ContextCompactionStatus, ContextCompactionTask,
+    ContextEntry, ContextEntryId, ContextEntryInput, ContextEntryKind, ContextEntrySource,
+    ContextMessageRole, ContextSnapshot, LlmFinish, LlmGenerationRequest, LlmGenerationResult,
+    LlmGenerationStatus, LlmRequest, ModelSelection, ProviderApiKind, RunId, SessionId, ToolChoice,
+    ToolName, TurnId,
     storage::{BlobStore, InMemoryBlobStore},
 };
 use llm_clients::anthropic::messages::{Client, Config};
@@ -106,11 +107,13 @@ fn user_entry(entry_id: u64, content_ref: BlobRef) -> ContextEntry {
             run_id: RunId::new(1),
             input_index: 0,
         },
-        content_ref,
-        media_type: None,
+        content: engine::ContentRef {
+            content_ref,
+            media_type: None,
+            provider_kind: None,
+        },
         preview: None,
-        provider_kind: None,
-        provider_item_id: None,
+        provenance_ref: None,
         token_estimate: None,
         supersedes: None,
     }
@@ -206,11 +209,9 @@ fn retained_context_entry(index: usize, item: &ContextEntryInput) -> ContextEntr
                 turn_id: TurnId::new(1),
             },
         },
-        content_ref: item.content_ref.clone(),
-        media_type: item.media_type.clone(),
+        content: item.content.clone(),
         preview: item.preview.clone(),
-        provider_kind: item.provider_kind.clone(),
-        provider_item_id: item.provider_item_id.clone(),
+        provenance_ref: item.provenance_ref.clone(),
         token_estimate: item.token_estimate.clone(),
         supersedes: None,
     }
@@ -281,14 +282,11 @@ async fn anthropic_messages_live_adapter_generates_result() {
         .find_map(|item| match item.kind {
             ContextEntryKind::Message {
                 role: ContextMessageRole::Assistant,
-            } => Some(item.content_ref.clone()),
+            } => Some(item.content.clone()),
             _ => None,
         })
         .expect("assistant context item");
-    let assistant_text = blobs
-        .read_text(&assistant_ref)
-        .await
-        .expect("assistant text");
+    let assistant_text = support::content_text(blobs.as_ref(), &assistant_ref).await;
     assert!(
         assistant_text.to_lowercase().contains("lightspeed"),
         "expected assistant output to contain lightspeed, got {assistant_text:?}"
@@ -317,14 +315,15 @@ fn assert_hosted_web_result(result: &LlmGenerationResult, capability: &str) {
     assert_eq!(result.facts.finish, LlmFinish::Stop);
     assert!(
         result.context_entries.iter().any(|entry| {
-            entry.provider_kind.as_deref() == Some(ANTHROPIC_MESSAGES_SERVER_TOOL_USE_PROVIDER_KIND)
+            entry.content.provider_kind.as_deref()
+                == Some(ANTHROPIC_MESSAGES_SERVER_TOOL_USE_PROVIDER_KIND)
         }),
         "expected {capability} server_tool_use block: {:?}",
         result.context_entries
     );
     assert!(
         result.context_entries.iter().any(|entry| {
-            entry.provider_kind.as_deref()
+            entry.content.provider_kind.as_deref()
                 == Some(ANTHROPIC_MESSAGES_SERVER_TOOL_RESULT_PROVIDER_KIND)
         }),
         "expected {capability} server-tool result block: {:?}",
@@ -332,25 +331,70 @@ fn assert_hosted_web_result(result: &LlmGenerationResult, capability: &str) {
     );
     assert!(
         cited_text_blocks(result).is_some(),
-        "expected {capability} cited blocks after an assistant message: {:?}",
+        "expected {capability} native assistant text blocks: {:?}",
         result.context_entries
     );
 }
 
-/// The exact cited blocks the provider attached to an assistant message. They
-/// follow the message they came from.
+/// The final native assistant message owns its text and citations.
 fn cited_text_blocks(result: &LlmGenerationResult) -> Option<&ContextEntryInput> {
-    let index = result.context_entries.iter().position(|entry| {
-        entry.provider_kind.as_deref() == Some(ANTHROPIC_MESSAGES_CITED_TEXT_PROVIDER_KIND)
-    })?;
-    let preceded_by_message = index > 0
-        && matches!(
-            result.context_entries[index - 1].kind,
+    result.context_entries.iter().rev().find(|entry| {
+        matches!(
+            entry.kind,
             ContextEntryKind::Message {
                 role: ContextMessageRole::Assistant
             }
-        );
-    preceded_by_message.then(|| &result.context_entries[index])
+        ) && entry.content.provider_kind.as_deref()
+            == Some(ANTHROPIC_MESSAGES_TEXT_BLOCKS_PROVIDER_KIND)
+    })
+}
+
+async fn assert_hosted_web_replay(
+    blobs: &Arc<InMemoryBlobStore>,
+    adapter: &AnthropicMessagesLlmAdapter,
+    original: &LlmRequest,
+    result: &LlmGenerationResult,
+) {
+    let mut request = original.clone();
+    let offset = request.context.entries.len();
+    request.context.entries.extend(
+        result
+            .context_entries
+            .iter()
+            .enumerate()
+            .map(|(index, entry)| retained_context_entry(offset + index, entry)),
+    );
+    let projected = api_projection::CoreAgentProjector::new(blobs.as_ref())
+        .project_context_state(0, &request.context.entries)
+        .await
+        .expect("project sourced history");
+    assert!(
+        projected
+            .entries
+            .iter()
+            .any(|entry| !entry.citations.is_empty())
+    );
+    let text = "Using only the sources already above, summarize the answer in one sentence. Do not call any tools.";
+    let prompt = text_blob(blobs, text).await;
+    request
+        .context
+        .entries
+        .push(user_entry(request.context.entries.len() as u64 + 1, prompt));
+    request.tool_choice = Some(ToolChoice::Auto);
+    request.provider_response_id = None;
+    request.output_limit = Some(512);
+    let followup = adapter
+        .generate(generation_request(2, request))
+        .await
+        .expect("replay native web history");
+    assert_eq!(followup.result.status, LlmGenerationStatus::Succeeded);
+    assert_eq!(followup.result.facts.finish, LlmFinish::Stop);
+    let message = cited_text_blocks(&followup.result).expect("native follow-up message");
+    assert!(
+        !support::content_text(blobs.as_ref(), &message.content)
+            .await
+            .is_empty()
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -383,14 +427,14 @@ async fn anthropic_messages_live_adapter_uses_hosted_web_search() {
     .with_debug_dumps(true);
 
     let execution = adapter
-        .generate(generation_request(1, request))
+        .generate(generation_request(1, request.clone()))
         .await
         .expect("generate with hosted web search");
 
     assert_hosted_web_result(&execution.result, "web search");
     let cited = cited_text_blocks(&execution.result).expect("cited blocks");
     let native_blocks = blobs
-        .read_text(&cited.content_ref)
+        .read_text(&cited.content.content_ref)
         .await
         .expect("native blocks");
     let native_blocks: Value = serde_json::from_str(&native_blocks).expect("native blocks JSON");
@@ -414,6 +458,7 @@ async fn anthropic_messages_live_adapter_uses_hosted_web_search() {
     let provider_request =
         provider_request_json(&blobs, &dumps(&execution).provider_request_ref).await;
     assert_eq!(provider_request["tools"][0]["type"], "web_search_20250305");
+    assert_hosted_web_replay(&blobs, &adapter, &request, &execution.result).await;
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -446,14 +491,14 @@ async fn anthropic_messages_live_adapter_uses_hosted_web_fetch() {
     .with_debug_dumps(true);
 
     let execution = adapter
-        .generate(generation_request(1, request))
+        .generate(generation_request(1, request.clone()))
         .await
         .expect("generate with hosted web fetch");
 
     assert_hosted_web_result(&execution.result, "web fetch");
     let cited = cited_text_blocks(&execution.result).expect("cited blocks");
     let native_blocks = blobs
-        .read_text(&cited.content_ref)
+        .read_text(&cited.content.content_ref)
         .await
         .expect("native blocks");
     let native_blocks: Value = serde_json::from_str(&native_blocks).expect("native blocks JSON");
@@ -476,6 +521,7 @@ async fn anthropic_messages_live_adapter_uses_hosted_web_fetch() {
         provider_request_json(&blobs, &dumps(&execution).provider_request_ref).await;
     assert_eq!(provider_request["tools"][0]["type"], "web_fetch_20250910");
     assert_eq!(provider_request["tools"][0]["citations"]["enabled"], true);
+    assert_hosted_web_replay(&blobs, &adapter, &request, &execution.result).await;
 }
 
 /// 32x32 solid red PNG.
@@ -497,7 +543,7 @@ async fn anthropic_messages_live_adapter_describes_image_input() {
     .await;
 
     let mut image_entry = user_entry(1, image_ref);
-    image_entry.media_type = Some("image/png".to_owned());
+    image_entry.content.media_type = Some("image/png".to_owned());
     image_entry.preview = Some("[image: red.png]".to_owned());
     let question_entry = user_entry(2, question_ref);
 
@@ -529,12 +575,10 @@ async fn anthropic_messages_live_adapter_describes_image_input() {
                 }
             )
         })
-        .map(|entry| entry.content_ref.clone())
+        .map(|entry| entry.content.clone())
         .expect("assistant entry");
-    let answer = blobs
-        .read_text(&assistant_ref)
+    let answer = support::content_text(blobs.as_ref(), &assistant_ref)
         .await
-        .expect("assistant text")
         .to_lowercase();
     assert!(
         answer.contains("red"),
@@ -591,7 +635,7 @@ async fn anthropic_messages_live_adapter_reads_pdf_document_input() {
     .await;
 
     let mut pdf_entry = user_entry(1, pdf_ref);
-    pdf_entry.media_type = Some("application/pdf".to_owned());
+    pdf_entry.content.media_type = Some("application/pdf".to_owned());
     pdf_entry.preview = Some("[document: magic.pdf]".to_owned());
     let question_entry = user_entry(2, question_ref);
 
@@ -623,12 +667,10 @@ async fn anthropic_messages_live_adapter_reads_pdf_document_input() {
                 }
             )
         })
-        .map(|entry| entry.content_ref.clone())
+        .map(|entry| entry.content.clone())
         .expect("assistant entry");
-    let answer = blobs
-        .read_text(&assistant_ref)
+    let answer = support::content_text(blobs.as_ref(), &assistant_ref)
         .await
-        .expect("assistant text")
         .to_lowercase();
     assert!(
         answer.contains("tangerine"),
@@ -722,11 +764,9 @@ async fn anthropic_messages_live_adapter_runs_tool_round_trip() {
             turn_id: TurnId::new(1),
             batch_id: None,
         },
-        content_ref: tool_output_ref,
-        media_type: Some("text/plain".to_owned()),
+        content: engine::ContentRef::text(tool_output_ref),
         preview: None,
-        provider_kind: None,
-        provider_item_id: None,
+        provenance_ref: None,
         token_estimate: None,
         supersedes: None,
     });
@@ -750,11 +790,11 @@ async fn anthropic_messages_live_adapter_runs_tool_round_trip() {
         .find_map(|item| match item.kind {
             ContextEntryKind::Message {
                 role: ContextMessageRole::Assistant,
-            } => Some(item.content_ref.clone()),
+            } => Some(item.content.clone()),
             _ => None,
         })
         .expect("final assistant context item");
-    let final_text = blobs.read_text(&final_ref).await.expect("final text");
+    let final_text = support::content_text(blobs.as_ref(), &final_ref).await;
     assert!(
         final_text.contains("11"),
         "expected final answer to use the tool result, got {final_text:?}"
@@ -812,11 +852,11 @@ async fn anthropic_messages_live_adapter_preserves_thinking_blocks() {
         .find_map(|item| match item.kind {
             ContextEntryKind::Message {
                 role: ContextMessageRole::Assistant,
-            } => Some(item.content_ref.clone()),
+            } => Some(item.content.clone()),
             _ => None,
         })
         .expect("assistant answer");
-    let answer = blobs.read_text(&answer_ref).await.expect("answer text");
+    let answer = support::content_text(blobs.as_ref(), &answer_ref).await;
     assert!(answer.contains("1120"), "expected 1120, got {answer:?}");
 
     // Replay the retained thinking + answer entries with a follow-up question
@@ -853,14 +893,11 @@ async fn anthropic_messages_live_adapter_preserves_thinking_blocks() {
         .find_map(|item| match item.kind {
             ContextEntryKind::Message {
                 role: ContextMessageRole::Assistant,
-            } => Some(item.content_ref.clone()),
+            } => Some(item.content.clone()),
             _ => None,
         })
         .expect("follow-up answer");
-    let followup_answer = blobs
-        .read_text(&followup_answer_ref)
-        .await
-        .expect("follow-up text");
+    let followup_answer = support::content_text(blobs.as_ref(), &followup_answer_ref).await;
     assert!(
         followup_answer.contains("1124"),
         "expected 1124, got {followup_answer:?}"
@@ -991,11 +1028,9 @@ async fn anthropic_messages_live_adapter_thinks_across_tool_round_trip() {
             turn_id: TurnId::new(1),
             batch_id: None,
         },
-        content_ref: tool_output_ref,
-        media_type: Some("text/plain".to_owned()),
+        content: engine::ContentRef::text(tool_output_ref),
         preview: None,
-        provider_kind: None,
-        provider_item_id: None,
+        provenance_ref: None,
         token_estimate: None,
         supersedes: None,
     });
@@ -1023,11 +1058,11 @@ async fn anthropic_messages_live_adapter_thinks_across_tool_round_trip() {
         .find_map(|item| match item.kind {
             ContextEntryKind::Message {
                 role: ContextMessageRole::Assistant,
-            } => Some(item.content_ref.clone()),
+            } => Some(item.content.clone()),
             _ => None,
         })
         .expect("final assistant context item");
-    let final_text = blobs.read_text(&final_ref).await.expect("final text");
+    let final_text = support::content_text(blobs.as_ref(), &final_ref).await;
     assert!(
         final_text.contains("11"),
         "expected final answer to use the tool result, got {final_text:?}"
@@ -1074,11 +1109,11 @@ async fn anthropic_messages_live_adapter_default_output_cap_is_accepted() {
         .find_map(|item| match item.kind {
             ContextEntryKind::Message {
                 role: ContextMessageRole::Assistant,
-            } => Some(item.content_ref.clone()),
+            } => Some(item.content.clone()),
             _ => None,
         })
         .expect("assistant answer");
-    let answer = blobs.read_text(&answer_ref).await.expect("answer text");
+    let answer = support::content_text(blobs.as_ref(), &answer_ref).await;
     assert!(answer.to_lowercase().contains("ok"), "got {answer:?}");
 }
 
@@ -1146,7 +1181,7 @@ async fn anthropic_messages_live_adapter_fails_the_turn_on_truncation_but_keeps_
     );
     assert_eq!(partial.len(), 1, "expected the partial essay text");
     let text = blobs
-        .read_text(&partial[0].content_ref)
+        .read_text(&partial[0].content.content_ref)
         .await
         .expect("partial text");
     assert!(!text.trim().is_empty(), "partial text must be visible");
@@ -1278,11 +1313,11 @@ async fn anthropic_messages_live_adapter_summarizes_context_compaction() {
         }
     ));
     assert_eq!(
-        entry.provider_kind.as_deref(),
+        entry.content.provider_kind.as_deref(),
         Some(ANTHROPIC_MESSAGES_COMPACTION_PROVIDER_KIND)
     );
     let summary = blobs
-        .read_text(&entry.content_ref)
+        .read_text(&entry.content.content_ref)
         .await
         .expect("summary text");
     assert!(

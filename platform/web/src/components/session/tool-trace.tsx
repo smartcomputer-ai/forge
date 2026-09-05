@@ -200,7 +200,7 @@ function ToolCallDetails({
               <ExpandableContent
                 text={output}
                 truncated={call.outputTruncated}
-                contentRef={call.outputContentRef}
+                blobRef={call.outputContentRef}
                 loadFullText={loadFullText}
               >
                 {(text) => <DetailBlock value={text} tone={failed ? "warning" : "default"} />}

@@ -180,7 +180,7 @@ async fn openai_responses_live_engine_prunes_and_reuses_provider_compaction() {
             .context
             .entries
             .iter()
-            .any(|entry| entry.content_ref == first_input_ref),
+            .any(|entry| entry.content.content_ref == first_input_ref),
         "pre-compaction input should be pruned from active context"
     );
     assert_eq!(
@@ -219,7 +219,16 @@ async fn openai_responses_live_engine_prunes_and_reuses_provider_compaction() {
         "{}",
         run_failure_text(blobs.as_ref(), &second.state).await
     );
-    let assistant_text = assistant_text(blobs.as_ref(), &second.emitted_entries).await;
+    let output = second.state.runs.completed[1]
+        .output
+        .as_ref()
+        .expect("completed run output");
+    assert_eq!(output.media_type.as_deref(), Some("application/json"));
+    assert_eq!(
+        output.provider_kind.as_deref(),
+        Some(engine::OPENAI_RESPONSES_MESSAGE_PROVIDER_KIND)
+    );
+    let assistant_text = support::content_text(blobs.as_ref(), output).await;
     assert!(
         assistant_text.contains(LIVE_MARKER),
         "second response did not recover marker from compacted context; assistant={assistant_text:?}"
@@ -418,7 +427,7 @@ fn session_config(model: ModelSelection) -> SessionConfig {
     SessionConfig {
         model,
         generation: engine::GenerationConfig {
-            max_output_tokens: Some(160),
+            max_output_tokens: Some(1024),
             reasoning_effort: None,
             tool_choice: None,
             parallel_tool_use: None,
@@ -441,7 +450,7 @@ fn standalone_session_config(
     SessionConfig {
         model,
         generation: engine::GenerationConfig {
-            max_output_tokens: Some(160),
+            max_output_tokens: Some(1024),
             reasoning_effort: None,
             tool_choice: None,
             parallel_tool_use: None,
@@ -483,11 +492,13 @@ fn user_input(content_ref: BlobRef) -> Vec<ContextEntryInput> {
         kind: ContextEntryKind::Message {
             role: ContextMessageRole::User,
         },
-        content_ref,
-        media_type: None,
+        content: engine::ContentRef {
+            content_ref,
+            media_type: None,
+            provider_kind: None,
+        },
         preview: None,
-        provider_kind: None,
-        provider_item_id: None,
+        provenance_ref: None,
         token_estimate: None,
     }]
 }
@@ -509,11 +520,13 @@ fn openai_raw_context_input(
 ) -> ContextEntryInput {
     ContextEntryInput {
         kind: ContextEntryKind::ProviderOpaque,
-        content_ref,
-        media_type: Some("application/json".to_owned()),
+        content: engine::ContentRef {
+            content_ref,
+            media_type: Some("application/json".to_owned()),
+            provider_kind: Some("openai.responses.input_message".to_owned()),
+        },
         preview: Some("OpenAI raw input message".to_owned()),
-        provider_kind: Some("openai.responses.input_message".to_owned()),
-        provider_item_id: None,
+        provenance_ref: None,
         token_estimate: token_estimate.map(|tokens| TokenEstimate {
             tokens,
             quality: TokenEstimateQuality::Estimated,
@@ -539,7 +552,8 @@ fn provider_compaction_entries(state: &engine::CoreAgentState) -> Vec<&engine::C
         .entries
         .iter()
         .filter(|entry| {
-            entry.provider_kind.as_deref() == Some(OPENAI_RESPONSES_COMPACTION_PROVIDER_KIND)
+            entry.content.provider_kind.as_deref()
+                == Some(OPENAI_RESPONSES_COMPACTION_PROVIDER_KIND)
         })
         .collect()
 }
@@ -549,7 +563,7 @@ fn active_context_contains_ref(state: &engine::CoreAgentState, content_ref: &Blo
         .context
         .entries
         .iter()
-        .any(|entry| &entry.content_ref == content_ref)
+        .any(|entry| &entry.content.content_ref == content_ref)
 }
 
 fn has_compaction_requested(
@@ -592,33 +606,6 @@ fn has_provider_compacted_removal(entries: &[engine::CoreAgentEntry]) -> bool {
             })
         )
     })
-}
-
-async fn assistant_text(blobs: &dyn BlobStore, entries: &[engine::CoreAgentEntry]) -> String {
-    let mut text = String::new();
-    for entry in entries {
-        if let CoreAgentEvent::Context(engine::ContextEvent::EntriesApplied { entries, .. }) =
-            &entry.event
-        {
-            for item in entries {
-                if matches!(
-                    item.kind,
-                    ContextEntryKind::Message {
-                        role: ContextMessageRole::Assistant
-                    }
-                ) {
-                    text.push_str(
-                        &blobs
-                            .read_text(&item.content_ref)
-                            .await
-                            .expect("assistant text"),
-                    );
-                    text.push('\n');
-                }
-            }
-        }
-    }
-    text
 }
 
 async fn compaction_failure_text(

@@ -229,11 +229,9 @@ async fn replace_prompt_instruction_source(
             default_key,
             engine::ContextEntryInput {
                 kind: ContextEntryKind::Instructions,
-                content_ref,
-                media_type: Some("text/plain".to_owned()),
+                content: engine::ContentRef::text(content_ref),
                 preview: None,
-                provider_kind: None,
-                provider_item_id: None,
+                provenance_ref: None,
                 token_estimate: None,
             },
         );
@@ -267,11 +265,9 @@ fn active_catalog_entry(catalog_ref: BlobRef) -> ContextEntry {
         source: ContextEntrySource::Runtime {
             label: "skills.catalog.vfs".to_owned(),
         },
-        content_ref: input.content_ref,
-        media_type: input.media_type,
+        content: input.content,
         preview: input.preview,
-        provider_kind: input.provider_kind,
-        provider_item_id: input.provider_item_id,
+        provenance_ref: input.provenance_ref,
         token_estimate: input.token_estimate,
         supersedes: None,
     }
@@ -300,11 +296,9 @@ fn active_projection_entry(
         source: ContextEntrySource::Runtime {
             label: label.to_owned(),
         },
-        content_ref: input.content_ref,
-        media_type: input.media_type,
+        content: input.content,
         preview: input.preview,
-        provider_kind: input.provider_kind,
-        provider_item_id: input.provider_item_id,
+        provenance_ref: input.provenance_ref,
         token_estimate: input.token_estimate,
         supersedes: None,
     }

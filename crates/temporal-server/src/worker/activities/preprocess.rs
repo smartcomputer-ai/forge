@@ -22,7 +22,7 @@ use temporal_workflow::{
 };
 
 use super::state::PreprocessActivityDeps;
-use crate::transcript::{AUDIO_TRANSCRIPT_PROVIDER_KIND, transcript_content, transcript_header};
+use llm_clients::content::{AUDIO_TRANSCRIPT_PROVIDER_KIND, AudioTranscript};
 
 const MAX_AUDIO_BYTES: u64 = 25 * 1024 * 1024;
 const MAX_AUDIO_DURATION_MS: u64 = 10 * 60 * 1000;
@@ -306,7 +306,7 @@ async fn transcribe_entry(
     transcoder: Option<&dyn AudioTranscoder>,
     entry: ContextEntryInput,
 ) -> Result<ContextEntryInput, PreprocessRunInputFailure> {
-    let mime = normalized_mime(entry.media_type.as_deref());
+    let mime = normalized_mime(entry.content.media_type.as_deref());
     let name = audio_label(&entry);
     if !PROVIDER_ACCEPTED_AUDIO_MIMES.contains(&mime.as_str())
         && !TRANSCODABLE_AUDIO_MIMES.contains(&mime.as_str())
@@ -321,7 +321,7 @@ async fn transcribe_entry(
     }
 
     let info = blobs
-        .stat_blob(&entry.content_ref)
+        .stat_blob(&entry.content.content_ref)
         .await
         .map_err(map_audio_blob_error)?;
     if info.byte_len > MAX_AUDIO_BYTES {
@@ -329,13 +329,13 @@ async fn transcribe_entry(
             PreprocessRunInputFailureKind::AudioBlobTooLarge,
             format!(
                 "audio entry {name} blob {} is {} bytes; the limit is {MAX_AUDIO_BYTES} bytes",
-                entry.content_ref, info.byte_len
+                entry.content.content_ref, info.byte_len
             ),
         ));
     }
 
     let bytes = blobs
-        .read_bytes(&entry.content_ref)
+        .read_bytes(&entry.content.content_ref)
         .await
         .map_err(map_audio_blob_error)?;
     if let Some(duration_ms) = audio_duration_ms(&mime, &bytes)
@@ -371,26 +371,34 @@ async fn transcribe_entry(
         })
         .await
         .map_err(map_transcription_error)?;
-    let transcript_text = transcript_content(&name, &transcript.text);
-    let transcript_ref = blobs
-        .put_bytes(transcript_text.into_bytes())
-        .await
-        .map_err(|error| {
-            failure(
-                PreprocessRunInputFailureKind::TranscriptionFailure,
-                format!("failed to store audio transcript: {error}"),
-            )
-        })?;
+    let transcript = AudioTranscript {
+        filename: name,
+        text: transcript.text.trim().to_owned(),
+    };
+    let transcript_bytes = serde_json::to_vec(&transcript).map_err(|error| {
+        failure(
+            PreprocessRunInputFailureKind::TranscriptionFailure,
+            format!("failed to encode transcript: {error}"),
+        )
+    })?;
+    let transcript_ref = blobs.put_bytes(transcript_bytes).await.map_err(|error| {
+        failure(
+            PreprocessRunInputFailureKind::TranscriptionFailure,
+            format!("failed to store audio transcript: {error}"),
+        )
+    })?;
 
     Ok(ContextEntryInput {
         kind: ContextEntryKind::Message {
             role: ContextMessageRole::User,
         },
-        content_ref: transcript_ref,
-        media_type: Some("text/plain".to_owned()),
-        preview: Some(transcript_header(&name)),
-        provider_kind: Some(AUDIO_TRANSCRIPT_PROVIDER_KIND.to_owned()),
-        provider_item_id: Some(entry.content_ref.as_str().to_owned()),
+        content: engine::ContentRef {
+            content_ref: transcript_ref,
+            media_type: Some("application/json".to_owned()),
+            provider_kind: Some(AUDIO_TRANSCRIPT_PROVIDER_KIND.to_owned()),
+        },
+        preview: Some(transcript.header().chars().take(256).collect()),
+        provenance_ref: Some(entry.content.content_ref.clone()),
         token_estimate: None,
     })
 }
@@ -457,6 +465,7 @@ async fn prepare_audio_for_transcription(
 
 fn is_audio_entry(entry: &ContextEntryInput) -> bool {
     entry
+        .content
         .media_type
         .as_deref()
         .map(|mime| mime.trim().to_ascii_lowercase().starts_with("audio/"))
@@ -825,11 +834,13 @@ mod tests {
                 kind: ContextEntryKind::Message {
                     role: ContextMessageRole::User,
                 },
-                content_ref: audio_ref,
-                media_type: Some("audio/ogg".to_owned()),
+                content: engine::ContentRef {
+                    content_ref: audio_ref.clone(),
+                    media_type: Some("audio/ogg".to_owned()),
+                    provider_kind: None,
+                },
                 preview: Some("[audio: voice.ogg]".to_owned()),
-                provider_kind: None,
-                provider_item_id: None,
+                provenance_ref: None,
                 token_estimate: None,
             },
         ];
@@ -846,13 +857,28 @@ mod tests {
         .expect("rewrite");
 
         assert_eq!(rewritten.len(), 2);
-        assert_eq!(rewritten[1].media_type.as_deref(), Some("text/plain"));
         assert_eq!(
-            blobs
-                .read_text(&rewritten[1].content_ref)
+            rewritten[1].content.media_type.as_deref(),
+            Some("application/json")
+        );
+        let raw = blobs
+            .read_text(&rewritten[1].content.content_ref)
+            .await
+            .expect("read transcript");
+        assert_eq!(
+            serde_json::from_str::<AudioTranscript>(&raw).unwrap(),
+            AudioTranscript {
+                filename: "voice.ogg".into(),
+                text: "please summarize this".into()
+            }
+        );
+        assert_eq!(rewritten[1].provenance_ref.as_ref(), Some(&audio_ref));
+        assert_eq!(
+            api_projection::project_content_text(&blobs, &rewritten[1].content)
                 .await
-                .expect("read transcript"),
-            "[audio transcript: voice.ogg]\nplease summarize this"
+                .unwrap()
+                .as_deref(),
+            Some("please summarize this")
         );
     }
 
@@ -869,11 +895,13 @@ mod tests {
                 kind: ContextEntryKind::Message {
                     role: ContextMessageRole::User,
                 },
-                content_ref: audio_ref,
-                media_type: Some("audio/aac".to_owned()),
+                content: engine::ContentRef {
+                    content_ref: audio_ref.clone(),
+                    media_type: Some("audio/aac".to_owned()),
+                    provider_kind: None,
+                },
                 preview: Some("[audio: voice.aac]".to_owned()),
-                provider_kind: None,
-                provider_item_id: None,
+                provenance_ref: None,
                 token_estimate: None,
             },
         ];
@@ -906,11 +934,13 @@ mod tests {
             kind: ContextEntryKind::Message {
                 role: ContextMessageRole::User,
             },
-            content_ref: audio_ref,
-            media_type: Some("audio/aac".to_owned()),
+            content: engine::ContentRef {
+                content_ref: audio_ref.clone(),
+                media_type: Some("audio/aac".to_owned()),
+                provider_kind: None,
+            },
             preview: Some("[audio: voice.aac]".to_owned()),
-            provider_kind: None,
-            provider_item_id: None,
+            provenance_ref: None,
             token_estimate: None,
         }];
         let transcriber = RecordingTranscriber::new("transcoded request");
@@ -924,12 +954,24 @@ mod tests {
             .await
             .expect("rewrite");
 
+        let raw = blobs
+            .read_text(&rewritten[0].content.content_ref)
+            .await
+            .expect("read transcript");
         assert_eq!(
-            blobs
-                .read_text(&rewritten[0].content_ref)
+            serde_json::from_str::<AudioTranscript>(&raw).unwrap(),
+            AudioTranscript {
+                filename: "voice.aac".into(),
+                text: "transcoded request".into()
+            }
+        );
+        assert_eq!(rewritten[0].provenance_ref.as_ref(), Some(&audio_ref));
+        assert_eq!(
+            api_projection::project_content_text(&blobs, &rewritten[0].content)
                 .await
-                .expect("read transcript"),
-            "[audio transcript: voice.aac]\ntranscoded request"
+                .unwrap()
+                .as_deref(),
+            Some("transcoded request")
         );
         let transcode_requests = transcoder.requests();
         assert_eq!(transcode_requests.len(), 1);
@@ -1022,11 +1064,13 @@ mod tests {
             kind: ContextEntryKind::Message {
                 role: ContextMessageRole::User,
             },
-            content_ref: audio_ref,
-            media_type: Some("audio/ogg".to_owned()),
+            content: engine::ContentRef {
+                content_ref: audio_ref.clone(),
+                media_type: Some("audio/ogg".to_owned()),
+                provider_kind: None,
+            },
             preview: Some("[audio: long.ogg]".to_owned()),
-            provider_kind: None,
-            provider_item_id: None,
+            provenance_ref: None,
             token_estimate: None,
         }];
 
@@ -1053,11 +1097,9 @@ mod tests {
             kind: ContextEntryKind::Message {
                 role: ContextMessageRole::User,
             },
-            content_ref,
-            media_type: Some("text/plain".to_owned()),
+            content: engine::ContentRef::text(content_ref),
             preview: None,
-            provider_kind: None,
-            provider_item_id: None,
+            provenance_ref: None,
             token_estimate: None,
         }
     }
@@ -1072,11 +1114,13 @@ mod tests {
             kind: ContextEntryKind::Message {
                 role: ContextMessageRole::User,
             },
-            content_ref: audio_ref,
-            media_type: Some("audio/aac".to_owned()),
+            content: engine::ContentRef {
+                content_ref: audio_ref.clone(),
+                media_type: Some("audio/aac".to_owned()),
+                provider_kind: None,
+            },
             preview: Some("[audio: voice.aac]".to_owned()),
-            provider_kind: None,
-            provider_item_id: None,
+            provenance_ref: None,
             token_estimate: None,
         }];
         let transcoder = StaticTranscoder::new(Err(error));

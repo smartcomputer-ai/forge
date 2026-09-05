@@ -184,7 +184,7 @@ async fn anthropic_messages_live_manual_standalone_compaction_preserves_marker()
         "active context should retain exactly one Anthropic compaction summary"
     );
     let summary = blobs
-        .read_text(&summaries[0].content_ref)
+        .read_text(&summaries[0].content.content_ref)
         .await
         .expect("summary text");
     assert!(
@@ -212,11 +212,13 @@ async fn anthropic_messages_live_manual_standalone_compaction_preserves_marker()
                         kind: ContextEntryKind::Message {
                             role: ContextMessageRole::User,
                         },
-                        content_ref: question_ref,
-                        media_type: None,
+                        content: engine::ContentRef {
+                            content_ref: question_ref,
+                            media_type: None,
+                            provider_kind: None,
+                        },
                         preview: None,
-                        provider_kind: None,
-                        provider_item_id: None,
+                        provenance_ref: None,
                         token_estimate: None,
                     }],
                 },
@@ -403,11 +405,13 @@ fn anthropic_raw_context_input(
 ) -> ContextEntryInput {
     ContextEntryInput {
         kind: ContextEntryKind::ProviderOpaque,
-        content_ref,
-        media_type: Some("application/json".to_owned()),
+        content: engine::ContentRef {
+            content_ref,
+            media_type: Some("application/json".to_owned()),
+            provider_kind: Some(ANTHROPIC_MESSAGES_INPUT_MESSAGE_PROVIDER_KIND.to_owned()),
+        },
         preview: Some("Anthropic raw input message".to_owned()),
-        provider_kind: Some(ANTHROPIC_MESSAGES_INPUT_MESSAGE_PROVIDER_KIND.to_owned()),
-        provider_item_id: None,
+        provenance_ref: None,
         token_estimate: token_estimate.map(|tokens| TokenEstimate {
             tokens,
             quality: TokenEstimateQuality::Estimated,
@@ -421,7 +425,8 @@ fn compaction_summary_entries(state: &engine::CoreAgentState) -> Vec<&engine::Co
         .entries
         .iter()
         .filter(|entry| {
-            entry.provider_kind.as_deref() == Some(ANTHROPIC_MESSAGES_COMPACTION_PROVIDER_KIND)
+            entry.content.provider_kind.as_deref()
+                == Some(ANTHROPIC_MESSAGES_COMPACTION_PROVIDER_KIND)
         })
         .collect()
 }
@@ -431,7 +436,7 @@ fn active_context_contains_ref(state: &engine::CoreAgentState, content_ref: &Blo
         .context
         .entries
         .iter()
-        .any(|entry| &entry.content_ref == content_ref)
+        .any(|entry| &entry.content.content_ref == content_ref)
 }
 
 fn has_compaction_requested(
@@ -489,12 +494,7 @@ async fn assistant_text(blobs: &dyn BlobStore, entries: &[engine::CoreAgentEntry
                         role: ContextMessageRole::Assistant
                     }
                 ) {
-                    text.push_str(
-                        &blobs
-                            .read_text(&item.content_ref)
-                            .await
-                            .expect("assistant text"),
-                    );
+                    text.push_str(&support::content_text(blobs, &item.content).await);
                     text.push('\n');
                 }
             }

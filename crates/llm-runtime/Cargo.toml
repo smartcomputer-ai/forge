@@ -15,6 +15,7 @@ tracing = "0.1"
 tools = { path = "../tools" }
 
 [dev-dependencies]
+api-projection = { path = "../api-projection" }
 test-support = { path = "../test-support" }
 tokio = { version = "1", features = ["macros", "rt"] }
 vfs = { path = "../vfs" }

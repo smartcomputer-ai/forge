@@ -33,11 +33,10 @@ use crate::{
     },
 };
 
-pub const OPENAI_COMPLETIONS_MESSAGE_PROVIDER_KIND: &str = "openai.completions.message";
-pub const OPENAI_COMPLETIONS_REFUSAL_PROVIDER_KIND: &str = "openai.completions.refusal";
+pub use llm_clients::content::{
+    OPENAI_COMPLETIONS_MESSAGE_PROVIDER_KIND, OPENAI_COMPLETIONS_REASONING_PROVIDER_KIND,
+};
 pub const OPENAI_COMPLETIONS_TOOL_CALL_PROVIDER_KIND: &str = "openai.completions.tool_call";
-pub const OPENAI_COMPLETIONS_REASONING_PROVIDER_KIND: &str = "openai.completions.reasoning_state";
-pub const OPENAI_COMPLETIONS_ANNOTATIONS_PROVIDER_KIND: &str = "openai.completions.annotations";
 
 const MEDIA_TYPE_JSON: &str = "application/json";
 const MEDIA_TYPE_TEXT: &str = "text/plain";
@@ -407,7 +406,7 @@ async fn materialize_messages(
         match &entry.kind {
             ContextEntryKind::ToolCall { .. } => {
                 require_completions_provider_kind(entry)?;
-                let raw = read_json(blobs, &entry.content_ref).await?;
+                let raw = read_json(blobs, &entry.content.content_ref).await?;
                 let tool_call: oai_c::CompletionToolCall =
                     serde_json::from_value(raw).map_err(|error| {
                         LlmAdapterError::InvalidProviderRequest {
@@ -436,11 +435,11 @@ async fn materialize_messages(
                 last_assistant_source = Some(entry.source.clone());
             }
             ContextEntryKind::ReasoningState
-                if entry.provider_kind.as_deref()
+                if entry.content.provider_kind.as_deref()
                     == Some(OPENAI_COMPLETIONS_REASONING_PROVIDER_KIND) =>
             {
                 require_completions_provider_kind(entry)?;
-                if entry.media_type.as_deref() != Some(MEDIA_TYPE_JSON) {
+                if entry.content.media_type.as_deref() != Some(MEDIA_TYPE_JSON) {
                     return Err(LlmAdapterError::InvalidProviderRequest {
                         message: format!(
                             "Chat Completions native entry {} must contain JSON",
@@ -448,7 +447,7 @@ async fn materialize_messages(
                         ),
                     });
                 }
-                let raw = read_json(blobs, &entry.content_ref).await?;
+                let raw = read_json(blobs, &entry.content.content_ref).await?;
                 let Some(state) = raw.as_object() else {
                     return Err(LlmAdapterError::InvalidProviderRequest {
                         message: format!(
@@ -474,17 +473,9 @@ async fn materialize_messages(
                 }
                 last_assistant_source = Some(entry.source.clone());
             }
-            ContextEntryKind::ProviderOpaque
-                if entry.provider_kind.as_deref()
-                    == Some(OPENAI_COMPLETIONS_ANNOTATIONS_PROVIDER_KIND) =>
-            {
-                // Output citations are durable provider metadata, not valid
-                // assistant input fields. Preserve them in context but do not
-                // replay them to the model.
-            }
             ContextEntryKind::ReasoningState | ContextEntryKind::ProviderOpaque => {
                 require_completions_provider_kind(entry)?;
-                if entry.media_type.as_deref() != Some(MEDIA_TYPE_JSON) {
+                if entry.content.media_type.as_deref() != Some(MEDIA_TYPE_JSON) {
                     return Err(LlmAdapterError::InvalidProviderRequest {
                         message: format!(
                             "Chat Completions native entry {} must contain JSON",
@@ -492,7 +483,7 @@ async fn materialize_messages(
                         ),
                     });
                 }
-                let raw = read_json(blobs, &entry.content_ref).await?;
+                let raw = read_json(blobs, &entry.content.content_ref).await?;
                 let message: oai_c::CompletionMessage =
                     serde_json::from_value(raw).map_err(|error| {
                         LlmAdapterError::InvalidProviderRequest {
@@ -518,7 +509,7 @@ async fn materialize_messages(
 }
 
 fn reject_foreign_provider_kind(entry: &ContextEntry) -> LlmAdapterResult<()> {
-    let Some(kind) = entry.provider_kind.as_deref() else {
+    let Some(kind) = entry.content.provider_kind.as_deref() else {
         return Ok(());
     };
     if (kind.starts_with("openai.") || kind.starts_with("anthropic."))
@@ -536,6 +527,7 @@ fn reject_foreign_provider_kind(entry: &ContextEntry) -> LlmAdapterResult<()> {
 
 fn require_completions_provider_kind(entry: &ContextEntry) -> LlmAdapterResult<()> {
     if entry
+        .content
         .provider_kind
         .as_deref()
         .is_some_and(|kind| kind.starts_with("openai.completions."))
@@ -545,7 +537,7 @@ fn require_completions_provider_kind(entry: &ContextEntry) -> LlmAdapterResult<(
         Err(LlmAdapterError::RequestKindMismatch {
             message: format!(
                 "context entry {} has provider kind {:?}, expected openai.completions.*",
-                entry.entry_id, entry.provider_kind
+                entry.entry_id, entry.content.provider_kind
             ),
         })
     }
@@ -586,21 +578,52 @@ async fn materialize_message(
                 ContextMessageRole::User => "user",
                 ContextMessageRole::Assistant => "assistant",
             };
-            let content = if let Some(mime) =
-                crate::blob_io::image_media_type(entry.media_type.as_deref())
+            if role == "assistant"
+                && entry.content.provider_kind.as_deref()
+                    == Some(OPENAI_COMPLETIONS_MESSAGE_PROVIDER_KIND)
+                && entry.content.media_type.as_deref() == Some(MEDIA_TYPE_JSON)
             {
-                let data = crate::blob_io::read_base64(blobs, &entry.content_ref).await?;
+                let raw = read_json(blobs, &entry.content.content_ref).await?;
+                let native: oai_c::CompletionMessage =
+                    serde_json::from_value(raw).map_err(|error| {
+                        LlmAdapterError::InvalidProviderRequest {
+                            message: format!("invalid Chat Completions assistant content: {error}"),
+                        }
+                    })?;
+                let text = native.text();
+                let refusal = text
+                    .is_empty()
+                    .then(|| llm_clients::content::completion_refusal(&native))
+                    .flatten();
+                // Response annotations stay in CAS. Replay the established text/refusal
+                // shape, with reasoning and calls folded from their semantic entries.
+                return Ok(oai_c::CompletionMessage {
+                    role: role.to_owned(),
+                    content: Some(oai_c::CompletionMessageContent::Text(if text.is_empty() {
+                        refusal.clone().unwrap_or_default()
+                    } else {
+                        text
+                    })),
+                    refusal,
+                    ..Default::default()
+                });
+            }
+            let content = if let Some(mime) =
+                crate::blob_io::image_media_type(entry.content.media_type.as_deref())
+            {
+                let data = crate::blob_io::read_base64(blobs, &entry.content.content_ref).await?;
                 oai_c::CompletionMessageContent::Parts(vec![part_with_extra(
                     "image_url",
                     "image_url",
                     json!({ "url": format!("data:{mime};base64,{data}") }),
                 )])
             } else if let Some(document) = crate::blob_io::document_entry(
-                entry.media_type.as_deref(),
+                entry.content.media_type.as_deref(),
                 entry.preview.as_deref(),
             ) {
                 if document.is_pdf {
-                    let data = crate::blob_io::read_base64(blobs, &entry.content_ref).await?;
+                    let data =
+                        crate::blob_io::read_base64(blobs, &entry.content.content_ref).await?;
                     oai_c::CompletionMessageContent::Parts(vec![part_with_extra(
                         "file",
                         "file",
@@ -610,7 +633,7 @@ async fn materialize_message(
                         }),
                     )])
                 } else {
-                    let text = read_text(blobs, &entry.content_ref).await?;
+                    let text = read_text(blobs, &entry.content.content_ref).await?;
                     let header = document
                         .name
                         .map(|name| format!("[document: {name}]"))
@@ -618,28 +641,24 @@ async fn materialize_message(
                     oai_c::CompletionMessageContent::Text(format!("{header}\n\n{text}"))
                 }
             } else {
-                oai_c::CompletionMessageContent::Text(read_text(blobs, &entry.content_ref).await?)
+                oai_c::CompletionMessageContent::Text(
+                    crate::blob_io::read_message_text(blobs, &entry.content).await?,
+                )
             };
-            let refusal = (entry.provider_kind.as_deref()
-                == Some(OPENAI_COMPLETIONS_REFUSAL_PROVIDER_KIND))
-            .then(|| match &content {
-                oai_c::CompletionMessageContent::Text(text) => text.clone(),
-                oai_c::CompletionMessageContent::Parts(_) => String::new(),
-            });
             Ok(oai_c::CompletionMessage {
                 role: role.to_owned(),
                 content: Some(content),
-                refusal,
                 ..Default::default()
             })
         }
         ContextEntryKind::Instructions => Ok(text_message(
             dialect.instruction_role(),
-            read_text(blobs, &entry.content_ref).await?,
+            read_text(blobs, &entry.content.content_ref).await?,
         )),
         ContextEntryKind::VfsCatalog => {
             let catalog =
-                crate::environment_prompts::read_vfs_catalog(blobs, &entry.content_ref).await?;
+                crate::environment_prompts::read_vfs_catalog(blobs, &entry.content.content_ref)
+                    .await?;
             Ok(text_message(
                 dialect.instruction_role(),
                 crate::catalog_prompts::catalog_text(
@@ -650,7 +669,7 @@ async fn materialize_message(
         }
         ContextEntryKind::SkillCatalog => {
             let catalog =
-                crate::skill_prompts::read_skill_catalog(blobs, &entry.content_ref).await?;
+                crate::skill_prompts::read_skill_catalog(blobs, &entry.content.content_ref).await?;
             Ok(text_message(
                 dialect.instruction_role(),
                 crate::catalog_prompts::catalog_text(
@@ -661,7 +680,8 @@ async fn materialize_message(
         }
         ContextEntryKind::SubagentCatalog => {
             let catalog =
-                crate::subagent_prompts::read_subagent_catalog(blobs, &entry.content_ref).await?;
+                crate::subagent_prompts::read_subagent_catalog(blobs, &entry.content.content_ref)
+                    .await?;
             Ok(text_message(
                 dialect.instruction_role(),
                 crate::catalog_prompts::catalog_text(
@@ -672,19 +692,20 @@ async fn materialize_message(
         }
         ContextEntryKind::Catalog { .. } => Ok(text_message(
             dialect.instruction_role(),
-            crate::catalog_prompts::external_catalog_text(blobs, entry, &entry.content_ref).await?,
+            crate::catalog_prompts::external_catalog_text(blobs, entry, &entry.content.content_ref)
+                .await?,
         )),
         ContextEntryKind::SkillActivation { skill_id, .. } => Ok(text_message(
             dialect.instruction_role(),
             crate::skill_prompts::skill_activation_text(
                 skill_id,
-                read_text(blobs, &entry.content_ref).await?,
+                read_text(blobs, &entry.content.content_ref).await?,
             ),
         )),
         ContextEntryKind::ToolResult { call_id, .. } => Ok(oai_c::CompletionMessage {
             role: "tool".to_owned(),
             content: Some(oai_c::CompletionMessageContent::Text(
-                read_text(blobs, &entry.content_ref).await?,
+                read_text(blobs, &entry.content.content_ref).await?,
             )),
             tool_call_id: Some(call_id.as_str().to_owned()),
             ..Default::default()
@@ -862,16 +883,19 @@ fn validate_dialect_capabilities(
     }
 
     for entry in &request.context.entries {
-        let is_image = crate::blob_io::image_media_type(entry.media_type.as_deref()).is_some();
-        let is_pdf =
-            crate::blob_io::document_entry(entry.media_type.as_deref(), entry.preview.as_deref())
-                .is_some_and(|document| document.is_pdf);
+        let is_image =
+            crate::blob_io::image_media_type(entry.content.media_type.as_deref()).is_some();
+        let is_pdf = crate::blob_io::document_entry(
+            entry.content.media_type.as_deref(),
+            entry.preview.as_deref(),
+        )
+        .is_some_and(|document| document.is_pdf);
         if is_image || is_pdf {
             return Err(LlmAdapterError::InvalidProviderRequest {
                 message: format!(
                     "DeepSeek Chat Completions accepts text input only; context entry {} is {}",
                     entry.entry_id,
-                    entry.media_type.as_deref().unwrap_or("binary")
+                    entry.content.media_type.as_deref().unwrap_or("binary")
                 ),
             });
         }
@@ -1031,62 +1055,63 @@ pub async fn result_from_response(
                 message: format!("Chat completion {} has no message", response.parsed.id),
             })?;
 
+    // Reasoning and calls retain their semantic entries. Keep the remaining
+    // native message fields together, including unknown response metadata.
+    let mut payload = raw_assistant_message(&response.raw_json)
+        .cloned()
+        .ok_or_else(|| LlmAdapterError::InvalidProviderRequest {
+            message: "Chat Completions response has no raw assistant message".to_owned(),
+        })?;
+    let reasoning_state = ["reasoning_content", "reasoning", "reasoning_details"]
+        .into_iter()
+        .filter_map(|key| payload.remove(key).map(|value| (key.to_owned(), value)))
+        .collect::<serde_json::Map<_, _>>();
+    payload.remove("tool_calls");
     let mut context_entries = Vec::new();
     let mut tool_calls = Vec::new();
     let text = message.text();
-    let refusal = message_refusal(message);
+    let refusal = llm_clients::content::completion_refusal(message);
     let visible = if text.is_empty() {
         refusal.as_deref().unwrap_or("")
     } else {
         &text
     };
-    if !visible.is_empty() {
-        let content_ref = put_text(blobs, visible).await?;
+    if !visible.is_empty()
+        || payload
+            .get("annotations")
+            .is_some_and(|value| !value.is_null())
+    {
+        let content_ref = put_json(blobs, &payload).await?;
         context_entries.push(ContextEntryInput {
             kind: ContextEntryKind::Message {
                 role: ContextMessageRole::Assistant,
             },
-            content_ref,
-            media_type: Some(MEDIA_TYPE_TEXT.to_owned()),
-            preview: Some(visible.to_owned()),
-            provider_kind: Some(
-                if text.is_empty() && refusal.is_some() {
-                    OPENAI_COMPLETIONS_REFUSAL_PROVIDER_KIND
-                } else {
-                    OPENAI_COMPLETIONS_MESSAGE_PROVIDER_KIND
-                }
-                .to_owned(),
-            ),
-            provider_item_id: None,
+            content: engine::ContentRef {
+                content_ref,
+                media_type: Some(MEDIA_TYPE_JSON.to_owned()),
+                provider_kind: Some(OPENAI_COMPLETIONS_MESSAGE_PROVIDER_KIND.to_owned()),
+            },
+            preview: Some(visible.chars().take(256).collect()),
+            provenance_ref: None,
             token_estimate: None,
         });
     }
 
-    if let Some(reasoning_state) = raw_assistant_extension(
-        &response.raw_json,
-        &["reasoning_content", "reasoning", "reasoning_details"],
-    ) {
+    if !reasoning_state.is_empty() {
+        let reasoning_state = Value::Object(reasoning_state);
+        let preview = llm_clients::content::openai_completion_reasoning(&reasoning_state)
+            .filter(|text| !text.is_empty())
+            .map(|text| text.chars().take(256).collect());
         let content_ref = put_json(blobs, &reasoning_state).await?;
         context_entries.push(ContextEntryInput {
             kind: ContextEntryKind::ReasoningState,
-            content_ref,
-            media_type: Some(MEDIA_TYPE_JSON.to_owned()),
-            preview: None,
-            provider_kind: Some(OPENAI_COMPLETIONS_REASONING_PROVIDER_KIND.to_owned()),
-            provider_item_id: None,
-            token_estimate: None,
-        });
-    }
-
-    if let Some(annotations) = raw_assistant_field(&response.raw_json, "annotations") {
-        let content_ref = put_json(blobs, annotations).await?;
-        context_entries.push(ContextEntryInput {
-            kind: ContextEntryKind::ProviderOpaque,
-            content_ref,
-            media_type: Some(MEDIA_TYPE_JSON.to_owned()),
-            preview: Some("Chat Completions output annotations".to_owned()),
-            provider_kind: Some(OPENAI_COMPLETIONS_ANNOTATIONS_PROVIDER_KIND.to_owned()),
-            provider_item_id: None,
+            content: engine::ContentRef {
+                content_ref,
+                media_type: Some(MEDIA_TYPE_JSON.to_owned()),
+                provider_kind: Some(OPENAI_COMPLETIONS_REASONING_PROVIDER_KIND.to_owned()),
+            },
+            preview,
+            provenance_ref: None,
             token_estimate: None,
         });
     }
@@ -1152,7 +1177,7 @@ pub async fn result_from_response(
         (
             LlmGenerationStatus::Failed,
             Some(failure_ref),
-            partial_output_entries(context_entries),
+            partial_output_entries(blobs, context_entries).await?,
             Vec::new(),
         )
     } else {
@@ -1206,27 +1231,15 @@ pub async fn result_from_compact_response(
             kind: ContextEntryKind::Message {
                 role: ContextMessageRole::User,
             },
-            content_ref,
-            media_type: Some(MEDIA_TYPE_TEXT.to_owned()),
-            preview: Some(summary.to_owned()),
-            provider_kind: Some(OPENAI_COMPLETIONS_COMPACTION_PROVIDER_KIND.to_owned()),
-            provider_item_id: Some(response.parsed.id.clone()),
+            content: engine::ContentRef {
+                content_ref,
+                media_type: Some(MEDIA_TYPE_TEXT.to_owned()),
+                provider_kind: Some(OPENAI_COMPLETIONS_COMPACTION_PROVIDER_KIND.to_owned()),
+            },
+            preview: Some(summary.chars().take(256).collect()),
+            provenance_ref: None,
             token_estimate: None,
         }],
-    })
-}
-
-fn message_refusal(message: &oai_c::CompletionMessage) -> Option<String> {
-    message.refusal.clone().or_else(|| match &message.content {
-        Some(oai_c::CompletionMessageContent::Parts(parts)) => {
-            let refusal = parts
-                .iter()
-                .filter_map(|part| part.refusal.as_deref())
-                .collect::<Vec<_>>()
-                .join("\n");
-            (!refusal.is_empty()).then_some(refusal)
-        }
-        _ => None,
     })
 }
 
@@ -1258,24 +1271,6 @@ fn raw_assistant_message(raw_response: &Value) -> Option<&serde_json::Map<String
         .first()?
         .get("message")?
         .as_object()
-}
-
-fn raw_assistant_field<'a>(raw_response: &'a Value, key: &str) -> Option<&'a Value> {
-    raw_assistant_message(raw_response)?.get(key)
-}
-
-fn raw_assistant_extension(raw_response: &Value, keys: &[&str]) -> Option<Value> {
-    let message = raw_assistant_message(raw_response)?;
-    let extension = keys
-        .iter()
-        .filter_map(|key| {
-            message
-                .get(*key)
-                .cloned()
-                .map(|value| ((*key).to_owned(), value))
-        })
-        .collect::<serde_json::Map<_, _>>();
-    (!extension.is_empty()).then_some(Value::Object(extension))
 }
 
 /// Some compatible APIs encode provider failures as a successful HTTP
@@ -1359,11 +1354,13 @@ async fn tool_call_context(
                 call_id: call_id.clone(),
                 name: tool_name.clone(),
             },
-            content_ref: native_call_ref.clone(),
-            media_type: Some(MEDIA_TYPE_JSON.to_owned()),
+            content: engine::ContentRef {
+                content_ref: native_call_ref.clone(),
+                media_type: Some(MEDIA_TYPE_JSON.to_owned()),
+                provider_kind: Some(OPENAI_COMPLETIONS_TOOL_CALL_PROVIDER_KIND.to_owned()),
+            },
             preview: None,
-            provider_kind: Some(OPENAI_COMPLETIONS_TOOL_CALL_PROVIDER_KIND.to_owned()),
-            provider_item_id: Some(id.to_owned()),
+            provenance_ref: None,
             token_estimate: None,
         },
         ObservedToolCall {
@@ -1592,11 +1589,13 @@ mod tests {
             key: None,
             kind,
             source,
-            content_ref,
-            media_type: Some(MEDIA_TYPE_TEXT.to_owned()),
+            content: engine::ContentRef {
+                content_ref,
+                media_type: Some(MEDIA_TYPE_TEXT.to_owned()),
+                provider_kind: None,
+            },
             preview: None,
-            provider_kind: None,
-            provider_item_id: None,
+            provenance_ref: None,
             token_estimate: None,
             supersedes: None,
         }
@@ -1799,7 +1798,7 @@ mod tests {
             ContextEntrySource::ContextEdit,
             image_ref,
         );
-        image.media_type = Some("image/png".to_owned());
+        image.content.media_type = Some("image/png".to_owned());
         let mut image_request = request(vec![image]);
         image_request.model = model_for("deepseek", "deepseek-v4-flash");
         assert!(matches!(
@@ -1934,7 +1933,7 @@ mod tests {
             source.clone(),
             image_ref,
         );
-        image.media_type = Some("image/png".to_owned());
+        image.content.media_type = Some("image/png".to_owned());
         let mut pdf = entry(
             2,
             ContextEntryKind::Message {
@@ -1943,7 +1942,7 @@ mod tests {
             source,
             pdf_ref,
         );
-        pdf.media_type = Some("application/pdf".to_owned());
+        pdf.content.media_type = Some("application/pdf".to_owned());
         pdf.preview = Some("[document: brief.pdf]".to_owned());
 
         let value = serde_json::to_value(
@@ -1993,8 +1992,8 @@ mod tests {
             assistant_source.clone(),
             call_ref,
         );
-        call.media_type = Some(MEDIA_TYPE_JSON.to_owned());
-        call.provider_kind = Some(OPENAI_COMPLETIONS_TOOL_CALL_PROVIDER_KIND.to_owned());
+        call.content.media_type = Some(MEDIA_TYPE_JSON.to_owned());
+        call.content.provider_kind = Some(OPENAI_COMPLETIONS_TOOL_CALL_PROVIDER_KIND.to_owned());
         let entries = vec![
             entry(
                 1,
@@ -2052,14 +2051,119 @@ mod tests {
             },
             content_ref,
         );
-        native.media_type = Some(MEDIA_TYPE_JSON.to_owned());
-        native.provider_kind = Some("openai.responses.message".to_owned());
+        native.content.media_type = Some(MEDIA_TYPE_JSON.to_owned());
+        native.content.provider_kind = Some("openai.responses.message".to_owned());
 
         let error = materialize_create_request(&blobs, &request(vec![native]))
             .await
             .expect_err("foreign native context must fail");
 
         assert!(matches!(error, LlmAdapterError::RequestKindMismatch { .. }));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn assistant_content_projects_and_replays_exact_text_with_bounded_previews() {
+        let blobs = InMemoryBlobStore::new();
+        let long_text = "héllo 🦀\n".repeat(1000);
+        let authored_json =
+            r#"{"type":"message","content":[{"type":"output_text","text":"literal JSON"}]}"#;
+        for (message, expected, provider_kind) in [
+            (
+                json!({"content": long_text}),
+                long_text,
+                OPENAI_COMPLETIONS_MESSAGE_PROVIDER_KIND,
+            ),
+            (
+                json!({"content": authored_json}),
+                authored_json.to_owned(),
+                OPENAI_COMPLETIONS_MESSAGE_PROVIDER_KIND,
+            ),
+            (
+                json!({"content": "\"quoted answer\""}),
+                "\"quoted answer\"".to_owned(),
+                OPENAI_COMPLETIONS_MESSAGE_PROVIDER_KIND,
+            ),
+            (
+                json!({"content": [{"type":"text","text":"hello "},{"type":"text","text":"world"}]}),
+                "hello world".to_owned(),
+                OPENAI_COMPLETIONS_MESSAGE_PROVIDER_KIND,
+            ),
+            (
+                json!({"content": null, "refusal": "I cannot do that."}),
+                "I cannot do that.".to_owned(),
+                OPENAI_COMPLETIONS_MESSAGE_PROVIDER_KIND,
+            ),
+        ] {
+            let raw = json!({
+                "id": "chatcmpl_content",
+                "choices": [{"index": 0, "finish_reason": "stop", "message": {
+                    "role": "assistant", "content": message["content"], "refusal": message["refusal"]
+                }}]
+            });
+            let response = ApiResponse {
+                parsed: serde_json::from_value(raw.clone()).expect("response"),
+                raw_json: raw,
+                status: 200,
+                headers: HeaderSnapshot::default(),
+            };
+            let result =
+                result_from_response(&blobs, &generation_request(request(Vec::new())), &response)
+                    .await
+                    .expect("result");
+            assert_eq!(result.status, LlmGenerationStatus::Succeeded);
+            assert_eq!(result.context_entries.len(), 1);
+            let input = result.context_entries.into_iter().next().unwrap();
+            let content = input.content.clone();
+            assert_eq!(
+                read_json(&blobs, &content.content_ref).await.unwrap(),
+                response.raw_json["choices"][0]["message"]
+            );
+            assert_eq!(content.media_type.as_deref(), Some("application/json"));
+            assert_eq!(content.provider_kind.as_deref(), Some(provider_kind));
+            assert!(input.preview.as_ref().unwrap().chars().count() <= 256);
+            assert_eq!(
+                api_projection::project_content_text(&blobs, &content)
+                    .await
+                    .unwrap(),
+                Some(expected.clone())
+            );
+            let entry = ContextEntry {
+                entry_id: ContextEntryId::new(1),
+                key: None,
+                kind: input.kind,
+                source: ContextEntrySource::AssistantOutput {
+                    run_id: result.run_id,
+                    turn_id: result.turn_id,
+                },
+                content: input.content,
+                preview: input.preview,
+                provenance_ref: input.provenance_ref,
+                token_estimate: input.token_estimate,
+                supersedes: None,
+            };
+            let view = api_projection::CoreAgentProjector::new(&blobs)
+                .project_context_entry(&entry, None)
+                .await
+                .unwrap();
+            if expected.len() > 4096 {
+                assert!(view.text_truncated);
+                assert!(expected.starts_with(view.text.as_deref().unwrap().trim_end_matches('…')));
+            } else {
+                assert!(!view.text_truncated);
+                assert_eq!(view.text.as_deref(), Some(expected.as_str()));
+            }
+            let replay = materialize_create_request(&blobs, &request(vec![entry]))
+                .await
+                .unwrap();
+            assert_eq!(replay.messages.len(), 1);
+            assert_eq!(replay.messages[0].text(), expected);
+            if message["refusal"].is_string() {
+                assert_eq!(
+                    replay.messages[0].refusal.as_deref(),
+                    Some(expected.as_str())
+                );
+            }
+        }
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -2124,8 +2228,8 @@ mod tests {
         );
         assert_eq!(result.context_entries.len(), 2);
         assert_eq!(
-            result.context_entries[0].provider_kind.as_deref(),
-            Some(OPENAI_COMPLETIONS_REFUSAL_PROVIDER_KIND)
+            result.context_entries[0].content.provider_kind.as_deref(),
+            Some(OPENAI_COMPLETIONS_MESSAGE_PROVIDER_KIND)
         );
         assert!(
             result
@@ -2197,11 +2301,9 @@ mod tests {
                 key: None,
                 kind: input.kind,
                 source: source.clone(),
-                content_ref: input.content_ref,
-                media_type: input.media_type,
+                content: input.content,
                 preview: input.preview,
-                provider_kind: input.provider_kind,
-                provider_item_id: input.provider_item_id,
+                provenance_ref: input.provenance_ref,
                 token_estimate: input.token_estimate,
                 supersedes: None,
             })
@@ -2243,6 +2345,8 @@ mod tests {
                 "message": {
                     "role": "assistant",
                     "content": "A cited answer",
+                    "refusal": "A separate refusal is retained",
+                    "provider_metadata": {"trace": "retained"},
                     "annotations": [{"type":"url_citation","url_citation":{"url":"https://example.com"}}]
                 }
             }],
@@ -2267,10 +2371,47 @@ mod tests {
         let usage = result.facts.usage.expect("usage");
         assert_eq!(usage.cached_input_tokens, Some(6));
         assert_eq!(usage.cache_miss_input_tokens, Some(4));
-        assert_eq!(result.context_entries.len(), 2);
+        assert_eq!(result.context_entries.len(), 1);
+        let input = &result.context_entries[0];
         assert_eq!(
-            result.context_entries[1].provider_kind.as_deref(),
-            Some(OPENAI_COMPLETIONS_ANNOTATIONS_PROVIDER_KIND)
+            read_json(&blobs, &input.content.content_ref).await.unwrap(),
+            response.raw_json["choices"][0]["message"]
+        );
+        let mut entry = entry(
+            1,
+            input.kind.clone(),
+            ContextEntrySource::AssistantOutput {
+                run_id: result.run_id,
+                turn_id: result.turn_id,
+            },
+            input.content.content_ref.clone(),
+        );
+        entry.content = input.content.clone();
+        let replay = materialize_messages(
+            &blobs,
+            std::slice::from_ref(&entry),
+            CompletionDialect::OpenAi,
+        )
+        .await
+        .expect("replay");
+        assert_eq!(replay[0].text(), "A cited answer");
+        assert!(replay[0].annotations().is_none());
+        assert!(replay[0].extra.is_empty());
+        assert!(replay[0].refusal.is_none());
+        let view = api_projection::CoreAgentProjector::new(&blobs)
+            .project_event_kind(&engine::CoreAgentEvent::Context(
+                engine::ContextEvent::EntriesApplied {
+                    base_revision: 0,
+                    entries: vec![entry],
+                },
+            ))
+            .await
+            .unwrap();
+        let view = serde_json::to_value(view).unwrap();
+        assert_eq!(view["entries"][0]["citations"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            view["entries"][0]["citations"][0]["url"],
+            "https://example.com"
         );
     }
 
@@ -2322,6 +2463,13 @@ mod tests {
         );
         assert_eq!(
             result.context_entries[0].preview.as_deref(),
+            Some("The bicycle was")
+        );
+        assert_eq!(
+            api_projection::project_content_text(&blobs, &result.context_entries[0].content)
+                .await
+                .expect("project partial text")
+                .as_deref(),
             Some("The bicycle was")
         );
         let failure = blobs
@@ -2436,12 +2584,13 @@ mod tests {
             "user"
         );
 
+        let summary = "Retain the project facts. ".repeat(20);
         let raw = json!({
             "id": "chatcmpl_compact",
             "choices": [{
                 "index": 0,
                 "finish_reason": "stop",
-                "message": { "role": "assistant", "content": "Useful summary" }
+                "message": { "role": "assistant", "content": summary }
             }]
         });
         let response = ApiResponse {
@@ -2460,7 +2609,7 @@ mod tests {
 
         assert_eq!(result.status, ContextCompactionStatus::Succeeded);
         assert_eq!(
-            result.context_entries[0].provider_kind.as_deref(),
+            result.context_entries[0].content.provider_kind.as_deref(),
             Some(OPENAI_COMPLETIONS_COMPACTION_PROVIDER_KIND)
         );
         assert!(matches!(
@@ -2469,5 +2618,14 @@ mod tests {
                 role: ContextMessageRole::User
             }
         ));
+        let entry = &result.context_entries[0];
+        assert!(entry.preview.as_ref().unwrap().len() <= 256);
+        assert_eq!(
+            api_projection::project_content_text(&blobs, &entry.content)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some(summary.trim())
+        );
     }
 }

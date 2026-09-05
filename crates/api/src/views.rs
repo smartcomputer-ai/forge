@@ -110,6 +110,13 @@ pub enum SessionStatus {
 pub struct RunView {
     pub id: RunId,
     pub status: RunStatus,
+    /// Authoritative terminal output, retained independently of active context.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output: Option<crate::ContentRefView>,
+    /// Complete visible text derived from `output`; absent for non-text output
+    /// or runs without a terminal output. Native metadata stays in the blob.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_text: Option<String>,
     /// When the run left the queue and began executing, derived from the
     /// committed `runStarted` event. Absent while the run is queued.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -349,15 +356,12 @@ pub enum MediaKind {
 #[serde(rename_all = "camelCase")]
 pub struct ContextEntryInputView {
     pub kind: ContextEntryKindView,
-    pub content_ref: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub media_type: Option<String>,
+    pub content: crate::ContentRefView,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preview: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub provider_kind: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub provider_item_id: Option<String>,
+    /// Immutable artifact recording this entry's origin or construction.
+    pub provenance_ref: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token_estimate: Option<TokenEstimateView>,
 }
@@ -425,8 +429,8 @@ pub enum TokenEstimateQualityView {
 /// kind-tagged, ref-backed. Keys are a stable extension point — clients
 /// reconstruct derived surfaces (e.g. the prompted instruction set via the
 /// `prompt_instructions/` key prefix) by filtering on `key` and fetching
-/// bodies through `blobs/read`. `text` inlines blob content only for
-/// message and tool entries; every other kind is ref + preview.
+/// original bytes through `blobs/read`. `text` contains complete message and
+/// visible reasoning text; tool and catalog bodies use bounded text previews.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ContextEntryView {
@@ -434,27 +438,27 @@ pub struct ContextEntryView {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key: Option<String>,
     pub kind: ContextEntryKindView,
-    pub content_ref: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub media_type: Option<String>,
+    pub content: crate::ContentRefView,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub preview: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub provider_kind: Option<String>,
+    /// Immutable artifact recording this entry's origin or construction.
+    pub provenance_ref: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Native item identity derived from the payload, when present.
     pub provider_item_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token_estimate: Option<TokenEstimateView>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
-    /// True when `text` is a bounded prefix of the blob body; fetch
-    /// `contentRef` for the complete content.
+    /// True when a tool or catalog body's `text` is a bounded prefix. Fetch
+    /// its original content through `blobs/read`. Messages and reasoning are full.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub text_truncated: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display: Option<ProviderContextDisplayView>,
-    /// Sources this assistant message cites, derived from the provider-native
-    /// cited entry that follows it. Empty for every other entry kind.
+    /// Sources this assistant message cites, derived from its own native
+    /// payload. Empty for every other entry kind.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub citations: Vec<CitationView>,
     /// Where the entry came from: run input, a steering batch, model output,

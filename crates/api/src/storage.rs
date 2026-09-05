@@ -35,6 +35,16 @@ pub struct BlobReadParams {
     pub blob_ref: String,
 }
 
+/// Immutable content and its encoding. A reference can name plain text,
+/// provider-native JSON, or media; it does not imply a UTF-8 text payload.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ContentRefView {
+    pub content_ref: String,
+    pub media_type: Option<String>,
+    pub provider_kind: Option<String>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct BlobReadResponse {

@@ -1289,6 +1289,34 @@ async fn run_builtin_tool_live_client(
         output.to_lowercase().contains("temporal tool ok"),
         "expected completion marker: {output}"
     );
+    let events = api
+        .read_session_events(SessionEventsReadParams {
+            session_id: session_id.as_str().to_owned(),
+            after: None,
+            limit: Some(500),
+            wait_ms: Some(0),
+        })
+        .await?
+        .result
+        .events;
+    let content = events
+        .iter()
+        .find_map(|event| match &event.kind {
+            api::SessionEventKindView::RunCompleted { run_id, output } if run_id == &run.id => {
+                output.clone()
+            }
+            _ => None,
+        })
+        .expect("completed run output descriptor");
+    if model.api_kind == engine::ProviderApiKind::OpenAiCompletions {
+        assert_eq!(content.media_type.as_deref(), Some("application/json"));
+        assert_eq!(
+            content.provider_kind.as_deref(),
+            Some("openai.completions.message")
+        );
+    }
+    assert_eq!(run.output.as_ref(), Some(&content));
+    assert_eq!(run.output_text.as_deref(), Some(output));
     assert!(
         run.entries.iter().any(|entry| matches!(
             &entry.kind,

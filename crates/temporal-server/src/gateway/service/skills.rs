@@ -36,7 +36,7 @@ impl GatewayAgentApi {
                 if key.as_str() == SKILL_CATALOG_CONTEXT_KEY
                     && matches!(entry.kind, ContextEntryKind::SkillCatalog) =>
             {
-                Some(entry.content_ref.clone())
+                Some(entry.content.content_ref.clone())
             }
             CoreAgentCommand::RemoveContext { key, .. }
                 if key.as_str() == SKILL_CATALOG_CONTEXT_KEY =>
@@ -284,11 +284,9 @@ pub(super) fn active_catalog_entry(catalog_ref: BlobRef) -> ContextEntry {
         source: engine::ContextEntrySource::Runtime {
             label: "skills.catalog.vfs".to_owned(),
         },
-        content_ref: input.content_ref,
-        media_type: input.media_type,
+        content: input.content,
         preview: input.preview,
-        provider_kind: input.provider_kind,
-        provider_item_id: input.provider_item_id,
+        provenance_ref: input.provenance_ref,
         token_estimate: input.token_estimate,
         supersedes: None,
     }
@@ -307,7 +305,7 @@ pub(super) fn active_skill_catalog_ref(state: &engine::CoreAgentState) -> Option
                 .is_some_and(|key| key.as_str() == SKILL_CATALOG_CONTEXT_KEY)
                 && matches!(entry.kind, ContextEntryKind::SkillCatalog)
         })
-        .map(|entry| entry.content_ref.clone())
+        .map(|entry| entry.content.content_ref.clone())
 }
 
 pub(super) fn active_skill_context_entries(state: &engine::CoreAgentState) -> Vec<&ContextEntry> {
@@ -361,11 +359,13 @@ pub(super) fn skill_activation_context_input(
             catalog_id,
             skill_id,
         },
-        content_ref: context_ref,
-        media_type: Some("text/markdown".to_owned()),
+        content: engine::ContentRef {
+            content_ref: context_ref,
+            media_type: Some("text/markdown".to_owned()),
+            provider_kind: Some(skill_activation_provider_kind(scope).to_owned()),
+        },
         preview: skill.map(|skill| format!("skill activated: {}", skill.name)),
-        provider_kind: Some(skill_activation_provider_kind(scope).to_owned()),
-        provider_item_id: Some(catalog_ref.as_str().to_owned()),
+        provenance_ref: Some(catalog_ref),
         token_estimate: None,
     }
 }
@@ -429,7 +429,7 @@ pub(super) fn skill_active_response(
 }
 
 pub(super) fn api_skill_activation_scope(entry: &ContextEntry) -> ApiSkillActivationScope {
-    match entry.provider_kind.as_deref() {
+    match entry.content.provider_kind.as_deref() {
         Some(SKILL_ACTIVATION_PROVIDER_KIND_RUN) => ApiSkillActivationScope::Run,
         _ => ApiSkillActivationScope::Session,
     }
@@ -453,20 +453,17 @@ pub(super) fn skill_activation_view(
             .iter()
             .find(|skill| &skill.skill_id == skill_id)
     });
-    let catalog_ref = activation
-        .provider_item_id
-        .as_deref()
-        .or_else(|| active_catalog_ref.map(BlobRef::as_str))?;
+    let catalog_ref = activation.provenance_ref.as_ref().or(active_catalog_ref)?;
     Some(SkillActivationView {
         catalog_id: catalog_id.clone(),
         skill_id: skill_id.as_str().to_owned(),
         name: metadata.map(|skill| skill.name.clone()),
         description: metadata.map(|skill| skill.description.clone()),
         short_description: metadata.and_then(|skill| skill.short_description.clone()),
-        catalog_ref: catalog_ref.to_owned(),
+        catalog_ref: catalog_ref.as_str().to_owned(),
         scope: api_skill_activation_scope(activation),
         source: ApiSkillActivationSource::DirectContext {
-            context_ref: activation.content_ref.as_str().to_owned(),
+            context_ref: activation.content.content_ref.as_str().to_owned(),
         },
     })
 }

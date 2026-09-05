@@ -149,7 +149,25 @@ async fn run_audio_preprocess_live_client(
         .find(|text| text.contains(TRANSCRIPT_TEXT))
         .copied()
         .expect("run items should include transcribed audio text");
-    assert!(transcript.contains("[audio transcript: voice-note.ogg]"));
+    assert_eq!(transcript, TRANSCRIPT_TEXT);
+    let transcript_entry = run
+        .entries
+        .iter()
+        .find(|entry| {
+            entry.content.provider_kind.as_deref()
+                == Some(llm_clients::content::AUDIO_TRANSCRIPT_PROVIDER_KIND)
+        })
+        .expect("structured transcript");
+    assert_eq!(
+        transcript_entry.content.media_type.as_deref(),
+        Some("application/json")
+    );
+    assert_eq!(
+        transcript_entry.provenance_ref.as_deref(),
+        Some(audio.result.blobs[0].blob_ref.as_str())
+    );
+    assert_eq!(transcript_entry.text.as_deref(), Some(TRANSCRIPT_TEXT));
+    assert!(!transcript_entry.text_truncated);
     assert!(
         user_messages
             .iter()
@@ -244,7 +262,25 @@ async fn run_transcodable_audio_preprocess_live_client(
         .find(|text| text.contains(TRANSCRIPT_TEXT))
         .copied()
         .expect("run items should include transcribed audio text");
-    assert!(transcript.contains("[audio transcript: voice-note.aac]"));
+    assert_eq!(transcript, TRANSCRIPT_TEXT);
+    let transcript_entry = run
+        .entries
+        .iter()
+        .find(|entry| {
+            entry.content.provider_kind.as_deref()
+                == Some(llm_clients::content::AUDIO_TRANSCRIPT_PROVIDER_KIND)
+        })
+        .expect("structured transcript");
+    assert_eq!(
+        transcript_entry.content.media_type.as_deref(),
+        Some("application/json")
+    );
+    assert_eq!(
+        transcript_entry.provenance_ref.as_deref(),
+        Some(audio.result.blobs[0].blob_ref.as_str())
+    );
+    assert_eq!(transcript_entry.text.as_deref(), Some(TRANSCRIPT_TEXT));
+    assert!(!transcript_entry.text_truncated);
     assert!(
         user_messages
             .iter()

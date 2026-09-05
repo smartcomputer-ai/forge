@@ -144,8 +144,11 @@ async fn assert_tool_loop(builtin: bool) {
     };
     assert_eq!(calls[0].tool_id.as_ref().map(ToolName::as_str), Some(id));
     assert_eq!(calls[0].tool_name.as_str(), name);
-    let output_ref = completed.output_ref.as_ref().expect("output ref");
-    let output = blobs.read_text(output_ref).await.expect("read output");
+    let content = completed.output.as_ref().expect("output content");
+    let output = api_projection::project_content_text(blobs.as_ref(), content)
+        .await
+        .expect("project output")
+        .expect("text output");
     assert!(output.contains("Fake agent completed run"));
 }
 
@@ -177,11 +180,13 @@ fn user_input(content_ref: BlobRef) -> Vec<ContextEntryInput> {
         kind: ContextEntryKind::Message {
             role: ContextMessageRole::User,
         },
-        content_ref,
-        media_type: None,
+        content: engine::ContentRef {
+            content_ref,
+            media_type: None,
+            provider_kind: None,
+        },
         preview: None,
-        provider_kind: None,
-        provider_item_id: None,
+        provenance_ref: None,
         token_estimate: None,
     }]
 }

@@ -199,11 +199,13 @@ async fn auto_reject_pending_approvals(
                         approval_request_id: provider_request_id.clone(),
                         approve: false,
                     },
-                    content_ref,
-                    media_type: Some("application/json".to_owned()),
+                    content: engine::ContentRef {
+                        content_ref,
+                        media_type: Some("application/json".to_owned()),
+                        provider_kind: Some("openai.responses.mcp_approval_response".to_owned()),
+                    },
                     preview: Some("MCP tool call auto-rejected in unattended session".to_owned()),
-                    provider_kind: Some("openai.responses.mcp_approval_response".to_owned()),
-                    provider_item_id: None,
+                    provenance_ref: None,
                     token_estimate: None,
                 })
             }
@@ -473,11 +475,13 @@ fn workflow_user_message_input(content_ref: BlobRef, preview: Option<String>) ->
         kind: ContextEntryKind::Message {
             role: ContextMessageRole::User,
         },
-        content_ref,
-        media_type: None,
+        content: engine::ContentRef {
+            content_ref,
+            media_type: None,
+            provider_kind: None,
+        },
         preview,
-        provider_kind: None,
-        provider_item_id: None,
+        provenance_ref: None,
         token_estimate: None,
     }
 }

@@ -14,6 +14,26 @@ const SHA256_REF_LEN: usize = SHA256_PREFIX.len() + SHA256_HEX_LEN;
 #[cfg_attr(feature = "contract", derive(schemars::JsonSchema))]
 pub struct BlobRef(String);
 
+/// Durable content identity and encoding. The payload stays in CAS; consumers
+/// project it outside the engine rather than assuming every output is text.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "contract", derive(schemars::JsonSchema))]
+pub struct ContentRef {
+    pub content_ref: BlobRef,
+    pub media_type: Option<String>,
+    pub provider_kind: Option<String>,
+}
+
+impl ContentRef {
+    pub fn text(content_ref: BlobRef) -> Self {
+        Self {
+            content_ref,
+            media_type: Some("text/plain".to_owned()),
+            provider_kind: None,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Error)]
 pub enum BlobRefError {
     #[error("blob ref must use sha256:<64 lowercase hex> format: {value}")]

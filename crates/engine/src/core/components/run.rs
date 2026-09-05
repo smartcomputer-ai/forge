@@ -29,7 +29,7 @@ pub enum Event {
     },
     Completed {
         run_id: RunId,
-        output_ref: Option<BlobRef>,
+        output: Option<crate::ContentRef>,
     },
     Failed {
         run_id: RunId,
@@ -106,7 +106,7 @@ pub struct ActiveRun {
     pub parked_tool_batch: Option<ParkedToolBatch>,
     pub tool_batches: BTreeMap<ToolBatchId, ActiveToolBatch>,
     pub completed_tool_batches: BTreeMap<ToolBatchId, CompletedToolBatch>,
-    pub output_ref: Option<BlobRef>,
+    pub output: Option<crate::ContentRef>,
     pub failure: Option<RunFailure>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub notify_on_terminal: Vec<RunTerminalNotifyIntent>,
@@ -153,7 +153,7 @@ pub struct RunRecord {
     pub completed_at_ms: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub usage: Option<LlmUsage>,
-    pub output_ref: Option<BlobRef>,
+    pub output: Option<crate::ContentRef>,
     pub failure: Option<RunFailure>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub notify_on_terminal: Vec<RunTerminalNotifyIntent>,
@@ -413,10 +413,10 @@ fn terminal_run_proposal(
         {
             None
         }
-        (TurnStatus::Completed, Some(TurnOutcome::FinalOutput { output_ref })) => {
+        (TurnStatus::Completed, Some(TurnOutcome::FinalOutput { output })) => {
             Some(CoreAgentEvent::Run(Event::Completed {
                 run_id: active_run.run_id,
-                output_ref: output_ref.clone(),
+                output: output.clone(),
             }))
         }
         (TurnStatus::Failed, Some(TurnOutcome::Failed { failure_ref })) => {
@@ -619,7 +619,7 @@ pub(crate) fn apply_event(
                 parked_tool_batch: None,
                 tool_batches: BTreeMap::new(),
                 completed_tool_batches: BTreeMap::new(),
-                output_ref: None,
+                output: None,
                 failure: None,
             });
             Ok(())
@@ -667,11 +667,11 @@ pub(crate) fn apply_event(
             active_run.status = RunStatus::Cancelling;
             Ok(())
         }
-        Event::Completed { run_id, output_ref } => finish_active_run(
+        Event::Completed { run_id, output } => finish_active_run(
             state,
             *run_id,
             RunStatus::Completed,
-            output_ref.clone(),
+            output.clone(),
             None,
             seq,
             observed_at_ms,
@@ -760,7 +760,7 @@ pub(crate) fn apply_event(
                 started_at_ms: None,
                 completed_at_ms: observed_at_ms,
                 usage: None,
-                output_ref: None,
+                output: None,
                 failure: None,
                 notify_on_terminal: queued.notify_on_terminal,
             });
@@ -919,7 +919,7 @@ fn finish_active_run(
     state: &mut CoreAgentState,
     run_id: RunId,
     status: RunStatus,
-    output_ref: Option<BlobRef>,
+    output: Option<crate::ContentRef>,
     failure: Option<RunFailure>,
     terminal_seq: EventSeq,
     completed_at_ms: u64,
@@ -963,7 +963,7 @@ fn finish_active_run(
         started_at_ms: active_run.started_at_ms,
         completed_at_ms,
         usage: active_run.usage,
-        output_ref,
+        output,
         failure,
         notify_on_terminal: active_run.notify_on_terminal,
     });

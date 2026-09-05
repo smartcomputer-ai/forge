@@ -310,6 +310,30 @@
         }
       ]
     },
+    "ContentRef": {
+      "description": "Durable content identity and encoding. The payload stays in CAS; consumers\nproject it outside the engine rather than assuming every output is text.",
+      "properties": {
+        "content_ref": {
+          "type": "string"
+        },
+        "media_type": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "provider_kind": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "content_ref"
+      ],
+      "type": "object"
+    },
     "ConversationRef": {
       "description": "The conversation a message belongs to: one account's chat, optionally\na thread inside it.",
       "properties": {
@@ -401,10 +425,14 @@
               "const": "run_terminal",
               "type": "string"
             },
-            "output_ref": {
-              "type": [
-                "string",
-                "null"
+            "output": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/ContentRef"
+                },
+                {
+                  "type": "null"
+                }
               ]
             },
             "run_id": {

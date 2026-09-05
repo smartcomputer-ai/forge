@@ -65,11 +65,13 @@ fn request_run_with_audio_input_needs_preprocessing() {
                 kind: ContextEntryKind::Message {
                     role: ContextMessageRole::User,
                 },
-                content_ref: engine::BlobRef::from_bytes(b"audio"),
-                media_type: Some("audio/ogg".to_owned()),
+                content: engine::ContentRef {
+                    content_ref: engine::BlobRef::from_bytes(b"audio"),
+                    media_type: Some("audio/ogg".to_owned()),
+                    provider_kind: None,
+                },
                 preview: Some("[audio]".to_owned()),
-                provider_kind: None,
-                provider_item_id: None,
+                provenance_ref: None,
                 token_estimate: None,
             }],
         },
@@ -255,7 +257,7 @@ fn close_on_terminal_requires_idle_open_session_with_completed_run() {
         started_at_ms: Some(1),
         completed_at_ms: 1,
         usage: None,
-        output_ref: None,
+        output: None,
         failure: None,
     });
     assert!(drive::should_close_on_terminal(&args, &state));
@@ -396,11 +398,13 @@ fn user_input(content_ref: engine::BlobRef) -> Vec<ContextEntryInput> {
         kind: ContextEntryKind::Message {
             role: ContextMessageRole::User,
         },
-        content_ref,
-        media_type: None,
+        content: engine::ContentRef {
+            content_ref,
+            media_type: None,
+            provider_kind: None,
+        },
         preview: None,
-        provider_kind: None,
-        provider_item_id: None,
+        provenance_ref: None,
         token_estimate: None,
     }]
 }
@@ -590,7 +594,7 @@ fn workflow_with_parked_tool_batch(spec: engine::AwaitSpec) -> AgentSessionWorkf
         }),
         tool_batches,
         completed_tool_batches: std::collections::BTreeMap::new(),
-        output_ref: None,
+        output: None,
         failure: None,
         notify_on_terminal: Vec::new(),
     });
@@ -652,7 +656,7 @@ fn cancelling_watchdog_wake_is_since_plus_timeout() {
 }
 
 #[test]
-fn run_terminal_emission_queues_resolve_promise_admission() {
+fn run_terminal_notifications_cannot_drop_output_encoding_into_a_session_promise() {
     let mut workflow = AgentSessionWorkflow::default();
     workflow.queue_emission(
         test_universe(),
@@ -663,42 +667,17 @@ fn run_terminal_emission_queues_resolve_promise_admission() {
             "promise_1".to_owned(),
             RunId::new(1),
             RunStatus::Completed,
-            Some(engine::BlobRef::from_bytes(b"result")),
+            Some(engine::ContentRef {
+                content_ref: engine::BlobRef::from_bytes(b"native output"),
+                media_type: Some("application/json".to_owned()),
+                provider_kind: Some("provider.message".to_owned()),
+            }),
             None,
         ),
     );
-    workflow.queue_emission(
-        test_universe(),
-        engine::EmissionEnvelope::run_terminal(
-            test_universe(),
-            SessionId::new("child_b"),
-            EventSeq::new(9),
-            "promise_2".to_owned(),
-            RunId::new(2),
-            RunStatus::Cancelled,
-            None,
-            None,
-        ),
-    );
-
-    assert_eq!(workflow.pending_admissions.len(), 2);
-    match &workflow.pending_admissions[0].command {
-        CoreAgentCommand::ResolvePromise {
-            promise_id,
-            resolution: engine::PromiseResolution::Resolved { payload_ref },
-        } => {
-            assert_eq!(promise_id.as_str(), "promise_1");
-            assert!(payload_ref.is_some());
-        }
-        other => panic!("expected resolved promise admission, got {other:?}"),
-    }
-    match &workflow.pending_admissions[1].command {
-        CoreAgentCommand::ResolvePromise {
-            promise_id,
-            resolution: engine::PromiseResolution::Failed { .. },
-        } => assert_eq!(promise_id.as_str(), "promise_2"),
-        other => panic!("expected failed promise admission, got {other:?}"),
-    }
+    assert!(workflow.pending_admissions.is_empty());
+    assert!(workflow.pending_source_resolutions.is_empty());
+    assert!(workflow.last_error.is_some());
 }
 
 #[test]
@@ -885,7 +864,7 @@ fn bound_dispatch_controls_push_delivery_independently_of_completion() {
         started_at_ms: Some(1),
         completed_at_ms: 1,
         usage: None,
-        output_ref: None,
+        output: None,
         failure: None,
         notify_on_terminal: Vec::new(),
     });
@@ -897,7 +876,7 @@ fn bound_dispatch_controls_push_delivery_independently_of_completion() {
         joins: CoreAgentJoins::default(),
         event: CoreAgentEvent::Run(RunEvent::Completed {
             run_id: RunId::new(1),
-            output_ref: None,
+            output: None,
         }),
     };
     workflow
@@ -1128,7 +1107,7 @@ fn terminal_run_with_notify_intent_queues_emission() {
         session_id: Some(SessionId::new("child_session")),
         ..Default::default()
     };
-    let output_ref = engine::BlobRef::from_bytes(b"done");
+    let output_ref = engine::ContentRef::text(engine::BlobRef::from_bytes(b"done"));
     workflow.core_state.runs.completed.push(RunRecord {
         run_id: RunId::new(3),
         status: RunStatus::Completed,
@@ -1141,7 +1120,7 @@ fn terminal_run_with_notify_intent_queues_emission() {
         started_at_ms: Some(1),
         completed_at_ms: 1,
         usage: None,
-        output_ref: Some(output_ref.clone()),
+        output: Some(output_ref.clone()),
         failure: None,
         notify_on_terminal: vec![RunTerminalNotifyIntent {
             holder_workflow_id: "universe/parent_session".to_owned(),
@@ -1156,7 +1135,7 @@ fn terminal_run_with_notify_intent_queues_emission() {
         joins: CoreAgentJoins::default(),
         event: CoreAgentEvent::Run(RunEvent::Completed {
             run_id: RunId::new(3),
-            output_ref: Some(output_ref.clone()),
+            output: Some(output_ref.clone()),
         }),
     };
 
@@ -1183,7 +1162,7 @@ fn terminal_run_with_notify_intent_queues_emission() {
             token,
             run_id,
             status: RunStatus::Completed,
-            output_ref: Some(actual),
+            output: Some(actual),
             failure_message_ref: None,
         } if token == "promise_parent"
             && *run_id == RunId::new(3)

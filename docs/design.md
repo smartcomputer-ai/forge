@@ -77,6 +77,14 @@ flowchart TD
 ```
 Lightspeed solves this by offloading all data that is not directly needed by the workflow logic to a content addressed storage (CAS) system. The structures that are passed between workflow and activities are extremely thin, keeping workflow state and log size small and efficient. So, instead of passing, say, the entire user input message to the LLM activity, we first store it in the CAS and then only pass a reference to the blob, and vice versa with model outputs.
 
+Context inputs, committed entries, and terminal outputs share one `ContentRef`:
+`content_ref`, `media_type`, and `provider_kind` describe the immutable payload
+and its decoding format. Context adds semantic kind, insertion source, preview,
+and accounting. Its optional `provenance_ref` names an immutable origin or
+construction artifact: source audio, a prompt assembly report, or a skill
+catalog snapshot. Native provider IDs stay in the native payload and can be
+projected for clients; they are not duplicated in reducer state.
+
 Blobs are immutable and shared within a universe, so nothing deletes them directly. Instead the store derives reachability from rows it already maintains: every session event row exposes the refs its entry embeds as a generated column, foreign keys protect checkpoints and VFS snapshots, bot events name their documents, and writers of nested formats (a VFS manifest and its files, a tool output and its attached assets, a catalog and its documents) record parent-to-child edges. A blob nothing reaches is collected by a background sweeper once it has gone untouched for a grace period; every put of existing content refreshes that touch, which closes the race between content-addressed deduplication and deletion without any coordination. Deleting a session therefore frees exactly the blobs only it used, on the next sweep, and debug material nothing ever referenced disappears on its own. Fingerprints that are hashes but not blobs carry a distinguishing prefix so they never read as refs.
 
 ## Hosting inside a Workflow Runtime (e.g. Temporal)
@@ -168,12 +176,30 @@ heads before runs, while environment files never participate in automatic
 prompt or skill discovery. Web fetch/search/extract tools remain independent;
 toolset resolution selects provider-hosted Anthropic search/fetch, OpenAI
 Responses hosted search, or the guarded local fetch implementation on other
-routes. A cited assistant message is followed by one provider-opaque entry
-holding the provider's exact output; the originating adapter replays that in
-place of the neutral text, and the API projection derives the same
-URL/title/cited-text citations from it onto the message for OpenAI and
-Anthropic. A run of consecutive Anthropic text blocks is one message, so
-citations never fragment an answer.
+routes. Anthropic Messages and OpenAI Responses assistant messages store the
+original provider payload in CAS: consecutive Anthropic text blocks form one
+message, and an OpenAI Responses message retains its exact item. API projections
+derive display text and citations from that same entry, while adapters replay it
+unchanged. There are no adjacent raw/text
+pairs. Run completion retains the message's content reference, media type, and
+provider kind, independently of active context. The engine never interprets the
+payload; API views and subagent results use the shared text projection at the
+consuming boundary. Message and visible reasoning text are returned in full.
+Detailed run reads expose the durable output descriptor and its full projected
+text, even after context compaction or removal. Responses containing full
+messages are exempt from the generic gateway response budget; paginated lists retain their
+limits. Tool and catalog previews stay bounded, with original bytes available
+through `blobs/read`. Output descriptors can identify media as well as text.
+Chat Completions retains assistant content, refusals, and annotations together
+in one JSON payload. Reasoning extensions and tool calls keep their own semantic
+entries and fold into the same assistant turn on replay. Output annotations are
+projected as citations and omitted from requests. Authored text, including JSON
+answers, is extracted exactly; compaction summaries and safe partial outputs
+remain plain text. Reasoning display derives only exposed text from native
+payloads, with full visible text in API views, leaving signatures and
+opaque continuation data intact. Audio preprocessing stores transcript text and
+filename as JSON, with source audio as provenance. Adapters render the transcript
+label when building model messages; activation and display read the text field.
 When a task genuinely needs a machine, the agent borrows one; dedicated VMs
 connect through a bridge daemon, and durable jobs run long tasks on that
 borrowed compute while the harness stays outside. Machines Lightspeed cannot

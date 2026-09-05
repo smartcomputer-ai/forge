@@ -566,11 +566,13 @@ impl ToolInvocationResult {
                 call_id: call_id.clone(),
                 is_error: status.is_error(),
             },
-            content_ref,
-            media_type: None,
+            content: crate::ContentRef {
+                content_ref,
+                media_type: None,
+                provider_kind: None,
+            },
             preview: None,
-            provider_kind: None,
-            provider_item_id: None,
+            provenance_ref: None,
             token_estimate: None,
         }
     }

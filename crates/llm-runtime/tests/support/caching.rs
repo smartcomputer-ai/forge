@@ -1,16 +1,26 @@
-// Shared by the caching live suites: a prompt long enough to clear every
-// provider's minimum cacheable prefix (Anthropic 1024–2048 tokens, OpenAI
-// 1024) so cache reads are expected, not optional.
+// Shared by the caching live suites: a reference long enough to clear the
+// tested models' minimum cacheable prefix so cache reads are required.
 
-/// About 3k tokens of deterministic, model-neutral instructions.
+/// A deterministic operations reference shared by successive requests.
 #[allow(dead_code)]
 pub fn long_instructions() -> String {
     let mut text = String::from(
-        "You are a meticulous operations assistant. Follow every guideline below exactly and keep answers short.\n\n",
+        "You are a warehouse operations assistant. Use the stock table for inventory questions and available tools for current information such as weather. Give brief, factual answers.\n\n# Warehouse stock table\n\nBay | Stock item | Units on hand | Reorder point | Inspection\n--- | --- | --- | --- | ---\n",
     );
+    let items = [
+        "reusable shipping containers",
+        "cardboard cartons",
+        "paper mailers",
+        "cotton tote bags",
+        "wooden pallets",
+        "packing tape rolls",
+    ];
     for index in 1..=240 {
+        let item = items[(index - 1) % items.len()];
+        let quantity = 24 + (index % 16) * 3;
+        let reorder_point = 8 + index % 8;
         text.push_str(&format!(
-            "Guideline {index}: when a request mentions item {index}, confirm the item number, note that guideline {index} applies, and never invent details that were not provided.\n"
+            "{index} | {item} | {quantity} | {reorder_point} | Checked and ready for dispatch; routine maintenance complete.\n"
         ));
     }
     text

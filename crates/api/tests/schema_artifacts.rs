@@ -72,6 +72,8 @@ fn serialized_fixtures_validate_against_exported_schemas() {
     assert_validates(&bundle, "RunStartParams", &value);
 
     let run = RunView {
+        output: None,
+        output_text: None,
         id: "run_1".to_owned(),
         status: RunStatus::Completed,
         started_at_ms: Some(10),

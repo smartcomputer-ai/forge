@@ -240,11 +240,13 @@ fn projection_context_input(
 ) -> ContextEntryInput {
     ContextEntryInput {
         kind,
-        content_ref,
-        media_type: Some(ENVIRONMENT_PROJECTION_MEDIA_TYPE.to_owned()),
+        content: engine::ContentRef {
+            content_ref,
+            media_type: Some(ENVIRONMENT_PROJECTION_MEDIA_TYPE.to_owned()),
+            provider_kind: None,
+        },
         preview: Some(preview.to_owned()),
-        provider_kind: None,
-        provider_item_id: None,
+        provenance_ref: None,
         token_estimate: None,
     }
 }
@@ -266,7 +268,7 @@ fn current_context_ref(
                 .is_some_and(|entry_key| entry_key.as_str() == key)
                 && entry.kind == kind
         })
-        .map(|entry| entry.content_ref.clone())
+        .map(|entry| entry.content.content_ref.clone())
 }
 
 fn current_key_ref(state: &CoreAgentState, key: &'static str) -> Option<BlobRef> {
@@ -281,7 +283,7 @@ fn current_key_ref(state: &CoreAgentState, key: &'static str) -> Option<BlobRef>
                 .as_ref()
                 .is_some_and(|entry_key| entry_key.as_str() == key)
         })
-        .map(|entry| entry.content_ref.clone())
+        .map(|entry| entry.content.content_ref.clone())
 }
 
 fn encode_json<T: Serialize>(value: &T) -> Result<Vec<u8>, EnvironmentProjectionError> {
@@ -328,11 +330,13 @@ mod tests {
             source: engine::ContextEntrySource::Runtime {
                 label: "environment.projection".to_owned(),
             },
-            content_ref: first.snapshot_ref.clone(),
-            media_type: Some(ENVIRONMENT_PROJECTION_MEDIA_TYPE.to_owned()),
+            content: engine::ContentRef {
+                content_ref: first.snapshot_ref.clone(),
+                media_type: Some(ENVIRONMENT_PROJECTION_MEDIA_TYPE.to_owned()),
+                provider_kind: None,
+            },
             preview: Some("VFS catalog".to_owned()),
-            provider_kind: None,
-            provider_item_id: None,
+            provenance_ref: None,
             token_estimate: None,
             supersedes: None,
         }];

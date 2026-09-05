@@ -10,7 +10,6 @@ import { NavLink, useLocation, useNavigate, useParams, useSearchParams } from "r
 import { Archive, ArrowLeft, ChevronDown, ListChecks, ListFilter, LoaderCircle, Plus, ShieldCheck, SlidersHorizontal, Trash2, X } from "lucide-react";
 import {
   api,
-  type BlobContent,
   type Environment,
   type InlineProfile,
   type ProfileDocument,
@@ -1365,14 +1364,11 @@ export function SessionDetail({
 
   const entries = tail.transcript.entries;
   const loadFullText = useCallback(
-    async (contentRef: string) => {
-      const blob = await api<BlobContent>(
-        "GET",
-        `/api/v1/universes/${universeId}/blobs/${encodeURIComponent(contentRef)}`,
+    async (blobRef: string) => {
+      const result = await api<{ bytesBase64: string }>(
+        "GET", `/api/v1/universes/${universeId}/blobs/${encodeURIComponent(blobRef)}`,
       );
-      const binary = atob(blob.bytesBase64);
-      const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
-      return new TextDecoder().decode(bytes);
+      return new TextDecoder().decode(Uint8Array.from(atob(result.bytesBase64), (char) => char.charCodeAt(0)));
     },
     [universeId],
   );
