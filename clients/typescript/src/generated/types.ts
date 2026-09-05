@@ -9,6 +9,10 @@
  */
 export type ToolKindView =
   | {
+      settings: unknown;
+      type: "builtin";
+    }
+  | {
       descriptionRef?: string | null;
       inputSchemaRef: string;
       outputSchemaRef?: string | null;
@@ -2296,8 +2300,7 @@ export interface WorkflowToolDefinitionInput {
 export interface WorkflowToolSpecInput {
   kind: WorkflowToolKindInput;
   /**
-   * Canonical effective-toolset name, also sent to the model and used for
-   * runtime dispatch.
+   * Function name exposed to the model and used as its registry identity.
    */
   name: string;
   parallelism?: ToolParallelismView & string;
@@ -2436,6 +2439,10 @@ export interface ToolCallEventView {
   argumentsRef: string;
   callId: string;
   display?: ToolCallDisplayView | null;
+  /**
+   * Admitted registry identity, absent when the model used an unavailable name.
+   */
+  toolId?: string | null;
   toolName: string;
 }
 /**
@@ -2514,6 +2521,10 @@ export interface ToolCallView {
    */
   startedAtMs?: number | null;
   status: ToolItemStatus;
+  /**
+   * Admitted registry identity, absent when the model used an unavailable name.
+   */
+  toolId?: string | null;
   toolName: string;
 }
 /**

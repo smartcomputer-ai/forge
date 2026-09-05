@@ -2,7 +2,7 @@
 
 **Status**
 
-- Implementation in progress 2026-09-04.
+- Implemented and verified offline and live 2026-09-05.
 - Simplification is the goal: stable internal identity, one resolver, matching
   execution, and preserved provider transcript. No versioned tool registry.
 - Greenfield refactor. Engine records, activity inputs, API projections, and
@@ -40,7 +40,7 @@ Session feature grants and trusted tool declarations
   -> tool activity: execute using the selected binding and render its result
 ```
 
-## Current Approach
+## Previous Approach
 
 `crates/tools/src/builtin/mod.rs` already separates logical operations from
 presentations. `BuiltinTool` captures domain, operation, surface, variant, and
@@ -68,7 +68,7 @@ the matching executable adapter. This refactor makes that relationship explicit.
 ## Decision 1: Registry Identity Is Internal
 
 Keep one admitted, revisioned registry. Key it by an internal tool identity,
-with separate types for internal identity and provider-visible name. A built-in
+with separate fields for internal identity and provider-visible name. A built-in
 registration identifies an operation; it does not store `Bash`, `exec_command`,
 or a provider-specific schema as its identity.
 
@@ -127,7 +127,11 @@ that execution happens inline in a tool activity.
 Apply this source distinction to all built-in definition producers, including
 code-owned workflow-tool definitions, rather than removing schema refs from
 filesystem tools while leaving the same detour elsewhere. External workflow
-declarations can continue supplying immutable schema refs.
+declarations supply immutable schema refs. The public `WorkflowToolKindInput`
+accepts only authored functions: system subagent and environment-job bindings
+are constructed directly inside the runtime, so their built-in definitions do
+not need a public workflow-input variant. Read-only tool inventory still exposes
+the built-in definition kind.
 
 A definition authored in this repository is not automatically a session-runtime
 built-in. Bot, channel, and plugin declarations supplied through the generic
@@ -204,9 +208,8 @@ unchanged descriptions and schemas. Preserve Anthropic cache breakpoints and
 other request additions associated with tool ordering.
 
 `ToolChoice::Specific` targets the internal registration. Resolution translates
-it to an exposed name. For an operation with several exposures, omission of a
-variant selects its designated primary exposure; an explicit variant uses a
-stable internal variant identifier. An unavailable choice fails before sending.
+it to the designated primary exposure. This refactor adds no variant selector
+to the tool-choice API. An unavailable choice fails before sending.
 The engine validates admitted identity; the resolver validates presentation
 availability. Public callers no longer need provider aliases to select a tool.
 
@@ -279,6 +282,10 @@ protocol, including their joined/explicit-promise and cancellation behavior.
 
 ## Replay and Deployment
 
+This greenfield change does not migrate sessions whose built-ins were admitted
+through the old materialized-definition path; recreate those sessions when
+adopting it. The implementation retains no compatibility dispatch path.
+
 Built-in definitions and adapters ship together with the runtime. There is no
 per-tool definition version, historical implementation registry, or fallback to
 the old blob-backed built-in path. Code changes can change the definitions used
@@ -292,8 +299,8 @@ contract as other runtime-owned argument adapters.
 
 ## Model-Facing Parity
 
-Before replacing the current path, capture fixtures from it for the supported
-provider/feature matrix. The existing executable presentation is the baseline;
+The committed fixtures capture the pre-refactor provider/feature matrix.
+The existing executable presentation is the baseline;
 do not reconstruct it from older roadmap prose or copy newer upstream harness
 definitions as part of this refactor.
 
@@ -349,8 +356,8 @@ not a promise that stochastic scores will be numerically identical.
   source contracts change. Remove obsolete helpers and tests that enforce
   built-in schema storage; retain external-definition storage coverage.
 - Update `README.md`, `docs/design.md`, and the relevant feature documentation
-  when the implementation changes the architecture. Keep this proposal marked
-  proposed until implementation and verification are complete.
+  when the implementation changes the architecture. Record implementation and
+  verification progress here.
 
 ## Verification and Acceptance
 
@@ -380,6 +387,157 @@ not a promise that stochastic scores will be numerically identical.
   relevant ignored integration suites with their required serialization and a
   representative benchmark rerun. Record model/config parity and investigate
   material regressions; offline fixtures alone do not establish benchmark parity.
+
+## Implementation Progress
+
+- Built-in registrations use logical ids and compact settings. The engine retains
+  its existing registry revision guard; there is no per-tool definition version.
+- `tools::definitions` owns direct function/native definition resolution.
+  Gateway admission writes no built-in descriptions or schemas to CAS, including
+  system subagent/job declarations and MCP search helpers.
+- All three LLM adapters resolve the request catalog, reject exposed-name
+  collisions, translate specific tool choices, and normalize client calls before
+  returning engine facts. Hosted calls remain outside client dispatch.
+- Activity inputs carry the original built-in settings and turn model. The
+  default all-provider catalog, schema bundles, tool documents, provider patch
+  wrapper, and redundant dispatch metadata have been removed.
+- Core scheduling, workflow binding lookup, promise controls, environment batch
+  rules, and MCP routing use admitted identities. API call views carry the
+  internal id alongside the historical displayed name.
+- Eighteen complete provider request fixtures were captured from executable
+  pre-refactor builders at commit `5707d076`, covering the three APIs across
+  workspace, environment, one-shot, explicit canonical, web, and workflow
+  configurations. Their regression test renders with an empty blob store.
+- Verification passed: `cargo check --workspace --all-targets`; unit suites for
+  `engine`, `tools`, `llm-runtime`, `temporal-server`, `temporal-workflow`, `api`,
+  `api-projection`, `test-support`, `bots`, and `channels`; and the complete
+  provider-request fixture comparison. Coverage includes engine event replay
+  from a checkpoint, run model overrides, unknown aliases, collisions,
+  serialized one-shot settings and continuation variants, hosted web tools,
+  workflow calls, MCP approvals, and mixed batches.
+- API and workflow contracts were regenerated, followed by the TypeScript
+  consumers. `npm install` and the full `npm run check` passed. The generated-file
+  checks compared regeneration against a temporary index of the new outputs;
+  the user's Git index was untouched.
+- Live subagent testing found two workflow-effect checks still comparing the
+  exposed name with the registration identity. Emission and replay now validate
+  the admitted id; the replay fixture uses different internal and exposed names.
+- Live skill tests execute with an empty runtime catalog and assert both the
+  internal VFS id and each provider's exposed name. Temporal provider tests
+  exercise built-in timer and await calls across all three APIs and check their
+  projected identities and successful results. The mixed native MCP test now
+  checks every call's success, not just the final scripted response.
+- Hosted-web live tests choose tools by their internal ids. DeepSeek live tests
+  supply the required provider record, endpoint, and credentials through the
+  current resolver; the redundant endpoint-only test and old client helper were
+  removed.
+- The generic fake model used by Temporal live suites now resolves built-ins
+  instead of silently omitting them when selecting its next call. A regression
+  test requires an actual tool round trip and distinct internal/exposed names.
+  Session and profile registry assertions use the current admitted identities.
+- Subagent cancellation waits for the parent's typed parked state rather than
+  an exact count of runtime waiters, and checks the typed cancelled await
+  outcome. The real bot test loads `.env` before checking provider credentials.
+
+### Live verification
+
+The user authorized the local services and credentials in `.env`. Temporal
+suites run serially against the existing local PostgreSQL, MinIO, and Temporal
+stack, with schema revision 15 current. Native MCP fixtures additionally require
+`LIGHTSPEED_MCP_PRIVATE_NETWORKS=localhost,127.0.0.1,::1`; each fixture record
+explicitly opts into private-network access.
+
+All 74 selected live cases passed after fixes, including 20 real-LLM cases.
+Counts below are unique cases; failed cases were rerun after correction.
+
+| Suite or scenario | Passed |
+| --- | ---: |
+| Temporal sessions, including real built-in calls on all three APIs | 12 |
+| Temporal run control, retries, parallel batches, and long drive sequences | 9 |
+| Generic workflow-tool plugins | 14 |
+| Joined/detached subagents, limits, inheritance, deadlines, and cancellation | 6 |
+| Native MCP discovery, approvals, configuration, and mixed await batches | 5 |
+| Profiles | 2 |
+| Environment lifecycle and real envd registration/process routes | 3 |
+| Bots, including a real-model workflow-tool delivery | 6 |
+| Channels | 2 |
+| OpenAI Responses and Anthropic skill/VFS engine loops | 2 |
+| OpenAI/Anthropic function round trips, parallel calls, and DeepSeek reasoning | 6 |
+| OpenAI/Anthropic hosted web tools | 3 |
+| OpenAI/Anthropic hosted remote MCP | 2 |
+| Anthropic and OpenAI Completions tool-round-trip prompt caching | 2 |
+
+Provider-runtime tests used their defaults: `gpt-5.5`, `claude-opus-5`, and
+`deepseek-v4-pro`. The final offline reruns passed the engine (209), LLM runtime
+(141), Temporal server (306), Temporal workflow (110), and fake-loop (2) tests,
+plus all 18 complete provider-request fixtures. Workspace/all-target checks and
+format/diff checks passed; public wire types did not change during live fixes.
+
+Complete provider-request equality establishes the advertised contract; these
+live integration tests do not establish stochastic benchmark-score parity.
+Full benchmark runs and the unrelated production-budget LLM timeout suite were
+not included.
+
+### Full workspace verification
+
+The complete Rust verification pass also succeeded on 2026-09-05:
+
+- `cargo fmt --all -- --check`
+- `cargo check --workspace --all-targets --all-features --locked`
+- `cargo build --workspace --locked`
+- `cargo clippy --workspace --all-targets --locked -- -D warnings`
+- `cargo test --workspace --locked --no-fail-fast`: 1,753 passed, zero failed,
+  and 192 explicitly ignored tests across unit, integration, and doc tests.
+- CI's ignored migration-ledger test passed separately against an isolated
+  PostgreSQL schema; release metadata verification passed as well.
+
+Four Clippy findings were fixed by removing redundant iterator conversions, an
+unnecessary test clone, and an obsolete single-case test loop. The affected test
+was rerun after simplification. Final builds and checks emitted no warnings.
+The ignored-test count is the standard workspace run's result; the selected
+live integrations above were exercised separately.
+
+### Frontend verification
+
+The session/profile editor now explains that specific tool choices use registry
+IDs, with builtin examples. The transcript reducer retains the optional admitted
+ID separately from the original model name, including when context and batch
+events arrive in either order. Rendering continues to use the recorded name;
+unavailable aliases remain unbound.
+
+Demo call fixtures carry explicit registry IDs through the same event API used
+by the live UI. Four duplicate fixture helpers were removed. Regression coverage
+checks provider-independent configuration, streamed and replayed transcripts,
+tool-name rendering, and demo route output.
+
+The full `npm run check` passed after these changes: generated client and
+Configurator consistency, all TypeScript typechecks, 262 tests (143 frontend
+tests), and production builds of the client, Configurator, live UI, and demo.
+Generation was checked against a temporary index of the intended artifacts,
+without changing the user's Git index. Both UI builds retain the pre-existing
+Vite advisory about chunks larger than 500 kB; no new build warnings appeared.
+
+### Public workflow input boundary
+
+The public workflow input's built-in variant was removed after checking every
+producer. Only internal system bindings need it: subagent and environment-job
+declarations are built directly as engine types. External workflow declarations
+always supply their own function definitions, and session management projection
+already excludes system bindings.
+
+The API input and gateway/projection conversion branches now accept only
+functions. Bot/channel test branches introduced solely for the extra variant
+were removed. Engine built-in definitions, internal workflow validation, and
+read-only tool inventory keep their built-in support. Regression coverage rejects
+built-ins in both JSON deserialization and the public schema, and checks the
+management projection with both external functions and internal built-ins.
+
+After removal, the API, projection, Temporal server, tools, bots, and channels
+suites passed: 818 tests, zero failures, and 66 explicitly ignored live tests.
+The API contract and TypeScript client were regenerated, and the complete
+`npm run check` passed again with 262 tests and both UI builds.
+Workspace Clippy over all targets with `-D warnings`, formatting, and diff checks
+also passed.
 
 ## Out of Scope
 

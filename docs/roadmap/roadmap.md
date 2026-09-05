@@ -1,9 +1,9 @@
 # Lightspeed Roadmap
 
 ## Work
-- [ ] [P159](p159-builtin-tool-registry-and-late-resolution.md) — built-in
-  tool registry and late resolution (implementation in progress 2026-09-04): admit stable
-  internal identities and compact definition references, resolve names,
+- [x] [P159](p159-builtin-tool-registry-and-late-resolution.md) — built-in
+  tool registry and late resolution (implemented 2026-09-05): admit stable
+  internal identities and compact settings, resolve names,
   schemas, and codecs for the actual turn model in the LLM activity, and
   carry the selected binding through execution while preserving the
   benchmarked model-facing tool contract. Greenfield internal/API changes;

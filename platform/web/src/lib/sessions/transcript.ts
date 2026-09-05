@@ -38,6 +38,8 @@ export type TranscriptEntry =
 
 export interface TranscriptToolCall {
   callId: string;
+  toolId?: string | null;
+  /// The original name returned by the model, preserved across model changes.
   toolName: string;
   status: ToolItemStatus;
   argumentsJson?: string | null;
@@ -704,6 +706,7 @@ function applyToolBatchStarted(
     if (state.toolCallByCallId.has(callId)) {
       updateToolCall(state, callId, (call) => ({
         ...call,
+        toolId: raw.toolId,
         toolName: raw.toolName,
         status: isTerminalToolStatus(call.status) ? call.status : "requested",
         argumentsJson: raw.arguments ?? call.argumentsJson,
@@ -712,6 +715,7 @@ function applyToolBatchStarted(
     } else {
       appendToolCall(state, entryIndex, {
         callId,
+        toolId: raw.toolId,
         toolName: raw.toolName,
         status: "requested",
         argumentsJson: raw.arguments,

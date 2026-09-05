@@ -37,7 +37,6 @@ impl GatewayAgentApi {
         })?;
         let expose_environment_jobs = jobs_granted;
         let expose_subagents = subagents_granted;
-        let target = ToolTarget::from(&session_config.model);
         let mut config =
             self.session_toolset_config(session_config, environments_granted, jobs_granted);
         let materialized_workflow_tools = loaded
@@ -54,14 +53,12 @@ impl GatewayAgentApi {
             &mut config,
             materialized_workflow_tools.iter().copied(),
         );
-        let mut toolset = resolve_toolset(ToolsetEnvironment { target: &target }, &config)
+        let mut toolset = register_toolset(&config)
             .map_err(|error| AgentApiError::internal(format!("build session tools: {error}")))?;
-        materialize_workflow_tools(&mut toolset, materialized_workflow_tools.iter().copied())
+        register_workflow_tools(&mut toolset, materialized_workflow_tools.iter().copied())
             .map_err(|error| {
                 AgentApiError::invalid_request(format!("materialize workflow tool tools: {error}"))
             })?;
-        let blobs: Arc<dyn BlobStore> = self.store.clone();
-        store_tool_documents(blobs.as_ref(), &toolset.documents).await?;
 
         // Remote MCP tools are derived from the config's declared links,
         // exactly like the standard toolset is derived from the features.
@@ -145,7 +142,7 @@ impl GatewayAgentApi {
 /// from declared links). Re-running against a converged state is a no-op.
 pub(super) fn toolset_reconcile_patch(
     active: &BTreeMap<ToolName, engine::ToolSpec>,
-    toolset: ResolvedToolset,
+    toolset: RegisteredToolset,
     desired_mcp: BTreeMap<ToolName, engine::ToolSpec>,
 ) -> engine::ToolPatch {
     let mut remove = Vec::new();
@@ -163,23 +160,4 @@ pub(super) fn toolset_reconcile_patch(
     }
 
     engine::ToolPatch { upsert, remove }
-}
-
-pub(super) async fn store_tool_documents(
-    blobs: &dyn BlobStore,
-    documents: &[ToolDocument],
-) -> Result<(), AgentApiError> {
-    for document in documents {
-        let blob_ref = blobs
-            .put_bytes(document.blob_bytes())
-            .await
-            .map_err(map_blob_store_error)?;
-        if blob_ref != document.blob_ref {
-            return Err(AgentApiError::internal(format!(
-                "tool document blob ref mismatch: expected {}, got {}",
-                document.blob_ref, blob_ref
-            )));
-        }
-    }
-    Ok(())
 }

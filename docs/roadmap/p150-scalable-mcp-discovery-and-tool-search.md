@@ -79,7 +79,7 @@ intact and degrades larger ones visibly. Not the preferred path.
 
 ### Model retrieval: one hit shape, byte-paged, plus `names`
 
-Contract. The meta-tool schema and description live in `mcp_api.rs`; the
+Contract. The meta-tool schema and description live in `tools::definitions`; the
 description must explain the three modes to the model.
 
 ```text

@@ -235,47 +235,25 @@ impl GatewayAgentApi {
         if !search_descriptions.is_empty() {
             search_descriptions.sort();
             let index = search_descriptions.join("; ");
-            let find = search_meta_tool(
-                self.store.as_ref(),
-                "mcp_find_tools",
-                format!(
-                    "Browse, search, or load full definitions for live MCP tools. Browse with no query or names; search with query (tool names, descriptions, and argument names are indexed); load full definitions with server plus up to five names. Browse and search are byte-paged and may truncate oversized hits; use server plus names when a hit asks for its full definition. Available servers: {index}"
+            let settings = tools::definitions::BuiltinSettings {
+                mcp_server_index: index,
+                ..Default::default()
+            };
+            let find = tools::definitions::register(
+                "mcp.find_tools",
+                settings.clone(),
+                engine::ToolParallelism::ParallelSafe,
+                engine::ToolExecutionSpec::new(engine::ToolExecutionClass::RemoteInteractive, true),
+            );
+            let call = tools::definitions::register(
+                "mcp.call",
+                settings,
+                engine::ToolParallelism::Exclusive,
+                engine::ToolExecutionSpec::new(
+                    engine::ToolExecutionClass::RemoteInteractive,
+                    false,
                 ),
-                serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "server": {"type": "string"},
-                        "query": {"type": "string"},
-                        "names": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                            "minItems": 1,
-                            "maxItems": 5
-                        },
-                        "cursor": {"type": "integer", "minimum": 0}
-                    },
-                    "additionalProperties": false
-                }),
-                true,
-            )
-            .await?;
-            let call = search_meta_tool(
-                self.store.as_ref(),
-                "mcp_call",
-                format!("Call a tool found on a live MCP server. Available servers: {index}"),
-                serde_json::json!({
-                    "type": "object",
-                    "properties": {
-                        "server": {"type": "string"},
-                        "tool": {"type": "string"},
-                        "arguments": {"type": "object"}
-                    },
-                    "required": ["server", "tool", "arguments"],
-                    "additionalProperties": false
-                }),
-                false,
-            )
-            .await?;
+            );
             for tool in [find, call] {
                 if tools.insert(tool.name.clone(), tool).is_some() {
                     return Err(AgentApiError::invalid_request(
@@ -286,49 +264,6 @@ impl GatewayAgentApi {
         }
         Ok(tools)
     }
-}
-
-async fn search_meta_tool(
-    blobs: &dyn engine::storage::BlobStore,
-    name: &str,
-    description: String,
-    schema: serde_json::Value,
-    retry_safe: bool,
-) -> Result<engine::ToolSpec, AgentApiError> {
-    let description_ref = blobs
-        .put_bytes(description.into_bytes())
-        .await
-        .map_err(|error| {
-            AgentApiError::internal(format!("store MCP search description: {error}"))
-        })?;
-    let input_schema_ref = blobs
-        .put_bytes(serde_json::to_vec(&schema).map_err(|error| {
-            AgentApiError::internal(format!("encode MCP search schema: {error}"))
-        })?)
-        .await
-        .map_err(|error| AgentApiError::internal(format!("store MCP search schema: {error}")))?;
-    Ok(engine::ToolSpec {
-        name: engine::ToolName::try_new(name).expect("static MCP meta-tool name"),
-        kind: engine::ToolKind::Function(engine::FunctionToolSpec {
-            description_ref: Some(description_ref),
-            input_schema_ref,
-            output_schema_ref: None,
-            // These meta-tools intentionally contain optional fields and, for
-            // `mcp_call`, an open object carrying the remote tool arguments.
-            // OpenAI strict function schemas cannot represent either shape.
-            strict: Some(false),
-            provider_options_ref: None,
-        }),
-        parallelism: if retry_safe {
-            engine::ToolParallelism::ParallelSafe
-        } else {
-            engine::ToolParallelism::Exclusive
-        },
-        execution: engine::ToolExecutionSpec::new(
-            engine::ToolExecutionClass::RemoteInteractive,
-            retry_safe,
-        ),
-    })
 }
 
 fn registry_approval(value: api::RemoteMcpApprovalPolicy) -> mcp::McpApprovalPolicy {
@@ -553,30 +488,21 @@ fn api_status(value: mcp::McpServerStatus) -> api::McpServerStatus {
 mod tests {
     use super::*;
 
-    #[tokio::test(flavor = "current_thread")]
-    async fn search_meta_tools_are_not_strict_functions() {
-        let blobs = engine::storage::InMemoryBlobStore::new();
-        let tool = search_meta_tool(
-            &blobs,
-            "mcp_call",
-            "Call a remote MCP tool".to_owned(),
-            serde_json::json!({
-                "type": "object",
-                "properties": {
-                    "arguments": {"type": "object"}
-                },
-                "required": ["arguments"],
-                "additionalProperties": false
-            }),
-            false,
-        )
-        .await
-        .expect("meta-tool");
-
-        let engine::ToolKind::Function(function) = tool.kind else {
-            panic!("MCP search meta-tool must be a function");
-        };
-        assert_eq!(function.strict, Some(false));
+    #[test]
+    fn search_meta_tools_are_not_strict_functions() {
+        let target = tools::runtime::ToolTarget::api_kind(engine::ProviderApiKind::OpenAiResponses);
+        for id in ["mcp.call", "mcp.find_tools"] {
+            let resolved = tools::definitions::resolve(
+                &ToolName::new(id),
+                &engine::BuiltinToolSpec::default(),
+                &target,
+            )
+            .expect("resolve meta-tool");
+            let tools::definitions::Definition::Function(function) = &resolved[0].definition else {
+                panic!("MCP search meta-tool must be a function");
+            };
+            assert_eq!(function.strict, Some(false));
+        }
     }
 
     #[test]

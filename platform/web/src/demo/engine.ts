@@ -516,6 +516,7 @@ function toolCallEvents(store: DemoStore, tools: DemoToolCall[]): ToolCallEventV
     const callId = store.nextId("call");
     return {
       callId,
+      toolId: tool.toolId,
       toolName: tool.name,
       argumentsRef: `blob:${callId}-args`,
       arguments: JSON.stringify(tool.arguments),

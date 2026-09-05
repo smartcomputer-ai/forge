@@ -52,6 +52,47 @@ const runView = (
 });
 
 describe("session transcript traces", () => {
+  it.each(["context first", "batch first"])("keeps registry IDs separate from model names (%s)", (order) => {
+    const calls = [
+      { callId: "responses", toolId: "env.run_process", toolName: "exec_command", argumentsRef: "sha256:args-1" },
+      { callId: "anthropic", toolId: "env.run_process", toolName: "Bash", argumentsRef: "sha256:args-2" },
+      { callId: "external", toolId: "custom_function", toolName: "custom_function", argumentsRef: "sha256:args-3" },
+      { callId: "unavailable", toolName: "unknown_alias", argumentsRef: "sha256:args-4" },
+    ];
+    const batch = { type: "toolBatchStarted" as const, calls };
+    const context = {
+      type: "contextEntriesApplied" as const,
+      entries: calls.map((call) => item(`entry-${call.callId}`, {
+        type: "toolCall", callId: call.callId, name: call.toolName,
+      })),
+    };
+    const ordered = order === "context first" ? [context, batch] : [batch, context];
+    const events = [
+      ...ordered.map((kind, i) => event(i + 1, kind)),
+      event(3, {
+        type: "contextEntriesApplied",
+        entries: calls.map((call) => item(`result-${call.callId}`, {
+          type: "toolResult", callId: call.callId, isError: call.callId === "unavailable",
+        }, { text: call.callId === "unavailable" ? "Tool unavailable" : "done" })),
+      }),
+      event(4, { type: "toolBatchCompleted" }),
+    ];
+    const state = applyEvents(emptyTranscript(), events);
+    const streamed = events.reduce((previous, next) => applyEvents(previous, [next]), emptyTranscript());
+    expect(streamed.entries).toEqual(state.entries);
+    expect(state.entries).toHaveLength(1);
+    expect(state.entries[0]).toMatchObject({
+      kind: "tool-group",
+      status: "completedWithErrors",
+      calls: calls.map(({ callId, toolName, ...rest }) => ({
+        callId,
+        toolId: "toolId" in rest ? rest.toolId : undefined,
+        toolName,
+        status: callId === "unavailable" ? "failed" : "succeeded",
+      })),
+    });
+  });
+
   it("keeps blob references for truncated message and tool-result expansion", () => {
     const state = applyEvents(emptyTranscript(), [
       event(1, {

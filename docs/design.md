@@ -129,6 +129,34 @@ never included.
 Agent profiles live on this boundary too: a profile is a reusable setup document for session config, instructions, workspace links, creation-time session metadata defaults, and environment selection. Explicit start metadata overrides profile defaults key by key; applying a profile later does not rewrite session metadata. A start may also retain a named profile while overriding its environment intent with an existing universe environment or none; omission uses the profile intent. Session config itself is a sparse, capability-oriented document: core sections (model, generation, limits, context) plus feature grants (vfs, web, subagents, timers, environments, mcp) where an absent feature is simply not granted — the default session is a model that can process runs and nothing else. `features.vfs.tools` grants dedicated `vfs_*` operations over linked snapshots/workspaces. `features.environments` grants ordinary file/process operations over the selected live environment; model-driven selection and advanced jobs remain separate, default-off sub-grants. The two filesystems are never fused or synchronized. Config is replaced whole via `session/config/put` guarded by an expected revision (no field-level patch vocabulary), and the session's toolset — including remote MCP tools declared under `features.mcp` — is derived from that document rather than managed imperatively. MCP server ids select universe-configured connections whose current auth grants resolve only at provider-send time; sessions and profiles select only the id, never a grant or per-session tool/approval policy. Management discovery uses the official Rust MCP SDK over current Streamable HTTP, reads the current inventory directly from the MCP server, and does not persist it. Universe environments remain live provider-backed resources; deterministic session state records only the active environment id. The hosted runtime resolves and applies profiles outside the deterministic core.
 
 ## Tools, Environments & Sub-agents
+
+The engine's tool registry records admitted logical identities and execution
+policy. Built-in entries carry small trusted settings, such as presentation
+overrides and one-shot process behavior. Definitions live in runtime code and
+are resolved directly into values when the LLM activity builds the catalog for
+the effective turn model, including run overrides. Externally authored functions
+and provider-native declarations continue to load their definition refs from
+CAS; MCP inventories remain runtime-owned.
+
+A shared built-in resolver selects the exposed name, description, schema,
+argument adapter, and result renderer. One logical operation may expose several
+tools: `env.continue_process` becomes `BashOutput` and `KillShell` on Anthropic.
+The request-local reverse lookup admits only advertised client calls. Exposed
+names must be unique, including injected MCP tools and hosted helpers. Specific
+tool choice targets a registry identity and resolves to its primary exposure.
+Built-in expansion preserves the previous exposed-name ordering and cache
+breakpoints; externally authored request lists retain their supplied order.
+
+Calls retain both the internal identity and the original exposed name.
+Scheduling, workflow lookup, concurrency controls, and environment batch rules
+use the identity. Native transcript items retain their original names,
+arguments, and call ids. Execution uses the same resolver with the admitted
+settings, originating turn model, and exposed variant carried on the activity
+input. This also applies to retries and parked batches. There is no historical
+built-in implementation registry or separately persisted resolved catalog:
+replay reduces recorded facts without codecs, while activities execute the
+currently deployed code with their original inputs.
+
 Tool intents are executed by tool packages outside the core. A CAS-backed
 virtual filesystem gives the agent dedicated `vfs_*` read/edit tools with no
 operating system attached. Ordinary file tools, commands, and new jobs instead

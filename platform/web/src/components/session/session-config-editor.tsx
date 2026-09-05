@@ -1044,12 +1044,16 @@ function GenerationFields({ config, change }: { config: RecordValue; change: (fn
           </Field>
           {toolChoiceType === "specific" && (
             <Field className="sm:col-span-2">
-              <FieldLabel>Tool id</FieldLabel>
+              <FieldLabel>Tool ID</FieldLabel>
               <Input
                 value={string(toolChoice.toolId)}
                 onChange={(e) => update("toolChoice", { type: "specific", toolId: e.target.value })}
-                placeholder="tool id"
+                placeholder="env.run_process"
               />
+              <FieldDescription>
+                Use the enabled tool's registry ID, such as env.run_process or vfs.read_file.
+                Builtin tool names are resolved for the selected model. For custom functions, use the function name.
+              </FieldDescription>
             </Field>
           )}
       </div>

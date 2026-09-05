@@ -16,7 +16,7 @@ use crate::{
     error::{ToolError, ToolResult},
     fs::FsToolContext,
     limits::ToolLimits,
-    runtime::{ToolBinding, ToolCatalog, ToolDispatchMode, ToolInvocationOutput, ToolRuntime},
+    runtime::{ToolBinding, ToolCatalog, ToolInvocationOutput, ToolRuntime},
     web::fetch::{WEB_FETCH_LOGICAL_ID, invoke_web_fetch},
 };
 
@@ -112,12 +112,29 @@ impl InlineToolRuntime {
     }
 
     fn resolve_binding(&self, call: &ToolInvocationRequest) -> ToolResult<ToolBinding> {
-        self.catalog
-            .get(&call.tool_name)
-            .cloned()
-            .ok_or_else(|| ToolError::UnsupportedCapability {
-                message: format!("unknown tool: {}", call.tool_name),
-            })
+        let builtin = call
+            .builtin
+            .as_ref()
+            .ok_or_else(|| ToolError::InvalidRequest {
+                message: "built-in call is missing its admitted settings and turn model".to_owned(),
+            })?;
+        let id = call
+            .tool_id
+            .as_ref()
+            .ok_or_else(|| ToolError::InvalidRequest {
+                message: "built-in call is missing its admitted identity".to_owned(),
+            })?;
+        crate::definitions::resolve(
+            id,
+            &builtin.spec,
+            &crate::runtime::ToolTarget::from(&builtin.model),
+        )?
+        .into_iter()
+        .find(|tool| tool.name == call.tool_name)
+        .and_then(|tool| tool.binding)
+        .ok_or_else(|| ToolError::UnsupportedCapability {
+            message: format!("unknown tool: {}", call.tool_name),
+        })
     }
 
     fn resolve_call_context(&self, binding: &ToolBinding) -> ToolResult<BuiltinToolContext<'_>> {
@@ -333,11 +350,6 @@ impl InlineToolRuntime {
         tool_name: &ToolName,
         arguments: Value,
     ) -> ToolResult<ToolInvocationOutput> {
-        if binding.dispatch != ToolDispatchMode::Local {
-            return Err(ToolError::UnsupportedCapability {
-                message: format!("tool {tool_name} is not configured for local dispatch"),
-            });
-        }
         if binding.logical_id == WEB_FETCH_LOGICAL_ID {
             return invoke_web_fetch(arguments).await;
         }
@@ -464,7 +476,7 @@ mod tests {
     use crate::runtime::{ToolCatalog, ToolTarget};
     use crate::toolset::{
         BuiltinToolPresentation, BuiltinToolsetConfig, FilesystemToolsetConfig, ToolsetConfig,
-        ToolsetEnvironment, resolve_toolset,
+        register_toolset,
     };
 
     #[derive(Default)]
@@ -530,7 +542,23 @@ mod tests {
 
     fn call(arguments_ref: BlobRef, tool_name: &str) -> ToolInvocationRequest {
         ToolInvocationRequest {
+            builtin: Some(engine::BuiltinToolCallRuntime {
+                spec: engine::BuiltinToolSpec {
+                    settings: json!({"presentation": "canonical"}),
+                },
+                model: engine::ModelSelection {
+                    api_kind: engine::ProviderApiKind::OpenAiResponses,
+                    provider_id: "openai".to_owned(),
+                    model: "test-model".to_owned(),
+                },
+            }),
             call_id: ToolCallId::new("call-1"),
+            tool_id: Some(ToolName::new(match tool_name {
+                "vfs_read_file" => "vfs.read_file",
+                "web_fetch" => "web.fetch",
+                "run_process" => "env.run_process",
+                _ => panic!("unknown test tool {tool_name}"),
+            })),
             tool_name: ToolName::new(tool_name),
             arguments_ref,
             workflow_tool: None,
@@ -556,12 +584,13 @@ mod tests {
 
     fn workspace_catalog(api_kind: engine::ProviderApiKind) -> ToolCatalog {
         let target = ToolTarget::api_kind(api_kind);
-        resolve_toolset(
-            ToolsetEnvironment { target: &target },
-            &ToolsetConfig::workspace(),
+        ToolCatalog::from_registrations(
+            &register_toolset(&ToolsetConfig::workspace())
+                .expect("toolset")
+                .tools,
+            &target,
         )
-        .expect("toolset")
-        .catalog
+        .expect("catalog")
     }
 
     fn catalog_for_operations_with_presentation(
@@ -573,9 +602,8 @@ mod tests {
         let mut config = ToolsetConfig::empty();
         config.builtin = crate::toolset::BuiltinToolsetConfig::from_operations(operations);
         config.builtin.presentation = presentation;
-        resolve_toolset(ToolsetEnvironment { target: &target }, &config)
-            .expect("toolset")
-            .catalog
+        ToolCatalog::from_registrations(&register_toolset(&config).expect("toolset").tools, &target)
+            .expect("catalog")
     }
 
     fn fs_context(fs: impl FileSystem + 'static, blobs: Arc<dyn BlobStore>) -> FsToolContext {
@@ -594,9 +622,8 @@ mod tests {
         let target = ToolTarget::api_kind(engine::ProviderApiKind::OpenAiResponses);
         let mut config = ToolsetConfig::empty();
         config.web.fetch = true;
-        resolve_toolset(ToolsetEnvironment { target: &target }, &config)
-            .expect("toolset")
-            .catalog
+        ToolCatalog::from_registrations(&register_toolset(&config).expect("toolset").tools, &target)
+            .expect("catalog")
     }
 
     fn visible_tool_result_ref(result: &ToolInvocationResult) -> BlobRef {
@@ -649,9 +676,11 @@ mod tests {
             },
             ..BuiltinToolsetConfig::disabled()
         };
-        let catalog = resolve_toolset(ToolsetEnvironment { target: &target }, &config)
-            .expect("toolset")
-            .catalog;
+        let catalog = ToolCatalog::from_registrations(
+            &register_toolset(&config).expect("toolset").tools,
+            &target,
+        )
+        .expect("catalog");
         let runtime = runtime_with_vfs(fs, blobs, catalog);
 
         let output = runtime
@@ -683,9 +712,11 @@ mod tests {
         let target = ToolTarget::api_kind(engine::ProviderApiKind::OpenAiResponses);
         let mut config = ToolsetConfig::workspace();
         config.builtin.environment = crate::toolset::EnvironmentToolsetConfig::basic();
-        let catalog = resolve_toolset(ToolsetEnvironment { target: &target }, &config)
-            .expect("toolset")
-            .catalog;
+        let catalog = ToolCatalog::from_registrations(
+            &register_toolset(&config).expect("toolset").tools,
+            &target,
+        )
+        .expect("catalog");
         let environment = EnvironmentToolContext::new(None, blobs.clone())
             .with_environment_id("environment-a")
             .with_filesystem(fs_context(environment, blobs.clone()));
@@ -811,14 +842,7 @@ mod tests {
                 environment_policy: None,
                 subagents_policy: None,
                 workspace_links: Vec::new(),
-                calls: vec![engine::ToolInvocationRequest {
-                    call_id: ToolCallId::new("call-1"),
-                    tool_name: ToolName::new("vfs_read_file"),
-                    arguments_ref: args_ref,
-                    workflow_tool: None,
-                    promise_control: None,
-                    remote_mcp: None,
-                }],
+                calls: vec![call(args_ref, "vfs_read_file")],
             },
         )
         .await
@@ -1037,5 +1061,88 @@ mod tests {
         let error_ref = result.error_ref.expect("error ref");
         let error = blobs.read_text(&error_ref).await.expect("error text");
         assert!(error.contains("no_active_environment"));
+    }
+    #[tokio::test(flavor = "current_thread")]
+    async fn serialized_calls_preserve_one_shot_policy_without_a_runtime_catalog() {
+        let blobs = Arc::new(InMemoryBlobStore::new());
+        let process = Arc::new(RecordingProcessExecutor::default());
+        let runtime = InlineToolRuntime::with_environment(
+            EnvironmentToolContext::new(Some(process.clone()), blobs.clone()),
+            ToolCatalog::new(),
+        );
+        let arguments_ref = blobs
+            .put_bytes(br#"{"cmd":"echo hello"}"#.to_vec())
+            .await
+            .unwrap();
+        let mut good = call(arguments_ref, "run_process");
+        good.tool_name = ToolName::new("exec_command");
+        good.builtin.as_mut().unwrap().spec.settings = json!({"one_shot": true});
+        let mut wrong_alias = good.clone();
+        wrong_alias.call_id = ToolCallId::new("unadvertised-call");
+        wrong_alias.tool_name = ToolName::new("Bash");
+        let mut request = batch_request(good);
+        request.calls.insert(0, wrong_alias);
+        let serialized = serde_json::to_vec(&request).expect("serialize activity input");
+        let restored = serde_json::from_slice(&serialized).expect("restore activity input");
+        let result = runtime
+            .invoke_batch(restored)
+            .await
+            .unwrap()
+            .completed_result()
+            .unwrap();
+        assert_eq!(result.results[0].status, ToolCallStatus::Failed);
+        assert_eq!(result.results[1].status, ToolCallStatus::Succeeded);
+        let requests = process.requests.lock().unwrap();
+        assert_eq!(requests.len(), 1, "unadvertised aliases cannot execute");
+        assert_eq!(
+            requests[0].yield_ms,
+            Some(ToolLimits::default().max_process_timeout_ms),
+            "one-shot calls use the bounded wait-to-exit ceiling, not the interactive yield"
+        );
+        assert_eq!(
+            requests[0].timeout_ms,
+            Some(ToolLimits::default().default_process_timeout_ms)
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn serialized_continuations_preserve_the_original_poll_and_kill_variants() {
+        let blobs = Arc::new(InMemoryBlobStore::new());
+        let process = Arc::new(RecordingProcessExecutor::default());
+        let runtime = InlineToolRuntime::with_environment(
+            EnvironmentToolContext::new(Some(process.clone()), blobs.clone()),
+            ToolCatalog::new(),
+        );
+        for (name, arguments) in [
+            ("BashOutput", json!({"bash_id":"proc-1"})),
+            ("KillShell", json!({"shell_id":"proc-1"})),
+        ] {
+            let arguments_ref = blobs
+                .put_bytes(serde_json::to_vec(&arguments).unwrap())
+                .await
+                .unwrap();
+            let mut request = call(arguments_ref, "run_process");
+            request.tool_id = Some(ToolName::new("env.continue_process"));
+            request.tool_name = ToolName::new(name);
+            request.builtin.as_mut().unwrap().model.api_kind =
+                engine::ProviderApiKind::AnthropicMessages;
+            request.builtin.as_mut().unwrap().spec.settings = json!({});
+            let restored = serde_json::from_slice(&serde_json::to_vec(&request).unwrap()).unwrap();
+            let result = runtime.invoke_call(&restored).await.unwrap();
+            assert_eq!(result.status, ToolCallStatus::Succeeded);
+            let visible = blobs
+                .read_text(&visible_tool_result_ref(&result))
+                .await
+                .unwrap();
+            assert!(visible.ends_with(if name == "KillShell" {
+                "[killed]"
+            } else {
+                "[exited with code 0]"
+            }));
+        }
+        let requests = process.continues.lock().unwrap();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0].signal, None);
+        assert_eq!(requests[1].signal, Some(ProcessSignal::Kill));
     }
 }

@@ -132,13 +132,14 @@ export const GPT: ModelConfig = { providerId: "openai", apiKind: "openai:respons
 // ---------------------------------------------------------------------------
 
 export function tool(
+  toolId: string,
   name: string,
   args: Record<string, unknown>,
   display: ToolCallDisplayView,
   output: string,
   isError = false,
 ): DemoToolCall {
-  return { name, arguments: args, display, output, ...(isError ? { isError: true } : {}) };
+  return { toolId, name, arguments: args, display, output, ...(isError ? { isError: true } : {}) };
 }
 
 export interface RunCommandOptions {
@@ -152,6 +153,7 @@ export interface RunCommandOptions {
 export function runCommand(argv: string[], output: string, options: RunCommandOptions = {}): DemoToolCall {
   const { detail, cwd, timeoutMs, isError = false } = options;
   return tool(
+    "env.run_process",
     "exec_command",
     { argv, ...(cwd === undefined ? {} : { cwd }), ...(timeoutMs === undefined ? {} : { timeoutMs }) },
     { group: "execute", verb: "Run", target: argv.join(" "), ...(detail === undefined ? {} : { detail }) },
@@ -162,16 +164,17 @@ export function runCommand(argv: string[], output: string, options: RunCommandOp
 
 /// `read_file` against the active environment.
 export function readFile(path: string, output: string): DemoToolCall {
-  return tool("read_file", { path }, { group: "explore", verb: "Read", target: path }, output);
+  return tool("env.read_file", "read_file", { path }, { group: "explore", verb: "Read", target: path }, output);
 }
 
 /// `vfs_read_file` against a linked workspace.
 export function vfsReadFile(path: string, output: string): DemoToolCall {
-  return tool("vfs_read_file", { path }, { group: "explore", verb: "Read", target: path }, output);
+  return tool("vfs.read_file", "vfs_read_file", { path }, { group: "explore", verb: "Read", target: path }, output);
 }
 
 export function writeFile(path: string, content: string, detail: string): DemoToolCall {
   return tool(
+    "env.write_file",
     "write_file",
     { path, content },
     { group: "edit", verb: "Write", target: path, detail },
@@ -182,6 +185,7 @@ export function writeFile(path: string, content: string, detail: string): DemoTo
 /// `vfs_write_file` into a writable workspace link.
 export function vfsWriteFile(path: string, content: string, detail: string): DemoToolCall {
   return tool(
+    "vfs.write_file",
     "vfs_write_file",
     { path, content },
     { group: "edit", verb: "Write", target: path, detail },
@@ -190,12 +194,13 @@ export function vfsWriteFile(path: string, content: string, detail: string): Dem
 }
 
 export function webFetch(url: string, detail: string, output: string, isError = false): DemoToolCall {
-  return tool("web_fetch", { url }, { group: "explore", verb: "Fetch", target: url, detail }, output, isError);
+  return tool("web.fetch", "web_fetch", { url }, { group: "explore", verb: "Fetch", target: url, detail }, output, isError);
 }
 
 /// A remote MCP tool; object outputs are shown pretty-printed.
 export function mcpCall(name: string, args: Record<string, unknown>, output: unknown): DemoToolCall {
   return tool(
+    name,
     name,
     args,
     { group: "other", verb: "MCP", target: name },
@@ -205,12 +210,13 @@ export function mcpCall(name: string, args: Record<string, unknown>, output: unk
 
 /// A GitHub MCP tool, shown under the GitHub verb.
 export function github(name: string, args: Record<string, unknown>, detail: string, output: string): DemoToolCall {
-  return tool(`github.${name}`, args, { group: "other", verb: "GitHub", target: name, detail }, output);
+  return tool(`github.${name}`, `github.${name}`, args, { group: "other", verb: "GitHub", target: name, detail }, output);
 }
 
 /// `agent_run`: a joined sub-agent delegation.
 export function agentRun(profileId: string, task: string, output: string): DemoToolCall {
   return tool(
+    "subagent.run",
     "agent_run",
     { profileId, input: task },
     { group: "other", verb: "Delegate", target: profileId, detail: task },
@@ -221,6 +227,7 @@ export function agentRun(profileId: string, task: string, output: string): DemoT
 /// `agent_spawn`: a sub-agent started for a promise the run joins later.
 export function agentSpawn(profileId: string, task: string, promiseId: string): DemoToolCall {
   return tool(
+    "subagent.spawn",
     "agent_spawn",
     { profileId, input: task },
     { group: "other", verb: "Spawn", target: profileId, detail: task },
@@ -234,6 +241,7 @@ export function awaitPromises(
   results: Array<{ agent: string; sessionId: string; output: string }>,
 ): DemoToolCall {
   return tool(
+    "concurrency.await",
     "await",
     { promises, mode: "all" },
     { group: "other", verb: "Await", target: promises.join(", ") },
@@ -253,6 +261,7 @@ export type BotEmitArgs = {
 export function botEmit(args: BotEmitArgs, seq: number | null): DemoToolCall {
   return tool(
     "bot_emit",
+    "bot_emit",
     { ...args },
     { group: "execute", verb: "Emit", target: args.to, detail: args.kind },
     JSON.stringify({ to: args.to, seq }),
@@ -261,6 +270,7 @@ export function botEmit(args: BotEmitArgs, seq: number | null): DemoToolCall {
 
 export function briefPut(brief: string): DemoToolCall {
   return tool(
+    "bot_brief_put",
     "bot_brief_put",
     { brief },
     { group: "edit", verb: "Update", target: "brief" },
@@ -278,6 +288,7 @@ export function messageSend(
 ): DemoToolCall {
   return tool(
     "message_send",
+    "message_send",
     { text, ...(replyTo === null ? {} : { replyTo }) },
     { group: "execute", verb: "Send", target: conversation.label, detail: replyTo === null ? "push" : `reply to #${replyTo}` },
     JSON.stringify({ sent }),
@@ -286,6 +297,7 @@ export function messageSend(
 
 export function messageNoop(conversation: { label: string }, reason: string): DemoToolCall {
   return tool(
+    "message_noop",
     "message_noop",
     { reason },
     { group: "other", verb: "Skip", target: conversation.label, detail: reason },

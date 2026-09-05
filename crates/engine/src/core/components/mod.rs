@@ -68,9 +68,9 @@ pub use run::{
 };
 pub use state::*;
 pub use tooling::{
-    ActiveToolBatch, CANCELLED_TOOL_RESULT_CONTENT, CompletedToolBatch, FunctionToolSpec,
-    ObservedToolCall, ProviderNativeToolExecution, ProviderNativeToolSpec, RemoteMcpApprovalPolicy,
-    RemoteMcpExecution, RemoteMcpExposure, RemoteMcpToolSpec, SecretRef,
+    ActiveToolBatch, BuiltinToolSpec, CANCELLED_TOOL_RESULT_CONTENT, CompletedToolBatch,
+    FunctionToolSpec, ObservedToolCall, ProviderNativeToolExecution, ProviderNativeToolSpec,
+    RemoteMcpApprovalPolicy, RemoteMcpExecution, RemoteMcpExposure, RemoteMcpToolSpec, SecretRef,
     TOOL_RUNTIME_BOUNDARY_FAILURE_CONTENT, ToolCallExecutionPolicy, ToolCallResult, ToolCallState,
     ToolCallStatus, ToolChoice, ToolConfigEvent, ToolEvent, ToolExecutionClass, ToolExecutionSpec,
     ToolKind, ToolParallelism, ToolPatch, ToolSpec, ToolingState, UNAVAILABLE_TOOL_RESULT_CONTENT,

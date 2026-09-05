@@ -18,10 +18,7 @@ use llm_runtime::{
     },
 };
 use serde_json::{Value, json};
-use tools::web::search::{
-    OpenAiResponsesWebSearchConfig, WebSearchContextSize, WebSearchMode,
-    openai_responses_web_search_tool_bundle,
-};
+use tools::web::search::{OpenAiResponsesWebSearchConfig, WebSearchContextSize, WebSearchMode};
 
 mod support;
 
@@ -115,19 +112,6 @@ fn openai_params(params: &OpenAiResponsesParams) -> ProviderParams {
         ProviderApiKind::OpenAiResponses,
         serde_json::to_value(params).expect("serialize params"),
     )
-}
-
-async fn store_tool_documents(
-    blobs: &InMemoryBlobStore,
-    documents: &[tools::runtime::ToolDocument],
-) {
-    for document in documents {
-        let stored_ref = blobs
-            .put_bytes(document.blob_bytes())
-            .await
-            .expect("store tool document");
-        assert_eq!(stored_ref, document.blob_ref);
-    }
 }
 
 /// 32x32 solid red PNG.
@@ -713,17 +697,17 @@ async fn openai_responses_live_adapter_captures_provider_triggered_compaction() 
 #[ignore = "requires OPENAI_API_KEY and an OpenAI Responses model that supports hosted web_search (costs real money)"]
 async fn openai_responses_live_adapter_captures_web_search_call_and_citations() {
     let blobs = Arc::new(InMemoryBlobStore::new());
-    let bundle = openai_responses_web_search_tool_bundle(&OpenAiResponsesWebSearchConfig {
+    let native = OpenAiResponsesWebSearchConfig {
         mode: WebSearchMode::Live,
         search_context_size: Some(WebSearchContextSize::Low),
         allowed_domains: vec!["developers.openai.com".to_string()],
         blocked_domains: Vec::new(),
         user_location: None,
         include_sources: true,
-    })
-    .expect("web search bundle")
+    }
+    .native_tool_json()
+    .expect("web search definition")
     .expect("enabled web search");
-    store_tool_documents(&blobs, &bundle.documents).await;
 
     let input_ref = text_blob(
         &blobs,
@@ -770,7 +754,19 @@ async fn openai_responses_live_adapter_captures_web_search_call_and_citations() 
                 entries: vec![context_entry],
                 token_estimate: None,
             },
-            tools: vec![bundle.spec],
+            tools: vec![engine::ToolSpec {
+                name: engine::ToolName::new("web_search"),
+                kind: engine::ToolKind::ProviderNative(engine::ProviderNativeToolSpec {
+                    api_kind: ProviderApiKind::OpenAiResponses,
+                    native_tool_ref: blobs
+                        .put_bytes(serde_json::to_vec(&native).expect("native json"))
+                        .await
+                        .expect("native definition"),
+                    execution: engine::ProviderNativeToolExecution::ProviderHosted,
+                }),
+                parallelism: engine::ToolParallelism::ParallelSafe,
+                execution: Default::default(),
+            }],
             tool_choice: Some(ToolChoice::RequiredAny),
             output_limit: Some(1024),
             reasoning_effort: None,

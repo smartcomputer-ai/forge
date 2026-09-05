@@ -16233,6 +16233,13 @@
               }
             ]
           },
+          "toolId": {
+            "description": "Admitted registry identity, absent when the model used an unavailable name.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "toolName": {
             "type": "string"
           }
@@ -16313,6 +16320,13 @@
           },
           "status": {
             "$ref": "#/components/schemas/ToolItemStatus"
+          },
+          "toolId": {
+            "description": "Admitted registry identity, absent when the model used an unavailable name.",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "toolName": {
             "type": "string"
@@ -16412,6 +16426,21 @@
       },
       "ToolKindView": {
         "oneOf": [
+          {
+            "description": "Code-owned definition; names and schemas are resolved for each turn.",
+            "properties": {
+              "settings": true,
+              "type": {
+                "const": "builtin",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "settings"
+            ],
+            "type": "object"
+          },
           {
             "properties": {
               "descriptionRef": {
@@ -17334,7 +17363,7 @@
             "$ref": "#/components/schemas/WorkflowToolKindInput"
           },
           "name": {
-            "description": "Canonical effective-toolset name, also sent to the model and used for\nruntime dispatch.",
+            "description": "Function name exposed to the model and used as its registry identity.",
             "type": "string"
           },
           "parallelism": {

@@ -149,12 +149,7 @@ impl SubagentScriptedLlm {
         let mut context_entries = Vec::with_capacity(calls.len());
         let mut tool_calls = Vec::with_capacity(calls.len());
         for (index, (tool_name, arguments)) in calls.into_iter().enumerate() {
-            if !request
-                .request
-                .tools
-                .iter()
-                .any(|tool| tool.name.as_str() == tool_name)
-            {
+            if test_support::scripted_tool_id(request, tool_name).is_none() {
                 return Err(CoreAgentIoError::Failed {
                     message: format!("scripted subagent test expected {tool_name} to be available"),
                 });
@@ -183,6 +178,7 @@ impl SubagentScriptedLlm {
             });
             tool_calls.push(ObservedToolCall {
                 call_id,
+                tool_id: test_support::scripted_tool_id(request, tool_name.as_str()),
                 tool_name,
                 provider_kind: Some("subagent-script".to_owned()),
                 arguments_ref,
@@ -667,6 +663,7 @@ async fn run_agent_run_inline_live_client(
         .filter(|call| call.tool_name == AGENT_RUN_TOOL_NAME)
         .collect::<Vec<_>>();
     assert_eq!(agent_calls.len(), 1, "expected one joined agent_run call");
+    assert_eq!(agent_calls[0].tool_id.as_deref(), Some("subagent.run"));
     assert_eq!(agent_calls[0].status, api::ToolItemStatus::Succeeded);
 
     let children = wait_for_children_closed(&sessions, &session_id, 1).await?;
@@ -1124,7 +1121,9 @@ async fn run_agent_spawn_cancel_live_client(
                     WorkflowQueryOptions::default(),
                 )
                 .await?;
-            Ok(status.active_waits == 1)
+            Ok(status
+                .active_run
+                .is_some_and(|run| run.status == engine::RunStatus::Parked))
         },
     )
     .await;
@@ -1166,6 +1165,14 @@ async fn run_agent_spawn_cancel_live_client(
         .filter(|call| call.tool_name == AWAIT_TOOL_NAME)
         .collect::<Vec<_>>();
     assert_eq!(await_calls.len(), 1, "expected one parked await call");
+    assert_eq!(await_calls[0].tool_id.as_deref(), Some("concurrency.await"));
+    assert_eq!(await_calls[0].status, api::ToolItemStatus::Succeeded);
+    let await_result: temporal_workflow::MaterializedAwaitResult =
+        serde_json::from_str(await_calls[0].output.as_deref().expect("await result"))?;
+    assert_eq!(
+        await_result.outcome,
+        temporal_workflow::AwaitOutcome::Cancelled
+    );
 
     // The cascade: run-scoped promise cancelled -> execution cancelled ->
     // child closed by the execution, well before its 12 s script finishes.

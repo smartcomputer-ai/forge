@@ -55,6 +55,7 @@ export interface DemoUser {
 
 /// One tool call inside a scripted assistant turn.
 export interface DemoToolCall {
+  toolId: string;
   name: string;
   arguments: Record<string, unknown>;
   display: ToolCallDisplayView;

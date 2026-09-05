@@ -234,8 +234,7 @@ pub struct WorkflowToolDefinitionInput {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct WorkflowToolSpecInput {
-    /// Canonical effective-toolset name, also sent to the model and used for
-    /// runtime dispatch.
+    /// Function name exposed to the model and used as its registry identity.
     pub name: String,
     pub kind: WorkflowToolKindInput,
     #[serde(default)]
@@ -667,6 +666,8 @@ pub struct ToolView {
     rename_all_fields = "camelCase"
 )]
 pub enum ToolKindView {
+    /// Code-owned definition; names and schemas are resolved for each turn.
+    Builtin { settings: serde_json::Value },
     Function {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         description_ref: Option<String>,
@@ -1450,6 +1451,9 @@ pub enum RunAcceptedSourceView {
 #[serde(rename_all = "camelCase")]
 pub struct ToolCallEventView {
     pub call_id: String,
+    /// Admitted registry identity, absent when the model used an unavailable name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tool_id: Option<String>,
     pub tool_name: String,
     pub arguments_ref: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -1,25 +1,16 @@
-//! Provider-aware session toolset composition.
+//! Provider-independent session tool registration.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use engine::{ProviderApiKind, ToolName, ToolSpec, WorkflowToolBinding};
 
 use crate::{
     builtin::{BuiltinTool, BuiltinToolOperation, BuiltinToolSurface},
-    concurrency::{ConcurrencyToolsetConfig, concurrency_tool_bindings, concurrency_tool_bundles},
-    environment::control::{environment_control_tool_bindings, environment_control_tool_bundles},
+    concurrency::ConcurrencyToolsetConfig,
+    definitions::{BuiltinSettings, register},
     error::{ToolError, ToolResult},
-    runtime::{ToolCatalog, ToolDispatchMode, ToolDocument, ToolSpecBundle, ToolTarget},
-    web::fetch::{
-        WebFetchToolConfig, anthropic_messages_web_fetch_tool_bundle, web_fetch_tool_binding,
-        web_fetch_tool_bundle,
-    },
-    web::search::{
-        OpenAiResponsesWebSearchConfig, WebSearchMode, WebSearchToolConfig,
-        anthropic_messages_web_search_tool_bundle, apply_openai_responses_web_search_includes,
-        openai_responses_web_search_tool_bundle,
-    },
-    workflow_tool::workflow_tool_tool_binding,
+    runtime::ToolTarget,
+    web::search::WebSearchToolConfig,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -67,7 +58,6 @@ pub struct BuiltinToolsetConfig {
     pub presentation: BuiltinToolPresentation,
     pub vfs: FilesystemToolsetConfig,
     pub environment: EnvironmentToolsetConfig,
-    pub dispatch: ToolDispatchMode,
 }
 
 impl BuiltinToolsetConfig {
@@ -76,7 +66,6 @@ impl BuiltinToolsetConfig {
             presentation: BuiltinToolPresentation::ProviderDefault,
             vfs: FilesystemToolsetConfig::disabled(),
             environment: EnvironmentToolsetConfig::disabled(),
-            dispatch: ToolDispatchMode::Local,
         }
     }
 
@@ -151,7 +140,8 @@ impl Default for BuiltinToolsetConfig {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum BuiltinToolPresentation {
     #[default]
     ProviderDefault,
@@ -165,7 +155,7 @@ impl BuiltinToolPresentation {
     /// their harnesses trained them on. OpenAI Completions, the
     /// compatibility API most other providers speak, gets the neutral
     /// canonical surface.
-    fn surface(self, target: &ToolTarget) -> BuiltinToolSurface {
+    pub(crate) fn surface(self, target: &ToolTarget) -> BuiltinToolSurface {
         match self {
             Self::ProviderDefault => match target.api_kind {
                 ProviderApiKind::AnthropicMessages => BuiltinToolSurface::ClaudeCodeLike,
@@ -325,52 +315,10 @@ impl EnvironmentToolsetConfig {
     }
 }
 
-pub struct ToolsetEnvironment<'a> {
-    pub target: &'a ToolTarget,
-}
-
-/// Provider request parameter additions required by the resolved toolset.
-///
-/// The toolset only reports the required values; applying them to a session's
-/// opaque provider params is owned by the runtime layer that knows the params
-/// schema.
+/// Admitted logical registrations. Provider presentation is resolved per turn.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct ProviderParamsPatch {
-    openai_responses_include: Vec<String>,
-}
-
-impl ProviderParamsPatch {
-    pub fn is_empty(&self) -> bool {
-        self.openai_responses_include.is_empty()
-    }
-
-    /// OpenAI Responses `include` values the toolset needs on generation
-    /// requests.
-    pub fn openai_responses_include(&self) -> &[String] {
-        &self.openai_responses_include
-    }
-
-    fn add_openai_web_search(&mut self, config: &OpenAiResponsesWebSearchConfig) {
-        let mut include = Vec::new();
-        apply_openai_responses_web_search_includes(&mut include, config);
-        for value in include {
-            if !self
-                .openai_responses_include
-                .iter()
-                .any(|existing| existing == &value)
-            {
-                self.openai_responses_include.push(value);
-            }
-        }
-    }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ResolvedToolset {
+pub struct RegisteredToolset {
     pub tools: BTreeMap<ToolName, ToolSpec>,
-    pub documents: Vec<ToolDocument>,
-    pub catalog: ToolCatalog,
-    pub provider_params_patch: ProviderParamsPatch,
 }
 
 /// Explicit-Promise workflow tools create model-owned completion promises, so their
@@ -388,10 +336,9 @@ pub fn enable_concurrency_for_workflow_tools<'a>(
     }
 }
 
-/// Merge trusted, already-admitted workflow tools into the effective
-/// provider-facing toolset and runtime catalog.
-pub fn materialize_workflow_tools<'a>(
-    toolset: &mut ResolvedToolset,
+/// Merge trusted, already-admitted workflow definitions into the registry.
+pub fn register_workflow_tools<'a>(
+    toolset: &mut RegisteredToolset,
     bindings: impl IntoIterator<Item = &'a WorkflowToolBinding>,
 ) -> ToolResult<()> {
     for binding in bindings {
@@ -415,199 +362,120 @@ pub fn materialize_workflow_tools<'a>(
         toolset
             .tools
             .insert(tool_name, binding.definition.tool.clone());
-        toolset.catalog.insert(workflow_tool_tool_binding(binding));
     }
     Ok(())
 }
 
-pub fn resolve_toolset(
-    env: ToolsetEnvironment<'_>,
-    config: &ToolsetConfig,
-) -> ToolResult<ResolvedToolset> {
-    let mut builder = ToolsetBuilder::new();
-
-    if config.builtin.enabled() {
-        builder.add_builtin_tools(env.target, &config.builtin)?;
-    }
-
-    if let Some(search) = &config.web.search {
-        let bundle = match env.target.api_kind {
-            ProviderApiKind::OpenAiResponses => {
-                let provider_config = OpenAiResponsesWebSearchConfig {
-                    mode: WebSearchMode::Cached,
-                    allowed_domains: search.allowed_domains.clone(),
-                    blocked_domains: search.blocked_domains.clone(),
-                    include_sources: true,
-                    ..OpenAiResponsesWebSearchConfig::default()
-                };
-                let bundle = openai_responses_web_search_tool_bundle(&provider_config)?;
-                builder
-                    .provider_params_patch
-                    .add_openai_web_search(&provider_config);
-                bundle
-            }
-            ProviderApiKind::AnthropicMessages => {
-                anthropic_messages_web_search_tool_bundle(search)?
-            }
-            ref api_kind => {
-                return Err(ToolError::UnsupportedCapability {
-                    message: format!(
-                        "web.search supports OpenAI Responses and Anthropic Messages, got {api_kind:?}"
-                    ),
-                });
-            }
+pub fn register_toolset(config: &ToolsetConfig) -> ToolResult<RegisteredToolset> {
+    use engine::{ToolExecutionClass, ToolExecutionSpec, ToolParallelism};
+    let mut tools = BTreeMap::new();
+    let mut add = |tool: ToolSpec| -> ToolResult<()> {
+        let name = tool.name.clone();
+        if tools.insert(name.clone(), tool).is_some() {
+            return Err(ToolError::InvalidRequest {
+                message: format!("duplicate tool registration {name}"),
+            });
         }
-        .ok_or_else(|| ToolError::InvalidRequest {
-            message: "web.search was enabled but did not produce a provider tool".to_owned(),
-        })?;
-        builder.add_provider_tool_bundle(bundle);
-    }
-
-    if config.web.fetch {
-        let provider_config = WebFetchToolConfig::enabled();
-        let bundle = if env.target.api_kind == ProviderApiKind::AnthropicMessages {
-            anthropic_messages_web_fetch_tool_bundle(&provider_config)?
-        } else {
-            web_fetch_tool_bundle(&provider_config)?
-        }
-        .ok_or_else(|| ToolError::InvalidRequest {
-            message: "web.fetch was enabled but did not produce a tool".to_owned(),
-        })?;
-        if env.target.api_kind == ProviderApiKind::AnthropicMessages {
-            builder.add_provider_tool_bundle(bundle);
-        } else {
-            builder.add_web_fetch(bundle);
-        }
-    }
-
-    if config.environment_read || config.environment_selection {
-        builder.add_environment_control(config.environment_selection)?;
-    }
-
-    let mut concurrency = config.concurrency.clone();
-    if config.builtin.environment.jobs_enabled() {
-        concurrency.enabled = true;
-    }
-    if concurrency.enabled_or_timer() {
-        builder.add_concurrency(&concurrency)?;
-    }
-
-    Ok(builder.finish())
-}
-
-struct ToolsetBuilder {
-    tools: BTreeMap<ToolName, ToolSpec>,
-    catalog: ToolCatalog,
-    documents_by_ref: BTreeMap<engine::BlobRef, ToolDocument>,
-    visible_tools: Vec<ToolName>,
-    seen_tools: BTreeSet<ToolName>,
-    provider_params_patch: ProviderParamsPatch,
-}
-
-impl ToolsetBuilder {
-    fn new() -> Self {
-        Self {
-            tools: BTreeMap::new(),
-            catalog: ToolCatalog::new(),
-            documents_by_ref: BTreeMap::new(),
-            visible_tools: Vec::new(),
-            seen_tools: BTreeSet::new(),
-            provider_params_patch: ProviderParamsPatch::default(),
-        }
-    }
-
-    fn add_builtin_tools(
-        &mut self,
-        target: &ToolTarget,
-        config: &BuiltinToolsetConfig,
-    ) -> ToolResult<()> {
-        let surface = config.presentation.surface(target);
-        let omit_unsupported = config.presentation == BuiltinToolPresentation::ProviderDefault;
-        for operation in config.vfs.operations() {
-            let tool = BuiltinTool::vfs(operation, surface);
-            let bundle = match tool.spec_bundle(target, STATIC_SCOPED_FS_PATHS) {
-                Ok(bundle) => bundle,
-                Err(ToolError::UnsupportedCapability { .. }) if omit_unsupported => continue,
-                Err(error) => return Err(error),
+        Ok(())
+    };
+    for (domain, operations) in [
+        (
+            crate::builtin::BuiltinToolDomain::Vfs,
+            config.builtin.vfs.operations(),
+        ),
+        (
+            crate::builtin::BuiltinToolDomain::Environment,
+            config.builtin.environment.operations(),
+        ),
+    ] {
+        for operation in operations {
+            let tool = match domain {
+                crate::builtin::BuiltinToolDomain::Vfs => {
+                    BuiltinTool::vfs(operation, BuiltinToolSurface::Canonical)
+                }
+                crate::builtin::BuiltinToolDomain::Environment => {
+                    BuiltinTool::environment(operation, BuiltinToolSurface::Canonical)
+                }
             };
-            let binding = tool.binding(target, config.dispatch.clone());
-            self.add_bundle(bundle);
-            self.catalog.insert(binding);
-        }
-        let one_shot = !config.environment.continue_process;
-        for operation in config.environment.operations() {
-            for tool in BuiltinTool::environment(operation, surface)
-                .with_one_shot(one_shot)
-                .variants()
-            {
-                let bundle = match tool.spec_bundle(target, STATIC_SCOPED_FS_PATHS) {
-                    Ok(bundle) => bundle,
-                    Err(ToolError::UnsupportedCapability { .. }) if omit_unsupported => continue,
-                    Err(error) => return Err(error),
-                };
-                let binding = tool.binding(target, config.dispatch.clone());
-                self.add_bundle(bundle);
-                self.catalog.insert(binding);
-            }
-        }
-        Ok(())
-    }
-
-    fn add_provider_tool_bundle(&mut self, bundle: ToolSpecBundle) {
-        self.add_bundle(bundle);
-    }
-
-    fn add_web_fetch(&mut self, bundle: ToolSpecBundle) {
-        self.add_bundle(bundle);
-        self.catalog
-            .insert(web_fetch_tool_binding(ToolDispatchMode::Local));
-    }
-
-    fn add_concurrency(&mut self, config: &ConcurrencyToolsetConfig) -> ToolResult<()> {
-        for bundle in concurrency_tool_bundles(config)? {
-            self.add_bundle(bundle);
-        }
-        for binding in concurrency_tool_bindings(ToolDispatchMode::Local, config) {
-            self.catalog.insert(binding);
-        }
-        Ok(())
-    }
-
-    fn add_environment_control(&mut self, selection_tools: bool) -> ToolResult<()> {
-        for bundle in environment_control_tool_bundles(selection_tools)? {
-            self.add_bundle(bundle);
-        }
-        for binding in environment_control_tool_bindings(ToolDispatchMode::Local, selection_tools) {
-            self.catalog.insert(binding);
-        }
-        Ok(())
-    }
-
-    fn add_bundle(&mut self, bundle: ToolSpecBundle) {
-        let tool_name = bundle.spec.name.clone();
-        if !self.seen_tools.insert(tool_name.clone()) {
-            return;
-        }
-        for document in bundle.documents {
-            self.documents_by_ref
-                .entry(document.blob_ref.clone())
-                .or_insert(document);
-        }
-        self.tools.insert(tool_name.clone(), bundle.spec);
-        self.visible_tools.push(tool_name);
-    }
-
-    fn finish(self) -> ResolvedToolset {
-        ResolvedToolset {
-            tools: self.tools,
-            documents: self.documents_by_ref.into_values().collect(),
-            catalog: self.catalog,
-            provider_params_patch: self.provider_params_patch,
+            add(register(
+                tool.logical_id(),
+                BuiltinSettings {
+                    presentation: config.builtin.presentation,
+                    one_shot: operation == BuiltinToolOperation::RunProcess
+                        && !config.builtin.environment.continue_process,
+                    ..Default::default()
+                },
+                tool.parallelism(),
+                tool.execution_spec(),
+            ))?;
         }
     }
+    if let Some(search) = &config.web.search {
+        add(register(
+            "web.search",
+            BuiltinSettings {
+                allowed_domains: search.allowed_domains.clone(),
+                blocked_domains: search.blocked_domains.clone(),
+                ..Default::default()
+            },
+            ToolParallelism::ParallelSafe,
+            ToolExecutionSpec::default(),
+        ))?;
+    }
+    if config.web.fetch {
+        add(register(
+            "web.fetch",
+            BuiltinSettings::default(),
+            ToolParallelism::ParallelSafe,
+            ToolExecutionSpec::new(ToolExecutionClass::RemoteInteractive, true),
+        ))?;
+    }
+    if config.environment_read || config.environment_selection {
+        add(register(
+            "environment.read",
+            BuiltinSettings::default(),
+            ToolParallelism::ParallelSafe,
+            ToolExecutionSpec::new(ToolExecutionClass::RemoteInteractive, true),
+        ))?;
+    }
+    if config.environment_selection {
+        for (id, parallelism, retry_safe) in [
+            ("environment.list", ToolParallelism::ParallelSafe, true),
+            ("environment.activate", ToolParallelism::Exclusive, false),
+            ("environment.deactivate", ToolParallelism::Exclusive, false),
+        ] {
+            add(register(
+                id,
+                BuiltinSettings::default(),
+                parallelism,
+                ToolExecutionSpec::new(ToolExecutionClass::RemoteInteractive, retry_safe),
+            ))?;
+        }
+    }
+    if config.concurrency.enabled_or_timer() || config.builtin.environment.jobs_enabled() {
+        for id in [
+            "concurrency.await",
+            "concurrency.cancel",
+            "concurrency.detach",
+        ] {
+            add(register(
+                id,
+                BuiltinSettings::default(),
+                ToolParallelism::Exclusive,
+                ToolExecutionSpec::default(),
+            ))?;
+        }
+        if config.concurrency.timer {
+            add(register(
+                "concurrency.sleep",
+                BuiltinSettings::default(),
+                ToolParallelism::Exclusive,
+                ToolExecutionSpec::default(),
+            ))?;
+        }
+    }
+    Ok(RegisteredToolset { tools })
 }
-
-const STATIC_SCOPED_FS_PATHS: bool = true;
 
 #[cfg(test)]
 mod tests {
@@ -619,11 +487,39 @@ mod tests {
     use crate::web::fetch::WEB_FETCH_TOOL_NAME;
     use crate::web::search::WebSearchToolConfig;
 
+    use crate::definitions::{Definition, ResolvedBuiltin};
+    use crate::runtime::ToolCatalog;
+
+    struct PresentedToolset {
+        tools: BTreeMap<ToolName, ResolvedBuiltin>,
+        catalog: ToolCatalog,
+    }
+
+    fn present_toolset(
+        target: &ToolTarget,
+        config: &ToolsetConfig,
+    ) -> ToolResult<PresentedToolset> {
+        let registry = super::register_toolset(config)?;
+        let mut tools = BTreeMap::new();
+        for tool in registry.tools.values() {
+            let engine::ToolKind::Builtin(spec) = &tool.kind else {
+                panic!("built-in registration");
+            };
+            for resolved in crate::definitions::resolve(&tool.name, spec, target)? {
+                assert!(tools.insert(resolved.name.clone(), resolved).is_none());
+            }
+        }
+        Ok(PresentedToolset {
+            tools,
+            catalog: ToolCatalog::from_registrations(&registry.tools, target)?,
+        })
+    }
+
     fn target(api_kind: ProviderApiKind) -> ToolTarget {
         ToolTarget::api_kind(api_kind)
     }
 
-    fn visible_names(toolset: &ResolvedToolset) -> Vec<String> {
+    fn visible_names(toolset: &PresentedToolset) -> Vec<String> {
         toolset
             .tools
             .keys()
@@ -631,20 +527,22 @@ mod tests {
             .collect()
     }
 
-    fn input_schema(toolset: &ResolvedToolset, name: &str) -> Value {
+    fn input_schema(toolset: &PresentedToolset, name: &str) -> Value {
         let spec = toolset
             .tools
             .get(&ToolName::new(name))
             .unwrap_or_else(|| panic!("tool {name} is listed"));
-        let engine::ToolKind::Function(function) = &spec.kind else {
-            panic!("{name} is a function tool");
+        let Definition::Function(function) = &spec.definition else {
+            panic!("function definition");
         };
-        let document = toolset
-            .documents
-            .iter()
-            .find(|document| document.blob_ref == function.input_schema_ref)
-            .expect("schema document");
-        serde_json::from_slice(&document.bytes).expect("schema json")
+        function.input_schema.clone()
+    }
+
+    fn native_definition(toolset: &PresentedToolset) -> Value {
+        let Definition::Native(native) = &toolset.tools.values().next().unwrap().definition else {
+            panic!("native definition");
+        };
+        native.clone()
     }
 
     fn property_names(schema: &Value) -> Vec<String> {
@@ -671,8 +569,7 @@ mod tests {
         let config = process_config();
 
         let responses = target(ProviderApiKind::OpenAiResponses);
-        let toolset =
-            resolve_toolset(ToolsetEnvironment { target: &responses }, &config).expect("toolset");
+        let toolset = present_toolset(&responses, &config).expect("toolset");
         assert_eq!(visible_names(&toolset), vec!["exec_command", "write_stdin"]);
         let exec = input_schema(&toolset, "exec_command");
         assert_eq!(
@@ -702,8 +599,7 @@ mod tests {
         );
 
         let anthropic = target(ProviderApiKind::AnthropicMessages);
-        let toolset =
-            resolve_toolset(ToolsetEnvironment { target: &anthropic }, &config).expect("toolset");
+        let toolset = present_toolset(&anthropic, &config).expect("toolset");
         assert_eq!(
             visible_names(&toolset),
             vec!["Bash", "BashOutput", "KillShell"]
@@ -738,13 +634,7 @@ mod tests {
         }
 
         let completions = target(ProviderApiKind::OpenAiCompletions);
-        let toolset = resolve_toolset(
-            ToolsetEnvironment {
-                target: &completions,
-            },
-            &config,
-        )
-        .expect("toolset");
+        let toolset = present_toolset(&completions, &config).expect("toolset");
         assert_eq!(
             visible_names(&toolset),
             vec!["continue_process", "run_process"]
@@ -782,8 +672,7 @@ mod tests {
         config.builtin.environment.continue_process = false;
 
         let responses = target(ProviderApiKind::OpenAiResponses);
-        let toolset =
-            resolve_toolset(ToolsetEnvironment { target: &responses }, &config).expect("toolset");
+        let toolset = present_toolset(&responses, &config).expect("toolset");
         assert_eq!(visible_names(&toolset), vec!["exec_command"]);
         assert_eq!(
             property_names(&input_schema(&toolset, "exec_command")),
@@ -800,8 +689,7 @@ mod tests {
         );
 
         let anthropic = target(ProviderApiKind::AnthropicMessages);
-        let toolset =
-            resolve_toolset(ToolsetEnvironment { target: &anthropic }, &config).expect("toolset");
+        let toolset = present_toolset(&anthropic, &config).expect("toolset");
         assert_eq!(visible_names(&toolset), vec!["Bash"]);
         assert!(
             !property_names(&input_schema(&toolset, "Bash"))
@@ -809,13 +697,7 @@ mod tests {
         );
 
         let completions = target(ProviderApiKind::OpenAiCompletions);
-        let toolset = resolve_toolset(
-            ToolsetEnvironment {
-                target: &completions,
-            },
-            &config,
-        )
-        .expect("toolset");
+        let toolset = present_toolset(&completions, &config).expect("toolset");
         assert_eq!(visible_names(&toolset), vec!["run_process"]);
         assert!(
             !property_names(&input_schema(&toolset, "run_process"))
@@ -827,11 +709,7 @@ mod tests {
     fn workspace_toolset_renders_openai_canonical_builtin_tools() {
         let target = target(ProviderApiKind::OpenAiResponses);
 
-        let toolset = resolve_toolset(
-            ToolsetEnvironment { target: &target },
-            &ToolsetConfig::workspace(),
-        )
-        .expect("toolset");
+        let toolset = present_toolset(&target, &ToolsetConfig::workspace()).expect("toolset");
 
         assert_eq!(
             visible_names(&toolset),
@@ -851,7 +729,6 @@ mod tests {
                 .get(&ToolName::new("vfs_read_file"))
                 .is_some()
         );
-        assert!(toolset.provider_params_patch.is_empty());
     }
 
     #[test]
@@ -860,8 +737,7 @@ mod tests {
         let mut config = ToolsetConfig::empty();
         config.builtin.vfs = FilesystemToolsetConfig::read_only();
 
-        let toolset =
-            resolve_toolset(ToolsetEnvironment { target: &target }, &config).expect("toolset");
+        let toolset = present_toolset(&target, &config).expect("toolset");
 
         assert_eq!(
             visible_names(&toolset),
@@ -881,8 +757,7 @@ mod tests {
         let mut config = ToolsetConfig::workspace();
         config.builtin.environment = EnvironmentToolsetConfig::basic();
 
-        let toolset =
-            resolve_toolset(ToolsetEnvironment { target: &target }, &config).expect("toolset");
+        let toolset = present_toolset(&target, &config).expect("toolset");
         let names = visible_names(&toolset);
 
         assert!(names.contains(&"vfs_read_file".to_owned()));
@@ -909,8 +784,7 @@ mod tests {
         let mut config = ToolsetConfig::empty();
         config.builtin.environment = EnvironmentToolsetConfig::jobs();
 
-        let toolset =
-            resolve_toolset(ToolsetEnvironment { target: &target }, &config).expect("toolset");
+        let toolset = present_toolset(&target, &config).expect("toolset");
         let names = visible_names(&toolset);
 
         assert!(names.contains(&"job_submit".to_owned()));
@@ -935,11 +809,7 @@ mod tests {
     #[test]
     fn environment_read_is_independent_from_default_off_selection_tools() {
         let target = target(ProviderApiKind::OpenAiResponses);
-        let disabled = resolve_toolset(
-            ToolsetEnvironment { target: &target },
-            &ToolsetConfig::empty(),
-        )
-        .expect("disabled toolset");
+        let disabled = present_toolset(&target, &ToolsetConfig::empty()).expect("disabled toolset");
         assert!(
             visible_names(&disabled)
                 .iter()
@@ -948,13 +818,11 @@ mod tests {
 
         let mut config = ToolsetConfig::empty();
         config.environment_read = true;
-        let read_only = resolve_toolset(ToolsetEnvironment { target: &target }, &config)
-            .expect("environment read toolset");
+        let read_only = present_toolset(&target, &config).expect("environment read toolset");
         assert_eq!(visible_names(&read_only), vec!["environment_read"]);
 
         config.environment_selection = true;
-        let enabled = resolve_toolset(ToolsetEnvironment { target: &target }, &config)
-            .expect("selection toolset");
+        let enabled = present_toolset(&target, &config).expect("selection toolset");
 
         assert_eq!(
             visible_names(&enabled),
@@ -973,8 +841,7 @@ mod tests {
         let mut config = ToolsetConfig::empty();
         config.concurrency = ConcurrencyToolsetConfig::timer();
 
-        let toolset =
-            resolve_toolset(ToolsetEnvironment { target: &target }, &config).expect("toolset");
+        let toolset = present_toolset(&target, &config).expect("toolset");
         let names = visible_names(&toolset);
 
         assert!(names.contains(&AWAIT_TOOL_NAME.to_owned()));
@@ -995,15 +862,13 @@ mod tests {
             ..BuiltinToolsetConfig::disabled()
         };
 
-        let toolset =
-            resolve_toolset(ToolsetEnvironment { target: &target }, &config).expect("toolset");
+        let toolset = present_toolset(&target, &config).expect("toolset");
 
         assert_eq!(visible_names(&toolset), vec!["VfsRead"]);
         assert!(
-            toolset
-                .documents
-                .iter()
-                .any(|document| document.text_lossy().contains("\"file_path\""))
+            input_schema(&toolset, "VfsRead")["properties"]
+                .get("file_path")
+                .is_some()
         );
     }
 
@@ -1011,11 +876,7 @@ mod tests {
     fn workspace_provider_default_omits_builtin_tools_unsupported_by_provider_surface() {
         let target = target(ProviderApiKind::AnthropicMessages);
 
-        let toolset = resolve_toolset(
-            ToolsetEnvironment { target: &target },
-            &ToolsetConfig::workspace(),
-        )
-        .expect("toolset");
+        let toolset = present_toolset(&target, &ToolsetConfig::workspace()).expect("toolset");
 
         assert_eq!(
             visible_names(&toolset),
@@ -1037,8 +898,7 @@ mod tests {
         config.builtin.vfs.list_dir = true;
         config.builtin.environment.filesystem.list_dir = true;
 
-        let toolset =
-            resolve_toolset(ToolsetEnvironment { target: &target }, &config).expect("toolset");
+        let toolset = present_toolset(&target, &config).expect("toolset");
 
         assert_eq!(visible_names(&toolset), vec!["ListDir", "VfsListDir"]);
         assert_eq!(
@@ -1068,13 +928,11 @@ mod tests {
             Vec::new(),
         ));
 
-        let toolset =
-            resolve_toolset(ToolsetEnvironment { target: &target }, &config).expect("toolset");
+        let toolset = present_toolset(&target, &config).expect("toolset");
 
         assert_eq!(visible_names(&toolset), vec!["web_search"]);
         assert!(toolset.catalog.is_empty());
-        let native: Value =
-            serde_json::from_slice(&toolset.documents[0].bytes).expect("native tool json");
+        let native = native_definition(&toolset);
         assert_eq!(
             native,
             json!({
@@ -1082,11 +940,6 @@ mod tests {
                 "external_web_access": false,
                 "filters": { "allowed_domains": ["docs.rs"] }
             })
-        );
-
-        assert_eq!(
-            toolset.provider_params_patch.openai_responses_include(),
-            [crate::web::search::OPENAI_RESPONSES_WEB_SEARCH_SOURCES_INCLUDE.to_owned()]
         );
     }
 
@@ -1096,13 +949,11 @@ mod tests {
         let mut config = ToolsetConfig::empty();
         config.web.search = Some(WebSearchToolConfig::default());
 
-        let toolset =
-            resolve_toolset(ToolsetEnvironment { target: &target }, &config).expect("toolset");
+        let toolset = present_toolset(&target, &config).expect("toolset");
 
         assert_eq!(visible_names(&toolset), vec!["web_search"]);
         assert!(toolset.catalog.is_empty());
-        let native: Value =
-            serde_json::from_slice(&toolset.documents[0].bytes).expect("native tool json");
+        let native = native_definition(&toolset);
         assert_eq!(native["type"], json!("web_search_20250305"));
     }
 
@@ -1112,8 +963,7 @@ mod tests {
         let mut config = ToolsetConfig::empty();
         config.web.fetch = true;
 
-        let toolset =
-            resolve_toolset(ToolsetEnvironment { target: &target }, &config).expect("toolset");
+        let toolset = present_toolset(&target, &config).expect("toolset");
 
         assert_eq!(visible_names(&toolset), vec![WEB_FETCH_TOOL_NAME]);
         assert!(
@@ -1134,8 +984,7 @@ mod tests {
         let mut config = ToolsetConfig::empty();
         config.web.fetch = true;
 
-        let toolset =
-            resolve_toolset(ToolsetEnvironment { target: &target }, &config).expect("toolset");
+        let toolset = present_toolset(&target, &config).expect("toolset");
 
         assert_eq!(visible_names(&toolset), vec![WEB_FETCH_TOOL_NAME]);
         assert!(toolset.catalog.is_empty());
@@ -1143,6 +992,6 @@ mod tests {
             .tools
             .get(&ToolName::new(WEB_FETCH_TOOL_NAME))
             .expect("web_fetch spec");
-        assert!(matches!(spec.kind, engine::ToolKind::ProviderNative(_)));
+        assert!(matches!(spec.definition, Definition::Native(_)));
     }
 }

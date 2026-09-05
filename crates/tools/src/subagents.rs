@@ -6,17 +6,13 @@
 
 use engine::{
     BlobRef, ContextEntryInput, ContextEntryKey, ContextEntryKind, CoreAgentCommand,
-    FunctionToolSpec, SUBAGENT_CATALOG_CONTEXT_KEY, SubagentLimits, ToolExecutionSpec, ToolKind,
-    ToolName, ToolParallelism, ToolSpec,
+    SUBAGENT_CATALOG_CONTEXT_KEY, SubagentLimits,
     storage::{BlobStore, BlobStoreError},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::{
-    error::{ToolError, ToolResult},
-    runtime::{ToolDocument, ToolSpecBundle},
-};
+use crate::error::{ToolError, ToolResult};
 
 pub const AGENT_RUN_TOOL_NAME: &str = "agent_run";
 pub const AGENT_SPAWN_TOOL_NAME: &str = "agent_spawn";
@@ -262,7 +258,9 @@ pub fn clear_subagent_catalog_command(
     })
 }
 
-pub fn subagent_tool_bundle(kind: SubagentToolKind) -> ToolResult<ToolSpecBundle> {
+pub fn subagent_tool_definition(
+    kind: SubagentToolKind,
+) -> ToolResult<crate::runtime::FunctionDefinition> {
     let description = match kind {
         SubagentToolKind::Run => {
             "Run a sub-agent from the sub-agent catalog with a complete brief and return its result when it finishes. Several agent_run calls in one turn run concurrently and return together."
@@ -271,30 +269,11 @@ pub fn subagent_tool_bundle(kind: SubagentToolKind) -> ToolResult<ToolSpecBundle
             "Start a sub-agent from the sub-agent catalog with a complete brief and return a promise immediately. Join it later with await (any/all/timeout); cancel closes the child."
         }
     };
-    let description = ToolDocument::text("text/plain; charset=utf-8", description);
-    let input_schema = ToolDocument::text(
-        "application/schema+json",
-        serde_json::to_string(&agent_call_input_schema()).map_err(|error| {
-            ToolError::InvalidRequest {
-                message: format!("failed to encode {} schema: {error}", kind.tool_name()),
-            }
-        })?,
-    );
-    Ok(ToolSpecBundle {
-        spec: ToolSpec {
-            name: ToolName::new(kind.tool_name()),
-            kind: ToolKind::Function(FunctionToolSpec {
-                description_ref: Some(description.blob_ref.clone()),
-                input_schema_ref: input_schema.blob_ref.clone(),
-                output_schema_ref: None,
-                strict: Some(false),
-                provider_options_ref: None,
-            }),
-            parallelism: ToolParallelism::ParallelSafe,
-            execution: ToolExecutionSpec::default(),
-        },
-        documents: vec![description, input_schema],
-    })
+    Ok(crate::runtime::FunctionDefinition::new(
+        kind.tool_name(),
+        description,
+        agent_call_input_schema(),
+    ))
 }
 
 fn agent_call_input_schema() -> Value {
@@ -355,8 +334,8 @@ mod tests {
                 SubagentToolKind::from_binding(kind.workflow_tool_id(), kind.semantic_type()),
                 Some(kind)
             );
-            let bundle = subagent_tool_bundle(kind).expect("bundle");
-            assert_eq!(bundle.spec.name, ToolName::new(kind.tool_name()));
+            let bundle = subagent_tool_definition(kind).expect("bundle");
+            assert_eq!(bundle.name.as_str(), kind.tool_name());
         }
         assert_eq!(
             SubagentToolKind::from_binding(AGENT_RUN_WORKFLOW_TOOL_ID, "other"),

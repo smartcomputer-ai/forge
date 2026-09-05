@@ -857,8 +857,7 @@ mod tests {
         fs::tools::ReadFileResult,
         fs::{FileSystem, FsPath, FsToolContext, LinkedVfsFileSystem},
         runtime::InlineToolRuntime,
-        runtime::ToolTarget,
-        toolset::{ToolsetConfig, ToolsetEnvironment, resolve_toolset},
+        toolset::{ToolsetConfig, register_toolset},
     };
     use vfs::{
         CompareAndSetVfsWorkspaceHead, CreateInlineSnapshotRequest, CreateVfsWorkspaceRecord,
@@ -1058,6 +1057,7 @@ mod tests {
                         approval_requests: Vec::new(),
                         tool_calls: vec![ObservedToolCall {
                             call_id: engine::ToolCallId::new("call-1"),
+                            tool_id: Some(ToolName::new("test_tool")),
                             tool_name: ToolName::new("test_tool"),
                             provider_kind: None,
                             arguments_ref: BlobRef::from_bytes(br#"{}"#),
@@ -1113,6 +1113,7 @@ mod tests {
                         approval_requests: Vec::new(),
                         tool_calls: vec![ObservedToolCall {
                             call_id: engine::ToolCallId::new(self.call_id.clone()),
+                            tool_id: Some(ToolName::new("vfs.read_file")),
                             tool_name: ToolName::new("vfs_read_file"),
                             provider_kind: None,
                             arguments_ref,
@@ -1924,14 +1925,9 @@ mod tests {
         .expect("linked fs");
         let ctx =
             FsToolContext::new(Arc::new(linked_fs), blob_store.clone()).with_cwd(FsPath::root());
-        let target = ToolTarget::api_kind(ProviderApiKind::OpenAiResponses);
-        let toolset = resolve_toolset(
-            ToolsetEnvironment { target: &target },
-            &ToolsetConfig::workspace(),
-        )
-        .expect("toolset");
+        let toolset = register_toolset(&ToolsetConfig::workspace()).expect("toolset");
         let tool_set = toolset.tools.clone();
-        let tools = InlineToolRuntime::with_vfs_filesystem(ctx, toolset.catalog);
+        let tools = InlineToolRuntime::with_vfs_filesystem(ctx, tools::runtime::ToolCatalog::new());
         let runner = SessionRunner::new(
             stores,
             Arc::new(ReadFileThenFinalLlm {
@@ -2054,14 +2050,9 @@ mod tests {
         .expect("linked fs");
         let ctx =
             FsToolContext::new(Arc::new(linked_fs), blob_store.clone()).with_cwd(FsPath::root());
-        let target = ToolTarget::api_kind(ProviderApiKind::OpenAiResponses);
-        let toolset = resolve_toolset(
-            ToolsetEnvironment { target: &target },
-            &ToolsetConfig::workspace(),
-        )
-        .expect("toolset");
+        let toolset = register_toolset(&ToolsetConfig::workspace()).expect("toolset");
         let tool_set = toolset.tools.clone();
-        let tools = InlineToolRuntime::with_vfs_filesystem(ctx, toolset.catalog);
+        let tools = InlineToolRuntime::with_vfs_filesystem(ctx, tools::runtime::ToolCatalog::new());
         let runner = SessionRunner::new(
             stores,
             Arc::new(ReadFileThenFinalLlm {

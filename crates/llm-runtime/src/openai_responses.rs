@@ -166,7 +166,19 @@ impl LlmGenerationAdapter for OpenAiResponsesLlmAdapter {
             });
         }
 
-        let mut provider_request = self.materialize_create_request(&request.request).await?;
+        let mut catalog = crate::tool_catalog::ToolCatalog::resolve(
+            self.blobs.as_ref(),
+            &tools::runtime::ToolTarget::from(&request.request.model),
+            &request.request.tools,
+        )
+        .await?;
+        let mut provider_request = materialize_request_with_catalog(
+            self.blobs.as_ref(),
+            self.inventory.as_ref(),
+            &request.request,
+            &mut catalog,
+        )
+        .await?;
         // Route every turn of a session to the same prompt cache.
         provider_request.prompt_cache_key =
             Some(crate::prompt_cache::prompt_cache_key(&request.session_id));
@@ -187,7 +199,8 @@ impl LlmGenerationAdapter for OpenAiResponsesLlmAdapter {
                     .map(|endpoint| &endpoint.transport),
             )
             .await?;
-        let result = result_from_response(self.blobs.as_ref(), &request, &response).await?;
+        let mut result = result_from_response(self.blobs.as_ref(), &request, &response).await?;
+        catalog.normalize(&mut result);
         let debug_dumps = store_debug_dumps(
             self.blobs.as_ref(),
             request_dump,
@@ -249,6 +262,21 @@ async fn materialize_create_request_with_inventory(
     inventory: &dyn McpInventoryResolver,
     request: &LlmRequest,
 ) -> LlmAdapterResult<oai::CreateResponseRequest> {
+    let mut catalog = crate::tool_catalog::ToolCatalog::resolve(
+        blobs,
+        &tools::runtime::ToolTarget::from(&request.model),
+        &request.tools,
+    )
+    .await?;
+    materialize_request_with_catalog(blobs, inventory, request, &mut catalog).await
+}
+
+async fn materialize_request_with_catalog(
+    blobs: &dyn BlobStore,
+    inventory: &dyn McpInventoryResolver,
+    request: &LlmRequest,
+    catalog: &mut crate::tool_catalog::ToolCatalog,
+) -> LlmAdapterResult<oai::CreateResponseRequest> {
     let mut params = openai_responses_params(request.params.as_ref())?;
     // Materialize intent fields into provider params. Explicit per-run
     // provider params win: derived values never overwrite fields the params
@@ -271,7 +299,7 @@ async fn materialize_create_request_with_inventory(
         .cloned()
         .collect::<Vec<_>>();
     let input_items = materialize_input_items(blobs, &input_entries).await?;
-    let tools = materialize_tools(blobs, inventory, &request.tools).await?;
+    let tools = materialize_tools(blobs, inventory, catalog).await?;
 
     let mut extra = params.extra.clone();
     let service_tier = crate::params::take_openai_service_tier(&mut extra, params.service_tier)?
@@ -290,7 +318,10 @@ async fn materialize_create_request_with_inventory(
         instructions,
         previous_response_id: request.provider_response_id.clone(),
         tools: non_empty(tools),
-        tool_choice: request.tool_choice.as_ref().map(openai_tool_choice),
+        tool_choice: catalog
+            .tool_choice(request.tool_choice.as_ref())?
+            .as_ref()
+            .map(openai_tool_choice),
         reasoning: params.reasoning.as_ref().map(|reasoning| oai::Reasoning {
             effort: reasoning.effort.clone(),
             summary: reasoning.summary.clone(),
@@ -573,12 +604,12 @@ fn is_openai_raw_item(item: &ContextEntry) -> bool {
 async fn materialize_tools(
     blobs: &dyn BlobStore,
     inventory: &dyn McpInventoryResolver,
-    tools: &[ToolSpec],
+    catalog: &mut crate::tool_catalog::ToolCatalog,
 ) -> LlmAdapterResult<Vec<oai::Tool>> {
-    let mut materialized = Vec::with_capacity(tools.len());
+    let mut materialized = Vec::with_capacity(catalog.tools.len());
     let mut native_mcp_tool_count = 0usize;
-    for tool in tools {
-        let ToolKind::RemoteMcp(spec) = &tool.kind else {
+    for tool in &catalog.tools {
+        let crate::tool_catalog::ResolvedToolKind::RemoteMcp(spec) = &tool.kind else {
             materialized.push(materialize_tool(blobs, tool).await?);
             continue;
         };
@@ -598,7 +629,7 @@ async fn materialize_tools(
                 let advertised_count = native.len();
                 native.retain(|native_tool| {
                     let name = format!("{}__{}", tool.name, native_tool.remote_name);
-                    name.len() <= 64 && ToolName::try_new(name).is_ok()
+                    crate::tool_catalog::valid_exposed_name(&name)
                 });
                 let omitted_count = advertised_count - native.len();
                 if omitted_count != 0 {
@@ -619,6 +650,9 @@ async fn materialize_tools(
                 native_mcp_tool_count += native.len();
                 for native_tool in native {
                     let name = format!("{}__{}", tool.name, native_tool.remote_name);
+                    catalog
+                        .names
+                        .insert(ToolName::new(name.clone()), Some(tool.id.clone()))?;
                     let mut function = oai::FunctionTool::new(name, native_tool.input_schema);
                     function.description = native_tool.description;
                     // MCP accepts general JSON Schema. OpenAI strict functions
@@ -633,20 +667,17 @@ async fn materialize_tools(
     Ok(materialized)
 }
 
-async fn materialize_tool(blobs: &dyn BlobStore, tool: &ToolSpec) -> LlmAdapterResult<oai::Tool> {
+async fn materialize_tool(
+    blobs: &dyn BlobStore,
+    tool: &crate::tool_catalog::ResolvedTool,
+) -> LlmAdapterResult<oai::Tool> {
     match &tool.kind {
-        ToolKind::Function(function) => {
-            let mut materialized = oai::FunctionTool::new(
-                tool.name.as_str(),
-                read_json(blobs, &function.input_schema_ref).await?,
-            );
-            materialized.description = match &function.description_ref {
-                Some(blob_ref) => Some(read_text(blobs, blob_ref).await?),
-                None => None,
-            };
+        crate::tool_catalog::ResolvedToolKind::Function(function) => {
+            let mut materialized =
+                oai::FunctionTool::new(tool.name.as_str(), function.input_schema.clone());
+            materialized.description = function.description.clone();
             materialized.strict = function.strict;
-            if let Some(provider_options_ref) = &function.provider_options_ref {
-                let options = read_json(blobs, provider_options_ref).await?;
+            if let Some(options) = &function.provider_options {
                 let Some(options) = options.as_object() else {
                     return Err(LlmAdapterError::InvalidProviderRequest {
                         message: format!(
@@ -661,7 +692,7 @@ async fn materialize_tool(blobs: &dyn BlobStore, tool: &ToolSpec) -> LlmAdapterR
             }
             Ok(oai::Tool::Function(materialized))
         }
-        ToolKind::ProviderNative(native) => {
+        crate::tool_catalog::ResolvedToolKind::ProviderNative(native) => {
             if native.api_kind != ProviderApiKind::OpenAiResponses {
                 return Err(LlmAdapterError::InvalidProviderRequest {
                     message: format!(
@@ -672,12 +703,14 @@ async fn materialize_tool(blobs: &dyn BlobStore, tool: &ToolSpec) -> LlmAdapterR
             }
             match native.execution {
                 ProviderNativeToolExecution::ProviderHosted
-                | ProviderNativeToolExecution::ClientEffect => Ok(oai::Tool::Raw(
-                    read_json(blobs, &native.native_tool_ref).await?,
-                )),
+                | ProviderNativeToolExecution::ClientEffect => {
+                    Ok(oai::Tool::Raw(native.definition.clone()))
+                }
             }
         }
-        ToolKind::RemoteMcp(remote_mcp) => materialize_remote_mcp_tool(blobs, remote_mcp).await,
+        crate::tool_catalog::ResolvedToolKind::RemoteMcp(remote_mcp) => {
+            materialize_remote_mcp_tool(blobs, remote_mcp).await
+        }
     }
 }
 
@@ -1295,6 +1328,7 @@ async fn function_call_context(
     };
     let tool_call = ObservedToolCall {
         call_id,
+        tool_id: Some(tool_name.clone()),
         tool_name,
         provider_kind: Some(PROVIDER_KIND_FUNCTION_CALL.to_string()),
         arguments_ref,
@@ -1498,10 +1532,7 @@ mod tests {
         SKILL_CATALOG_SCHEMA_VERSION, SkillCatalogSnapshot, SkillDependencies, SkillLocation,
         SkillMetadata, SkillScope, SkillSource, SkillTrustLevel,
     };
-    use tools::web::search::{
-        OpenAiResponsesWebSearchConfig, WebSearchContextSize, WebSearchMode,
-        openai_responses_web_search_tool_bundle,
-    };
+    use tools::web::search::{OpenAiResponsesWebSearchConfig, WebSearchContextSize, WebSearchMode};
 
     use super::*;
     use crate::executor::{LlmAdapterRegistry, LlmRuntime};
@@ -1553,10 +1584,17 @@ mod tests {
         let tools = materialize_tools(
             &blobs,
             &StaticMcpInventory,
-            &[
-                native_mcp_tool(RemoteMcpExposure::Inject),
-                native_mcp_tool(RemoteMcpExposure::Search),
-            ],
+            &mut crate::tool_catalog::ToolCatalog::resolve(
+                &blobs,
+                &tools::runtime::ToolTarget::api_kind(ProviderApiKind::OpenAiResponses),
+                &[native_mcp_tool(RemoteMcpExposure::Inject), {
+                    let mut tool = native_mcp_tool(RemoteMcpExposure::Search);
+                    tool.name = ToolName::new("mcp_other");
+                    tool
+                }],
+            )
+            .await
+            .expect("catalog"),
         )
         .await
         .expect("materialize native MCP");
@@ -1893,24 +1931,32 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn materialize_create_request_passes_provider_native_web_search_tool() {
         let blobs = InMemoryBlobStore::new();
-        let bundle = openai_responses_web_search_tool_bundle(&OpenAiResponsesWebSearchConfig {
+        let native = OpenAiResponsesWebSearchConfig {
             mode: WebSearchMode::Cached,
             search_context_size: Some(WebSearchContextSize::Low),
             allowed_domains: vec!["docs.rs".to_string()],
             blocked_domains: Vec::new(),
             user_location: None,
             include_sources: true,
-        })
-        .expect("web search bundle")
-        .expect("enabled web search");
-        for document in &bundle.documents {
-            let stored_ref = crate::blob_io::put_bytes(&blobs, document.blob_bytes())
-                .await
-                .expect("store native tool");
-            assert_eq!(stored_ref, document.blob_ref);
         }
+        .native_tool_json()
+        .expect("web search definition")
+        .expect("enabled web search");
+
         let mut request = intent_request(Vec::new());
-        request.tools = vec![bundle.spec];
+        request.tools = vec![engine::ToolSpec {
+            name: engine::ToolName::new("web_search"),
+            kind: engine::ToolKind::ProviderNative(engine::ProviderNativeToolSpec {
+                api_kind: ProviderApiKind::OpenAiResponses,
+                native_tool_ref: blobs
+                    .put_bytes(serde_json::to_vec(&native).expect("native json"))
+                    .await
+                    .expect("native definition"),
+                execution: engine::ProviderNativeToolExecution::ProviderHosted,
+            }),
+            parallelism: engine::ToolParallelism::ParallelSafe,
+            execution: Default::default(),
+        }];
         request.tool_choice = Some(ToolChoice::Auto);
         request.output_limit = Some(1024);
         request.params = Some(openai_params(&OpenAiResponsesParams {
@@ -2536,6 +2582,15 @@ mod tests {
             request: {
                 let mut request = intent_request(vec![context]);
                 request.output_limit = Some(256);
+                request.tools = vec![tools::definitions::register(
+                    "env.read_file",
+                    tools::definitions::BuiltinSettings {
+                        presentation: tools::toolset::BuiltinToolPresentation::Canonical,
+                        ..Default::default()
+                    },
+                    ToolParallelism::ParallelSafe,
+                    Default::default(),
+                )];
                 request
             },
         };
@@ -2556,6 +2611,10 @@ mod tests {
             Some(15)
         );
         assert_eq!(result.facts.tool_calls.len(), 1);
+        assert_eq!(
+            result.facts.tool_calls[0].tool_id,
+            Some(ToolName::new("env.read_file"))
+        );
         assert_eq!(
             result.facts.tool_calls[0].tool_name,
             ToolName::new("read_file")

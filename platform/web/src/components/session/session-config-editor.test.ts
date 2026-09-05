@@ -11,6 +11,24 @@ import {
   workspaceLinksFromConfig,
 } from "./session-config-editor";
 
+describe("specific tool choice", () => {
+  it.each([
+    { providerId: "openai", apiKind: "openai:responses", model: "gpt-5.5" },
+    { providerId: "anthropic", apiKind: "anthropic:messages", model: "claude-opus-5" },
+    { providerId: "deepseek", apiKind: "openai:completions", model: "deepseek-v4-pro" },
+  ])("preserves registry IDs when saving a $apiKind configuration", (model) => {
+    for (const toolId of ["env.run_process", "vfs.read_file", "custom_function"]) {
+      expect(normalizeSessionConfig({
+        model,
+        generation: { toolChoice: { type: "specific", toolId: ` ${toolId} ` } },
+      })).toEqual({
+        model,
+        generation: { toolChoice: { type: "specific", toolId } },
+      });
+    }
+  });
+});
+
 describe("model picker ordering", () => {
   const option = (
     model: string,

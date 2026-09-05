@@ -14,13 +14,6 @@ use engine::{
 use llm_clients::anthropic::messages::{Client, Config};
 use llm_runtime::{AnthropicMessagesLlmAdapter, LlmCompactionAdapter, LlmGenerationAdapter};
 use serde_json::{Value, json};
-use tools::{
-    runtime::ToolDocument,
-    web::{
-        fetch::{WebFetchToolConfig, anthropic_messages_web_fetch_tool_bundle},
-        search::{WebSearchToolConfig, anthropic_messages_web_search_tool_bundle},
-    },
-};
 
 mod support;
 
@@ -92,16 +85,6 @@ fn unquote_dotenv_value(value: &str) -> String {
 
 async fn text_blob(blobs: &InMemoryBlobStore, text: &str) -> BlobRef {
     blobs.insert_text(text).await
-}
-
-async fn store_tool_documents(blobs: &InMemoryBlobStore, documents: &[ToolDocument]) {
-    for document in documents {
-        let stored_ref = blobs
-            .put_bytes(document.blob_bytes())
-            .await
-            .expect("store tool document");
-        assert_eq!(stored_ref, document.blob_ref);
-    }
 }
 
 fn model_selection() -> ModelSelection {
@@ -374,10 +357,12 @@ fn cited_text_blocks(result: &LlmGenerationResult) -> Option<&ContextEntryInput>
 #[ignore = "requires ANTHROPIC_API_KEY and a model supporting hosted web search (costs real money)"]
 async fn anthropic_messages_live_adapter_uses_hosted_web_search() {
     let blobs = Arc::new(InMemoryBlobStore::new());
-    let bundle = anthropic_messages_web_search_tool_bundle(&WebSearchToolConfig::default())
-        .expect("web search bundle")
-        .expect("enabled web search");
-    store_tool_documents(&blobs, &bundle.documents).await;
+    let tool = tools::definitions::register(
+        "web.search",
+        Default::default(),
+        engine::ToolParallelism::ParallelSafe,
+        Default::default(),
+    );
     let input_ref = text_blob(
         &blobs,
         "Use web search to find Anthropic's current web search tool documentation. Reply with one short sourced sentence.",
@@ -387,9 +372,9 @@ async fn anthropic_messages_live_adapter_uses_hosted_web_search() {
         "live-anthropic-messages-web-search",
         vec![user_entry(1, input_ref)],
     );
-    request.tools = vec![bundle.spec];
+    request.tools = vec![tool];
     request.tool_choice = Some(ToolChoice::Specific {
-        tool_name: ToolName::new("web_search"),
+        tool_name: ToolName::new("web.search"),
     });
     let adapter = AnthropicMessagesLlmAdapter::new(
         retrying_anthropic_messages_client(live_client()),
@@ -435,10 +420,12 @@ async fn anthropic_messages_live_adapter_uses_hosted_web_search() {
 #[ignore = "requires ANTHROPIC_API_KEY and a model supporting hosted web fetch (costs real money)"]
 async fn anthropic_messages_live_adapter_uses_hosted_web_fetch() {
     let blobs = Arc::new(InMemoryBlobStore::new());
-    let bundle = anthropic_messages_web_fetch_tool_bundle(&WebFetchToolConfig::enabled())
-        .expect("web fetch bundle")
-        .expect("enabled web fetch");
-    store_tool_documents(&blobs, &bundle.documents).await;
+    let tool = tools::definitions::register(
+        "web.fetch",
+        Default::default(),
+        engine::ToolParallelism::ParallelSafe,
+        Default::default(),
+    );
     let input_ref = text_blob(
         &blobs,
         "Use web_fetch to read https://www.rfc-editor.org/rfc/rfc2606.txt. State which top-level domains it reserves and cite the fetched document.",
@@ -448,9 +435,9 @@ async fn anthropic_messages_live_adapter_uses_hosted_web_fetch() {
         "live-anthropic-messages-web-fetch",
         vec![user_entry(1, input_ref)],
     );
-    request.tools = vec![bundle.spec];
+    request.tools = vec![tool];
     request.tool_choice = Some(ToolChoice::Specific {
-        tool_name: ToolName::new("web_fetch"),
+        tool_name: ToolName::new("web.fetch"),
     });
     let adapter = AnthropicMessagesLlmAdapter::new(
         retrying_anthropic_messages_client(live_client()),

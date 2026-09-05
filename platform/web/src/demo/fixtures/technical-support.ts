@@ -56,6 +56,7 @@ import {
   template,
   tool,
   vfsReadFile,
+  vfsWriteFile,
   webFetch,
   webhookTrigger,
   workspace,
@@ -616,19 +617,9 @@ const LEE: Conversation = {
 
 const main = (botId: string): { sessionId: string; label: string } => ({ sessionId: `bot:v1:${botId}`, label: "Main" });
 
-/// `vfs_write_file` into a writable workspace link.
-function vfsWriteFile(path: string, content: string, detail: string): DemoToolCall {
-  return tool(
-    "vfs_write_file",
-    { path, content },
-    { group: "edit", verb: "Write", target: path, detail },
-    `wrote ${new TextEncoder().encode(content).length} bytes to ${path}`,
-  );
-}
-
 /// A PagerDuty MCP call that the server refused.
 function pagerdutyFailure(name: string, args: Record<string, unknown>, output: string): DemoToolCall {
-  return tool(`pagerduty.${name}`, args, { group: "other", verb: "MCP", target: `pagerduty.${name}` }, output, true);
+  return tool(`pagerduty.${name}`, `pagerduty.${name}`, args, { group: "other", verb: "MCP", target: `pagerduty.${name}` }, output, true);
 }
 
 /// Support's `nw` CLI in the support-tools environment.

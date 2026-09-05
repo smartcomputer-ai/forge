@@ -334,7 +334,9 @@ mod tests {
                     subagents_policy: None,
                     workspace_links: Vec::new(),
                     calls: vec![ToolInvocationRequest {
+                        builtin: None,
                         call_id: tool_call.call_id.clone(),
+                        tool_id: Some(tool_call.tool_name.clone()),
                         tool_name: tool_call.tool_name.clone(),
                         arguments_ref: tool_call.arguments_ref.clone(),
                         workflow_tool: None,

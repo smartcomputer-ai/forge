@@ -199,7 +199,19 @@ impl LlmGenerationAdapter for AnthropicMessagesLlmAdapter {
             });
         }
 
-        let provider_request = self.materialize_create_request(&request.request).await?;
+        let mut catalog = crate::tool_catalog::ToolCatalog::resolve(
+            self.blobs.as_ref(),
+            &tools::runtime::ToolTarget::from(&request.request.model),
+            &request.request.tools,
+        )
+        .await?;
+        let provider_request = materialize_request_with_catalog(
+            self.blobs.as_ref(),
+            self.inventory.as_ref(),
+            &request.request,
+            &mut catalog,
+        )
+        .await?;
         let (mut send_request, mut redacted_request) =
             inject_remote_mcp_auth(self.secrets.as_ref(), &request.request, provider_request)
                 .await?;
@@ -237,7 +249,8 @@ impl LlmGenerationAdapter for AnthropicMessagesLlmAdapter {
                 break;
             }
         }
-        let result = result_from_responses(self.blobs.as_ref(), &request, &responses).await?;
+        let mut result = result_from_responses(self.blobs.as_ref(), &request, &responses).await?;
+        catalog.normalize(&mut result);
         let request_dump = match request_dumps.len() {
             0 => None,
             1 => request_dumps.pop(),
@@ -324,6 +337,21 @@ async fn materialize_create_request_with_inventory(
     inventory: &dyn McpInventoryResolver,
     request: &LlmRequest,
 ) -> LlmAdapterResult<am::CreateMessageRequest> {
+    let mut catalog = crate::tool_catalog::ToolCatalog::resolve(
+        blobs,
+        &tools::runtime::ToolTarget::from(&request.model),
+        &request.tools,
+    )
+    .await?;
+    materialize_request_with_catalog(blobs, inventory, request, &mut catalog).await
+}
+
+async fn materialize_request_with_catalog(
+    blobs: &dyn BlobStore,
+    inventory: &dyn McpInventoryResolver,
+    request: &LlmRequest,
+    catalog: &mut crate::tool_catalog::ToolCatalog,
+) -> LlmAdapterResult<am::CreateMessageRequest> {
     if request.processing_tier.is_some() {
         return Err(LlmAdapterError::InvalidProviderRequest {
             message: "processing tier is not supported by Anthropic Messages".to_owned(),
@@ -396,7 +424,7 @@ async fn materialize_create_request_with_inventory(
     let mut messages = materialize_messages(blobs, &message_entries).await?;
     place_message_breakpoint(&mut messages, &cache_control);
     let (mut tools, mcp_servers) =
-        materialize_tools(blobs, inventory, &request.model.model, &request.tools).await?;
+        materialize_tools(inventory, &request.model.model, catalog).await?;
     place_tool_breakpoint(&mut tools, &cache_control);
 
     Ok(am::CreateMessageRequest {
@@ -415,7 +443,10 @@ async fn materialize_create_request_with_inventory(
             extra: thinking.extra.clone(),
         }),
         output_config: params.output_config.clone(),
-        tool_choice: anthropic_tool_choice(request.tool_choice.as_ref(), request.parallel_tool_use),
+        tool_choice: anthropic_tool_choice(
+            catalog.tool_choice(request.tool_choice.as_ref())?.as_ref(),
+            request.parallel_tool_use,
+        ),
         tools: non_empty(tools),
         top_k: params.top_k.map(u64::from),
         top_p: optional_f64(params.top_p.as_ref(), "top_p")?,
@@ -852,31 +883,24 @@ async fn materialize_block(
 }
 
 async fn materialize_tools(
-    blobs: &dyn BlobStore,
     inventory: &dyn McpInventoryResolver,
     model: &str,
-    tools: &[ToolSpec],
+    catalog: &mut crate::tool_catalog::ToolCatalog,
 ) -> LlmAdapterResult<(Vec<am::Tool>, Vec<Value>)> {
     let mut materialized = Vec::new();
     let mut mcp_toolsets = Vec::new();
     let mut mcp_servers = Vec::new();
     let mut has_deferred_mcp = false;
     let mut native_mcp_tool_count = 0usize;
-    for tool in tools {
+    for tool in &catalog.tools {
         match &tool.kind {
-            ToolKind::Function(function) => {
-                let mut definition = am::ToolDefinition::new(
-                    tool.name.as_str(),
-                    read_json(blobs, &function.input_schema_ref).await?,
-                );
-                definition.description = match &function.description_ref {
-                    Some(blob_ref) => Some(read_text(blobs, blob_ref).await?),
-                    None => None,
-                };
+            crate::tool_catalog::ResolvedToolKind::Function(function) => {
+                let mut definition =
+                    am::ToolDefinition::new(tool.name.as_str(), function.input_schema.clone());
+                definition.description = function.description.clone();
                 // Anthropic has no strict-mode switch; the input schema is the
                 // only contract, so `strict` does not lower to anything.
-                if let Some(provider_options_ref) = &function.provider_options_ref {
-                    let options = read_json(blobs, provider_options_ref).await?;
+                if let Some(options) = &function.provider_options {
                     let Some(options) = options.as_object() else {
                         return Err(LlmAdapterError::InvalidProviderRequest {
                             message: format!(
@@ -891,7 +915,7 @@ async fn materialize_tools(
                 }
                 materialized.push(am::Tool::Custom(definition));
             }
-            ToolKind::ProviderNative(native) => {
+            crate::tool_catalog::ResolvedToolKind::ProviderNative(native) => {
                 if native.api_kind != ProviderApiKind::AnthropicMessages {
                     return Err(LlmAdapterError::InvalidProviderRequest {
                         message: format!(
@@ -903,66 +927,73 @@ async fn materialize_tools(
                 match native.execution {
                     ProviderNativeToolExecution::ProviderHosted
                     | ProviderNativeToolExecution::ClientEffect => {
-                        materialized.push(am::Tool::Raw(
-                            read_json(blobs, &native.native_tool_ref).await?,
-                        ));
+                        materialized.push(am::Tool::Raw(native.definition.clone()));
                     }
                 }
             }
-            ToolKind::RemoteMcp(remote_mcp) => match (remote_mcp.execution, remote_mcp.exposure) {
-                (RemoteMcpExecution::Provider, _) => {
-                    let (server, toolset) = materialize_remote_mcp_server(tool, remote_mcp)?;
-                    has_deferred_mcp |= remote_mcp.defer_loading == Some(true);
-                    mcp_servers.push(server);
-                    mcp_toolsets.push(toolset);
-                }
-                (RemoteMcpExecution::Native, RemoteMcpExposure::Search) => {}
-                (RemoteMcpExecution::Native, RemoteMcpExposure::Inject) => {
-                    let mut native = inventory.list_tools(remote_mcp).await.map_err(|error| {
-                        LlmAdapterError::McpInventory {
-                            server: remote_mcp.server_id.clone(),
-                            message: error.to_string(),
-                        }
-                    })?;
-                    native.sort_by(|left, right| left.remote_name.cmp(&right.remote_name));
-                    let advertised_count = native.len();
-                    native.retain(|native_tool| {
-                        let name = format!("{}__{}", tool.name, native_tool.remote_name);
-                        name.len() <= 64 && ToolName::try_new(name).is_ok()
-                    });
-                    let omitted_count = advertised_count - native.len();
-                    if omitted_count != 0 {
-                        tracing::warn!(
-                            server_id = %remote_mcp.server_id,
-                            omitted_tool_count = omitted_count,
-                            "omitted native MCP tools with provider-incompatible names"
-                        );
+            crate::tool_catalog::ResolvedToolKind::RemoteMcp(remote_mcp) => {
+                match (remote_mcp.execution, remote_mcp.exposure) {
+                    (RemoteMcpExecution::Provider, _) => {
+                        let (server, toolset) = materialize_remote_mcp_server(tool, remote_mcp)?;
+                        has_deferred_mcp |= remote_mcp.defer_loading == Some(true);
+                        mcp_servers.push(server);
+                        mcp_toolsets.push(toolset);
                     }
-                    if native_mcp_tool_count.saturating_add(native.len())
-                        > MAX_NATIVE_MCP_TOOLS_PER_REQUEST
-                    {
-                        return Err(LlmAdapterError::McpInventory {
+                    (RemoteMcpExecution::Native, RemoteMcpExposure::Search) => {}
+                    (RemoteMcpExecution::Native, RemoteMcpExposure::Inject) => {
+                        let mut native =
+                            inventory.list_tools(remote_mcp).await.map_err(|error| {
+                                LlmAdapterError::McpInventory {
+                                    server: remote_mcp.server_id.clone(),
+                                    message: error.to_string(),
+                                }
+                            })?;
+                        native.sort_by(|left, right| left.remote_name.cmp(&right.remote_name));
+                        let advertised_count = native.len();
+                        native.retain(|native_tool| {
+                            let name = format!("{}__{}", tool.name, native_tool.remote_name);
+                            crate::tool_catalog::valid_exposed_name(&name)
+                        });
+                        let omitted_count = advertised_count - native.len();
+                        if omitted_count != 0 {
+                            tracing::warn!(
+                                server_id = %remote_mcp.server_id,
+                                omitted_tool_count = omitted_count,
+                                "omitted native MCP tools with provider-incompatible names"
+                            );
+                        }
+                        if native_mcp_tool_count.saturating_add(native.len())
+                            > MAX_NATIVE_MCP_TOOLS_PER_REQUEST
+                        {
+                            return Err(LlmAdapterError::McpInventory {
                             server: remote_mcp.server_id.clone(),
                             message: "native MCP inventory exceeds the per-request tool cap; author a Selected allowlist or switch the record to search exposure".to_owned(),
                         });
-                    }
-                    native_mcp_tool_count += native.len();
-                    for native_tool in native {
-                        let name = format!("{}__{}", tool.name, native_tool.remote_name);
-                        materialized.push(am::Tool::Custom(am::ToolDefinition {
-                            name,
-                            description: native_tool.description,
-                            input_schema: native_tool.input_schema,
-                            cache_control: None,
-                            extra: Default::default(),
-                        }));
+                        }
+                        native_mcp_tool_count += native.len();
+                        for native_tool in native {
+                            let name = format!("{}__{}", tool.name, native_tool.remote_name);
+                            catalog
+                                .names
+                                .insert(ToolName::new(name.clone()), Some(tool.id.clone()))?;
+                            materialized.push(am::Tool::Custom(am::ToolDefinition {
+                                name,
+                                description: native_tool.description,
+                                input_schema: native_tool.input_schema,
+                                cache_control: None,
+                                extra: Default::default(),
+                            }));
+                        }
                     }
                 }
-            },
+            }
         }
     }
     if has_deferred_mcp {
         ensure_anthropic_tool_search_model(model)?;
+        catalog
+            .names
+            .insert(ToolName::new(TOOL_SEARCH_TOOL_NAME), None)?;
         materialized.push(am::Tool::Raw(json!({
             "type": TOOL_SEARCH_TOOL_TYPE,
             "name": TOOL_SEARCH_TOOL_NAME,
@@ -973,7 +1004,7 @@ async fn materialize_tools(
 }
 
 fn materialize_remote_mcp_server(
-    tool: &ToolSpec,
+    tool: &crate::tool_catalog::ResolvedTool,
     remote_mcp: &RemoteMcpToolSpec,
 ) -> LlmAdapterResult<(Value, Value)> {
     // Materialized requests never contain auth values; `inject_remote_mcp_auth`
@@ -1316,14 +1347,11 @@ async fn result_from_responses(
             None => combined = Some(part),
             Some(total) => {
                 total.context_entries.extend(part.context_entries);
-                total
-                    .facts
-                    .tool_calls
-                    .extend(part.facts.tool_calls.into_iter());
+                total.facts.tool_calls.extend(part.facts.tool_calls);
                 total
                     .facts
                     .approval_requests
-                    .extend(part.facts.approval_requests.into_iter());
+                    .extend(part.facts.approval_requests);
                 merge_llm_usage(&mut total.facts.usage, part.facts.usage.as_ref());
                 total.status = part.status;
                 total.failure_ref = part.failure_ref;
@@ -1576,6 +1604,7 @@ async fn tool_use_context(
     };
     let tool_call = ObservedToolCall {
         call_id,
+        tool_id: Some(tool_name.clone()),
         tool_name,
         provider_kind: Some(PROVIDER_KIND_TOOL_USE.to_owned()),
         arguments_ref,
@@ -1737,29 +1766,34 @@ mod tests {
     async fn native_mcp_lowers_to_anthropic_custom_function_tools() {
         let blobs = InMemoryBlobStore::new();
         let (tools, servers) = materialize_tools(
-            &blobs,
             &StaticMcpInventory,
             "claude-opus-4-8",
-            &[ToolSpec {
-                name: ToolName::try_new("mcp_docs").expect("name"),
-                kind: ToolKind::RemoteMcp(RemoteMcpToolSpec {
-                    server_id: "docs".to_owned(),
-                    record_revision: 1,
-                    server_label: "docs".to_owned(),
-                    server_url: "https://example.com/mcp".to_owned(),
-                    description_ref: None,
-                    allowed_tools: None,
-                    execution: RemoteMcpExecution::Native,
-                    exposure: RemoteMcpExposure::Inject,
-                    approval: RemoteMcpApprovalPolicy::Never,
-                    defer_loading: None,
-                    auth_ref: None,
-                    auth_required: false,
-                    allow_private_network: false,
-                }),
-                execution: Default::default(),
-                parallelism: ToolParallelism::ParallelSafe,
-            }],
+            &mut crate::tool_catalog::ToolCatalog::resolve(
+                &blobs,
+                &tools::runtime::ToolTarget::api_kind(ProviderApiKind::AnthropicMessages),
+                &[ToolSpec {
+                    name: ToolName::try_new("mcp_docs").expect("name"),
+                    kind: ToolKind::RemoteMcp(RemoteMcpToolSpec {
+                        server_id: "docs".to_owned(),
+                        record_revision: 1,
+                        server_label: "docs".to_owned(),
+                        server_url: "https://example.com/mcp".to_owned(),
+                        description_ref: None,
+                        allowed_tools: None,
+                        execution: RemoteMcpExecution::Native,
+                        exposure: RemoteMcpExposure::Inject,
+                        approval: RemoteMcpApprovalPolicy::Never,
+                        defer_loading: None,
+                        auth_ref: None,
+                        auth_required: false,
+                        allow_private_network: false,
+                    }),
+                    execution: Default::default(),
+                    parallelism: ToolParallelism::ParallelSafe,
+                }],
+            )
+            .await
+            .expect("catalog"),
         )
         .await
         .expect("materialize native MCP");
@@ -1777,19 +1811,8 @@ mod tests {
             Vec::new(),
         ));
         config.web.fetch = true;
-        let target = tools::runtime::ToolTarget::api_kind(ProviderApiKind::AnthropicMessages);
-        let resolved = tools::toolset::resolve_toolset(
-            tools::toolset::ToolsetEnvironment { target: &target },
-            &config,
-        )
-        .expect("resolve hosted web tools");
-        for document in resolved.documents {
-            let stored = blobs
-                .put_bytes(document.bytes)
-                .await
-                .expect("store tool document");
-            assert_eq!(stored, document.blob_ref);
-        }
+        let resolved = tools::toolset::register_toolset(&config).expect("resolve hosted web tools");
+
         let mut request = intent_request(Vec::new());
         request.tools = resolved.tools.into_values().collect();
 
@@ -3109,6 +3132,15 @@ mod tests {
             request: {
                 let mut request = intent_request(vec![user_entry(1, input_ref)]);
                 request.output_limit = Some(256);
+                request.tools = vec![tools::definitions::register(
+                    "env.read_file",
+                    tools::definitions::BuiltinSettings {
+                        presentation: tools::toolset::BuiltinToolPresentation::Canonical,
+                        ..Default::default()
+                    },
+                    ToolParallelism::ParallelSafe,
+                    Default::default(),
+                )];
                 request
             },
         };
@@ -3138,6 +3170,10 @@ mod tests {
             "billed thinking tokens must surface as reasoning tokens"
         );
         assert_eq!(result.facts.tool_calls.len(), 1);
+        assert_eq!(
+            result.facts.tool_calls[0].tool_id,
+            Some(ToolName::new("env.read_file"))
+        );
         assert_eq!(
             result.facts.tool_calls[0].tool_name,
             ToolName::new("read_file")

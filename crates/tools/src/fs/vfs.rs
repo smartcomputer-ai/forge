@@ -929,7 +929,7 @@ mod tests {
     };
     use crate::runtime::InlineToolRuntime;
     use crate::runtime::ToolTarget;
-    use crate::toolset::{ToolsetConfig, ToolsetEnvironment, resolve_toolset};
+    use crate::toolset::{ToolsetConfig, register_toolset};
 
     #[derive(Debug, Default)]
     struct TestWorkspaceStore {
@@ -1465,12 +1465,9 @@ mod tests {
             test_workspace_fs(store.clone(), Vec::new()).await;
         let ctx = FsToolContext::new(Arc::new(fs), blobs.clone());
         let target = ToolTarget::api_kind(engine::ProviderApiKind::OpenAiResponses);
-        let toolset = resolve_toolset(
-            ToolsetEnvironment { target: &target },
-            &ToolsetConfig::workspace(),
-        )
-        .expect("toolset");
-        let runtime = InlineToolRuntime::with_vfs_filesystem(ctx, toolset.catalog);
+        let toolset = register_toolset(&ToolsetConfig::workspace()).expect("toolset");
+        let runtime =
+            InlineToolRuntime::with_vfs_filesystem(ctx, crate::runtime::ToolCatalog::new());
         let args_ref = blobs
             .put_bytes(br#"{"path":"/README.md","content":"updated\n"}"#.to_vec())
             .await
@@ -1489,7 +1486,19 @@ mod tests {
                 subagents_policy: None,
                 workspace_links: Vec::new(),
                 calls: vec![ToolInvocationRequest {
+                    builtin: Some(engine::BuiltinToolCallRuntime {
+                        spec: match &toolset.tools[&ToolName::new("vfs.write_file")].kind {
+                            engine::ToolKind::Builtin(spec) => spec.clone(),
+                            _ => panic!("built-in spec"),
+                        },
+                        model: engine::ModelSelection {
+                            api_kind: target.api_kind,
+                            provider_id: "test".into(),
+                            model: "test".into(),
+                        },
+                    }),
                     call_id: ToolCallId::new("call_1"),
+                    tool_id: Some(ToolName::new("vfs.write_file")),
                     tool_name: ToolName::new("vfs_write_file"),
                     arguments_ref: args_ref,
                     workflow_tool: None,

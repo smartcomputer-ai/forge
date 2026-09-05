@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-pub const AWAIT_TOOL_NAME: &str = "await";
+pub const AWAIT_TOOL_ID: &str = "concurrency.await";
 
 use crate::{
     ApprovalEvent, ApprovalId, ApprovalRequested, AwaitMode, AwaitSpec, BlobRef, CodecError,
@@ -818,9 +818,11 @@ pub fn next_tool_batch_request(
         .iter()
         .filter(|call_state| call_state.status == ToolCallStatus::Pending)
         .map(|call_state| {
-            let workflow_tool = state
-                .workflow_tools
-                .binding_for_tool_name(&call_state.call.tool_name)
+            let workflow_tool = call_state
+                .call
+                .tool_id
+                .as_ref()
+                .and_then(|id| state.workflow_tools.binding_for_tool_name(id))
                 .map(|binding| {
                     crate::WorkflowToolCallRuntime::v1(
                         binding.clone(),
@@ -832,13 +834,33 @@ pub fn next_tool_batch_request(
             // Native MCP routing is decided here, once per dispatch, so the
             // batch-unit and per-call execution paths see identical facts
             // (including the run-owned approval decision, if any).
-            let remote_mcp = crate::remote_mcp_call_runtime(
-                state,
-                &call_state.call.tool_name,
-                &call_state.call.call_id,
-            );
+            let remote_mcp = crate::remote_mcp_call_runtime(state, &call_state.call);
             ToolInvocationRequest {
+                builtin: call_state
+                    .call
+                    .tool_id
+                    .as_ref()
+                    .and_then(|id| state.tooling.tools.get(id))
+                    .and_then(|tool| match &tool.kind {
+                        crate::ToolKind::Builtin(spec) => Some(crate::BuiltinToolCallRuntime {
+                            spec: spec.clone(),
+                            model: active_run
+                                .run_config
+                                .model_override
+                                .clone()
+                                .or_else(|| {
+                                    state
+                                        .lifecycle
+                                        .config
+                                        .as_ref()
+                                        .map(|config| config.model.clone())
+                                })
+                                .expect("active run has a configured model"),
+                        }),
+                        _ => None,
+                    }),
                 call_id: call_state.call.call_id.clone(),
+                tool_id: call_state.call.tool_id.clone(),
                 tool_name: call_state.call.tool_name.clone(),
                 arguments_ref: call_state.call.arguments_ref.clone(),
                 workflow_tool,
@@ -1022,7 +1044,11 @@ pub fn tool_batch_deferred_proposals(
         .iter()
         .filter(|call_state| {
             call_state.status == ToolCallStatus::Pending
-                && call_state.call.tool_name.as_str() == AWAIT_TOOL_NAME
+                && call_state
+                    .call
+                    .tool_id
+                    .as_ref()
+                    .is_some_and(|id| id.as_str() == AWAIT_TOOL_ID)
         })
         .map(|call_state| call_state.call.call_id.clone())
         .collect::<Vec<_>>();
@@ -1108,7 +1134,12 @@ pub fn tool_batch_deferred_proposals(
         )));
     }
     if !batch.calls.iter().any(|call_state| {
-        call_state.call.call_id == call_id && call_state.call.tool_name.as_str() == AWAIT_TOOL_NAME
+        call_state.call.call_id == call_id
+            && call_state
+                .call
+                .tool_id
+                .as_ref()
+                .is_some_and(|id| id.as_str() == AWAIT_TOOL_ID)
     }) {
         return Err(DomainError::InvariantViolation(format!(
             "deferred call {} is not an await call",
@@ -2249,9 +2280,19 @@ mod tests {
         drive_until_generate_with_planned_event(drive).1
     }
 
+    fn test_tool_id(name: &str) -> ToolName {
+        ToolName::new(match name {
+            "await" => "concurrency.await",
+            "cancel" => "concurrency.cancel",
+            "detach" => "concurrency.detach",
+            "mcp_echo__hello" => "mcp_echo",
+            other => other,
+        })
+    }
+
     fn test_tool_spec(tool_name: &str) -> ToolSpec {
         ToolSpec {
-            name: ToolName::new(tool_name),
+            name: test_tool_id(tool_name),
             execution: Default::default(),
             kind: ToolKind::Function(FunctionToolSpec {
                 description_ref: None,
@@ -2285,6 +2326,7 @@ mod tests {
     ) -> ToolInvocationBatchRequest {
         let tool_call = ObservedToolCall {
             call_id: crate::ToolCallId::new("call_wait"),
+            tool_id: Some(test_tool_id(tool_name)),
             tool_name: ToolName::new(tool_name),
             provider_kind: None,
             arguments_ref: BlobRef::from_bytes(br#"{"wait":true}"#),
@@ -4381,6 +4423,7 @@ mod tests {
                         usage: None,
                         tool_calls: vec![ObservedToolCall {
                             call_id: crate::ToolCallId::new("call_wait"),
+                            tool_id: Some(ToolName::new("concurrency.await")),
                             tool_name: ToolName::new("await"),
                             provider_kind: None,
                             arguments_ref: BlobRef::from_bytes(br#"{"wait":true}"#),
@@ -6439,6 +6482,7 @@ mod tests {
         let observed_calls = vec![
             ObservedToolCall {
                 call_id: ToolCallId::new("call-send-1"),
+                tool_id: Some(ToolName::new("message_send")),
                 tool_name: ToolName::new("message_send"),
                 provider_kind: None,
                 arguments_ref: BlobRef::from_bytes(br#"{"text":"one"}"#),
@@ -6446,6 +6490,7 @@ mod tests {
             },
             ObservedToolCall {
                 call_id: ToolCallId::new("call-echo"),
+                tool_id: Some(ToolName::new("local_echo")),
                 tool_name: ToolName::new("local_echo"),
                 provider_kind: None,
                 arguments_ref: BlobRef::from_bytes(br#"{"text":"echo"}"#),
@@ -6453,6 +6498,7 @@ mod tests {
             },
             ObservedToolCall {
                 call_id: ToolCallId::new("call-send-2"),
+                tool_id: Some(ToolName::new("message_send")),
                 tool_name: ToolName::new("message_send"),
                 provider_kind: None,
                 arguments_ref: BlobRef::from_bytes(br#"{"text":"two"}"#),
@@ -6653,7 +6699,7 @@ mod tests {
             )
             .expect("admit Joined system tool");
         commit_action(&mut drive, admitted);
-        let await_spec = test_tool_spec(AWAIT_TOOL_NAME);
+        let await_spec = test_tool_spec(AWAIT_TOOL_ID);
         let installed = drive
             .admit_command(
                 CoreAgentCommand::ReplaceTools {
@@ -6675,6 +6721,7 @@ mod tests {
             vec![
                 ObservedToolCall {
                     call_id: ToolCallId::new("call-send"),
+                    tool_id: Some(ToolName::new("message_send")),
                     tool_name: ToolName::new("message_send"),
                     provider_kind: None,
                     arguments_ref: BlobRef::from_bytes(br#"{"text":"one"}"#),
@@ -6682,7 +6729,8 @@ mod tests {
                 },
                 ObservedToolCall {
                     call_id: ToolCallId::new("call-await"),
-                    tool_name: ToolName::new(AWAIT_TOOL_NAME),
+                    tool_id: Some(ToolName::new(AWAIT_TOOL_ID)),
+                    tool_name: ToolName::new("await"),
                     provider_kind: None,
                     arguments_ref: BlobRef::from_bytes(br#"{"promises":["other"]}"#),
                     native_call_ref: None,
@@ -6704,7 +6752,11 @@ mod tests {
         let await_call = request
             .calls
             .iter()
-            .find(|call| call.tool_name.as_str() == AWAIT_TOOL_NAME)
+            .find(|call| {
+                call.tool_id
+                    .as_ref()
+                    .is_some_and(|id| id.as_str() == AWAIT_TOOL_ID)
+            })
             .expect("await call");
         let invocation_id = crate::WorkflowToolInvocationId::for_call(
             universe_id,
@@ -7364,7 +7416,9 @@ mod tests {
             subagents_policy: None,
             calls: vec![
                 ToolInvocationRequest {
+                    builtin: None,
                     call_id: crate::ToolCallId::new("cancel"),
+                    tool_id: Some(ToolName::new("concurrency.cancel")),
                     tool_name: ToolName::new("cancel"),
                     arguments_ref: BlobRef::from_bytes(b"cancel"),
                     workflow_tool: None,
@@ -7372,7 +7426,9 @@ mod tests {
                     remote_mcp: None,
                 },
                 ToolInvocationRequest {
+                    builtin: None,
                     call_id: crate::ToolCallId::new("detach-invalid"),
+                    tool_id: Some(ToolName::new("concurrency.detach")),
                     tool_name: ToolName::new("detach"),
                     arguments_ref: BlobRef::from_bytes(b"detach"),
                     workflow_tool: None,
@@ -7532,6 +7588,7 @@ mod tests {
             vec![
                 ObservedToolCall {
                     call_id: crate::ToolCallId::new("call_a"),
+                    tool_id: Some(ToolName::new("tool_a")),
                     tool_name: ToolName::new("tool_a"),
                     provider_kind: None,
                     arguments_ref: BlobRef::from_bytes(br#"{"a":true}"#),
@@ -7539,6 +7596,7 @@ mod tests {
                 },
                 ObservedToolCall {
                     call_id: crate::ToolCallId::new("call_b"),
+                    tool_id: Some(ToolName::new("tool_b")),
                     tool_name: ToolName::new("tool_b"),
                     provider_kind: None,
                     arguments_ref: BlobRef::from_bytes(br#"{"b":true}"#),
@@ -7771,6 +7829,7 @@ mod tests {
     fn observed_call(call_id: &str, tool_name: &str) -> ObservedToolCall {
         ObservedToolCall {
             call_id: crate::ToolCallId::new(call_id),
+            tool_id: Some(test_tool_id(tool_name)),
             tool_name: ToolName::new(tool_name),
             provider_kind: None,
             arguments_ref: BlobRef::from_bytes(b"{}"),
@@ -8005,5 +8064,145 @@ mod tests {
             duplicate,
             CoreAgentDriveError::Domain(DomainError::InvariantViolation(_))
         ));
+    }
+    #[test]
+    fn builtin_calls_replay_with_internal_identity_and_original_turn_inputs() {
+        let session_id = SessionId::new("builtin-replay");
+        let mut drive =
+            CoreAgentDrive::from_replayed(session_id.clone(), CoreAgentState::new(), None);
+        let mut session_config = config();
+        session_config.model = ModelSelection {
+            api_kind: ProviderApiKind::AnthropicMessages,
+            provider_id: "anthropic".into(),
+            model: "claude-base".into(),
+        };
+        open_session_with_config(&mut drive, session_config);
+        let spec = crate::BuiltinToolSpec {
+            settings: serde_json::json!({"one_shot":true}),
+        };
+        let tool = ToolSpec {
+            name: ToolName::new("env.run_process"),
+            kind: ToolKind::Builtin(spec.clone()),
+            parallelism: ToolParallelism::Exclusive,
+            execution: Default::default(),
+        };
+        let action = drive
+            .admit_command(
+                CoreAgentCommand::ReplaceTools {
+                    expected_revision: Some(0),
+                    tools: BTreeMap::from([(tool.name.clone(), tool)]),
+                },
+                11,
+            )
+            .unwrap();
+        commit_action(&mut drive, action);
+        let override_model = ModelSelection {
+            api_kind: ProviderApiKind::AnthropicMessages,
+            provider_id: "anthropic".into(),
+            model: "claude-test".into(),
+        };
+        let action = drive
+            .admit_command(
+                request_run_command(
+                    None,
+                    user_input(BlobRef::from_bytes(b"input")),
+                    RunConfig {
+                        model_override: Some(override_model.clone()),
+                        ..Default::default()
+                    },
+                ),
+                20,
+            )
+            .unwrap();
+        commit_action(&mut drive, action);
+        let generation = drive_until_generate(&mut drive);
+        let checkpoint = serde_json::to_vec(drive.state()).unwrap();
+        let head = drive.head().cloned();
+        let native_call = BlobRef::from_bytes(
+            br#"{"type":"tool_use","name":"Bash","input":{"command":"echo hello"}}"#,
+        );
+        let call = ObservedToolCall {
+            call_id: crate::ToolCallId::new("call-bash"),
+            tool_id: Some(ToolName::new("env.run_process")),
+            tool_name: ToolName::new("Bash"),
+            provider_kind: Some("tool_use".into()),
+            arguments_ref: BlobRef::from_bytes(br#"{"command":"echo hello"}"#),
+            native_call_ref: Some(native_call.clone()),
+        };
+        let mut unknown = call.clone();
+        unknown.call_id = crate::ToolCallId::new("unknown-alias");
+        unknown.tool_name = ToolName::new("exec_command");
+        unknown.tool_id = None;
+        let action = drive
+            .resume_generation(
+                LlmGenerationResult {
+                    run_id: generation.run_id,
+                    turn_id: generation.turn_id,
+                    status: LlmGenerationStatus::Succeeded,
+                    failure_ref: None,
+                    context_entries: vec![ContextEntryInput {
+                        kind: ContextEntryKind::ToolCall {
+                            call_id: call.call_id.clone(),
+                            name: call.tool_name.clone(),
+                        },
+                        content_ref: native_call.clone(),
+                        media_type: Some("application/json".into()),
+                        provider_kind: Some("tool_use".into()),
+                        provider_item_id: None,
+                        preview: None,
+                        token_estimate: None,
+                    }],
+                    facts: LlmGenerationFacts {
+                        duration_ms: None,
+                        provider_response_id: None,
+                        finish: LlmFinish::ToolCalls,
+                        usage: None,
+                        tool_calls: vec![call.clone(), unknown],
+                        approval_requests: Vec::new(),
+                        context_token_estimate: None,
+                    },
+                },
+                30,
+            )
+            .unwrap();
+        let mut events = commit_action(&mut drive, action);
+        let request = loop {
+            match drive.next_action(31, 64).unwrap() {
+                CoreAgentAction::InvokeTools { request } => break request,
+                action => events.extend(commit_action(&mut drive, action)),
+            }
+        };
+        assert_eq!(request.calls.len(), 1, "unknown aliases do not execute");
+        assert_eq!(request.calls[0].tool_id, call.tool_id);
+        assert_eq!(request.calls[0].tool_name.as_str(), "Bash");
+        assert_eq!(
+            request.calls[0].builtin,
+            Some(crate::BuiltinToolCallRuntime {
+                spec,
+                model: override_model
+            })
+        );
+        let mut replayed = CoreAgentDrive::from_replayed(
+            session_id,
+            serde_json::from_slice(&checkpoint).unwrap(),
+            head,
+        );
+        // Replaying the committed events needs no definitions, blobs, or codecs.
+        replayed
+            .resume_appended(
+                events
+                    .iter()
+                    .map(|entry| CoreAgentCodec.encode_entry(entry).unwrap())
+                    .collect(),
+            )
+            .unwrap();
+        assert_eq!(replayed.state(), drive.state());
+        let CoreAgentAction::InvokeTools { request: restored } =
+            replayed.next_action(32, 64).unwrap()
+        else {
+            panic!("replayed invocation");
+        };
+        assert_eq!(restored, request);
+        assert!(replayed.state().context.entries.iter().any(|entry| entry.content_ref == native_call && matches!(&entry.kind, ContextEntryKind::ToolCall { name, .. } if name.as_str() == "Bash")));
     }
 }

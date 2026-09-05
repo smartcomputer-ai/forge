@@ -23,9 +23,11 @@ import {
   SONNET,
   ago,
   agentRun,
+  agentSpawn,
   agoIso,
   at,
   atIso,
+  awaitPromises,
   bot,
   botEmit,
   botSession,
@@ -51,6 +53,7 @@ import {
   tool,
   uuidLike,
   vfsReadFile,
+  vfsWriteFile,
   webFetch,
   webhookTrigger,
   workspace,
@@ -195,32 +198,13 @@ const GPT_MINI: ModelConfig = { providerId: "openai", apiKind: "openai:responses
 // Tool calls the builders do not cover
 // ---------------------------------------------------------------------------
 
-/// `agent_spawn`: a sub-agent started for a promise the run joins later.
-function agentSpawn(profileId: string, task: string, promiseId: string): DemoToolCall {
-  return tool("agent_spawn", { profileId, input: task }, { group: "other", verb: "Spawn", target: profileId, detail: task }, JSON.stringify({ promise: promiseId, agent: profileId }));
-}
-
-/// `await`: parks the run on promises; the output is each child's result.
-function awaitPromises(promises: string[], results: Array<{ agent: string; sessionId: string; output: string }>): DemoToolCall {
-  return tool(
-    "await",
-    { promises, mode: "all" },
-    { group: "other", verb: "Await", target: promises.join(", ") },
-    JSON.stringify(Object.fromEntries(promises.map((id, i) => [id, { status: "completed", ...results[i] }])), null, 2),
-  );
-}
-
-function vfsWriteFile(path: string, content: string, detail: string): DemoToolCall {
-  return tool("vfs_write_file", { path, content }, { group: "edit", verb: "Write", target: path, detail }, `wrote ${new TextEncoder().encode(content).length} bytes to ${path}`);
-}
-
 function vfsListDir(path: string, entries: string[]): DemoToolCall {
-  return tool("vfs_list_dir", { path }, { group: "explore", verb: "List", target: path }, entries.join("\n"));
+  return tool("vfs.list_dir", "vfs_list_dir", { path }, { group: "explore", verb: "List", target: path }, entries.join("\n"));
 }
 
 /// A Linear MCP tool, shown under the Linear verb.
 function linear(name: string, args: Record<string, unknown>, detail: string, output: string, isError = false): DemoToolCall {
-  return tool(`linear.${name}`, args, { group: "other", verb: "Linear", target: name, detail }, output, isError);
+  return tool(`linear.${name}`, `linear.${name}`, args, { group: "other", verb: "Linear", target: name, detail }, output, isError);
 }
 
 const LINEAR_401 = "request failed: 401 Unauthorized — the Linear MCP server rejected the workspace token (rotated 2026-08-24). Reconnect the `linear` server on the Integrations page.";

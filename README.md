@@ -173,6 +173,11 @@ Two more decisions make this practical inside a workflow engine:
    keeping workflow histories small. Blobs nothing reaches any more are
    collected after a grace period, so deleting sessions frees their storage.
 
+Built-in tools are registered by logical identity, such as `env.run_process`.
+The LLM activity selects their names, schemas, and argument adapters for the
+turn's model. Those definitions live in runtime code; externally authored tool
+definitions and conversation payloads continue to use CAS.
+
 The full design walk-through is in [docs/design.md](docs/design.md).
 
 <p align="center">

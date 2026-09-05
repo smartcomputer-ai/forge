@@ -31,6 +31,12 @@ Committed wire artifacts are owned by `crates/api/contract/`.
 The repository-level Docker Compose development environment lives under
 `scripts/dev/`.
 
+Specific tool choices in session and profile configuration use registry IDs
+(for example, `env.run_process`). The runtime chooses builtin names and schemas
+for each model. Transcripts preserve each call's original `toolName` alongside
+its optional admitted `toolId`; the UI does not resolve historical names again.
+Demo tool fixtures record these identities explicitly as well.
+
 The authoritative configuration reference is
 [`docs/variables.md`](../docs/variables.md), with separate sections for the
 Platform server, connector host, Configurator MCP, and development-only

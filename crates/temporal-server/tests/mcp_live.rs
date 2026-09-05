@@ -51,7 +51,7 @@ const LARGE_TOOL_COUNT: usize = 45;
 const LARGE_PAGE_SIZE: usize = 15;
 
 #[tokio::test(flavor = "current_thread")]
-#[ignore = "requires ./dev.sh infra or compatible Temporal + Postgres env"]
+#[ignore = "requires ./dev.sh infra and LIGHTSPEED_MCP_PRIVATE_NETWORKS allowing loopback"]
 async fn mcp_live_native_configuration_and_server_size_matrix() -> anyhow::Result<()> {
     let _lock = LIVE_TEST_LOCK.lock().await;
     let _ = dotenvy::dotenv();
@@ -309,6 +309,7 @@ impl MatrixScriptedLlm {
                 usage: None,
                 tool_calls: vec![ObservedToolCall {
                     call_id,
+                    tool_id: test_support::scripted_tool_id(request, tool_name.as_str()),
                     tool_name,
                     provider_kind: Some("mcp-live-matrix".to_owned()),
                     arguments_ref,
@@ -946,7 +947,7 @@ async fn temporal_live_native_mcp_mixed_await_batch_parks_once_and_completes() -
 }
 
 #[tokio::test(flavor = "current_thread")]
-#[ignore = "requires ./dev.sh infra or compatible Temporal + Postgres env"]
+#[ignore = "requires ./dev.sh infra, npm install, and LIGHTSPEED_MCP_PRIVATE_NETWORKS allowing loopback"]
 async fn temporal_live_mcp_and_session_links_materialize() -> anyhow::Result<()> {
     let _lock = LIVE_TEST_LOCK.lock().await;
     let _ = dotenvy::dotenv();
@@ -1035,12 +1036,7 @@ impl NativeMcpScriptedLlm {
         call_id: &str,
         arguments: serde_json::Value,
     ) -> Result<LlmGenerationResult, CoreAgentIoError> {
-        if !request
-            .request
-            .tools
-            .iter()
-            .any(|candidate| candidate.name.as_str() == tool)
-        {
+        if test_support::scripted_tool_id(request, tool).is_none() {
             return Err(CoreAgentIoError::Failed {
                 message: format!("native MCP scripted model expected {tool}"),
             });
@@ -1076,6 +1072,7 @@ impl NativeMcpScriptedLlm {
                 usage: None,
                 tool_calls: vec![ObservedToolCall {
                     call_id,
+                    tool_id: test_support::scripted_tool_id(request, tool_name.as_str()),
                     tool_name,
                     provider_kind: Some("native-mcp-script".to_owned()),
                     arguments_ref,
@@ -1981,6 +1978,7 @@ impl MixedBatchScriptedLlm {
             });
             tool_calls.push(ObservedToolCall {
                 call_id,
+                tool_id: test_support::scripted_tool_id(request, tool_name.as_str()),
                 tool_name,
                 provider_kind: Some("mixed-batch-script".to_owned()),
                 arguments_ref,
@@ -2156,6 +2154,17 @@ async fn run_mixed_batch_live_client(
         "unexpected final output: {output}"
     );
     for call_id in [MIXED_SLEEP_CALL_ID, MIXED_AWAIT_CALL_ID, MIXED_MCP_CALL_ID] {
+        let call = terminal
+            .tool_batches
+            .iter()
+            .flat_map(|batch| &batch.calls)
+            .find(|call| call.call_id == call_id)
+            .expect("mixed batch call");
+        assert_eq!(call.status, api::ToolItemStatus::Succeeded, "{call:?}");
+        assert!(
+            call.tool_id.is_some(),
+            "mixed batch call must retain its admitted identity"
+        );
         assert!(
             output.contains(&format!("{call_id}=")),
             "final output lacks the {call_id} result: {output}"

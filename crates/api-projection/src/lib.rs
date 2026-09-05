@@ -1088,6 +1088,7 @@ impl<'a> CoreAgentProjector<'a> {
         try_join_all(calls.iter().map(|call| async move {
             let arguments = self.read_blob_text(&call.arguments_ref).await?;
             Ok(ToolCallEventView {
+                tool_id: call.tool_id.as_ref().map(|id| id.as_str().to_owned()),
                 call_id: call.call_id.as_str().to_owned(),
                 tool_name: call.tool_name.as_str().to_owned(),
                 arguments_ref: call.arguments_ref.as_str().to_owned(),
@@ -1125,6 +1126,7 @@ impl<'a> CoreAgentProjector<'a> {
                         let result = result_by_call.get(call.call_id.as_str());
                         let arguments = self.read_blob_text(&call.arguments_ref).await?;
                         Ok(ToolCallView {
+                            tool_id: call.tool_id.as_ref().map(|id| id.as_str().to_owned()),
                             call_id: call.call_id.as_str().to_owned(),
                             tool_name: call.tool_name.as_str().to_owned(),
                             arguments_ref: call.arguments_ref.as_str().to_owned(),
@@ -1454,9 +1456,6 @@ fn session_management_to_api(state: &CoreAgentState) -> Option<SessionManagement
 fn workflow_tool_declaration_to_api(
     binding: &engine::WorkflowToolBinding,
 ) -> Option<WorkflowToolDeclarationInput> {
-    let engine::ToolKind::Function(function) = &binding.definition.tool.kind else {
-        return None;
-    };
     Some(WorkflowToolDeclarationInput {
         definition: WorkflowToolDefinitionInput {
             tool_id: binding.definition.tool_id.as_str().to_owned(),
@@ -1464,21 +1463,24 @@ fn workflow_tool_declaration_to_api(
             semantic_type: binding.definition.semantic_type.clone(),
             tool: WorkflowToolSpecInput {
                 name: binding.definition.tool.name.as_str().to_owned(),
-                kind: WorkflowToolKindInput::Function {
-                    description_ref: function
-                        .description_ref
-                        .as_ref()
-                        .map(|value| value.as_str().to_owned()),
-                    input_schema_ref: function.input_schema_ref.as_str().to_owned(),
-                    output_schema_ref: function
-                        .output_schema_ref
-                        .as_ref()
-                        .map(|value| value.as_str().to_owned()),
-                    strict: function.strict,
-                    provider_options_ref: function
-                        .provider_options_ref
-                        .as_ref()
-                        .map(|value| value.as_str().to_owned()),
+                kind: match &binding.definition.tool.kind {
+                    engine::ToolKind::Function(function) => WorkflowToolKindInput::Function {
+                        description_ref: function
+                            .description_ref
+                            .as_ref()
+                            .map(|value| value.as_str().to_owned()),
+                        input_schema_ref: function.input_schema_ref.as_str().to_owned(),
+                        output_schema_ref: function
+                            .output_schema_ref
+                            .as_ref()
+                            .map(|value| value.as_str().to_owned()),
+                        strict: function.strict,
+                        provider_options_ref: function
+                            .provider_options_ref
+                            .as_ref()
+                            .map(|value| value.as_str().to_owned()),
+                    },
+                    _ => return None,
                 },
                 parallelism: tool_parallelism_to_api(binding.definition.tool.parallelism),
             },
@@ -2178,6 +2180,9 @@ fn tool_to_api(tool: &ToolSpec) -> ToolView {
 
 fn tool_kind_to_api(kind: &ToolKind) -> ToolKindView {
     match kind {
+        ToolKind::Builtin(builtin) => ToolKindView::Builtin {
+            settings: builtin.settings.clone(),
+        },
         ToolKind::Function(function) => ToolKindView::Function {
             description_ref: function
                 .description_ref
@@ -2836,6 +2841,7 @@ mod tests {
 
     fn tool_call_with_status(status: ToolItemStatus) -> ToolCallView {
         ToolCallView {
+            tool_id: None,
             call_id: "call-1".to_owned(),
             tool_name: "read_file".to_owned(),
             arguments_ref: "sha256:args".to_owned(),
@@ -2971,6 +2977,26 @@ mod tests {
             },
         )
         .expect("joined binding");
+        let mut system_definition = binding.definition.clone();
+        system_definition.tool_id = engine::WorkflowToolId::new("subagent-run");
+        system_definition.semantic_type = "lightspeed.subagent.run.v1".to_owned();
+        system_definition.tool.name = engine::ToolName::new("subagent.run");
+        system_definition.tool.kind = ToolKind::Builtin(Default::default());
+        let system_binding = engine::WorkflowToolBinding::admit(
+            universe_id,
+            system_definition,
+            binding.target.clone(),
+            binding.completion.clone(),
+        )
+        .expect("system builtin binding");
+        state
+            .workflow_tools
+            .system_binding_ids
+            .insert(system_binding.definition.tool_id.clone());
+        state
+            .workflow_tools
+            .bindings
+            .insert(system_binding.definition.tool_id.clone(), system_binding);
         state
             .workflow_tools
             .bindings

@@ -542,7 +542,7 @@ async fn run_profiles_live_client(
         .filter(|tool| matches!(tool.kind, api::ToolKindView::RemoteMcp { .. }))
         .collect();
     assert_eq!(mcp_tools.len(), 1);
-    assert_eq!(mcp_tools[0].tool_id, format!("mcp_{server_id}"));
+    assert_eq!(mcp_tools[0].tool_id, "mcp_profile_crm");
     let api::ToolKindView::RemoteMcp { server_label, .. } = &mcp_tools[0].kind else {
         panic!("expected remote MCP tool kind");
     };

@@ -1,16 +1,9 @@
 //! Provider-hosted web search tool builders.
 
-use engine::{
-    ProviderApiKind, ProviderNativeToolExecution, ProviderNativeToolSpec, ToolKind, ToolName,
-    ToolParallelism, ToolSpec,
-};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
-use crate::{
-    error::{ToolError, ToolResult},
-    runtime::{ToolDocument, ToolSpecBundle},
-};
+use crate::error::{ToolError, ToolResult};
 
 pub const WEB_SEARCH_TOOL_NAME: &str = "web_search";
 pub const ANTHROPIC_MESSAGES_WEB_SEARCH_TYPE: &str = "web_search_20250305";
@@ -200,36 +193,7 @@ impl OpenAiApproximateUserLocation {
     }
 }
 
-pub fn openai_responses_web_search_tool_bundle(
-    config: &OpenAiResponsesWebSearchConfig,
-) -> ToolResult<Option<ToolSpecBundle>> {
-    let Some(native_tool) = config.native_tool_json()? else {
-        return Ok(None);
-    };
-    let native_tool = ToolDocument::text(
-        "application/json",
-        serde_json::to_string(&native_tool).map_err(|error| ToolError::InvalidRequest {
-            message: format!("failed to encode OpenAI Responses web search tool: {error}"),
-        })?,
-    );
-    Ok(Some(ToolSpecBundle {
-        spec: ToolSpec {
-            name: ToolName::new(WEB_SEARCH_TOOL_NAME),
-            kind: ToolKind::ProviderNative(ProviderNativeToolSpec {
-                api_kind: ProviderApiKind::OpenAiResponses,
-                native_tool_ref: native_tool.blob_ref.clone(),
-                execution: ProviderNativeToolExecution::ProviderHosted,
-            }),
-            parallelism: ToolParallelism::ParallelSafe,
-            execution: engine::ToolExecutionSpec::default(),
-        },
-        documents: vec![native_tool],
-    }))
-}
-
-pub fn anthropic_messages_web_search_tool_bundle(
-    config: &WebSearchToolConfig,
-) -> ToolResult<Option<ToolSpecBundle>> {
+pub fn anthropic_messages_web_search_definition(config: &WebSearchToolConfig) -> ToolResult<Value> {
     validate_domains("allowed_domains", &config.allowed_domains)?;
     validate_domains("blocked_domains", &config.blocked_domains)?;
     if !config.allowed_domains.is_empty() && !config.blocked_domains.is_empty() {
@@ -252,25 +216,7 @@ pub fn anthropic_messages_web_search_tool_bundle(
         tool.insert("blocked_domains".to_owned(), json!(config.blocked_domains));
     }
 
-    let native_tool = ToolDocument::text(
-        "application/json",
-        serde_json::to_string(&Value::Object(tool)).map_err(|error| ToolError::InvalidRequest {
-            message: format!("failed to encode Anthropic Messages web search tool: {error}"),
-        })?,
-    );
-    Ok(Some(ToolSpecBundle {
-        spec: ToolSpec {
-            name: ToolName::new(WEB_SEARCH_TOOL_NAME),
-            kind: ToolKind::ProviderNative(ProviderNativeToolSpec {
-                api_kind: ProviderApiKind::AnthropicMessages,
-                native_tool_ref: native_tool.blob_ref.clone(),
-                execution: ProviderNativeToolExecution::ProviderHosted,
-            }),
-            parallelism: ToolParallelism::ParallelSafe,
-            execution: engine::ToolExecutionSpec::default(),
-        },
-        documents: vec![native_tool],
-    }))
+    Ok(Value::Object(tool))
 }
 
 pub const OPENAI_RESPONSES_WEB_SEARCH_SOURCES_INCLUDE: &str = "web_search_call.action.sources";
@@ -345,16 +291,17 @@ mod tests {
 
     #[test]
     fn disabled_web_search_has_no_tool() {
-        let bundle =
-            openai_responses_web_search_tool_bundle(&OpenAiResponsesWebSearchConfig::default())
-                .expect("bundle");
-
-        assert!(bundle.is_none());
+        assert!(
+            OpenAiResponsesWebSearchConfig::default()
+                .native_tool_json()
+                .expect("definition")
+                .is_none()
+        );
     }
 
     #[test]
     fn cached_web_search_builds_provider_native_tool() {
-        let bundle = openai_responses_web_search_tool_bundle(&OpenAiResponsesWebSearchConfig {
+        let native_tool = OpenAiResponsesWebSearchConfig {
             mode: WebSearchMode::Cached,
             search_context_size: Some(WebSearchContextSize::Medium),
             allowed_domains: vec!["docs.rs".to_string()],
@@ -366,23 +313,10 @@ mod tests {
                 timezone: None,
             }),
             include_sources: true,
-        })
-        .expect("bundle")
+        }
+        .native_tool_json()
+        .expect("definition")
         .expect("enabled");
-
-        assert_eq!(bundle.spec.name.as_str(), WEB_SEARCH_TOOL_NAME);
-        assert_eq!(bundle.spec.parallelism, ToolParallelism::ParallelSafe);
-        let ToolKind::ProviderNative(native) = &bundle.spec.kind else {
-            panic!("expected provider-native tool");
-        };
-        assert_eq!(native.api_kind, ProviderApiKind::OpenAiResponses);
-        assert_eq!(
-            native.execution,
-            ProviderNativeToolExecution::ProviderHosted
-        );
-        assert_eq!(native.native_tool_ref, bundle.documents[0].blob_ref);
-        let native_tool: Value =
-            serde_json::from_slice(&bundle.documents[0].bytes).expect("native tool");
         assert_eq!(
             native_tool,
             json!({
@@ -413,23 +347,11 @@ mod tests {
 
     #[test]
     fn anthropic_web_search_builds_bounded_provider_native_tool() {
-        let bundle = anthropic_messages_web_search_tool_bundle(&WebSearchToolConfig::new(
+        let native_tool = anthropic_messages_web_search_definition(&WebSearchToolConfig::new(
             vec!["docs.rs".to_owned()],
             Vec::new(),
         ))
-        .expect("bundle")
-        .expect("enabled");
-
-        let ToolKind::ProviderNative(native) = &bundle.spec.kind else {
-            panic!("expected provider-native tool");
-        };
-        assert_eq!(native.api_kind, ProviderApiKind::AnthropicMessages);
-        assert_eq!(
-            native.execution,
-            ProviderNativeToolExecution::ProviderHosted
-        );
-        let native_tool: Value =
-            serde_json::from_slice(&bundle.documents[0].bytes).expect("native tool");
+        .expect("definition");
         assert_eq!(
             native_tool,
             json!({
@@ -443,7 +365,7 @@ mod tests {
 
     #[test]
     fn anthropic_web_search_rejects_mixed_domain_filters() {
-        let error = anthropic_messages_web_search_tool_bundle(&WebSearchToolConfig::new(
+        let error = anthropic_messages_web_search_definition(&WebSearchToolConfig::new(
             vec!["docs.rs".to_owned()],
             vec!["example.com".to_owned()],
         ))

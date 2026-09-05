@@ -331,10 +331,6 @@ pub struct JobCancelResultEntry {
     pub error: Option<String>,
 }
 
-pub fn is_environment_job_query_tool_name(name: &str) -> bool {
-    name == JOB_READ_TOOL_NAME
-}
-
 pub fn visible_job_read_output(jobs: &[ModelJobResult]) -> String {
     serde_json::to_string_pretty(&ModelJobResultSet {
         jobs: jobs.to_vec(),

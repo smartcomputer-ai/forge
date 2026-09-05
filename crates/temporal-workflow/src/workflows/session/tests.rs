@@ -552,6 +552,7 @@ fn workflow_with_parked_tool_batch(spec: engine::AwaitSpec) -> AgentSessionWorkf
             calls: vec![engine::ToolCallState {
                 call: engine::ObservedToolCall {
                     call_id: call_id.clone(),
+                    tool_id: Some((engine::ToolName::new("await")).clone()),
                     tool_name: engine::ToolName::new("await"),
                     provider_kind: None,
                     arguments_ref: engine::BlobRef::from_bytes(b"{}"),
