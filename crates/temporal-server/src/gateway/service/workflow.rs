@@ -85,6 +85,7 @@ impl GatewayAgentApi {
         session_id: &SessionId,
         admissions: Vec<AgentAdmission>,
     ) -> Result<(), AgentApiError> {
+        self.refresh_input_blob_grace(&admissions).await?;
         match self
             .workflow_handle(session_id)
             .signal(
@@ -100,6 +101,21 @@ impl GatewayAgentApi {
                 .await),
             Err(error) => Err(map_workflow_interaction_error(error)),
         }
+    }
+
+    /// Refresh externally admitted refs in one database statement before the
+    /// workflow can queue them. Reads alone do not renew an upload's grace.
+    pub(super) async fn refresh_input_blob_grace(
+        &self,
+        input: &impl serde::Serialize,
+    ) -> Result<(), AgentApiError> {
+        let value = serde_json::to_value(input)
+            .map_err(|error| AgentApiError::internal(format!("encode admission: {error}")))?;
+        let refs = engine::storage::collect_blob_refs(&value);
+        self.store
+            .touch_blob_refs(&refs.into_iter().collect::<Vec<_>>())
+            .await
+            .map_err(map_blob_store_error)
     }
 
     pub(super) async fn wait_for_open_session(

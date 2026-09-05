@@ -85,7 +85,30 @@ construction artifact: source audio, a prompt assembly report, or a skill
 catalog snapshot. Native provider IDs stay in the native payload and can be
 projected for clients; they are not duplicated in reducer state.
 
-Blobs are immutable and shared within a universe, so nothing deletes them directly. Instead the store derives reachability from rows it already maintains: every session event row exposes the refs its entry embeds as a generated column, foreign keys protect checkpoints and VFS snapshots, bot events name their documents, and writers of nested formats (a VFS manifest and its files, a tool output and its attached assets, a catalog and its documents) record parent-to-child edges. A blob nothing reaches is collected by a background sweeper once it has gone untouched for a grace period; every put of existing content refreshes that touch, which closes the race between content-addressed deduplication and deletion without any coordination. Deleting a session therefore frees exactly the blobs only it used, on the next sweep, and debug material nothing ever referenced disappears on its own. Fingerprints that are hashes but not blobs carry a distinguishing prefix so they never read as refs.
+Blobs are immutable and shared within a universe. Session appends and bot event
+inserts derive deduplicated roots in their existing database transactions;
+foreign keys prevent committing dangling references. Checkpoints and VFS
+snapshots have their own foreign keys. Writers of nested formats (a VFS manifest
+and its files, a tool output and its assets, a catalog and its documents) record
+parent-to-child edges. Chat declaration documents retain their schemas and
+descriptions, and bot events retain the receiver's declaration document.
+
+A single background collector runs hourly, examining up to 100,000 catalog rows
+per universe in pages of at most 1,024, subject to a shared 10-minute budget
+checked between pages. It deletes old blobs with no holder or incoming edge.
+Parent deletion releases children for later pages or passes. Each put and API
+admission of existing refs refreshes the default seven-day grace; reads do not. Unique physical object keys let catalog deletion
+commit before object cleanup without a delayed delete damaging a reupload.
+Session deletion releases its roots; collection follows asynchronously after
+grace and cursor traversal. Fingerprints that are hashes but not blobs carry a
+distinguishing prefix so they never read as refs.
+
+Profiles borrow their blob refs: use inline instructions or content retained by
+another durable resource. Workflow state alone also does not retain blobs.
+Ordinary activity handoffs fit within grace; an uncommitted handoff stalled
+longer than grace may lose its blobs and require resubmission. There are no
+generic workflow leases or per-activity retention writes. A chat conversation
+reconstructs a collected declaration when another message arrives.
 
 ## Hosting inside a Workflow Runtime (e.g. Temporal)
 With the above pieces in place, running an agent inside a workflow runtime becomes feasible and pleasant. We just have to put it all together.

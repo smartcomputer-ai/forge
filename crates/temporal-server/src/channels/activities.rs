@@ -181,6 +181,14 @@ pub async fn chat_tool_declarations(
         .put_bytes(bytes)
         .await
         .map_err(|error| blob_error("store channel tool declarations", error))?;
+    let children = schema_refs
+        .values()
+        .chain(description_refs.values())
+        .map(|value| parse_blob_ref(value))
+        .collect::<Result<Vec<_>, _>>()?;
+    engine::storage::record_contains_edges(Some(api.store().as_ref()), &tools_ref, children)
+        .await
+        .map_err(|error| blob_error("record channel declaration edges", error))?;
     Ok(ChatToolDeclarationsResult {
         tools_ref: tools_ref.to_string(),
         tool_ids: declarations
@@ -590,7 +598,7 @@ fn refused(reason: ChatRefusalReason) -> ChatEmitEventResult {
 
 pub async fn emit_chat_event(
     api: &GatewayAgentApi,
-    request: ChatEmitEventRequest,
+    mut request: ChatEmitEventRequest,
 ) -> Result<ChatEmitEventResult, ActivityError> {
     let store = api.store();
     // A deleted bot was closed first: the conversation is over.
@@ -626,6 +634,25 @@ pub async fn emit_chat_event(
             ..
         }) => return Ok(refused(ChatRefusalReason::BreakerTripped)),
         Err(error) => return Err(bot_error("check trigger breaker", error)),
+    }
+
+    // A conversation may outlive all its bot events. Its cached declaration
+    // ref is borrowed until the next event commits; recover if collected.
+    let tools_ref = parse_blob_ref(&request.tools_ref)?;
+    match store.touch_blob_refs(&[tools_ref]).await {
+        Ok(()) => {}
+        Err(engine::storage::BlobStoreError::NotFound { .. }) => {
+            request.tools_ref = chat_tool_declarations(
+                api,
+                ChatToolDeclarationsRequest {
+                    universe_id: request.universe_id,
+                    receiver: request.notify.clone(),
+                },
+            )
+            .await?
+            .tools_ref;
+        }
+        Err(error) => return Err(blob_error("refresh channel declaration grace", error)),
     }
 
     let event_id = chat_message_event_id(

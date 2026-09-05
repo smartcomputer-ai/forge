@@ -29,6 +29,8 @@ const LIGHTSPEED_TABLES: &[&str] = &[
     "bots",
     "cas_blob_edges",
     "cas_blobs",
+    "cas_bot_event_roots",
+    "cas_session_roots",
     "channel_accounts",
     "channel_pairings",
     "environment_credentials",

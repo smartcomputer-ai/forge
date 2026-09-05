@@ -341,7 +341,10 @@ impl PgStore {
 
 pub use api_keys::PgApiKeyStore;
 pub use blob_cache::BlobCache;
-pub use cas_sweep::{CasObjectDeletion, CasSweepCandidate, CasSweepError};
+pub use cas_sweep::{
+    CasObjectDeletion, CasSweepCandidate, CasSweepCursor, CasSweepError, CasSweepLeader,
+    CasSweepPage,
+};
 pub use channels::list_channel_accounts_all;
 pub use environment_registration::{
     find_registered_environment_universe, find_registration_key_universe,

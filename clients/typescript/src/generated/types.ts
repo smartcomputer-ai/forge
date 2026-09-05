@@ -6245,7 +6245,9 @@ export interface BlobPutItem {
 }
 /**
  * `blobs/put` is batch-native: pass one item to store a single blob. Results
- * come back in request order.
+ * come back in request order. Uploads are eligible for collection after the
+ * deployment's grace period unless retained by a durable resource. Reads do
+ * not extend retention; admitting an existing ref refreshes its grace.
  *
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "BlobPutParams".

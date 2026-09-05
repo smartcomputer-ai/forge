@@ -539,3 +539,75 @@ async fn channels_live_pairing_gates_a_conversation() -> anyhow::Result<()> {
     })
     .await
 }
+
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires local Temporal, Postgres, and MinIO"]
+async fn temporal_live_chat_rebuilds_collected_declarations_and_retains_assets()
+-> anyhow::Result<()> {
+    use bots::BotEventStore;
+    use engine::{BlobRef, WorkflowEndpointRef, storage::collect_blob_refs};
+    use temporal_server::channels::activities::{chat_tool_declarations, emit_chat_event};
+    use temporal_workflow::channels::{
+        CHANNEL_CONVERSATION_WORKFLOW_KIND, ChatEmitEventRequest, ChatEmitEventResult, ChatMessage,
+        ChatToolDeclarationsRequest,
+    };
+    run_channels_live(|live| async move {
+        let (bot_id, trigger_id, _) = create_bot_with_chat(&live.api, &live.account_id, ChatPairing::Open).await?;
+        let store = pg_store_from_env().await?;
+        let receiver = WorkflowEndpointRef {
+            workflow_id: unique("gc-conversation"),
+            workflow_kind: CHANNEL_CONVERSATION_WORKFLOW_KIND.to_owned(),
+        };
+        let declaration = chat_tool_declarations(&live.api, ChatToolDeclarationsRequest {
+            universe_id: store.config().universe_id, receiver: receiver.clone(),
+        }).await.map_err(|e| anyhow::anyhow!("declaration: {e:?}"))?;
+        let tools_ref = BlobRef::parse(declaration.tools_ref.clone())?;
+        let bytes = store.read_bytes(&tools_ref).await?;
+        let children = collect_blob_refs(&serde_json::from_slice(&bytes)?);
+        assert!(!children.is_empty());
+        let edges: i64 = sqlx::query_scalar("SELECT count(*) FROM cas_blob_edges WHERE universe_id = $1 AND parent_digest = $2")
+            .bind(store.config().universe_id).bind(tools_ref.as_str().trim_start_matches("sha256:"))
+            .fetch_one(store.pool()).await?;
+        assert_eq!(edges as usize, children.len(), "declarations retain all schemas and descriptions");
+        sqlx::query("UPDATE cas_blobs SET created_at_ms = 1, touched_at_ms = 1 WHERE universe_id = $1 AND digest = $2")
+            .bind(store.config().universe_id).bind(tools_ref.as_str().trim_start_matches("sha256:"))
+            .execute(store.pool()).await?;
+        let deleted = store.delete_dead_blobs(std::slice::from_ref(&tools_ref), 2, &[]).await?;
+        assert_eq!(deleted.len(), 1, "a workflow's cached ref alone does not retain its declaration");
+        let result = emit_chat_event(&live.api, ChatEmitEventRequest {
+            universe_id: store.config().universe_id,
+            bot_id: bot_id.clone(), trigger_id, account_id: live.account_id.clone(),
+            provider: ChannelProvider::new("telegram"),
+            conversation: channels::ConversationRef {
+                account_id: live.account_id.clone(), chat_id: unique("gc-chat"), thread_id: None,
+            },
+            label: "GC recovery".to_owned(), scope: api::ChatScope::Direct,
+            message: ChatMessage {
+                message_id: unique("gc-message"), sender_id: "sender".to_owned(),
+                sender_name: "Sender".to_owned(), timestamp_ms: 1_788_000_000_000,
+                text: "hello after collection".to_owned(), is_direct: true,
+                mentioned_bot: false, is_reply_to_bot: false,
+            },
+            media: vec![], tools_ref: declaration.tools_ref, notify: receiver,
+            notify_token: unique("receipt"),
+        }).await.map_err(|e| anyhow::anyhow!("emit after collection: {e:?}"))?;
+        let ChatEmitEventResult::Admitted { event_id, .. } = result else {
+            anyhow::bail!("expected admitted event, got {result:?}");
+        };
+        let event = store.read_bot_event(&bot_id, &event_id).await?;
+        assert_eq!(event.tools_ref(), Some(tools_ref.as_str()));
+        assert!(store.has_blob(&tools_ref).await?, "declaration catalog row was reconstructed");
+        let root: bool = sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM cas_bot_event_roots WHERE universe_id = $1 AND bot_id = $2 AND event_id = $3 AND digest = $4)")
+            .bind(store.config().universe_id).bind(bot_id.as_str()).bind(&event_id)
+            .bind(tools_ref.as_str().trim_start_matches("sha256:")).fetch_one(store.pool()).await?;
+        assert!(root, "bot event retains its receiver declaration");
+        let mut held = children.into_iter().collect::<Vec<_>>();
+        held.push(tools_ref);
+        sqlx::query("UPDATE cas_blobs SET created_at_ms = 1, touched_at_ms = 1 WHERE universe_id = $1 AND digest = ANY($2::text[])")
+            .bind(store.config().universe_id)
+            .bind(held.iter().map(|r| r.as_str().trim_start_matches("sha256:")).collect::<Vec<_>>())
+            .execute(store.pool()).await?;
+        assert!(store.delete_dead_blobs(&held, 2, &[]).await?.is_empty());
+        Ok(())
+    }).await
+}

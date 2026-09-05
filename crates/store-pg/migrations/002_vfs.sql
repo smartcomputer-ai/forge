@@ -71,6 +71,9 @@ CREATE TABLE IF NOT EXISTS vfs_workspaces (
 CREATE INDEX IF NOT EXISTS vfs_workspaces_head_digest_idx
     ON vfs_workspaces (universe_id, head_snapshot_digest);
 
+CREATE INDEX IF NOT EXISTS vfs_workspaces_base_digest_idx
+    ON vfs_workspaces (universe_id, base_snapshot_digest);
+
 COMMENT ON TABLE vfs_snapshots IS
     'Descriptive metadata for immutable CAS-backed VFS snapshot manifests.';
 COMMENT ON TABLE vfs_workspaces IS

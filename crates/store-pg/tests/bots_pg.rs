@@ -17,6 +17,7 @@ use channels::{
     ChannelAccountStore, ChannelError, ChannelPairingFilter, ChannelPairingRecord,
     ChannelPairingStore,
 };
+use engine::{BlobRef, storage::BlobStore};
 use sqlx::postgres::PgPoolOptions;
 use store_pg::{PgStore, PgStoreConfig};
 use uuid::Uuid;
@@ -34,6 +35,12 @@ async fn live_store() -> PgStore {
     PgStore::migrate(&pool).await.expect("apply migrations");
     let store = PgStore::new(pool, PgStoreConfig::new(Uuid::new_v4()));
     store.ensure_universe().await.expect("ensure test universe");
+    for bytes in [b"event document".as_slice(), b"event prompt".as_slice()] {
+        store
+            .put_bytes(bytes.to_vec())
+            .await
+            .expect("put event fixture blob");
+    }
     store
 }
 
@@ -133,8 +140,8 @@ fn event(
         summary: format!("event {seq}"),
         occurred_at_ms: received_at_ms,
         received_at_ms,
-        document_ref: format!("sha256:{}", "a".repeat(64)),
-        prompt_ref: Some(format!("sha256:{}", "b".repeat(64))),
+        document_ref: BlobRef::from_bytes(b"event document").to_string(),
+        prompt_ref: Some(BlobRef::from_bytes(b"event prompt").to_string()),
         session: Some(RoutedSession {
             session_id: format!("bot:v1:{bot_id}:main"),
             label: "main".to_owned(),
@@ -1225,5 +1232,116 @@ async fn pg_live_channel_accounts_and_pairings() {
             .is_empty()
     );
 
+    drop_universe(&store).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires Postgres"]
+async fn pg_live_bot_event_roots_cover_receiver_tools_and_roll_back_missing_refs() {
+    let store = live_store().await;
+    let bot_id = BotId::new("rooted-event");
+    store
+        .create_bot(bot_id.clone(), bot_document("profile"), 1)
+        .await
+        .expect("create bot");
+    let tools = store
+        .put_bytes(b"receiver tools".to_vec())
+        .await
+        .expect("tools");
+    let media = store
+        .put_bytes(b"media attachment".to_vec())
+        .await
+        .expect("media");
+    let mut record = event(&bot_id, "with-tools", 1, 2, None, None);
+    record.receiver = Some(bots::EventReceiver::Workflow {
+        workflow_id: "conversation".to_owned(),
+        workflow_kind: "chat".to_owned(),
+        token: "receipt".to_owned(),
+        tools_ref: Some(tools.to_string()),
+    });
+    record.media = vec![api::BotEventMedia {
+        blob_ref: media.to_string(),
+        kind: api::BotEventMediaKind::Image,
+        mime: "image/png".to_owned(),
+        name: None,
+    }];
+    store
+        .insert_bot_event(record.clone())
+        .await
+        .expect("insert rooted event");
+    let roots: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM cas_bot_event_roots WHERE universe_id = $1 AND bot_id = $2",
+    )
+    .bind(store.config().universe_id)
+    .bind(bot_id.as_str())
+    .fetch_one(store.pool())
+    .await
+    .expect("roots");
+    assert_eq!(
+        roots, 4,
+        "document, prompt, media, and receiver tools are retained"
+    );
+    sqlx::query("UPDATE cas_blobs SET created_at_ms = 1, touched_at_ms = 1 WHERE universe_id = $1")
+        .bind(store.config().universe_id)
+        .execute(store.pool())
+        .await
+        .expect("age blobs");
+    let refs = [
+        &record.document_ref,
+        record.prompt_ref.as_ref().unwrap(),
+        &media.to_string(),
+        &tools.to_string(),
+    ]
+    .into_iter()
+    .map(|r| BlobRef::parse(r.clone()).unwrap())
+    .collect::<Vec<_>>();
+    assert!(
+        store
+            .delete_dead_blobs(&refs, 2, &[])
+            .await
+            .expect("sweep rooted event")
+            .is_empty()
+    );
+    let missing = BlobRef::from_bytes(b"never stored").to_string();
+    let mut duplicate = record.clone();
+    duplicate.document_ref = missing.clone();
+    assert!(
+        store
+            .insert_bot_event(duplicate)
+            .await
+            .expect("duplicate keeps original roots")
+            .is_duplicate()
+    );
+    let mut broken = record;
+    broken.event_id = "missing".to_owned();
+    broken.seq = 2;
+    broken.document_ref = missing;
+    assert!(matches!(
+        store.insert_bot_event(broken).await,
+        Err(BotError::Store { .. })
+    ));
+    let events: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM bot_events WHERE universe_id = $1 AND bot_id = $2",
+    )
+    .bind(store.config().universe_id)
+    .bind(bot_id.as_str())
+    .fetch_one(store.pool())
+    .await
+    .expect("events");
+    assert_eq!(events, 1, "a failed attachment rolls back its event");
+    sqlx::query("DELETE FROM bot_events WHERE universe_id = $1 AND bot_id = $2")
+        .bind(store.config().universe_id)
+        .bind(bot_id.as_str())
+        .execute(store.pool())
+        .await
+        .expect("delete event");
+    assert_eq!(
+        store
+            .delete_dead_blobs(&refs, 2, &[])
+            .await
+            .expect("sweep released roots")
+            .len(),
+        4
+    );
     drop_universe(&store).await;
 }

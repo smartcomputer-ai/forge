@@ -22,7 +22,10 @@ use engine::{
         SessionStore, SessionStoreError, engine_blob_refs,
     },
 };
-use store_pg::{CasObjectDeletion, CasSweepCandidate, CasSweepError, PgStore};
+use store_pg::{
+    CasObjectDeletion, CasSweepCandidate, CasSweepCursor, CasSweepError, CasSweepLeader,
+    CasSweepPage, PgStore,
+};
 use temporal_workflow::{AgentAdmission, AgentSessionWorkflow, compose_workflow_id};
 use temporalio_client::{
     Client, WorkflowDescribeOptions, WorkflowSignalOptions, errors::WorkflowInteractionError,
@@ -38,28 +41,36 @@ use crate::{
 
 const DEFAULT_REAPER_INTERVAL: Duration = Duration::from_secs(5 * 60);
 const SESSION_PAGE_LIMIT: usize = 256;
-/// Blobs one sweep pass deletes per universe. A large backlog drains over
-/// passes instead of one transaction storm.
-const CAS_SWEEP_BATCH_LIMIT: usize = 1024;
+const CAS_SWEEP_INTERVAL: Duration = Duration::from_secs(60 * 60);
+/// Bound each database scan/delete independently of the hourly allowance.
+const CAS_SWEEP_PAGE_LIMIT: usize = 1024;
+/// Catalog rows examined per universe and pass, including live blobs.
+const CAS_SWEEP_ROW_LIMIT: usize = 100_000;
+const CAS_SWEEP_PASS_BUDGET: Duration = Duration::from_secs(10 * 60);
 
 /// Periodic collector of content-addressed blobs nothing references.
 ///
-/// A pass visits every universe once and deletes at most
-/// [`CAS_SWEEP_BATCH_LIMIT`] blobs there: those with no event root, no
-/// checkpoint, VFS, or bot holder, no incoming edge, not pinned, and
-/// untouched for longer than the grace. The store repeats every predicate in
-/// the delete statement, so anything that became live in between survives.
-/// Catalog rows go first and objects second; an object whose deletion fails
-/// is unreachable and merely leaks.
+/// One leader scans bounded catalog pages, preserving cursors between passes.
+/// FK-backed holders protect concurrent attachments. Physical object keys are
+/// unique per catalog incarnation, so delayed object cleanup cannot hurt a put.
 #[derive(Clone)]
 pub struct CasBlobSweeper {
+    progress: Arc<tokio::sync::Mutex<CasSweepProgress>>,
     stores: DeploymentStores,
     grace: Duration,
     interval: Duration,
 }
 
+#[derive(Default)]
+struct CasSweepProgress {
+    cursors: BTreeMap<Uuid, Option<CasSweepCursor>>,
+    last_universe: Option<Uuid>,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CasSweepStats {
+    pub rows_scanned: usize,
+    pub leader_busy: bool,
     pub universes_scanned: usize,
     pub candidates: usize,
     pub rows_deleted: usize,
@@ -72,16 +83,17 @@ pub struct CasSweepStats {
 
 impl CasSweepStats {
     fn reportable(&self) -> bool {
-        self.candidates > 0 || self.holder_conflicts > 0 || self.errors > 0
+        self.rows_scanned > 0 || self.holder_conflicts > 0 || self.errors > 0
     }
 }
 
 impl CasBlobSweeper {
     pub fn new(stores: DeploymentStores, grace: Duration) -> Self {
         Self {
+            progress: Arc::default(),
             stores,
             grace,
-            interval: DEFAULT_REAPER_INTERVAL,
+            interval: CAS_SWEEP_INTERVAL,
         }
     }
 
@@ -91,49 +103,98 @@ impl CasBlobSweeper {
 
     pub async fn run_forever(self) {
         loop {
-            match self.run_once(false).await {
-                Ok(stats) if stats.reportable() => tracing::info!(
-                    target: "temporal_server",
-                    universes_scanned = stats.universes_scanned,
-                    candidates = stats.candidates,
-                    rows_deleted = stats.rows_deleted,
-                    bytes_freed = stats.bytes_freed,
-                    objects_deleted = stats.objects_deleted,
-                    object_errors = stats.object_errors,
-                    holder_conflicts = stats.holder_conflicts,
-                    errors = stats.errors,
-                    "cas blob sweep pass complete"
-                ),
-                Ok(_) => {}
-                Err(error) => tracing::warn!(
-                    target: "temporal_server",
-                    %error,
-                    "cas blob sweep pass failed"
-                ),
+            match CasSweepLeader::try_acquire(self.stores.pool()).await {
+                Ok(Some(mut leader)) => loop {
+                    match self.run_pass(false, Some(&mut leader)).await {
+                        Ok(stats) if stats.reportable() => tracing::info!(
+                            target: "temporal_server",
+                            universes_scanned = stats.universes_scanned,
+                            rows_scanned = stats.rows_scanned,
+                            candidates = stats.candidates,
+                            rows_deleted = stats.rows_deleted,
+                            bytes_freed = stats.bytes_freed,
+                            objects_deleted = stats.objects_deleted,
+                            object_errors = stats.object_errors,
+                            holder_conflicts = stats.holder_conflicts,
+                            errors = stats.errors,
+                            "cas blob sweep pass complete"
+                        ),
+                        Ok(_) => {}
+                        Err(error) => {
+                            tracing::warn!(target: "temporal_server", %error, "cas blob sweep leader failed");
+                            break;
+                        }
+                    }
+                    tokio::time::sleep(self.interval).await;
+                },
+                Ok(None) => {}
+                Err(error) => {
+                    tracing::warn!(target: "temporal_server", %error, "could not acquire cas sweep leadership")
+                }
             }
             tokio::time::sleep(self.interval).await;
         }
     }
 
-    /// One pass over every universe. A dry run reports the candidates and
-    /// bytes a real pass would delete right now and deletes nothing.
+    /// One bounded pass. Manual deletion yields to an active background
+    /// leader; dry-run remains available and never advances sweep cursors.
     pub async fn run_once(&self, dry_run: bool) -> anyhow::Result<CasSweepStats> {
-        let universes = store_pg::list_universes(self.stores.pool()).await?;
+        if dry_run {
+            return self.run_pass(true, None).await;
+        }
+        let Some(mut leader) = CasSweepLeader::try_acquire(self.stores.pool()).await? else {
+            return Ok(CasSweepStats {
+                leader_busy: true,
+                ..Default::default()
+            });
+        };
+        self.run_pass(false, Some(&mut leader)).await
+    }
+
+    async fn run_pass(
+        &self,
+        dry_run: bool,
+        mut leader: Option<&mut CasSweepLeader>,
+    ) -> anyhow::Result<CasSweepStats> {
+        let mut universes = store_pg::list_universes(self.stores.pool()).await?;
+        universes.sort_by_key(|(id, _)| *id);
+        let mut progress = self.progress.lock().await;
+        progress
+            .cursors
+            .retain(|id, _| universes.binary_search_by_key(id, |(id, _)| *id).is_ok());
+        if let Some(last) = progress.last_universe {
+            let offset = universes.partition_point(|(id, _)| *id <= last);
+            universes.rotate_left(offset);
+        }
+        let deadline = std::time::Instant::now() + CAS_SWEEP_PASS_BUDGET;
         let cutoff_ms = now_ms().saturating_sub(duration_ms(self.grace));
         let pinned = engine_blob_refs();
         let mut stats = CasSweepStats::default();
         for (universe_id, _) in universes {
+            if std::time::Instant::now() >= deadline {
+                break;
+            }
+            if let Some(leader) = leader.as_mut() {
+                leader.check().await?;
+            }
             let store = self.stores.store_for(universe_id);
-            sweep_universe_once(
+            let mut cursor = progress.cursors.get(&universe_id).cloned().flatten();
+            sweep_universe_pass(
                 universe_id,
                 store.as_ref(),
                 cutoff_ms,
                 &pinned,
-                CAS_SWEEP_BATCH_LIMIT,
+                CAS_SWEEP_ROW_LIMIT,
                 dry_run,
+                deadline,
                 &mut stats,
+                &mut cursor,
             )
             .await;
+            if !dry_run {
+                progress.cursors.insert(universe_id, cursor);
+                progress.last_universe = Some(universe_id);
+            }
         }
         Ok(stats)
     }
@@ -148,12 +209,13 @@ fn duration_ms(duration: Duration) -> u64 {
 /// implementation.
 #[async_trait]
 pub(super) trait CasSweepStore: Send + Sync {
-    async fn list_sweep_candidates(
+    async fn scan_sweep_candidates(
         &self,
         cutoff_ms: u64,
         pinned: &[BlobRef],
+        after: Option<&CasSweepCursor>,
         limit: usize,
-    ) -> Result<Vec<CasSweepCandidate>, CasSweepError>;
+    ) -> Result<CasSweepPage, CasSweepError>;
 
     async fn delete_dead_blobs(
         &self,
@@ -167,13 +229,14 @@ pub(super) trait CasSweepStore: Send + Sync {
 
 #[async_trait]
 impl CasSweepStore for PgStore {
-    async fn list_sweep_candidates(
+    async fn scan_sweep_candidates(
         &self,
         cutoff_ms: u64,
         pinned: &[BlobRef],
+        after: Option<&CasSweepCursor>,
         limit: usize,
-    ) -> Result<Vec<CasSweepCandidate>, CasSweepError> {
-        PgStore::list_sweep_candidates(self, cutoff_ms, pinned, limit).await
+    ) -> Result<CasSweepPage, CasSweepError> {
+        PgStore::scan_sweep_candidates(self, cutoff_ms, pinned, after, limit).await
     }
 
     async fn delete_dead_blobs(
@@ -190,7 +253,48 @@ impl CasSweepStore for PgStore {
     }
 }
 
-pub(super) async fn sweep_universe_once(
+/// Scan multiple small pages without wrapping in the same pass. All universes
+/// share the pass deadline; unfinished cursors resume on the next hourly pass.
+#[allow(clippy::too_many_arguments)]
+async fn sweep_universe_pass(
+    universe_id: Uuid,
+    store: &dyn CasSweepStore,
+    cutoff_ms: u64,
+    pinned: &[BlobRef],
+    row_limit: usize,
+    dry_run: bool,
+    deadline: std::time::Instant,
+    stats: &mut CasSweepStats,
+    cursor: &mut Option<CasSweepCursor>,
+) {
+    stats.universes_scanned += 1;
+    let initial_rows_scanned = stats.rows_scanned;
+    loop {
+        let remaining = row_limit.saturating_sub(stats.rows_scanned - initial_rows_scanned);
+        if remaining == 0 || std::time::Instant::now() >= deadline {
+            break;
+        }
+        if !sweep_universe_page(
+            universe_id,
+            store,
+            cutoff_ms,
+            pinned,
+            remaining.min(CAS_SWEEP_PAGE_LIMIT),
+            dry_run,
+            stats,
+            cursor,
+        )
+        .await
+        {
+            break;
+        }
+    }
+}
+
+/// Returns whether another page may be processed in this pass. Errors stop
+/// the universe so a failed dependency cannot consume the whole row allowance.
+#[allow(clippy::too_many_arguments)]
+async fn sweep_universe_page(
     universe_id: Uuid,
     store: &dyn CasSweepStore,
     cutoff_ms: u64,
@@ -198,10 +302,13 @@ pub(super) async fn sweep_universe_once(
     limit: usize,
     dry_run: bool,
     stats: &mut CasSweepStats,
-) {
-    stats.universes_scanned += 1;
-    let candidates = match store.list_sweep_candidates(cutoff_ms, pinned, limit).await {
-        Ok(candidates) => candidates,
+    cursor: &mut Option<CasSweepCursor>,
+) -> bool {
+    let page = match store
+        .scan_sweep_candidates(cutoff_ms, pinned, cursor.as_ref(), limit)
+        .await
+    {
+        Ok(page) => page,
         Err(error) => {
             stats.errors += 1;
             tracing::warn!(
@@ -210,19 +317,22 @@ pub(super) async fn sweep_universe_once(
                 %error,
                 "could not list cas sweep candidates"
             );
-            return;
+            return false;
         }
     };
+    stats.rows_scanned += page.scanned;
+    *cursor = page.next_cursor;
+    let candidates = page.candidates;
     stats.candidates += candidates.len();
     if dry_run {
         stats.bytes_freed += candidates
             .iter()
             .map(|candidate| candidate.byte_len)
             .sum::<u64>();
-        return;
+        return cursor.is_some();
     }
     if candidates.is_empty() {
-        return;
+        return cursor.is_some();
     }
     let candidate_refs = candidates
         .iter()
@@ -237,18 +347,17 @@ pub(super) async fn sweep_universe_once(
             constraint,
             message,
         }) => {
-            // A holder table the liveness predicate does not cover: report
-            // it and leave the universe alone this pass; never retry in a
-            // loop.
+            // A concurrent attachment or an uncovered holder won. Leave
+            // this page alone and revisit it after the cursor wraps.
             stats.holder_conflicts += 1;
-            tracing::error!(
+            tracing::warn!(
                 target: "temporal_server",
                 %universe_id,
                 constraint,
                 message,
-                "cas sweep skipped a universe: blob deletion hit an uncovered holder"
+                "cas sweep skipped a page: blob deletion conflicts with a holder"
             );
-            return;
+            return false;
         }
         Err(error) => {
             stats.errors += 1;
@@ -258,7 +367,7 @@ pub(super) async fn sweep_universe_once(
                 %error,
                 "could not delete dead cas blobs"
             );
-            return;
+            return false;
         }
     };
     stats.rows_deleted += deleted.len();
@@ -271,11 +380,12 @@ pub(super) async fn sweep_universe_once(
         .filter_map(|candidate| candidate.object_key)
         .collect::<Vec<_>>();
     if object_keys.is_empty() {
-        return;
+        return cursor.is_some();
     }
     let objects = store.delete_blob_objects(&object_keys).await;
     stats.objects_deleted += objects.deleted;
     stats.object_errors += objects.failures.len();
+    let objects_succeeded = objects.failures.is_empty();
     for (key, error) in objects.failures {
         tracing::warn!(
             target: "temporal_server",
@@ -285,6 +395,31 @@ pub(super) async fn sweep_universe_once(
             "could not delete swept blob object; the object is unreachable and leaks"
         );
     }
+    objects_succeeded && cursor.is_some()
+}
+
+#[cfg(test)]
+async fn sweep_universe_once(
+    universe_id: Uuid,
+    store: &dyn CasSweepStore,
+    cutoff_ms: u64,
+    pinned: &[BlobRef],
+    limit: usize,
+    dry_run: bool,
+    stats: &mut CasSweepStats,
+) {
+    sweep_universe_pass(
+        universe_id,
+        store,
+        cutoff_ms,
+        pinned,
+        limit,
+        dry_run,
+        std::time::Instant::now() + CAS_SWEEP_PASS_BUDGET,
+        stats,
+        &mut None,
+    )
+    .await;
 }
 
 #[derive(Clone)]
@@ -1112,6 +1247,7 @@ mod tests {
         failing_objects: BTreeSet<String>,
         holder_conflict: bool,
         deleted_objects: Mutex<Vec<String>>,
+        scan_limits: Mutex<Vec<usize>>,
     }
 
     impl FakeSweepStore {
@@ -1149,15 +1285,45 @@ mod tests {
 
     #[async_trait]
     impl CasSweepStore for FakeSweepStore {
-        async fn list_sweep_candidates(
+        async fn scan_sweep_candidates(
             &self,
             cutoff_ms: u64,
             pinned: &[BlobRef],
+            after: Option<&CasSweepCursor>,
             limit: usize,
-        ) -> Result<Vec<CasSweepCandidate>, CasSweepError> {
-            let mut candidates = self.dead_candidates(cutoff_ms, pinned, None);
-            candidates.truncate(limit);
-            Ok(candidates)
+        ) -> Result<CasSweepPage, CasSweepError> {
+            self.scan_limits
+                .lock()
+                .expect("scan limits lock")
+                .push(limit);
+            let scanned: Vec<_> = self
+                .blobs
+                .blobs_touched_before(cutoff_ms)
+                .into_iter()
+                .filter(|info| {
+                    after.is_none_or(|after| {
+                        (
+                            self.blobs.touched_at_ms(&info.blob_ref).unwrap(),
+                            &info.blob_ref,
+                        ) > (after.touched_at_ms, &after.blob_ref)
+                    })
+                })
+                .take(limit)
+                .map(|info| info.blob_ref)
+                .collect();
+            let next_cursor = if scanned.len() == limit {
+                scanned.last().map(|blob_ref| CasSweepCursor {
+                    touched_at_ms: self.blobs.touched_at_ms(blob_ref).unwrap(),
+                    blob_ref: blob_ref.clone(),
+                })
+            } else {
+                None
+            };
+            Ok(CasSweepPage {
+                candidates: self.dead_candidates(cutoff_ms, pinned, Some(&scanned)),
+                scanned: scanned.len(),
+                next_cursor,
+            })
         }
 
         async fn delete_dead_blobs(
@@ -1325,7 +1491,8 @@ mod tests {
         )
         .await;
         assert_eq!(third.candidates, 0, "a repeated sweep is a no-op");
-        assert!(!third.reportable());
+        assert!(third.rows_scanned > 0);
+        assert!(third.reportable(), "live pages still report examined rows");
 
         store.live.lock().expect("live lock").clear();
         let mut released = CasSweepStats::default();
@@ -1393,6 +1560,145 @@ mod tests {
         assert_eq!(stats.candidates, 2);
         assert_eq!(stats.rows_deleted, 2);
         assert_eq!(store.blobs.blob_refs().len(), 3);
+    }
+
+    async fn paged_sweep_store(count: usize) -> FakeSweepStore {
+        let store = FakeSweepStore {
+            blobs: engine::storage::InMemoryBlobStore::with_clock(Arc::new(|| 10)),
+            ..FakeSweepStore::default()
+        };
+        for index in 0..count {
+            aged_blob(&store, &index.to_le_bytes()).await;
+        }
+        store
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn cas_sweep_pages_past_live_rows_and_resumes_after_its_row_limit() {
+        let store = paged_sweep_store(CAS_SWEEP_PAGE_LIMIT + 4).await;
+        store.live.lock().expect("live lock").extend(
+            store
+                .blobs
+                .blobs_touched_before(100)
+                .into_iter()
+                .take(CAS_SWEEP_PAGE_LIMIT)
+                .map(|blob| blob.blob_ref),
+        );
+        let universe_id = Uuid::new_v4();
+        let mut cursor = None;
+        let mut first = CasSweepStats::default();
+        sweep_universe_pass(
+            universe_id,
+            &store,
+            100,
+            &[],
+            CAS_SWEEP_PAGE_LIMIT + 2,
+            false,
+            std::time::Instant::now() + CAS_SWEEP_PASS_BUDGET,
+            &mut first,
+            &mut cursor,
+        )
+        .await;
+        assert_eq!(first.universes_scanned, 1, "count universes, not pages");
+        assert_eq!(first.rows_scanned, CAS_SWEEP_PAGE_LIMIT + 2);
+        assert_eq!(
+            first.rows_deleted, 2,
+            "live rows count against the allowance"
+        );
+        assert!(cursor.is_some());
+        assert_eq!(
+            *store.scan_limits.lock().unwrap(),
+            vec![CAS_SWEEP_PAGE_LIMIT, 2]
+        );
+
+        let mut next = CasSweepStats::default();
+        sweep_universe_pass(
+            universe_id,
+            &store,
+            100,
+            &[],
+            CAS_SWEEP_ROW_LIMIT,
+            false,
+            std::time::Instant::now() + CAS_SWEEP_PASS_BUDGET,
+            &mut next,
+            &mut cursor,
+        )
+        .await;
+        assert_eq!(next.rows_scanned, 2, "resume beyond the previous live page");
+        assert_eq!(next.rows_deleted, 2);
+        assert!(
+            cursor.is_none(),
+            "stop at the end without wrapping this pass"
+        );
+        assert_eq!(store.blobs.blob_refs().len(), CAS_SWEEP_PAGE_LIMIT);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn cas_sweep_dry_run_traverses_multiple_pages_without_deleting_or_wrapping() {
+        let count = CAS_SWEEP_PAGE_LIMIT + 3;
+        let store = paged_sweep_store(count).await;
+        let mut stats = CasSweepStats::default();
+        sweep_universe_once(
+            Uuid::new_v4(),
+            &store,
+            100,
+            &[],
+            CAS_SWEEP_ROW_LIMIT,
+            true,
+            &mut stats,
+        )
+        .await;
+        assert_eq!(stats.universes_scanned, 1);
+        assert_eq!(stats.rows_scanned, count);
+        assert_eq!(stats.candidates, count);
+        assert_eq!(stats.rows_deleted, 0);
+        assert_eq!(store.blobs.blob_refs().len(), count);
+        assert_eq!(
+            *store.scan_limits.lock().unwrap(),
+            vec![CAS_SWEEP_PAGE_LIMIT; 2]
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn cas_sweep_stops_at_an_expired_deadline_or_a_page_failure() {
+        let mut store = paged_sweep_store(CAS_SWEEP_PAGE_LIMIT + 1).await;
+        let mut stats = CasSweepStats::default();
+        let mut cursor = None;
+        sweep_universe_pass(
+            Uuid::new_v4(),
+            &store,
+            100,
+            &[],
+            CAS_SWEEP_ROW_LIMIT,
+            false,
+            std::time::Instant::now(),
+            &mut stats,
+            &mut cursor,
+        )
+        .await;
+        assert_eq!(stats.rows_scanned, 0);
+        assert!(store.scan_limits.lock().unwrap().is_empty());
+        assert!(cursor.is_none());
+
+        store.holder_conflict = true;
+        let mut stats = CasSweepStats::default();
+        sweep_universe_once(
+            Uuid::new_v4(),
+            &store,
+            100,
+            &[],
+            CAS_SWEEP_ROW_LIMIT,
+            false,
+            &mut stats,
+        )
+        .await;
+        assert_eq!(stats.rows_scanned, CAS_SWEEP_PAGE_LIMIT);
+        assert_eq!(stats.holder_conflicts, 1, "stop after the failed page");
+        assert_eq!(stats.rows_deleted, 0);
+        assert_eq!(
+            *store.scan_limits.lock().unwrap(),
+            vec![CAS_SWEEP_PAGE_LIMIT]
+        );
     }
 
     fn snapshots(
