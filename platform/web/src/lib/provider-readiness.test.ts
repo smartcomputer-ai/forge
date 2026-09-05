@@ -31,6 +31,13 @@ describe("provider readiness", () => {
     expect(summarizeProviderReadiness(undefined).ready).toBe(true);
   });
 
+  it("encodes reserved characters in add-integration kinds", () => {
+    const href = addIntegrationHref("acme", "custom provider/alpha?x=1&y=2#fragment");
+    expect(href).toBe(
+      "/u/acme/settings/integrations?add=custom%20provider%2Falpha%3Fx%3D1%26y%3D2%23fragment",
+    );
+  });
+
   it("builds the add-integration deep link", () => {
     expect(addIntegrationHref("acme", "openAiApiKey")).toBe(
       "/u/acme/settings/integrations?add=openAiApiKey",
