@@ -123,7 +123,7 @@ impl PgStore {
             committed.push(entry);
         }
         embedded
-            .verify_stored(&mut tx, self.config.universe_id, &request.session_id)
+            .record_roots(&mut tx, self.config.universe_id, &request.session_id)
             .await?;
 
         if let Some(last) = committed.last() {
@@ -1657,7 +1657,7 @@ async fn append_events_in_tx(
         committed.push(entry);
     }
     embedded
-        .verify_stored(tx, universe_id, &record.session_id)
+        .record_roots(tx, universe_id, &record.session_id)
         .await?;
 
     if let Some(last) = committed.last() {
@@ -1692,11 +1692,8 @@ async fn append_events_in_tx(
     Ok((record, committed))
 }
 
-/// Blob refs embedded in the entries of one append. The event rows themselves
-/// keep these blobs alive: the store exposes every ref an entry embeds as a
-/// generated column, so nothing has to be registered. What the append must
-/// guarantee is that each ref names a blob the catalog holds, because a
-/// dangling ref would otherwise only fail later, at read time.
+/// Distinct refs in an append. The store derives FK-backed roots inside the
+/// append transaction; callers never register roots separately.
 #[derive(Default)]
 struct EmbeddedBlobRefs {
     refs: BTreeSet<BlobRef>,
@@ -1707,7 +1704,7 @@ impl EmbeddedBlobRefs {
         self.refs.extend(collect_blob_refs(entry_json));
     }
 
-    async fn verify_stored(
+    async fn record_roots(
         self,
         tx: &mut Transaction<'_, Postgres>,
         universe_id: Uuid,
@@ -1719,24 +1716,39 @@ impl EmbeddedBlobRefs {
         let candidates = self
             .refs
             .iter()
-            .map(|blob_ref| blob_ref.as_str().to_owned())
+            .map(|blob_ref| blob_ref.as_str()[7..].to_owned())
             .collect::<Vec<_>>();
         let missing: Vec<String> = sqlx::query_scalar(
             r#"
-            SELECT r.blob_ref
-            FROM unnest($2::text[]) AS r(blob_ref)
-            WHERE NOT EXISTS (
-                SELECT 1 FROM cas_blobs AS b
-                WHERE b.universe_id = $1 AND b.blob_ref = r.blob_ref
+            WITH requested AS (
+                SELECT digest FROM unnest($3::text[]) AS candidate(digest)
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM cas_session_roots r
+                    WHERE r.universe_id = $1 AND r.session_id = $2
+                      AND r.digest = candidate.digest
+                )
+            ), held AS MATERIALIZED (
+                SELECT b.digest FROM cas_blobs b
+                JOIN requested r ON r.digest = b.digest
+                WHERE b.universe_id = $1
+                ORDER BY b.digest
+                FOR KEY SHARE OF b
+            ), inserted AS (
+                INSERT INTO cas_session_roots (universe_id, session_id, digest)
+                SELECT $1, $2, digest FROM held
+                ON CONFLICT DO NOTHING
             )
-            ORDER BY r.blob_ref
+            SELECT 'sha256:' || digest FROM requested
+            WHERE digest NOT IN (SELECT digest FROM held)
+            ORDER BY digest
             "#,
         )
         .bind(universe_id)
+        .bind(session_id.as_str())
         .bind(&candidates)
         .fetch_all(&mut **tx)
         .await
-        .map_err(|error| session_sql_error("verify event blob refs", error))?;
+        .map_err(|error| session_sql_error("record event blob roots", error))?;
         if missing.is_empty() {
             return Ok(());
         }

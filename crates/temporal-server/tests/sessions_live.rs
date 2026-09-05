@@ -862,7 +862,7 @@ async fn run_context_append_live_client(
 ) -> anyhow::Result<()> {
     let store = pg_store_from_env().await?;
     let model = default_model_from_env();
-    let api = GatewayAgentApi::builder(client.clone(), store)
+    let api = GatewayAgentApi::builder(client.clone(), store.clone())
         .with_task_queue(task_queue)
         .with_default_model(model.clone())
         .build();
@@ -883,14 +883,20 @@ async fn run_context_append_live_client(
 
     let first_text = "[telegram:group Engineering] Alice (12:01): the deploy looks stuck";
     let second_text = "[telegram:group Engineering] Bob (12:02): restarting the worker now";
+    let borrowed = store.put_bytes(first_text.as_bytes().to_vec()).await?;
+    sqlx::query("UPDATE cas_blobs SET created_at_ms = 1, touched_at_ms = 1 WHERE universe_id = $1 AND digest = $2")
+        .bind(store.config().universe_id)
+        .bind(borrowed.as_str().trim_start_matches("sha256:"))
+        .execute(store.pool())
+        .await?;
     let appended = api
         .append_context(ContextAppendParams {
             session_id: session_id.as_str().to_owned(),
             entries: vec![
                 ContextAppendEntry {
                     key: "channel.room.msg-1".to_owned(),
-                    item: InputItem::Text {
-                        text: first_text.to_owned(),
+                    item: InputItem::TextRef {
+                        blob_ref: borrowed.to_string(),
                     },
                 },
                 ContextAppendEntry {
@@ -913,6 +919,15 @@ async fn run_context_append_live_client(
             ("channel.room.msg-1", ContextAppendStatus::Applied),
             ("channel.room.msg-2", ContextAppendStatus::Applied)
         ]
+    );
+    assert!(
+        store
+            .blob_timestamps(&borrowed)
+            .await?
+            .expect("admitted blob")
+            .1
+            > 1,
+        "admission must refresh a borrowed ref before signaling the workflow"
     );
     let first_revision = appended.result.context_revision;
 

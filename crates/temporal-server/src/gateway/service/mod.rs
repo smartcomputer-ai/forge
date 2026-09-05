@@ -1280,20 +1280,22 @@ impl GatewayAgentApi {
             self.validate_managed_session_materialization(&session_config, workflow_tools)
                 .await?;
         }
+        let args = self.workflow_args(
+            session_id.clone(),
+            display_name,
+            effective_metadata,
+            effective_delete_after_close_ms,
+            session_config,
+            workflow_tools.clone(),
+            close_on_terminal,
+            auto_reject_approvals,
+        );
+        self.refresh_input_blob_grace(&args).await?;
         let started = self
             .client
             .start_workflow(
                 AgentSessionWorkflow::run,
-                self.workflow_args(
-                    session_id.clone(),
-                    display_name,
-                    effective_metadata,
-                    effective_delete_after_close_ms,
-                    session_config,
-                    workflow_tools.clone(),
-                    close_on_terminal,
-                    auto_reject_approvals,
-                ),
+                args,
                 WorkflowStartOptions::new(
                     self.task_queue.clone(),
                     self.workflow_id_for(&session_id),

@@ -185,14 +185,6 @@ CREATE TABLE IF NOT EXISTS session_events (
     event_version integer GENERATED ALWAYS AS
         ((entry_json #>> '{event,version}')::integer) STORED,
 
-    -- Every embedded CAS reference roots its blob for the lifetime of this event.
-    blob_refs jsonb GENERATED ALWAYS AS (
-        jsonb_path_query_array(
-            entry_json,
-            'strict $.** ? (@.type() == "string" && @ like_regex "^sha256:[0-9a-f]{64}$")'
-        )
-    ) STORED,
-
     PRIMARY KEY (universe_id, session_id, seq),
     FOREIGN KEY (universe_id, session_id)
         REFERENCES sessions (universe_id, session_id) ON DELETE CASCADE,
@@ -218,9 +210,6 @@ CREATE TABLE IF NOT EXISTS session_events (
 
 CREATE INDEX IF NOT EXISTS session_events_event_kind_idx
     ON session_events (universe_id, event_kind);
-
-CREATE INDEX IF NOT EXISTS session_events_blob_refs_idx
-    ON session_events USING gin (blob_refs jsonb_path_ops);
 
 CREATE TABLE IF NOT EXISTS cas_blobs (
     universe_id uuid NOT NULL
@@ -277,7 +266,24 @@ CREATE UNIQUE INDEX IF NOT EXISTS cas_blobs_object_key_idx
 
 -- The sweep considers the oldest untouched blobs after its grace period.
 CREATE INDEX IF NOT EXISTS cas_blobs_touched_at_idx
-    ON cas_blobs (universe_id, touched_at_ms);
+    ON cas_blobs (universe_id, touched_at_ms, digest);
+
+-- Derived by the session store in the append transaction. One row per
+-- session and blob, regardless of how many events reference it. The FK
+-- serializes attachment against collection, including uncommitted appends.
+CREATE TABLE IF NOT EXISTS cas_session_roots (
+    universe_id uuid NOT NULL,
+    session_id text NOT NULL,
+    digest text NOT NULL,
+    PRIMARY KEY (universe_id, session_id, digest),
+    FOREIGN KEY (universe_id, session_id)
+        REFERENCES sessions (universe_id, session_id) ON DELETE CASCADE,
+    -- Check at commit so whole-universe cascades can remove holders first.
+    FOREIGN KEY (universe_id, digest)
+        REFERENCES cas_blobs (universe_id, digest) ON DELETE NO ACTION DEFERRABLE INITIALLY DEFERRED
+);
+CREATE INDEX IF NOT EXISTS cas_session_roots_digest_idx
+    ON cas_session_roots (universe_id, digest);
 
 -- Disposable, advance-only pointers to CAS-backed session reducer state.
 -- The append-only event log remains the sole durable authority.
@@ -350,12 +356,12 @@ COMMENT ON TABLE session_events IS
 COMMENT ON TABLE cas_blobs IS
     'Universe-scoped CAS catalog keyed by sha256 digest; small payloads inline, large payloads external.';
 COMMENT ON TABLE cas_blob_edges IS
-    'Optional best-effort parent-child CAS edges recorded outside put_bytes.';
+    'Required parent-child reachability edges for nested CAS formats; recorded by their writers.';
 COMMENT ON COLUMN sessions.metadata_json IS
     'Descriptive key/value metadata; never routing, authority, or selection.';
 COMMENT ON COLUMN cas_blobs.created_at_ms IS
     'Unix milliseconds of the first put of this content in the universe.';
 COMMENT ON COLUMN cas_blobs.touched_at_ms IS
-    'Unix milliseconds of the most recent put of this content; the collection grace period counts from here.';
-COMMENT ON COLUMN session_events.blob_refs IS
-    'Generated: every sha256 blob ref string the stored entry embeds; the blobs it names are live while the row exists.';
+    'Unix milliseconds of the most recent put or input admission; collection grace counts from here.';
+COMMENT ON TABLE cas_session_roots IS
+    'Distinct blob references derived transactionally from a session log; removed with the session.';

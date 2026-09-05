@@ -14,11 +14,40 @@ use crate::{
 };
 
 impl PgStore {
+    /// Renew the upload grace when existing refs are admitted as new input.
+    /// One indexed update for the whole batch; reads never refresh grace.
+    /// Missing refs fail admission, including refs still present in a cache.
+    pub async fn touch_blob_refs(&self, refs: &[BlobRef]) -> Result<(), BlobStoreError> {
+        if refs.is_empty() {
+            return Ok(());
+        }
+        let digests = refs.iter().map(sha256_hex).collect::<Result<Vec<_>, _>>()?;
+        let touched: Vec<String> = sqlx::query_scalar(
+            "UPDATE cas_blobs SET touched_at_ms = GREATEST(touched_at_ms, $3) \
+             WHERE universe_id = $1 AND digest = ANY($2::text[]) RETURNING digest",
+        )
+        .bind(self.config.universe_id)
+        .bind(&digests)
+        .bind(unix_now_ms())
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|error| blob_sql_error("refresh input blob grace", error))?;
+        let touched: std::collections::BTreeSet<_> = touched.into_iter().collect();
+        for (blob_ref, digest) in refs.iter().zip(digests) {
+            if !touched.contains(digest) {
+                return Err(BlobStoreError::NotFound {
+                    blob_ref: blob_ref.clone(),
+                });
+            }
+        }
+        Ok(())
+    }
+
     /// Touch-or-insert. Existing content only moves `touched_at_ms` forward;
     /// bytes are never rewritten and objects never re-uploaded. The touch is
     /// what keeps a deduplicated write safe against a concurrent sweep: the
     /// sweep only considers blobs untouched for longer than its grace, so a
-    /// ref handed out here cannot dangle before its holder commits.
+    /// ref handed out here has a fresh grace window for its holder to commit.
     async fn put_single_blob(&self, bytes: Vec<u8>) -> Result<BlobRef, BlobStoreError> {
         let blob_ref = BlobRef::from_bytes(&bytes);
         let digest = sha256_hex(&blob_ref)?;
@@ -82,9 +111,9 @@ impl PgStore {
 
         let object_key = direct_blob_key(&self.config, &blob_ref)?;
         let put_result = self.put_object(&object_key, bytes).await?;
-        // Two writers racing on a new digest both upload the same object
-        // under the same key; the second insert only touches the row.
-        sqlx::query(
+        // Each upload has its own physical key. A delayed sweep can only
+        // delete the previous incarnation, never this replacement's bytes.
+        let stored_key: Option<String> = sqlx::query_scalar(
             r#"
             INSERT INTO cas_blobs (
                 universe_id,
@@ -100,18 +129,27 @@ impl PgStore {
             VALUES ($1, $2, $3, 'object', $4, $5, $6, $7, $7)
             ON CONFLICT (universe_id, digest) DO UPDATE
             SET touched_at_ms = GREATEST(cas_blobs.touched_at_ms, EXCLUDED.touched_at_ms)
+            RETURNING object_key
             "#,
         )
         .bind(self.config.universe_id)
         .bind(digest)
         .bind(byte_len)
-        .bind(object_key)
+        .bind(&object_key)
         .bind(put_result.e_tag)
         .bind(put_result.version)
         .bind(now_ms)
-        .execute(&self.pool)
+        .fetch_one(&self.pool)
         .await
         .map_err(|error| blob_sql_error("insert object blob", error))?;
+        if stored_key.as_deref() != Some(object_key.as_str()) {
+            // Another writer won (possibly with inline storage). Only our
+            // unused upload is ours to remove. A failed cleanup leaks safely.
+            let cleanup = self.delete_blob_objects(&[object_key]).await;
+            for (key, error) in cleanup.failures {
+                tracing::warn!(%key, %error, "could not delete unused CAS upload");
+            }
+        }
         Ok(blob_ref)
     }
 

@@ -2145,13 +2145,9 @@ mod tests {
                 .project_context_entry(&entry, None)
                 .await
                 .unwrap();
-            if expected.len() > 4096 {
-                assert!(view.text_truncated);
-                assert!(expected.starts_with(view.text.as_deref().unwrap().trim_end_matches('…')));
-            } else {
-                assert!(!view.text_truncated);
-                assert_eq!(view.text.as_deref(), Some(expected.as_str()));
-            }
+            // Message views return full text; the entry preview stays bounded.
+            assert!(!view.text_truncated);
+            assert_eq!(view.text.as_deref(), Some(expected.as_str()));
             let replay = materialize_create_request(&blobs, &request(vec![entry]))
                 .await
                 .unwrap();

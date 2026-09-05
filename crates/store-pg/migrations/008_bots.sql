@@ -399,6 +399,23 @@ COMMENT ON COLUMN bot_events.hops IS
     'Federation hop count of the event; bounded by MAX_BOT_HOPS at admission.';
 COMMENT ON COLUMN bot_events.in_reply_to_json IS
     'Public BotEventReplyRef correlation of a receipt: the asked event #N at the answering bot.';
+-- Derived by the bot store in the same transaction as event insertion.
+-- Covers documents, prompts, media, and receiver tool declarations.
+CREATE TABLE IF NOT EXISTS cas_bot_event_roots (
+    universe_id uuid NOT NULL,
+    bot_id text NOT NULL,
+    event_id text NOT NULL,
+    digest text NOT NULL,
+    PRIMARY KEY (universe_id, bot_id, event_id, digest),
+    FOREIGN KEY (universe_id, bot_id, event_id)
+        REFERENCES bot_events (universe_id, bot_id, event_id) ON DELETE CASCADE,
+    -- Check at commit so whole-universe cascades can remove holders first.
+    FOREIGN KEY (universe_id, digest)
+        REFERENCES cas_blobs (universe_id, digest) ON DELETE NO ACTION DEFERRABLE INITIALLY DEFERRED
+);
+CREATE INDEX IF NOT EXISTS cas_bot_event_roots_digest_idx
+    ON cas_bot_event_roots (universe_id, digest);
+
 COMMENT ON COLUMN bot_events.receiver_json IS
     'Private EventReceiver: the admitting workflow (receipt endpoint, token, receiver-bound tools) or the asking bot (bot.reply route). NULL when nobody listens.';
 COMMENT ON COLUMN bot_events.outcome IS

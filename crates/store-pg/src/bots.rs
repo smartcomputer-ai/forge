@@ -851,6 +851,11 @@ impl BotEventStore for PgStore {
         &self,
         record: BotEventRecord,
     ) -> Result<InsertBotEventOutcome, BotError> {
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .map_err(|error| BotError::store(format!("begin bot event insertion: {error}")))?;
         let columns = event_columns();
         let query = format!(
             r#"
@@ -913,12 +918,50 @@ impl BotEventStore for PgStore {
                 .bind(record.outcome_detail.as_deref())
                 .bind(record.run_id.as_deref())
                 .bind(record.resolved_at_ms)
-                .fetch_optional(&self.pool)
+                .fetch_optional(&mut *tx)
                 .await
                 .map_err(|error| map_event_insert_error(&record.bot_id, error))?;
         if let Some(row) = row {
+            let mut refs = std::collections::BTreeSet::from([record.document_ref.clone()]);
+            refs.extend(record.prompt_ref.iter().cloned());
+            refs.extend(record.media.iter().map(|media| media.blob_ref.clone()));
+            refs.extend(
+                record
+                    .receiver
+                    .as_ref()
+                    .and_then(|receiver| receiver.tools_ref())
+                    .map(str::to_owned),
+            );
+            let digests = refs
+                .iter()
+                .map(|value| {
+                    engine::BlobRef::parse(value)
+                        .map(|blob| blob.as_str()[7..].to_owned())
+                        .map_err(|error| {
+                            BotError::invalid(format!("invalid bot event blob ref: {error}"))
+                        })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            sqlx::query(
+                "INSERT INTO cas_bot_event_roots (universe_id, bot_id, event_id, digest) \
+                 SELECT $1, $2, $3, digest FROM unnest($4::text[]) AS r(digest) \
+                 ORDER BY digest ON CONFLICT DO NOTHING",
+            )
+            .bind(self.config.universe_id)
+            .bind(record.bot_id.as_str())
+            .bind(record.event_id.as_str())
+            .bind(digests)
+            .execute(&mut *tx)
+            .await
+            .map_err(|error| BotError::store(format!("record bot event blob roots: {error}")))?;
+            tx.commit()
+                .await
+                .map_err(|error| BotError::store(format!("commit bot event insertion: {error}")))?;
             return Ok(InsertBotEventOutcome::Inserted(event_from_row(&row, "")?));
         }
+        tx.commit()
+            .await
+            .map_err(|error| BotError::store(format!("commit duplicate bot event: {error}")))?;
         // The id was already stored: hand back the stored row so `#N` stays
         // stable. A delete racing in between surfaces as not found.
         self.read_bot_event(&record.bot_id, &record.event_id)

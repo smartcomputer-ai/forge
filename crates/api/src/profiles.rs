@@ -282,8 +282,14 @@ pub enum ProfileEnvironmentRetention {
     rename_all_fields = "camelCase"
 )]
 pub enum ProfileInstructions {
-    Text { text: String },
-    TextRef { blob_ref: String },
+    Text {
+        text: String,
+    },
+    /// Borrowed CAS content: saving a profile does not retain the blob. Use
+    /// inline text, or keep this ref retained by another durable resource.
+    TextRef {
+        blob_ref: String,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

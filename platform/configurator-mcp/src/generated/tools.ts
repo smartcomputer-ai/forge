@@ -735,6 +735,7 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
               "type": "object"
             },
             {
+              "description": "Borrowed CAS content: saving a profile does not retain the blob. Use\ninline text, or keep this ref retained by another durable resource.",
               "properties": {
                 "blobRef": {
                   "type": "string"
@@ -4003,6 +4004,7 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
               "type": "object"
             },
             {
+              "description": "Borrowed CAS content: saving a profile does not retain the blob. Use\ninline text, or keep this ref retained by another durable resource.",
               "properties": {
                 "blobRef": {
                   "type": "string"
@@ -5916,6 +5918,7 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
               "type": "object"
             },
             {
+              "description": "Borrowed CAS content: saving a profile does not retain the blob. Use\ninline text, or keep this ref retained by another durable resource.",
               "properties": {
                 "blobRef": {
                   "type": "string"
@@ -7106,6 +7109,7 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
               "type": "object"
             },
             {
+              "description": "Borrowed CAS content: saving a profile does not retain the blob. Use\ninline text, or keep this ref retained by another durable resource.",
               "properties": {
                 "blobRef": {
                   "type": "string"
@@ -7605,7 +7609,7 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
     "resultType": "AgentApiOutcome<BlobPutResponse>",
     "inputSchema": {
       "$schema": "http://json-schema.org/draft-07/schema#",
-      "description": "`blobs/put` is batch-native: pass one item to store a single blob. Results\ncome back in request order.",
+      "description": "`blobs/put` is batch-native: pass one item to store a single blob. Results\ncome back in request order. Uploads are eligible for collection after the\ndeployment's grace period unless retained by a durable resource. Reads do\nnot extend retention; admitting an existing ref refreshes its grace.",
       "properties": {
         "blobs": {
           "default": [],
