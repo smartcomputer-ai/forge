@@ -483,7 +483,7 @@ mod tests {
             started_at_ms: Some(first_seq),
             completed_at_ms: terminal_seq,
             usage: None,
-            output_ref: None,
+            output: None,
             failure: None,
             notify_on_terminal: Vec::new(),
         }

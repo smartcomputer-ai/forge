@@ -6,6 +6,7 @@
 //! context windows, CAS refs, or a provider-neutral model message abstraction.
 
 pub mod anthropic;
+pub mod content;
 pub mod error;
 pub mod openai;
 pub mod transport;

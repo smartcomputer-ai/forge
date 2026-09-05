@@ -45,11 +45,13 @@ fn entry(
         key: None,
         kind,
         source,
-        content_ref,
-        media_type: None,
+        content: engine::ContentRef {
+            content_ref,
+            media_type: None,
+            provider_kind: None,
+        },
         preview: None,
-        provider_kind: None,
-        provider_item_id: None,
+        provenance_ref: None,
         token_estimate: None,
         supersedes: None,
     }
@@ -152,7 +154,23 @@ async fn assistant_text(
             )
         })
         .expect("assistant message");
-    blobs.read_text(&entry.content_ref).await.expect("text")
+    assert_eq!(
+        entry.content.media_type.as_deref(),
+        Some("application/json")
+    );
+    let raw: serde_json::Value = serde_json::from_slice(
+        &blobs
+            .read_bytes(&entry.content.content_ref)
+            .await
+            .expect("native content"),
+    )
+    .unwrap();
+    let text = support::content_text(blobs, &entry.content).await;
+    assert_eq!(
+        Some(text.clone()),
+        llm_clients::content::openai_completion_message(&raw)
+    );
+    text
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -285,7 +303,7 @@ async fn openai_completions_runtime_live_image_input() {
         source.clone(),
         image_ref,
     );
-    image.media_type = Some("image/png".to_owned());
+    image.content.media_type = Some("image/png".to_owned());
     let request = generation_request(vec![
         image,
         entry(
@@ -362,7 +380,7 @@ async fn openai_completions_runtime_live_pdf_document() {
         source.clone(),
         pdf_ref,
     );
-    pdf.media_type = Some("application/pdf".to_owned());
+    pdf.content.media_type = Some("application/pdf".to_owned());
     pdf.preview = Some("[document: magic.pdf]".to_owned());
 
     let execution = live_adapter(blobs.clone())
@@ -414,7 +432,7 @@ async fn openai_completions_runtime_live_text_document() {
         source.clone(),
         document_ref,
     );
-    document.media_type = Some("text/markdown".to_owned());
+    document.content.media_type = Some("text/markdown".to_owned());
     document.preview = Some("[document: facts.md]".to_owned());
 
     let execution = live_adapter(blobs.clone())
@@ -575,12 +593,12 @@ async fn openai_completions_runtime_live_tool_call_and_result_round_trip() {
             index as u64 + 2,
             output.kind.clone(),
             assistant_source.clone(),
-            output.content_ref.clone(),
+            output.content.content_ref.clone(),
         );
-        committed.media_type = output.media_type.clone();
+        committed.content.media_type = output.content.media_type.clone();
         committed.preview = output.preview.clone();
-        committed.provider_kind = output.provider_kind.clone();
-        committed.provider_item_id = output.provider_item_id.clone();
+        committed.content.provider_kind = output.content.provider_kind.clone();
+        committed.provenance_ref = output.provenance_ref.clone();
         entries.push(committed);
     }
     entries.push(entry(
@@ -729,11 +747,11 @@ async fn deepseek_completions_runtime_live_v4_dialect_reasoning_and_usage() {
         .context_entries
         .iter()
         .find(|entry| {
-            entry.provider_kind.as_deref()
+            entry.content.provider_kind.as_deref()
                 == Some(llm_runtime::openai_completions::OPENAI_COMPLETIONS_REASONING_PROVIDER_KIND)
         })
         .expect("durable DeepSeek reasoning state");
-    let reasoning = llm_runtime::blob_io::read_json(blobs.as_ref(), &reasoning.content_ref)
+    let reasoning = llm_runtime::blob_io::read_json(blobs.as_ref(), &reasoning.content.content_ref)
         .await
         .expect("reasoning state");
     assert!(
@@ -799,7 +817,7 @@ async fn deepseek_completions_runtime_live_v4_reasoning_tool_round_trip() {
     assert_eq!(first.result.facts.finish, LlmFinish::ToolCalls);
     assert_eq!(first.result.facts.tool_calls.len(), 1);
     assert!(first.result.context_entries.iter().any(|entry| {
-        entry.provider_kind.as_deref()
+        entry.content.provider_kind.as_deref()
             == Some(llm_runtime::openai_completions::OPENAI_COMPLETIONS_REASONING_PROVIDER_KIND)
     }));
     let observed = first.result.facts.tool_calls[0].clone();
@@ -821,12 +839,12 @@ async fn deepseek_completions_runtime_live_v4_reasoning_tool_round_trip() {
             index as u64 + 2,
             output.kind.clone(),
             assistant_source.clone(),
-            output.content_ref.clone(),
+            output.content.content_ref.clone(),
         );
-        committed.media_type = output.media_type.clone();
+        committed.content.media_type = output.content.media_type.clone();
         committed.preview = output.preview.clone();
-        committed.provider_kind = output.provider_kind.clone();
-        committed.provider_item_id = output.provider_item_id.clone();
+        committed.content.provider_kind = output.content.provider_kind.clone();
+        committed.provenance_ref = output.provenance_ref.clone();
         entries.push(committed);
     }
     entries.push(entry(

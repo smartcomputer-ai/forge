@@ -631,11 +631,9 @@ async fn effective_prompt_instruction_inputs(
             engine::ContextEntryKey::new("instructions.000.default"),
             engine::ContextEntryInput {
                 kind: engine::ContextEntryKind::Instructions,
-                content_ref,
-                media_type: Some("text/plain".to_owned()),
+                content: engine::ContentRef::text(content_ref),
                 preview: None,
-                provider_kind: None,
-                provider_item_id: None,
+                provenance_ref: None,
                 token_estimate: None,
             },
         );
@@ -660,11 +658,9 @@ fn active_instruction_inputs(
                 key,
                 engine::ContextEntryInput {
                     kind: entry.kind.clone(),
-                    content_ref: entry.content_ref.clone(),
-                    media_type: entry.media_type.clone(),
+                    content: entry.content.clone(),
                     preview: entry.preview.clone(),
-                    provider_kind: entry.provider_kind.clone(),
-                    provider_item_id: entry.provider_item_id.clone(),
+                    provenance_ref: entry.provenance_ref.clone(),
                     token_estimate: entry.token_estimate.clone(),
                 },
             ))
@@ -699,7 +695,7 @@ fn active_skill_catalog_ref(state: &CoreAgentState) -> Option<BlobRef> {
                 .is_some_and(|key| key.as_str() == SKILL_CATALOG_CONTEXT_KEY)
                 && matches!(entry.kind, engine::ContextEntryKind::SkillCatalog)
         })
-        .map(|entry| entry.content_ref.clone())
+        .map(|entry| entry.content.content_ref.clone())
 }
 
 fn resolve_max_steps(max_steps: Option<u32>) -> Result<usize, RunnerError> {
@@ -1151,11 +1147,13 @@ mod tests {
                 kind: ContextEntryKind::Message {
                     role: ContextMessageRole::Assistant,
                 },
-                content_ref: BlobRef::from_bytes(b"assistant output"),
-                media_type: None,
+                content: engine::ContentRef {
+                    content_ref: BlobRef::from_bytes(b"assistant output"),
+                    media_type: None,
+                    provider_kind: None,
+                },
                 preview: None,
-                provider_kind: None,
-                provider_item_id: None,
+                provenance_ref: None,
                 token_estimate: None,
             }],
             facts: LlmGenerationFacts {
@@ -1175,11 +1173,13 @@ mod tests {
             kind: ContextEntryKind::Message {
                 role: ContextMessageRole::User,
             },
-            content_ref,
-            media_type: None,
+            content: engine::ContentRef {
+                content_ref,
+                media_type: None,
+                provider_kind: None,
+            },
             preview: None,
-            provider_kind: None,
-            provider_item_id: None,
+            provenance_ref: None,
             token_estimate: None,
         }]
     }
@@ -1332,11 +1332,13 @@ mod tests {
                     key: ContextEntryKey::new("client.native"),
                     entry: ContextEntryInput {
                         kind: ContextEntryKind::ProviderOpaque,
-                        content_ref: BlobRef::from_bytes(br#"{"type":"input"}"#),
-                        media_type: Some("application/json".to_owned()),
+                        content: engine::ContentRef {
+                            content_ref: BlobRef::from_bytes(br#"{"type":"input"}"#),
+                            media_type: Some("application/json".to_owned()),
+                            provider_kind: None,
+                        },
                         preview: None,
-                        provider_kind: None,
-                        provider_item_id: None,
+                        provenance_ref: None,
                         token_estimate: None,
                     },
                 },
@@ -1427,9 +1429,13 @@ mod tests {
             .iter()
             .find(|entry| matches!(entry.kind, ContextEntryKind::VfsCatalog))
             .expect("VFS catalog context entry");
-        let vfs_catalog: tools::environment::projection::VfsCatalog =
-            serde_json::from_slice(&blobs.read_bytes(&vfs_entry.content_ref).await.unwrap())
-                .expect("decode VFS catalog");
+        let vfs_catalog: tools::environment::projection::VfsCatalog = serde_json::from_slice(
+            &blobs
+                .read_bytes(&vfs_entry.content.content_ref)
+                .await
+                .unwrap(),
+        )
+        .expect("decode VFS catalog");
         assert_eq!(vfs_catalog.routes.len(), 1);
         assert_eq!(vfs_catalog.routes[0].path.as_str(), "/workspace");
 
@@ -2178,22 +2184,17 @@ mod tests {
                     .starts_with(PROMPT_INSTRUCTIONS_CONTEXT_KEY_PREFIX)
             }));
             assert_eq!(
-                entry.provider_kind.as_deref(),
+                entry.content.provider_kind.as_deref(),
                 Some(PROMPT_INSTRUCTIONS_PROVIDER_KIND)
             );
-            assert!(
-                entry
-                    .provider_item_id
-                    .as_deref()
-                    .is_some_and(|value| BlobRef::parse(value.to_owned()).is_ok())
-            );
+            assert!(entry.provenance_ref.is_some());
         }
     }
 
     fn prompt_content_refs(entries: &[&engine::ContextEntry]) -> Vec<BlobRef> {
         let mut refs = entries
             .iter()
-            .map(|entry| entry.content_ref.clone())
+            .map(|entry| entry.content.content_ref.clone())
             .collect::<Vec<_>>();
         refs.sort();
         refs
@@ -2202,11 +2203,11 @@ mod tests {
     fn prompt_report_ref_from_entries(entries: &[&engine::ContextEntry]) -> BlobRef {
         let first = entries
             .first()
-            .and_then(|entry| entry.provider_item_id.as_deref())
+            .and_then(|entry| entry.provenance_ref.as_ref())
             .expect("prompt report ref");
-        let report_ref = BlobRef::parse(first.to_owned()).expect("valid prompt report ref");
+        let report_ref = first.clone();
         for entry in entries {
-            assert_eq!(entry.provider_item_id.as_deref(), Some(first));
+            assert_eq!(entry.provenance_ref.as_ref(), Some(first));
         }
         report_ref
     }
@@ -2218,7 +2219,7 @@ mod tests {
         let mut texts = Vec::with_capacity(entries.len());
         for entry in entries {
             let bytes = blobs
-                .read_bytes(&entry.content_ref)
+                .read_bytes(&entry.content.content_ref)
                 .await
                 .expect("read prompt source");
             texts.push(String::from_utf8(bytes).expect("prompt source utf8"));
@@ -2246,7 +2247,7 @@ mod tests {
                 key.as_str()
                     .starts_with(PROMPT_INSTRUCTIONS_CONTEXT_KEY_PREFIX)
             })
-            && entry.provider_kind.as_deref() == Some(PROMPT_INSTRUCTIONS_PROVIDER_KIND)
+            && entry.content.provider_kind.as_deref() == Some(PROMPT_INSTRUCTIONS_PROVIDER_KIND)
     }
 
     fn assert_prompts_precede_user_message(request: &LlmGenerationRequest) {

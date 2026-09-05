@@ -150,11 +150,9 @@ fn replace_managed_instruction_source(
 fn default_instruction_input(content_ref: BlobRef) -> ContextEntryInput {
     ContextEntryInput {
         kind: ContextEntryKind::Instructions,
-        content_ref,
-        media_type: Some("text/plain".to_owned()),
+        content: engine::ContentRef::text(content_ref),
         preview: None,
-        provider_kind: None,
-        provider_item_id: None,
+        provenance_ref: None,
         token_estimate: None,
     }
 }
@@ -166,11 +164,9 @@ mod tests {
     fn instruction(bytes: &[u8]) -> ContextEntryInput {
         ContextEntryInput {
             kind: ContextEntryKind::Instructions,
-            content_ref: BlobRef::from_bytes(bytes),
-            media_type: Some("text/plain".to_owned()),
+            content: engine::ContentRef::text(BlobRef::from_bytes(bytes)),
             preview: None,
-            provider_kind: None,
-            provider_item_id: None,
+            provenance_ref: None,
             token_estimate: None,
         }
     }

@@ -2,6 +2,13 @@
 
 **Status**
 
+- Content-descriptor follow-up validated 2026-09-05: Chat Completions answers,
+  refusals, and compaction summaries retain their full text in CAS with bounded
+  previews. Shared content projection, full API message text, and run outputs use
+  that same payload;
+  JSON-formatted answers remain authored text rather than provider-native JSON.
+  Seventeen OpenAI/DeepSeek provider live cases and a hosted tool-loop live case
+  verify this path, including the run-completion descriptor and content read API.
 - Proposed 2026-08-18. Phase 1 and Phase 2 completed 2026-08-18.
 - Phase 1 shipped the native client auth/model-list additions, the generation
   and standalone-compaction adapter, hosted/eval/CLI registration, reasoning
@@ -144,12 +151,12 @@ Two phases, shipped in order:
 - **D2 — Context entries are provider-native and round-trip byte-for-byte.**
   Assistant output is stored as:
   - one `Message { role: Assistant }` entry when `content` is non-empty
-    (`text/plain`, preview = text), `provider_kind =
-    "openai.completions.message"`;
+    (`application/json`, bounded preview), `content.provider_kind =
+    "openai.completions.message"`; the payload preserves `role`, `content`,
+    `refusal`, and `annotations` together and projects their visible text;
   - one `ToolCall { call_id, name }` entry **per** `tool_calls[]` element,
     `media_type = application/json`, body = the raw tool-call object,
-    `provider_kind = "openai.completions.tool_call"`, `provider_item_id =
-    tool_call.id`; the `LlmToolCall` fact carries `arguments` parsed from
+    `content.provider_kind = "openai.completions.tool_call"`; native IDs stay in the payload; the `LlmToolCall` fact carries `arguments` parsed from
     `function.arguments` (invalid JSON → `arguments` kept as the raw string
     inside `{"__raw": …}` and the call still dispatches; the tool layer
     already reports schema errors back to the model).
@@ -169,8 +176,8 @@ Two phases, shipped in order:
   (OpenRouter) are merged into that same assistant message before its tool
   calls on replay. This is mandatory for DeepSeek thinking-mode tool loops
   and preserves OpenRouter signatures/details without interpreting them.
-  Output `annotations` are retained as provider-opaque context metadata but
-  are not replayed as assistant input.
+  Output `annotations` stay with their assistant content, project as citations,
+  and are not replayed as assistant input.
   A `ProviderOpaque` / `ReasoningState` entry with `provider_kind` starting
   `openai.completions.` is passed through raw; any other provider-native
   entry (Responses items, Anthropic blocks) is a `RequestKindMismatch`

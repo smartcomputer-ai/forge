@@ -37,8 +37,8 @@ const event = <T extends EventKind["type"]>(
 const item = (
   id: string,
   kind: SessionItem["kind"],
-  extra: Omit<Partial<SessionItem>, "id" | "kind" | "contentRef"> = {},
-): SessionItem => ({ id, kind, ...extra, contentRef: `sha256:${id}` });
+  extra: Omit<Partial<SessionItem>, "id" | "kind"> = {},
+): SessionItem => ({ id, kind, content: { contentRef: `sha256:${id}`, mediaType: null, providerKind: null }, ...extra });
 
 const runView = (
   id: string,
@@ -93,14 +93,15 @@ describe("session transcript traces", () => {
     });
   });
 
-  it("keeps blob references for truncated message and tool-result expansion", () => {
+  it("keeps full messages and blob references for truncated tool results", () => {
+    const text = "A full message 🦀. ".repeat(700);
     const state = applyEvents(emptyTranscript(), [
       event(1, {
         type: "contextEntriesApplied",
         entries: [
           item("message", { type: "message", role: "assistant" }, {
-            text: "message preview",
-            textTruncated: true,
+            text,
+            content: { contentRef: "sha256:message", mediaType: "application/json", providerKind: "anthropic.messages.text_blocks" },
           }),
           item("tool", { type: "toolCall", callId: "call", name: "read_file" }),
           item("result", { type: "toolResult", callId: "call", isError: false }, {
@@ -113,9 +114,7 @@ describe("session transcript traces", () => {
 
     expect(state.entries[0]).toMatchObject({
       kind: "message",
-      contentRef: "sha256:message",
-      text: "message preview",
-      textTruncated: true,
+      text,
     });
     expect(state.entries[1]).toMatchObject({
       kind: "tool-group",
@@ -151,6 +150,20 @@ describe("session transcript traces", () => {
     ]);
   });
 
+  it("uses full projected reasoning text instead of its preview", () => {
+    const text = "Complete projected reasoning 🦀. ".repeat(700) + "Done.";
+    const content = { contentRef: "sha256:reasoning", mediaType: "application/json", providerKind: "anthropic.messages.thinking" };
+    const state = applyEvents(emptyTranscript(), [event(1, {
+      type: "contextEntriesApplied",
+      entries: [item("reasoning", { type: "reasoningState" }, {
+        content, preview: "short preview", text,
+      })],
+    })]);
+    expect(state.entries).toEqual([{
+      kind: "reasoning", key: "reasoning", text,
+    }]);
+  });
+
   it("renders citations projected on an assistant message", () => {
     const state = applyEvents(emptyTranscript(), [
       event(1, {
@@ -174,8 +187,6 @@ describe("session transcript traces", () => {
       key: "answer",
       role: "assistant",
       text: "A sourced answer.",
-      contentRef: "sha256:answer",
-      textTruncated: false,
       citations: [{
         url: "https://example.com/source",
         title: "Example source",
@@ -208,8 +219,6 @@ describe("session transcript traces", () => {
       key: "answer",
       role: "assistant",
       text: "A fetched answer.",
-      contentRef: "sha256:answer",
-      textTruncated: false,
       citations: [{
         url: "https://example.com/fetched",
         title: "Fetched source",
@@ -607,8 +616,6 @@ describe("session transcript run control", () => {
         key: "input",
         role: "user",
         text: "do the task",
-        contentRef: "sha256:input",
-        textTruncated: false,
         runId: "run_1",
       },
       {
@@ -616,8 +623,6 @@ describe("session transcript run control", () => {
         key: "steer",
         role: "user",
         text: "also mention the moon",
-        contentRef: "sha256:steer",
-        textTruncated: false,
         runId: "run_1",
         steering: true,
       },

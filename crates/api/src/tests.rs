@@ -42,6 +42,8 @@ fn notification_serializes_as_json_rpc_lite_shape() {
     let notification = AgentNotification::RunCompleted {
         session_id: "session_1".to_owned(),
         run: RunView {
+            output: None,
+            output_text: None,
             id: "run_1".to_owned(),
             status: RunStatus::Completed,
             started_at_ms: Some(10),
@@ -1502,7 +1504,11 @@ fn session_event_serializes_with_cursor_and_kind() {
         },
         kind: SessionEventKindView::RunCompleted {
             run_id: "run_1".to_owned(),
-            output_ref: Some("sha256:abc".to_owned()),
+            output: Some(ContentRefView {
+                content_ref: "sha256:abc".to_owned(),
+                media_type: Some("text/plain".to_owned()),
+                provider_kind: None,
+            }),
         },
     };
 
@@ -1524,7 +1530,7 @@ fn session_event_serializes_with_cursor_and_kind() {
                     "kind": {
                         "type": "runCompleted",
                         "runId": "run_1",
-                        "outputRef": "sha256:abc"
+                        "output": { "contentRef": "sha256:abc", "mediaType": "text/plain", "providerKind": null }
                     }
                 }
             }
@@ -1587,10 +1593,13 @@ fn provider_context_entry_serializes_debug_metadata() {
         id: "item_42".to_owned(),
         key: None,
         kind: ContextEntryKindView::ProviderOpaque,
-        content_ref: "sha256:compact".to_owned(),
-        media_type: Some("application/json".to_owned()),
+        content: crate::ContentRefView {
+            content_ref: "sha256:compact".to_owned(),
+            media_type: Some("application/json".to_owned()),
+            provider_kind: Some("openai.responses.compaction".to_owned()),
+        },
+        provenance_ref: None,
         preview: Some("OpenAI Responses compaction item".to_owned()),
-        provider_kind: Some("openai.responses.compaction".to_owned()),
         provider_item_id: Some("item_compaction_1".to_owned()),
         token_estimate: Some(TokenEstimateView {
             tokens: 123,
@@ -1612,10 +1621,8 @@ fn provider_context_entry_serializes_debug_metadata() {
         json!({
             "id": "item_42",
             "kind": { "type": "providerOpaque" },
-            "contentRef": "sha256:compact",
-            "mediaType": "application/json",
+            "content": { "contentRef": "sha256:compact", "mediaType": "application/json", "providerKind": "openai.responses.compaction" },
             "preview": "OpenAI Responses compaction item",
-            "providerKind": "openai.responses.compaction",
             "providerItemId": "item_compaction_1",
             "tokenEstimate": {
                 "tokens": 123,
@@ -1631,10 +1638,13 @@ fn provider_context_entry_serializes_mcp_display() {
         id: "item_43".to_owned(),
         key: None,
         kind: ContextEntryKindView::ProviderOpaque,
-        content_ref: "sha256:mcp".to_owned(),
-        media_type: Some("application/json".to_owned()),
+        content: crate::ContentRefView {
+            content_ref: "sha256:mcp".to_owned(),
+            media_type: Some("application/json".to_owned()),
+            provider_kind: Some("openai.responses.mcp_call".to_owned()),
+        },
+        provenance_ref: None,
         preview: Some("OpenAI Responses MCP tool call: echo.echo".to_owned()),
-        provider_kind: Some("openai.responses.mcp_call".to_owned()),
         provider_item_id: Some("mcp_1".to_owned()),
         token_estimate: None,
         text: None,
@@ -1666,10 +1676,8 @@ fn provider_context_entry_serializes_mcp_display() {
         json!({
             "id": "item_43",
             "kind": { "type": "providerOpaque" },
-            "contentRef": "sha256:mcp",
-            "mediaType": "application/json",
+            "content": { "contentRef": "sha256:mcp", "mediaType": "application/json", "providerKind": "openai.responses.mcp_call" },
             "preview": "OpenAI Responses MCP tool call: echo.echo",
-            "providerKind": "openai.responses.mcp_call",
             "providerItemId": "mcp_1",
             "display": {
                 "summary": {
@@ -1690,6 +1698,8 @@ fn provider_context_entry_serializes_mcp_display() {
 #[test]
 fn run_view_can_expose_tool_batches() {
     let run = RunView {
+        output: None,
+        output_text: None,
         id: "run_1".to_owned(),
         status: RunStatus::Running,
         started_at_ms: Some(10),
@@ -3350,6 +3360,8 @@ fn test_external_environment() -> EnvironmentView {
 
 fn test_run(id: RunId, status: RunStatus) -> RunView {
     RunView {
+        output: None,
+        output_text: None,
         id,
         status,
         started_at_ms: None,

@@ -282,3 +282,14 @@ fn retry_delay(error: &LlmApiError, attempt: usize) -> Duration {
     }
     Duration::from_millis(750 * (1 << attempt.min(2)))
 }
+
+#[allow(dead_code)]
+pub async fn content_text(
+    blobs: &dyn engine::storage::BlobStore,
+    content: &engine::ContentRef,
+) -> String {
+    api_projection::project_content_text(blobs, content)
+        .await
+        .expect("project assistant content")
+        .expect("assistant text")
+}

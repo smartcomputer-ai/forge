@@ -4,8 +4,7 @@ use engine::{
     ContextCompactionRequest, ContextCompactionStatus, ContextCompactionTask, ContextEntry,
     ContextEntryId, ContextEntryKind, ContextEntrySource, ContextMessageRole, ContextSnapshot,
     LlmGenerationRequest, LlmRequest, ModelSelection, OPENAI_COMPLETIONS_COMPACTION_PROVIDER_KIND,
-    ProviderApiKind, RunId, SessionId, TurnId,
-    storage::{BlobStore, InMemoryBlobStore},
+    ProviderApiKind, RunId, SessionId, TurnId, storage::InMemoryBlobStore,
 };
 use llm_runtime::{
     LlmCompactionAdapter, LlmGenerationAdapter, OpenAiCompletionsLlmAdapter,
@@ -38,11 +37,9 @@ fn entry(
         key: None,
         kind: ContextEntryKind::Message { role },
         source,
-        content_ref,
-        media_type: Some("text/plain".to_owned()),
+        content: engine::ContentRef::text(content_ref),
         preview: None,
-        provider_kind: None,
-        provider_item_id: None,
+        provenance_ref: None,
         token_estimate: None,
         supersedes: None,
     }
@@ -140,13 +137,11 @@ async fn openai_completions_runtime_live_standalone_compaction_preserves_facts()
     assert_eq!(result.context_revision, 11);
     assert_eq!(result.context_entries.len(), 1);
     assert_eq!(
-        result.context_entries[0].provider_kind.as_deref(),
+        result.context_entries[0].content.provider_kind.as_deref(),
         Some(OPENAI_COMPLETIONS_COMPACTION_PROVIDER_KIND)
     );
-    let summary = blobs
-        .read_text(&result.context_entries[0].content_ref)
+    let summary = support::content_text(blobs.as_ref(), &result.context_entries[0].content)
         .await
-        .expect("summary")
         .to_lowercase();
     assert!(summary.contains("silver kestrel"), "summary: {summary}");
     assert!(summary.contains("rust"), "summary: {summary}");
@@ -178,7 +173,7 @@ async fn openai_completions_runtime_live_compacted_summary_continues_conversatio
         ContextEntrySource::Runtime {
             label: "compaction".to_owned(),
         },
-        summary_input.content_ref.clone(),
+        summary_input.content.content_ref.clone(),
     );
     let question_ref = blobs
         .insert_text("What is the project codename? Reply with only the codename.")
@@ -221,11 +216,10 @@ async fn openai_completions_runtime_live_compacted_summary_continues_conversatio
         .generate(request)
         .await
         .expect("continue from compacted context");
-    let answer = blobs
-        .read_text(&execution.result.context_entries[0].content_ref)
-        .await
-        .expect("answer")
-        .to_lowercase();
+    let answer =
+        support::content_text(blobs.as_ref(), &execution.result.context_entries[0].content)
+            .await
+            .to_lowercase();
 
     assert!(answer.contains("silver kestrel"), "answer: {answer}");
 }

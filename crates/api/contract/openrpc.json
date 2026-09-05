@@ -7079,6 +7079,30 @@
           }
         ]
       },
+      "ContentRefView": {
+        "description": "Immutable content and its encoding. A reference can name plain text,\nprovider-native JSON, or media; it does not imply a UTF-8 text payload.",
+        "properties": {
+          "contentRef": {
+            "type": "string"
+          },
+          "mediaType": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "providerKind": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "contentRef"
+        ],
+        "type": "object"
+      },
       "ContextAppendEntry": {
         "properties": {
           "item": {
@@ -7226,17 +7250,11 @@
       },
       "ContextEntryInputView": {
         "properties": {
-          "contentRef": {
-            "type": "string"
+          "content": {
+            "$ref": "#/components/schemas/ContentRefView"
           },
           "kind": {
             "$ref": "#/components/schemas/ContextEntryKindView"
-          },
-          "mediaType": {
-            "type": [
-              "string",
-              "null"
-            ]
           },
           "preview": {
             "type": [
@@ -7244,13 +7262,8 @@
               "null"
             ]
           },
-          "providerItemId": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "providerKind": {
+          "provenanceRef": {
+            "description": "Immutable artifact recording this entry's origin or construction.",
             "type": [
               "string",
               "null"
@@ -7269,7 +7282,7 @@
         },
         "required": [
           "kind",
-          "contentRef"
+          "content"
         ],
         "type": "object"
       },
@@ -7625,17 +7638,17 @@
         ]
       },
       "ContextEntryView": {
-        "description": "A session context entry, faithful to the stored engine entry: keyed,\nkind-tagged, ref-backed. Keys are a stable extension point — clients\nreconstruct derived surfaces (e.g. the prompted instruction set via the\n`prompt_instructions/` key prefix) by filtering on `key` and fetching\nbodies through `blobs/read`. `text` inlines blob content only for\nmessage and tool entries; every other kind is ref + preview.",
+        "description": "A session context entry, faithful to the stored engine entry: keyed,\nkind-tagged, ref-backed. Keys are a stable extension point — clients\nreconstruct derived surfaces (e.g. the prompted instruction set via the\n`prompt_instructions/` key prefix) by filtering on `key` and fetching\noriginal bytes through `blobs/read`. `text` contains complete message and\nvisible reasoning text; tool and catalog bodies use bounded text previews.",
         "properties": {
           "citations": {
-            "description": "Sources this assistant message cites, derived from the provider-native\ncited entry that follows it. Empty for every other entry kind.",
+            "description": "Sources this assistant message cites, derived from its own native\npayload. Empty for every other entry kind.",
             "items": {
               "$ref": "#/components/schemas/CitationView"
             },
             "type": "array"
           },
-          "contentRef": {
-            "type": "string"
+          "content": {
+            "$ref": "#/components/schemas/ContentRefView"
           },
           "display": {
             "anyOf": [
@@ -7659,25 +7672,21 @@
           "kind": {
             "$ref": "#/components/schemas/ContextEntryKindView"
           },
-          "mediaType": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
           "preview": {
             "type": [
               "string",
               "null"
             ]
           },
-          "providerItemId": {
+          "provenanceRef": {
+            "description": "Immutable artifact recording this entry's origin or construction.",
             "type": [
               "string",
               "null"
             ]
           },
-          "providerKind": {
+          "providerItemId": {
+            "description": "Native item identity derived from the payload, when present.",
             "type": [
               "string",
               "null"
@@ -7715,7 +7724,7 @@
             ]
           },
           "textTruncated": {
-            "description": "True when `text` is a bounded prefix of the blob body; fetch\n`contentRef` for the complete content.",
+            "description": "True when a tool or catalog body's `text` is a bounded prefix. Fetch\nits original content through `blobs/read`. Messages and reasoning are full.",
             "type": "boolean"
           },
           "tokenEstimate": {
@@ -7732,7 +7741,7 @@
         "required": [
           "id",
           "kind",
-          "contentRef"
+          "content"
         ],
         "type": "object"
       },
@@ -12651,7 +12660,7 @@
         "type": "object"
       },
       "RunReadResponse": {
-        "description": "The complete projection of one run. Run projection is stateful across the\nrun's events, so partial pages would silently lose cross-event state; a\nrun whose interval exceeds the server's detail ceiling is rejected with a\ntyped error and remains readable through `session/events/read`. Inline\nentry text is bounded; full bodies stay blob-addressed via `contentRef`.",
+        "description": "The complete projection of one run. Run projection is stateful across the\nrun's events, so partial pages would silently lose cross-event state; a\nrun whose interval exceeds the server's detail ceiling is rejected with a\ntyped error and remains readable through `session/events/read`. Inline\nmessage and reasoning text is complete. Tool and catalog previews are bounded;\ntheir full bodies remain available through `blobs/read`.",
         "properties": {
           "run": {
             "$ref": "#/components/schemas/RunView"
@@ -12947,6 +12956,24 @@
           },
           "id": {
             "type": "string"
+          },
+          "output": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ContentRefView"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Authoritative terminal output, retained independently of active context."
+          },
+          "outputText": {
+            "description": "Complete visible text derived from `output`; absent for non-text output\nor runs without a terminal output. Native metadata stays in the blob.",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "pendingApprovals": {
             "items": {
@@ -13779,10 +13806,14 @@
           },
           {
             "properties": {
-              "outputRef": {
-                "type": [
-                  "string",
-                  "null"
+              "output": {
+                "anyOf": [
+                  {
+                    "$ref": "#/components/schemas/ContentRefView"
+                  },
+                  {
+                    "type": "null"
+                  }
                 ]
               },
               "runId": {

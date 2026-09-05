@@ -500,7 +500,7 @@ impl WorkflowToolScriptedLlm {
             if matches_kind(&entry.kind) {
                 return self
                     .blobs
-                    .read_text(&entry.content_ref)
+                    .read_text(&entry.content.content_ref)
                     .await
                     .map(Some)
                     .map_err(io_error);
@@ -537,11 +537,13 @@ impl WorkflowToolScriptedLlm {
                     call_id: call_id.clone(),
                     name: tool_name.clone(),
                 },
-                content_ref: arguments_ref.clone(),
-                media_type: Some("application/json".to_owned()),
+                content: engine::ContentRef {
+                    content_ref: arguments_ref.clone(),
+                    media_type: Some("application/json".to_owned()),
+                    provider_kind: Some("workflow-tool-script".to_owned()),
+                },
                 preview: None,
-                provider_kind: Some("workflow-tool-script".to_owned()),
-                provider_item_id: Some(call_id.as_str().to_owned()),
+                provenance_ref: None,
                 token_estimate: None,
             }],
             facts: LlmGenerationFacts {
@@ -586,11 +588,13 @@ impl WorkflowToolScriptedLlm {
                 kind: ContextEntryKind::Message {
                     role: ContextMessageRole::Assistant,
                 },
-                content_ref: output_ref,
-                media_type: Some("text/plain".to_owned()),
+                content: engine::ContentRef {
+                    content_ref: output_ref,
+                    media_type: Some("text/plain".to_owned()),
+                    provider_kind: Some("workflow-tool-script".to_owned()),
+                },
                 preview: Some("workflow tool scripted final".to_owned()),
-                provider_kind: Some("workflow-tool-script".to_owned()),
-                provider_item_id: None,
+                provenance_ref: None,
                 token_estimate: None,
             }],
             facts: LlmGenerationFacts {
@@ -646,7 +650,7 @@ impl CoreAgentLlm for WorkflowToolScriptedLlm {
                 ContextEntryKind::ToolResult { .. } => {
                     let tool_result = self
                         .blobs
-                        .read_text(&entry.content_ref)
+                        .read_text(&entry.content.content_ref)
                         .await
                         .map_err(io_error)?;
                     if tool_result.contains("\"accepted\":true")
@@ -679,7 +683,7 @@ impl CoreAgentLlm for WorkflowToolScriptedLlm {
                 } => {
                     let text = self
                         .blobs
-                        .read_text(&entry.content_ref)
+                        .read_text(&entry.content.content_ref)
                         .await
                         .map_err(io_error)?;
                     if let Some(tool_name) = text

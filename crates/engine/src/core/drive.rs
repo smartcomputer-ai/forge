@@ -681,7 +681,7 @@ fn turn_outcome_for_generation_result(result: &LlmGenerationResult) -> TurnOutco
                 TurnOutcome::ApprovalsRequested
             }
             LlmFinish::Stop | LlmFinish::Unknown => TurnOutcome::FinalOutput {
-                output_ref: final_output_ref(&result.context_entries),
+                output: final_output(&result.context_entries),
             },
         },
     }
@@ -719,14 +719,14 @@ fn source_for_llm_context_entry(
     }
 }
 
-fn final_output_ref(context_entries: &[ContextEntryInput]) -> Option<BlobRef> {
+fn final_output(context_entries: &[ContextEntryInput]) -> Option<crate::ContentRef> {
     context_entries
         .iter()
         .rev()
         .find_map(|entry| match entry.kind {
             ContextEntryKind::Message {
                 role: ContextMessageRole::Assistant,
-            } => Some(entry.content_ref.clone()),
+            } => Some(entry.content.clone()),
             _ => None,
         })
 }
@@ -2140,11 +2140,13 @@ mod tests {
             key,
             kind: ContextEntryKind::ProviderOpaque,
             source: ContextEntrySource::ContextEdit,
-            content_ref: BlobRef::from_bytes(content),
-            media_type: None,
+            content: crate::ContentRef {
+                content_ref: BlobRef::from_bytes(content),
+                media_type: None,
+                provider_kind: None,
+            },
             preview: None,
-            provider_kind: None,
-            provider_item_id: None,
+            provenance_ref: None,
             token_estimate: None,
             supersedes: None,
         }
@@ -2191,11 +2193,13 @@ mod tests {
     fn message_input(role: ContextMessageRole, content_ref: BlobRef) -> ContextEntryInput {
         ContextEntryInput {
             kind: ContextEntryKind::Message { role },
-            content_ref,
-            media_type: None,
+            content: crate::ContentRef {
+                content_ref,
+                media_type: None,
+                provider_kind: None,
+            },
             preview: None,
-            provider_kind: None,
-            provider_item_id: None,
+            provenance_ref: None,
             token_estimate: None,
         }
     }
@@ -2203,11 +2207,13 @@ mod tests {
     fn provider_opaque_input(content_ref: BlobRef) -> ContextEntryInput {
         ContextEntryInput {
             kind: ContextEntryKind::ProviderOpaque,
-            content_ref,
-            media_type: None,
+            content: crate::ContentRef {
+                content_ref,
+                media_type: None,
+                provider_kind: None,
+            },
             preview: None,
-            provider_kind: None,
-            provider_item_id: None,
+            provenance_ref: None,
             token_estimate: None,
         }
     }
@@ -2224,11 +2230,13 @@ mod tests {
     fn openai_compaction_input(content_ref: BlobRef) -> ContextEntryInput {
         ContextEntryInput {
             kind: ContextEntryKind::ProviderOpaque,
-            content_ref,
-            media_type: Some("application/json".to_owned()),
+            content: crate::ContentRef {
+                content_ref,
+                media_type: Some("application/json".to_owned()),
+                provider_kind: Some(OPENAI_RESPONSES_COMPACTION_PROVIDER_KIND.to_owned()),
+            },
             preview: Some("OpenAI Responses compaction item".to_owned()),
-            provider_kind: Some(OPENAI_RESPONSES_COMPACTION_PROVIDER_KIND.to_owned()),
-            provider_item_id: Some("cmp_1".to_owned()),
+            provenance_ref: None,
             token_estimate: None,
         }
     }
@@ -2236,11 +2244,9 @@ mod tests {
     fn instruction_input(content_ref: BlobRef) -> ContextEntryInput {
         ContextEntryInput {
             kind: ContextEntryKind::Instructions,
-            content_ref,
-            media_type: Some("text/plain".to_owned()),
+            content: crate::ContentRef::text(content_ref),
             preview: None,
-            provider_kind: None,
-            provider_item_id: None,
+            provenance_ref: None,
             token_estimate: None,
         }
     }
@@ -2248,11 +2254,13 @@ mod tests {
     fn skill_catalog_input(content_ref: BlobRef) -> ContextEntryInput {
         ContextEntryInput {
             kind: ContextEntryKind::SkillCatalog,
-            content_ref,
-            media_type: None,
+            content: crate::ContentRef {
+                content_ref,
+                media_type: None,
+                provider_kind: None,
+            },
             preview: None,
-            provider_kind: None,
-            provider_item_id: None,
+            provenance_ref: None,
             token_estimate: None,
         }
     }
@@ -2267,11 +2275,13 @@ mod tests {
                 catalog_id: "vfs".to_owned(),
                 skill_id,
             },
-            content_ref,
-            media_type: Some("text/markdown".to_owned()),
+            content: crate::ContentRef {
+                content_ref,
+                media_type: Some("text/markdown".to_owned()),
+                provider_kind: provider_kind.map(str::to_owned),
+            },
             preview: None,
-            provider_kind: provider_kind.map(str::to_owned),
-            provider_item_id: None,
+            provenance_ref: None,
             token_estimate: None,
         }
     }
@@ -2677,6 +2687,116 @@ mod tests {
     }
 
     #[test]
+    fn native_run_output_replays_from_recorded_events_without_blob_access() {
+        let session_id = SessionId::new("native-output-replay");
+        let mut drive =
+            CoreAgentDrive::from_replayed(session_id.clone(), CoreAgentState::new(), None);
+        open_session(&mut drive);
+        let action = drive
+            .admit_command(
+                request_run_command(
+                    None,
+                    user_input(BlobRef::from_bytes(b"input")),
+                    run_config(),
+                ),
+                20,
+            )
+            .unwrap();
+        commit_action(&mut drive, action);
+        let request = drive_until_generate(&mut drive);
+        let checkpoint = serde_json::to_vec(drive.state()).unwrap();
+        let head = drive.head().cloned();
+        let mut message = message_input(
+            ContextMessageRole::Assistant,
+            BlobRef::from_bytes(b"opaque native bytes"),
+        );
+        message.content.media_type = Some("application/json".into());
+        message.content.provider_kind = Some("provider.message".into());
+        message.provenance_ref = Some(BlobRef::from_bytes(b"origin artifact"));
+        let expected = message.content.clone();
+        let action = drive
+            .resume_generation(
+                LlmGenerationResult {
+                    run_id: request.run_id,
+                    turn_id: request.turn_id,
+                    status: LlmGenerationStatus::Succeeded,
+                    failure_ref: None,
+                    context_entries: vec![message],
+                    facts: LlmGenerationFacts {
+                        duration_ms: None,
+                        provider_response_id: None,
+                        finish: LlmFinish::Stop,
+                        usage: None,
+                        tool_calls: vec![],
+                        approval_requests: vec![],
+                        context_token_estimate: None,
+                    },
+                },
+                30,
+            )
+            .unwrap();
+        let mut events = commit_action(&mut drive, action);
+        for now in 31..40 {
+            let action = drive.next_action(now, 64).unwrap();
+            if matches!(action, CoreAgentAction::Idle) {
+                break;
+            }
+            events.extend(commit_action(&mut drive, action));
+        }
+        assert_eq!(
+            drive.state().runs.completed.last().unwrap().output.as_ref(),
+            Some(&expected)
+        );
+        let mut replayed = CoreAgentDrive::from_replayed(
+            session_id,
+            serde_json::from_slice(&checkpoint).unwrap(),
+            head,
+        );
+        replayed
+            .resume_appended(
+                events
+                    .iter()
+                    .map(|entry| CoreAgentCodec.encode_entry(entry).unwrap())
+                    .collect(),
+            )
+            .unwrap();
+        assert_eq!(replayed.state(), drive.state());
+        assert_eq!(
+            replayed
+                .state()
+                .runs
+                .completed
+                .last()
+                .unwrap()
+                .output
+                .as_ref(),
+            Some(&expected)
+        );
+    }
+
+    #[test]
+    fn final_output_retains_native_encoding_without_interpreting_payload() {
+        let mut message = message_input(
+            ContextMessageRole::Assistant,
+            BlobRef::from_bytes(b"native payload"),
+        );
+        message.content.media_type = Some("application/json".to_owned());
+        message.content.provider_kind = Some("provider.native_message".to_owned());
+        let output = final_output(&[message.clone()]).expect("final output");
+        assert_eq!(output, message.content.clone());
+        let event = crate::RunEvent::Completed {
+            run_id: RunId::new(1),
+            output: Some(output.clone()),
+        };
+        let encoded = serde_json::to_vec(&event).expect("encode completion");
+        let decoded: crate::RunEvent = serde_json::from_slice(&encoded).expect("decode completion");
+        assert_eq!(decoded, event);
+        // A run owns a durable descriptor, independent of active context entries.
+        message.content.content_ref = BlobRef::from_bytes(b"replacement");
+        assert_ne!(output.content_ref, message.content.content_ref);
+    }
+
+    #[test]
     fn request_run_rejects_non_user_message_input() {
         let session_id = SessionId::new("session-a");
         let mut drive = CoreAgentDrive::from_replayed(session_id, CoreAgentState::new(), None);
@@ -2733,7 +2853,7 @@ mod tests {
         let opaque_ref = BlobRef::from_bytes(b"mcp approval request");
         let entries = vec![provider_opaque_input(opaque_ref)];
 
-        assert_eq!(final_output_ref(&entries), None);
+        assert_eq!(final_output(&entries), None);
     }
 
     #[test]
@@ -2781,11 +2901,13 @@ mod tests {
             kind: ContextEntryKind::Catalog {
                 title: title.to_owned(),
             },
-            content_ref,
-            media_type: Some("text/markdown".to_owned()),
+            content: crate::ContentRef {
+                content_ref,
+                media_type: Some("text/markdown".to_owned()),
+                provider_kind: None,
+            },
             preview: Some(title.to_owned()),
-            provider_kind: None,
-            provider_item_id: None,
+            provenance_ref: None,
             token_estimate: None,
         }
     }
@@ -2947,7 +3069,7 @@ mod tests {
         let state = drive.state();
         assert_eq!(state.context.entries.len(), 1);
         assert_eq!(
-            state.context.entries[0].content_ref,
+            state.context.entries[0].content.content_ref,
             BlobRef::from_bytes(b"b")
         );
         assert_eq!(state.context.entries[0].supersedes, None);
@@ -3001,11 +3123,13 @@ mod tests {
         open_session(&mut drive);
         let catalog = ContextEntryInput {
             kind: ContextEntryKind::SubagentCatalog,
-            content_ref: BlobRef::from_bytes(b"agents"),
-            media_type: Some("application/json".to_owned()),
+            content: crate::ContentRef {
+                content_ref: BlobRef::from_bytes(b"agents"),
+                media_type: Some("application/json".to_owned()),
+                provider_kind: None,
+            },
             preview: Some("Sub-agent catalog".to_owned()),
-            provider_kind: None,
-            provider_item_id: None,
+            provenance_ref: None,
             token_estimate: None,
         };
         upsert(&mut drive, crate::SUBAGENT_CATALOG_CONTEXT_KEY, catalog, 20);
@@ -3391,7 +3515,7 @@ mod tests {
                 role: ContextMessageRole::User,
             }
         );
-        assert_eq!(entry.content_ref, content_ref);
+        assert_eq!(entry.content.content_ref, content_ref);
         assert_eq!(entry.source, ContextEntrySource::ContextEdit);
         let revision = drive.state().context.revision;
 
@@ -3473,16 +3597,16 @@ mod tests {
 
         assert_eq!(items.len(), 3);
         assert!(matches!(items[0].kind, ContextEntryKind::Instructions));
-        assert_eq!(items[0].content_ref, first_ref);
+        assert_eq!(items[0].content.content_ref, first_ref);
         assert!(matches!(items[1].kind, ContextEntryKind::Instructions));
-        assert_eq!(items[1].content_ref, second_ref);
+        assert_eq!(items[1].content.content_ref, second_ref);
         assert!(matches!(
             items[2].kind,
             ContextEntryKind::Message {
                 role: ContextMessageRole::User
             }
         ));
-        assert_eq!(items[2].content_ref, input_ref);
+        assert_eq!(items[2].content.content_ref, input_ref);
     }
 
     #[test]
@@ -3667,7 +3791,7 @@ mod tests {
         assert_eq!(retained.len(), 2);
         assert!(matches!(retained[0].kind, ContextEntryKind::ProviderOpaque));
         assert_eq!(
-            retained[0].provider_kind.as_deref(),
+            retained[0].content.provider_kind.as_deref(),
             Some(OPENAI_RESPONSES_COMPACTION_PROVIDER_KIND)
         );
         assert!(matches!(
@@ -3760,7 +3884,10 @@ mod tests {
         assert_eq!(reason, &ContextRemovalReason::ProviderCompacted);
         assert_eq!(drive.state().context.entries.len(), 1);
         assert_eq!(
-            drive.state().context.entries[0].provider_kind.as_deref(),
+            drive.state().context.entries[0]
+                .content
+                .provider_kind
+                .as_deref(),
             Some(OPENAI_RESPONSES_COMPACTION_PROVIDER_KIND)
         );
     }
@@ -4499,11 +4626,9 @@ mod tests {
                 kind: ContextEntryKind::Message {
                     role: ContextMessageRole::Assistant,
                 },
-                content_ref: BlobRef::from_bytes(text),
-                media_type: Some("text/plain".to_owned()),
+                content: crate::ContentRef::text(BlobRef::from_bytes(text)),
                 preview: None,
-                provider_kind: None,
-                provider_item_id: None,
+                provenance_ref: None,
                 token_estimate: None,
             }],
             facts: LlmGenerationFacts {
@@ -4803,7 +4928,10 @@ mod tests {
             &drive.state().context.entries[0].kind,
             ContextEntryKind::SkillActivation { skill_id: planned, .. } if planned == &skill_id
         ));
-        assert_eq!(drive.state().context.entries[0].content_ref, context_ref);
+        assert_eq!(
+            drive.state().context.entries[0].content.content_ref,
+            context_ref
+        );
         assert!(drive.state().runs.active.is_none());
         assert!(drive.state().runs.queued.is_empty());
         assert!(matches!(
@@ -4884,19 +5012,19 @@ mod tests {
         let items = openai_items(&request);
         assert_eq!(items.len(), 3);
         assert!(matches!(items[0].kind, ContextEntryKind::SkillCatalog));
-        assert_eq!(items[0].content_ref, catalog_ref);
+        assert_eq!(items[0].content.content_ref, catalog_ref);
         assert!(matches!(
             &items[1].kind,
             ContextEntryKind::SkillActivation { skill_id: planned, .. } if planned == &skill_id
         ));
-        assert_eq!(items[1].content_ref, activation_ref);
+        assert_eq!(items[1].content.content_ref, activation_ref);
         assert!(matches!(
             items[2].kind,
             ContextEntryKind::Message {
                 role: ContextMessageRole::User
             }
         ));
-        assert_eq!(items[2].content_ref, input_ref);
+        assert_eq!(items[2].content.content_ref, input_ref);
     }
 
     #[test]
@@ -5065,11 +5193,13 @@ mod tests {
                         kind: ContextEntryKind::Message {
                             role: ContextMessageRole::Assistant,
                         },
-                        content_ref: BlobRef::from_bytes(b"assistant output"),
-                        media_type: None,
+                        content: crate::ContentRef {
+                            content_ref: BlobRef::from_bytes(b"assistant output"),
+                            media_type: None,
+                            provider_kind: None,
+                        },
                         preview: None,
-                        provider_kind: None,
-                        provider_item_id: None,
+                        provenance_ref: None,
                         token_estimate: None,
                     }],
                     facts: LlmGenerationFacts {
@@ -5171,7 +5301,7 @@ mod tests {
                 .context
                 .entries
                 .iter()
-                .any(|entry| entry.content_ref == partial_ref),
+                .any(|entry| entry.content.content_ref == partial_ref),
             "the partial text must stay in the active context: {:?}",
             drive.state().context.entries
         );
@@ -5421,7 +5551,7 @@ mod tests {
             ContextEntryKind::ToolResult { .. }
         ));
         assert_eq!(
-            result.model_visible_context_entries[0].content_ref,
+            result.model_visible_context_entries[0].content.content_ref,
             result_ref
         );
         assert!(
@@ -5635,7 +5765,7 @@ mod tests {
                     ContextEntryKind::Message {
                         role: ContextMessageRole::User
                     }
-                ) && entry.content_ref == extra_ref
+                ) && entry.content.content_ref == extra_ref
             }) {
                 break;
             }
@@ -5647,7 +5777,7 @@ mod tests {
 
         assert!(drive.state().context.entries.iter().any(|entry| {
             matches!(entry.kind, ContextEntryKind::ToolResult { .. })
-                && entry.content_ref == tool_result_ref
+                && entry.content.content_ref == tool_result_ref
         }));
         assert!(drive.state().context.entries.iter().any(|entry| {
             matches!(
@@ -5655,7 +5785,7 @@ mod tests {
                 ContextEntryKind::Message {
                     role: ContextMessageRole::User
                 }
-            ) && entry.content_ref == extra_ref
+            ) && entry.content.content_ref == extra_ref
         }));
     }
 
@@ -7378,7 +7508,7 @@ mod tests {
                 },
                 CoreAgentEvent::Run(RunEvent::Completed {
                     run_id,
-                    output_ref: None,
+                    output: None,
                 }),
             )],
         );
@@ -8145,10 +8275,13 @@ mod tests {
                             call_id: call.call_id.clone(),
                             name: call.tool_name.clone(),
                         },
-                        content_ref: native_call.clone(),
-                        media_type: Some("application/json".into()),
-                        provider_kind: Some("tool_use".into()),
-                        provider_item_id: None,
+                        content: crate::ContentRef {
+                            content_ref: native_call.clone(),
+                            media_type: Some("application/json".into()),
+                            provider_kind: Some("tool_use".into()),
+                        },
+
+                        provenance_ref: None,
                         preview: None,
                         token_estimate: None,
                     }],
@@ -8203,6 +8336,6 @@ mod tests {
             panic!("replayed invocation");
         };
         assert_eq!(restored, request);
-        assert!(replayed.state().context.entries.iter().any(|entry| entry.content_ref == native_call && matches!(&entry.kind, ContextEntryKind::ToolCall { name, .. } if name.as_str() == "Bash")));
+        assert!(replayed.state().context.entries.iter().any(|entry| entry.content.content_ref == native_call && matches!(&entry.kind, ContextEntryKind::ToolCall { name, .. } if name.as_str() == "Bash")));
     }
 }

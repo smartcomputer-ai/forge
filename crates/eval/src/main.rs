@@ -574,6 +574,7 @@ struct EvalRuntime {
 }
 
 struct EvalRunProjection<'a> {
+    output: Option<&'a engine::ContentRef>,
     run_id: engine::RunId,
     status: engine::RunStatus,
     source: &'a engine::RunSource,
@@ -666,6 +667,7 @@ impl EvalRuntime {
                 source: &run.source,
                 started_at_ms: run.started_at_ms,
                 completed_at_ms: Some(run.completed_at_ms),
+                output: run.output.as_ref(),
                 usage: run.usage.as_ref(),
             }
         } else if let Some(run) = outcome
@@ -681,6 +683,7 @@ impl EvalRuntime {
                 source: &run.source,
                 started_at_ms: run.started_at_ms,
                 completed_at_ms: None,
+                output: None,
                 usage: run.usage.as_ref(),
             }
         } else {
@@ -755,6 +758,7 @@ impl EvalRuntime {
                 entries: &entries,
                 run_id: projection.run_id,
                 status: api_projection::core_run_status_to_api_status(projection.status),
+                output: projection.output,
                 source: projection.source,
                 started_at_ms: projection.started_at_ms,
                 completed_at_ms: projection.completed_at_ms,
@@ -934,11 +938,13 @@ fn user_input(content_ref: engine::BlobRef) -> Vec<ContextEntryInput> {
         kind: ContextEntryKind::Message {
             role: ContextMessageRole::User,
         },
-        content_ref,
-        media_type: None,
+        content: engine::ContentRef {
+            content_ref,
+            media_type: None,
+            provider_kind: None,
+        },
         preview: None,
-        provider_kind: None,
-        provider_item_id: None,
+        provenance_ref: None,
         token_estimate: None,
     }]
 }
@@ -946,11 +952,9 @@ fn user_input(content_ref: engine::BlobRef) -> Vec<ContextEntryInput> {
 fn instruction_context_input(content_ref: engine::BlobRef) -> ContextEntryInput {
     ContextEntryInput {
         kind: ContextEntryKind::Instructions,
-        content_ref,
-        media_type: Some("text/plain".to_owned()),
+        content: engine::ContentRef::text(content_ref),
         preview: None,
-        provider_kind: None,
-        provider_item_id: None,
+        provenance_ref: None,
         token_estimate: None,
     }
 }
@@ -1335,10 +1339,13 @@ mod tests {
             id: id.to_owned(),
             key: None,
             kind,
-            content_ref: "sha256:entry".to_owned(),
-            media_type: None,
+            content: api::ContentRefView {
+                content_ref: "sha256:entry".to_owned(),
+                media_type: None,
+                provider_kind: None,
+            },
+            provenance_ref: None,
             preview: None,
-            provider_kind: None,
             provider_item_id: None,
             token_estimate: None,
             text: text.map(str::to_owned),

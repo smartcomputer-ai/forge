@@ -259,7 +259,7 @@ export function sessionRoutes(store: DemoStore): Hono {
       .filter((entry) => entry.kind.type === "instructions")
       .map((entry) => ({
         key: entry.key ?? null,
-        contentRef: entry.contentRef,
+        contentRef: entry.content.contentRef,
         preview: entry.preview ?? null,
       }));
     const custom = active.find((entry) => entry.key === PROFILE_INSTRUCTIONS_KEY);

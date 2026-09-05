@@ -118,9 +118,10 @@ impl CoreAgentLlm for MatrixScriptedLlm {
             .iter()
             .rev()
             .find_map(|entry| match &entry.kind {
-                ContextEntryKind::ToolResult { call_id, .. } => {
-                    Some((call_id.as_str().to_owned(), entry.content_ref.clone()))
-                }
+                ContextEntryKind::ToolResult { call_id, .. } => Some((
+                    call_id.as_str().to_owned(),
+                    entry.content.content_ref.clone(),
+                )),
                 _ => None,
             });
         let Some((call_id, result_ref)) = latest else {
@@ -295,11 +296,13 @@ impl MatrixScriptedLlm {
                     call_id: call_id.clone(),
                     name: tool_name.clone(),
                 },
-                content_ref: arguments_ref.clone(),
-                media_type: Some("application/json".to_owned()),
+                content: engine::ContentRef {
+                    content_ref: arguments_ref.clone(),
+                    media_type: Some("application/json".to_owned()),
+                    provider_kind: Some("mcp-live-matrix".to_owned()),
+                },
                 preview: None,
-                provider_kind: Some("mcp-live-matrix".to_owned()),
-                provider_item_id: Some(call_id.as_str().to_owned()),
+                provenance_ref: None,
                 token_estimate: None,
             }],
             facts: LlmGenerationFacts {
@@ -340,11 +343,13 @@ impl MatrixScriptedLlm {
                 kind: ContextEntryKind::Message {
                     role: ContextMessageRole::Assistant,
                 },
-                content_ref,
-                media_type: Some("text/plain".to_owned()),
+                content: engine::ContentRef {
+                    content_ref,
+                    media_type: Some("text/plain".to_owned()),
+                    provider_kind: Some("mcp-live-matrix".to_owned()),
+                },
                 preview: None,
-                provider_kind: Some("mcp-live-matrix".to_owned()),
-                provider_item_id: None,
+                provenance_ref: None,
                 token_estimate: None,
             }],
             facts: LlmGenerationFacts {
@@ -985,7 +990,7 @@ impl CoreAgentLlm for NativeMcpScriptedLlm {
                 let ContextEntryKind::ToolResult { call_id, .. } = &entry.kind else {
                     return None;
                 };
-                Some((call_id.clone(), entry.content_ref.clone()))
+                Some((call_id.clone(), entry.content.content_ref.clone()))
             });
         match latest_result {
             None => {
@@ -1058,11 +1063,13 @@ impl NativeMcpScriptedLlm {
                     call_id: call_id.clone(),
                     name: tool_name.clone(),
                 },
-                content_ref: arguments_ref.clone(),
-                media_type: Some("application/json".to_owned()),
+                content: engine::ContentRef {
+                    content_ref: arguments_ref.clone(),
+                    media_type: Some("application/json".to_owned()),
+                    provider_kind: Some("native-mcp-script".to_owned()),
+                },
                 preview: None,
-                provider_kind: Some("native-mcp-script".to_owned()),
-                provider_item_id: Some(call_id.as_str().to_owned()),
+                provenance_ref: None,
                 token_estimate: None,
             }],
             facts: LlmGenerationFacts {
@@ -1103,11 +1110,13 @@ impl NativeMcpScriptedLlm {
                 kind: ContextEntryKind::Message {
                     role: ContextMessageRole::Assistant,
                 },
-                content_ref,
-                media_type: Some("text/plain".to_owned()),
+                content: engine::ContentRef {
+                    content_ref,
+                    media_type: Some("text/plain".to_owned()),
+                    provider_kind: Some("native-mcp-script".to_owned()),
+                },
                 preview: None,
-                provider_kind: Some("native-mcp-script".to_owned()),
-                provider_item_id: None,
+                provenance_ref: None,
                 token_estimate: None,
             }],
             facts: LlmGenerationFacts {
@@ -1168,11 +1177,13 @@ impl CoreAgentLlm for ApprovalScriptedLlm {
                     kind: ContextEntryKind::Message {
                         role: ContextMessageRole::Assistant,
                     },
-                    content_ref: output_ref,
-                    media_type: Some("text/plain".to_owned()),
+                    content: engine::ContentRef {
+                        content_ref: output_ref,
+                        media_type: Some("text/plain".to_owned()),
+                        provider_kind: Some("approval-script".to_owned()),
+                    },
                     preview: None,
-                    provider_kind: Some("approval-script".to_owned()),
-                    provider_item_id: None,
+                    provenance_ref: None,
                     token_estimate: None,
                 }],
                 facts: LlmGenerationFacts {
@@ -1219,13 +1230,15 @@ impl CoreAgentLlm for ApprovalScriptedLlm {
             failure_ref: None,
             context_entries: vec![ContextEntryInput {
                 kind: ContextEntryKind::ProviderOpaque,
-                content_ref: opaque_ref,
-                media_type: Some("application/json".to_owned()),
+                content: engine::ContentRef {
+                    content_ref: opaque_ref,
+                    media_type: Some("application/json".to_owned()),
+                    provider_kind: Some(
+                        engine::OPENAI_RESPONSES_MCP_APPROVAL_REQUEST_PROVIDER_KIND.to_owned(),
+                    ),
+                },
                 preview: None,
-                provider_kind: Some(
-                    engine::OPENAI_RESPONSES_MCP_APPROVAL_REQUEST_PROVIDER_KIND.to_owned(),
-                ),
-                provider_item_id: Some(provider_request_id.clone()),
+                provenance_ref: None,
                 token_estimate: None,
             }],
             facts: LlmGenerationFacts {
@@ -1876,7 +1889,7 @@ impl CoreAgentLlm for MixedBatchScriptedLlm {
             .iter()
             .filter_map(|entry| match &entry.kind {
                 ContextEntryKind::ToolResult { call_id, .. } => {
-                    Some((call_id.clone(), entry.content_ref.clone()))
+                    Some((call_id.clone(), entry.content.content_ref.clone()))
                 }
                 _ => None,
             })
@@ -1969,11 +1982,13 @@ impl MixedBatchScriptedLlm {
                     call_id: call_id.clone(),
                     name: tool_name.clone(),
                 },
-                content_ref: arguments_ref.clone(),
-                media_type: Some("application/json".to_owned()),
+                content: engine::ContentRef {
+                    content_ref: arguments_ref.clone(),
+                    media_type: Some("application/json".to_owned()),
+                    provider_kind: Some("mixed-batch-script".to_owned()),
+                },
                 preview: None,
-                provider_kind: Some("mixed-batch-script".to_owned()),
-                provider_item_id: Some(call_id.as_str().to_owned()),
+                provenance_ref: None,
                 token_estimate: None,
             });
             tool_calls.push(ObservedToolCall {
@@ -2022,11 +2037,13 @@ impl MixedBatchScriptedLlm {
                 kind: ContextEntryKind::Message {
                     role: ContextMessageRole::Assistant,
                 },
-                content_ref,
-                media_type: Some("text/plain".to_owned()),
+                content: engine::ContentRef {
+                    content_ref,
+                    media_type: Some("text/plain".to_owned()),
+                    provider_kind: Some("mixed-batch-script".to_owned()),
+                },
                 preview: None,
-                provider_kind: Some("mixed-batch-script".to_owned()),
-                provider_item_id: None,
+                provenance_ref: None,
                 token_estimate: None,
             }],
             facts: LlmGenerationFacts {

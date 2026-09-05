@@ -190,7 +190,7 @@ pub enum EmissionBody {
         token: String,
         run_id: RunId,
         status: RunStatus,
-        output_ref: Option<BlobRef>,
+        output: Option<crate::ContentRef>,
         failure_message_ref: Option<BlobRef>,
     },
     SourceResolution {
@@ -234,7 +234,7 @@ impl EmissionEnvelope {
         token: String,
         run_id: RunId,
         status: RunStatus,
-        output_ref: Option<BlobRef>,
+        output: Option<crate::ContentRef>,
         failure_message_ref: Option<BlobRef>,
     ) -> Self {
         let emission_id = EmissionId::for_run_terminal(universe_id, &session_id, run_id, &token);
@@ -249,7 +249,7 @@ impl EmissionEnvelope {
                 token,
                 run_id,
                 status,
-                output_ref,
+                output,
                 failure_message_ref,
             },
         }

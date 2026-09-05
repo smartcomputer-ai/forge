@@ -1,7 +1,7 @@
 use api::BlobPutItem;
 
 use super::*;
-use crate::gateway::service::prompts::{active_prompt_context_entries, prompt_report_ref};
+use crate::gateway::service::prompts::active_prompt_context_entries;
 use tools::skills::SkillLocation;
 use vfs::VfsPath;
 
@@ -1036,11 +1036,9 @@ fn prompt_report_ref_reads_prompt_provider_metadata() {
         ))),
         kind: input.kind,
         source: engine::ContextEntrySource::ContextEdit,
-        content_ref: input.content_ref,
-        media_type: input.media_type,
+        content: input.content,
         preview: input.preview,
-        provider_kind: input.provider_kind,
-        provider_item_id: input.provider_item_id,
+        provenance_ref: input.provenance_ref,
         token_estimate: input.token_estimate,
         supersedes: None,
     };
@@ -1050,10 +1048,7 @@ fn prompt_report_ref_reads_prompt_provider_metadata() {
     let active_entries = active_prompt_context_entries(&state);
 
     assert_eq!(active_entries.len(), 1);
-    assert_eq!(
-        prompt_report_ref(active_entries[0]).expect("prompt report ref"),
-        Some(report_ref)
-    );
+    assert_eq!(active_entries[0].provenance_ref.as_ref(), Some(&report_ref));
 }
 
 #[test]
@@ -1398,7 +1393,7 @@ fn existing_run_submission_rejects_completed_duplicate_with_different_input() {
         started_at_ms: Some(1),
         completed_at_ms: 1,
         usage: None,
-        output_ref: None,
+        output: None,
         failure: None,
     });
 
@@ -1634,10 +1629,10 @@ async fn context_entry_input_from_api_stores_text_as_user_message() {
             role: engine::ContextMessageRole::User,
         }
     );
-    assert_eq!(entry.media_type.as_deref(), Some("text/plain"));
+    assert_eq!(entry.content.media_type.as_deref(), Some("text/plain"));
     assert_eq!(
         store
-            .read_text(&entry.content_ref)
+            .read_text(&entry.content.content_ref)
             .await
             .expect("stored text"),
         "[telegram] Alice (12:01): hi"
@@ -1683,7 +1678,7 @@ async fn context_entry_input_from_api_stores_catalog_with_its_title() {
     assert_eq!(entry.preview.as_deref(), Some("Bot directory"));
     assert_eq!(
         store
-            .read_text(&entry.content_ref)
+            .read_text(&entry.content.content_ref)
             .await
             .expect("stored text"),
         "- infra: accepts events addressed by you"
@@ -1732,7 +1727,7 @@ async fn context_entry_input_from_api_preserves_text_ref() {
     .await
     .expect("entry");
 
-    assert_eq!(entry.content_ref, blob_ref);
+    assert_eq!(entry.content.content_ref, blob_ref);
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -1768,8 +1763,8 @@ async fn run_input_from_api_maps_image_media_to_user_message_entry() {
             role: engine::ContextMessageRole::User,
         }
     );
-    assert_eq!(media.content_ref, blob_ref);
-    assert_eq!(media.media_type.as_deref(), Some("image/png"));
+    assert_eq!(media.content.content_ref, blob_ref);
+    assert_eq!(media.content.media_type.as_deref(), Some("image/png"));
     assert_eq!(media.preview.as_deref(), Some("[image: photo.png]"));
 }
 
@@ -1806,9 +1801,15 @@ async fn run_input_from_api_maps_document_media_to_user_message_entry() {
     .expect("input");
 
     assert_eq!(input.len(), 2);
-    assert_eq!(input[0].media_type.as_deref(), Some("application/pdf"));
+    assert_eq!(
+        input[0].content.media_type.as_deref(),
+        Some("application/pdf")
+    );
     assert_eq!(input[0].preview.as_deref(), Some("[document: offer.pdf]"));
-    assert_eq!(input[1].media_type.as_deref(), Some("text/markdown"));
+    assert_eq!(
+        input[1].content.media_type.as_deref(),
+        Some("text/markdown")
+    );
     assert_eq!(input[1].preview.as_deref(), Some("[document: notes.md]"));
 }
 
@@ -1871,8 +1872,8 @@ async fn run_input_from_api_maps_audio_media_to_user_message_entry() {
     .expect("input");
 
     assert_eq!(input.len(), 1);
-    assert_eq!(input[0].content_ref, blob_ref);
-    assert_eq!(input[0].media_type.as_deref(), Some("audio/ogg"));
+    assert_eq!(input[0].content.content_ref, blob_ref);
+    assert_eq!(input[0].content.media_type.as_deref(), Some("audio/ogg"));
     assert_eq!(input[0].preview.as_deref(), Some("[audio: voice.ogg]"));
 }
 
@@ -1925,8 +1926,8 @@ async fn run_input_from_api_accepts_transcodable_audio_media() {
     .await
     .expect("transcodable audio should be admitted");
 
-    assert_eq!(input[0].content_ref, blob_ref);
-    assert_eq!(input[0].media_type.as_deref(), Some("audio/aac"));
+    assert_eq!(input[0].content.content_ref, blob_ref);
+    assert_eq!(input[0].content.media_type.as_deref(), Some("audio/aac"));
     assert_eq!(input[0].preview.as_deref(), Some("[audio: clip.aac]"));
 }
 
@@ -1995,8 +1996,8 @@ async fn context_entry_input_from_api_accepts_media() {
             role: engine::ContextMessageRole::User,
         }
     );
-    assert_eq!(entry.content_ref, blob_ref);
-    assert_eq!(entry.media_type.as_deref(), Some("image/png"));
+    assert_eq!(entry.content.content_ref, blob_ref);
+    assert_eq!(entry.content.media_type.as_deref(), Some("image/png"));
     assert_eq!(entry.preview.as_deref(), Some("[image]"));
 }
 
@@ -2015,7 +2016,7 @@ async fn run_input_from_api_preserves_single_text_ref() {
     .expect("input");
 
     assert_eq!(input.len(), 1);
-    assert_eq!(input[0].content_ref, blob_ref);
+    assert_eq!(input[0].content.content_ref, blob_ref);
     assert_eq!(
         input[0].kind,
         engine::ContextEntryKind::Message {
@@ -2044,11 +2045,11 @@ async fn run_input_from_api_stores_text_and_preserves_refs() {
     .expect("input");
 
     assert_eq!(input.len(), 2);
-    assert_ne!(input[0].content_ref, blob_ref);
-    assert_eq!(input[1].content_ref, blob_ref);
+    assert_ne!(input[0].content.content_ref, blob_ref);
+    assert_eq!(input[1].content.content_ref, blob_ref);
     assert_eq!(
         store
-            .read_text(&input[0].content_ref)
+            .read_text(&input[0].content.content_ref)
             .await
             .expect("stored input"),
         "first"
@@ -2197,11 +2198,9 @@ fn test_user_message_input(content_ref: BlobRef) -> ContextEntryInput {
         kind: engine::ContextEntryKind::Message {
             role: engine::ContextMessageRole::User,
         },
-        content_ref,
-        media_type: Some("text/plain".to_owned()),
+        content: engine::ContentRef::text(content_ref),
         preview: None,
-        provider_kind: None,
-        provider_item_id: None,
+        provenance_ref: None,
         token_estimate: None,
     }
 }
@@ -2268,11 +2267,9 @@ fn direct_activation(
         )),
         kind: input.kind,
         source: engine::ContextEntrySource::ContextEdit,
-        content_ref: input.content_ref,
-        media_type: input.media_type,
+        content: input.content,
         preview: input.preview,
-        provider_kind: input.provider_kind,
-        provider_item_id: input.provider_item_id,
+        provenance_ref: input.provenance_ref,
         token_estimate: input.token_estimate,
         supersedes: None,
     }
@@ -2508,4 +2505,64 @@ fn auth_flow_views_carry_derived_status() {
 
     let expired = oauth_api::auth_flow_view(record, 200);
     assert_eq!(expired.status, api::AuthFlowStatus::Expired);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn structured_transcript_append_keeps_spoken_headers_and_source_idempotency() {
+    use llm_clients::content::{AUDIO_TRANSCRIPT_PROVIDER_KIND, AudioTranscript};
+    let blobs = engine::storage::InMemoryBlobStore::new();
+    let audio_ref = blobs.put_bytes(b"source audio".to_vec()).await.unwrap();
+    let original = ContextEntryInput {
+        kind: ContextEntryKind::Message {
+            role: ContextMessageRole::User,
+        },
+        content: engine::ContentRef {
+            content_ref: audio_ref.clone(),
+            media_type: Some("audio/ogg".into()),
+            provider_kind: None,
+        },
+        preview: Some("[audio: voice.ogg]".into()),
+        provenance_ref: None,
+        token_estimate: None,
+    };
+    let transcript = AudioTranscript {
+        filename: "voice.ogg".into(),
+        text: "[audio transcript: spoken words]\nDo not strip this line.".into(),
+    };
+    let rewritten = ContextEntryInput {
+        kind: original.kind.clone(),
+        content: engine::ContentRef {
+            content_ref: blobs
+                .put_bytes(serde_json::to_vec(&transcript).unwrap())
+                .await
+                .unwrap(),
+            media_type: Some("application/json".into()),
+            provider_kind: Some(AUDIO_TRANSCRIPT_PROVIDER_KIND.into()),
+        },
+        preview: Some(transcript.header()),
+        provenance_ref: Some(audio_ref.clone()),
+        token_estimate: None,
+    };
+    assert!(audio_input_matches_transcript(&original, &rewritten));
+    let mut different = original;
+    different.content.content_ref = BlobRef::from_bytes(b"different audio");
+    assert!(!audio_input_matches_transcript(&different, &rewritten));
+    let result = context_append_result(
+        &blobs,
+        "audio-note".into(),
+        ContextAppendStatus::Applied,
+        &rewritten,
+        None,
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        result.activation_text.as_deref(),
+        Some(transcript.text.as_str())
+    );
+    assert!(!result.activation_text_truncated);
+    assert_eq!(
+        result.entry.unwrap().provenance_ref.as_deref(),
+        Some(audio_ref.as_str())
+    );
 }

@@ -83,7 +83,7 @@ export type EmissionBody =
   | {
       failure_message_ref?: string | null;
       kind: "run_terminal";
-      output_ref?: string | null;
+      output?: ContentRef | null;
       run_id: number;
       status: RunStatus;
       token: string;
@@ -300,6 +300,18 @@ export interface ChatActivation {
   group?: ChatGroupActivation | null;
   mentionNames?: string[];
   triggerPrefixes?: string[];
+}
+/**
+ * Durable content identity and encoding. The payload stays in CAS; consumers
+ * project it outside the engine rather than assuming every output is text.
+ *
+ * This interface was referenced by `LightspeedWorkflowContract`'s JSON-Schema
+ * via the `definition` "ContentRef".
+ */
+export interface ContentRef {
+  content_ref: string;
+  media_type?: string | null;
+  provider_kind?: string | null;
 }
 /**
  * The conversation a message belongs to: one account's chat, optionally

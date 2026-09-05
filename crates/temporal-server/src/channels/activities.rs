@@ -257,48 +257,8 @@ pub fn run_used_messaging_tool(run: &RunView) -> bool {
     answered_in_entries || answered_in_batches
 }
 
-/// The run's assistant messages with truncated inline bodies re-read from
-/// CAS, trimmed and joined; `None` when the run wrote nothing. Projected
-/// entry text is a bounded prefix, and the outbound channel message must be
-/// the complete reply.
-async fn full_assistant_text(
-    blobs: &dyn BlobStore,
-    run: &RunView,
-) -> Result<Option<String>, ActivityError> {
-    let mut texts: Vec<String> = Vec::new();
-    for entry in &run.entries {
-        if !matches!(
-            entry.kind,
-            ContextEntryKindView::Message {
-                role: ContextMessageRoleView::Assistant
-            }
-        ) {
-            continue;
-        }
-        let text = if entry.text_truncated {
-            let blob_ref = parse_blob_ref(&entry.content_ref)?;
-            Some(
-                blobs
-                    .read_text(&blob_ref)
-                    .await
-                    .map_err(|error| blob_error("read assistant output", error))?,
-            )
-        } else {
-            entry.text.clone()
-        };
-        if let Some(text) = text {
-            let text = text.trim();
-            if !text.is_empty() {
-                texts.push(text.to_owned());
-            }
-        }
-    }
-    Ok((!texts.is_empty()).then(|| texts.join("\n\n")))
-}
-
 /// The run's assistant messages, trimmed and joined; `None` when it wrote
 /// nothing.
-#[cfg(test)]
 fn assistant_text(run: &RunView) -> Option<String> {
     let texts: Vec<&str> = run
         .entries
@@ -374,9 +334,7 @@ pub async fn reconcile_delivery(
         });
     }
     Ok(ChatReconcileDeliveryResult::Deliver {
-        text: full_assistant_text(blob_store(api), &run)
-            .await?
-            .unwrap_or_else(|| NO_REPLY_TEXT.to_owned()),
+        text: assistant_text(&run).unwrap_or_else(|| NO_REPLY_TEXT.to_owned()),
     })
 }
 
@@ -1070,7 +1028,7 @@ mod tests {
         json!({
             "id": format!("{role}-{}", text.len()),
             "kind": { "type": "message", "role": role },
-            "contentRef": "sha256:x",
+            "content": { "contentRef": "sha256:x", "mediaType": "text/plain", "providerKind": null },
             "text": text,
         })
     }
@@ -1079,7 +1037,7 @@ mod tests {
         json!({
             "id": format!("call-{call_id}"),
             "kind": { "type": "toolCall", "callId": call_id, "name": name },
-            "contentRef": "sha256:x",
+            "content": { "contentRef": "sha256:x", "mediaType": "text/plain", "providerKind": null },
         })
     }
 
@@ -1087,7 +1045,7 @@ mod tests {
         json!({
             "id": format!("result-{call_id}"),
             "kind": { "type": "toolResult", "callId": call_id, "isError": is_error },
-            "contentRef": "sha256:x",
+            "content": { "contentRef": "sha256:x", "mediaType": "text/plain", "providerKind": null },
         })
     }
 
@@ -1367,24 +1325,17 @@ mod tests {
         );
     }
 
-    #[tokio::test(flavor = "current_thread")]
-    async fn a_truncated_assistant_entry_is_delivered_from_its_blob() {
-        use engine::storage::InMemoryBlobStore;
-        let blobs = InMemoryBlobStore::new();
+    #[test]
+    fn a_full_assistant_message_is_delivered_without_reading_its_native_blob() {
         let full_text = "long reply ".repeat(1_000);
-        let blob_ref = blobs
-            .put_bytes(full_text.clone().into_bytes())
-            .await
-            .expect("store reply");
-        let mut entry = message_entry("assistant", "long reply \u{2026}");
-        entry["contentRef"] = json!(blob_ref.as_str());
-        entry["textTruncated"] = json!(true);
+        let mut entry = message_entry("assistant", &full_text);
+        entry["content"] = json!({
+            "contentRef": "sha256:unavailable-native-payload",
+            "mediaType": "application/json",
+            "providerKind": "anthropic.messages.text_blocks"
+        });
         let run = run(json!([entry]), json!([]));
-        let text = full_assistant_text(&blobs, &run)
-            .await
-            .expect("resolve truncated entry")
-            .expect("assistant text");
-        assert_eq!(text, full_text.trim());
+        assert_eq!(assistant_text(&run).as_deref(), Some(full_text.trim()));
     }
 
     #[test]

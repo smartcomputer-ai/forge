@@ -276,7 +276,14 @@ function parseBody(value: unknown): void {
       requireNonEmpty(requireString(body, "token"), "run_terminal.token");
       requireSafeInteger(body, "run_id");
       requireRunStatus(body.status);
-      requireOptionalBlobRef(body, "output_ref");
+      if (body.output !== undefined && body.output !== null) {
+        const output = record(body.output, "run_terminal.output");
+        requireString(output, "content_ref");
+        requireOptionalBlobRef(output, "content_ref");
+        for (const key of ["media_type", "provider_kind"]) {
+          if (output[key] !== undefined && output[key] !== null) requireString(output, key);
+        }
+      }
       requireOptionalBlobRef(body, "failure_message_ref");
       return;
     case "source_resolution":

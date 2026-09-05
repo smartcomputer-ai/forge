@@ -100,6 +100,16 @@ describe("generated workflow contract", () => {
     }
   });
 
+  it("validates the encoding descriptor on terminal output", () => {
+    const envelope = WORKFLOW_CONTRACT_VECTORS.envelopes[0] as EmissionEnvelope;
+    expect(() => parseEmissionEnvelope({ ...envelope, body: {
+      ...envelope.body, output: { content_ref: "not-a-blob", media_type: "application/json", provider_kind: "anthropic.messages.text_blocks" },
+    } })).toThrow(/canonical blob ref/);
+    expect(() => parseEmissionEnvelope({ ...envelope, body: {
+      ...envelope.body, output: { media_type: "application/json" },
+    } })).toThrow(/content_ref/);
+  });
+
   it("constructs canonical source resolutions", () => {
     const envelope = sourceResolutionEnvelope({
       universeId: inputs.universeId,

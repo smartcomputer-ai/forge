@@ -184,11 +184,13 @@ pub async fn prepare_skill_catalog_publication_with_warnings(
 pub fn skill_catalog_context_input(catalog_ref: BlobRef) -> ContextEntryInput {
     ContextEntryInput {
         kind: ContextEntryKind::SkillCatalog,
-        content_ref: catalog_ref,
-        media_type: None,
+        content: engine::ContentRef {
+            content_ref: catalog_ref,
+            media_type: None,
+            provider_kind: None,
+        },
         preview: Some("VFS skill catalog".to_owned()),
-        provider_kind: None,
-        provider_item_id: None,
+        provenance_ref: None,
         token_estimate: None,
     }
 }
@@ -205,7 +207,7 @@ fn current_skill_catalog_ref(state: &CoreAgentState) -> Option<BlobRef> {
                 .as_ref()
                 .is_some_and(|key| key.as_str() == SKILL_CATALOG_CONTEXT_KEY)
         })
-        .map(|entry| entry.content_ref.clone())
+        .map(|entry| entry.content.content_ref.clone())
 }
 
 async fn scan_root(
@@ -925,11 +927,13 @@ mod tests {
             source: ContextEntrySource::Runtime {
                 label: "skills.catalog.vfs".to_owned(),
             },
-            content_ref: first.build.catalog_ref.clone(),
-            media_type: None,
+            content: engine::ContentRef {
+                content_ref: first.build.catalog_ref.clone(),
+                media_type: None,
+                provider_kind: None,
+            },
             preview: Some("skills catalog".to_owned()),
-            provider_kind: None,
-            provider_item_id: None,
+            provenance_ref: None,
             token_estimate: None,
             supersedes: None,
         }];

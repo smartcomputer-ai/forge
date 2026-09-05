@@ -1885,6 +1885,8 @@ mod tests {
     #[test]
     fn project_tool_chains_preserves_lightspeed_tool_call_details() {
         let run = api::RunView {
+            output: None,
+            output_text: None,
             id: "run_7".into(),
             status: api::RunStatus::Running,
             started_at_ms: None,
@@ -1947,6 +1949,8 @@ mod tests {
     #[test]
     fn project_tool_chains_renders_projected_mcp_calls() {
         let run = api::RunView {
+            output: None,
+            output_text: None,
             id: "run_7".into(),
             status: api::RunStatus::Completed,
             started_at_ms: None,
@@ -1956,10 +1960,13 @@ mod tests {
                 id: "item_43".into(),
                 key: None,
                 kind: ContextEntryKindView::ProviderOpaque,
-                content_ref: "sha256:mcp".into(),
-                media_type: Some("application/json".into()),
+                content: api::ContentRefView {
+                    content_ref: "sha256:mcp".into(),
+                    media_type: Some("application/json".into()),
+                    provider_kind: Some("openai.responses.mcp_call".into()),
+                },
+                provenance_ref: None,
                 preview: Some("OpenAI Responses MCP tool call: echo.echo".into()),
-                provider_kind: Some("openai.responses.mcp_call".into()),
                 provider_item_id: Some("mcp_1".into()),
                 token_estimate: None,
                 text: None,
@@ -2281,7 +2288,7 @@ mod tests {
     fn terminal_event_kinds_request_snapshot_reconciliation() {
         assert!(event_needs_snapshot(&SessionEventKindView::RunCompleted {
             run_id: "run_1".into(),
-            output_ref: None,
+            output: None,
         }));
         assert!(event_needs_snapshot(
             &SessionEventKindView::ContextEntriesApplied {

@@ -99,7 +99,11 @@ export const WORKFLOW_CONTRACT_MANIFEST =
         "body": {
           "failure_message_ref": null,
           "kind": "run_terminal",
-          "output_ref": "sha256:e0ee8bb50685e05fa0f47ed04203ae953fdfd055f5bd2892ea186504254f8c3a",
+          "output": {
+            "content_ref": "sha256:e0ee8bb50685e05fa0f47ed04203ae953fdfd055f5bd2892ea186504254f8c3a",
+            "media_type": "text/plain",
+            "provider_kind": null
+          },
           "run_id": 7,
           "status": "completed",
           "token": "terminal-token-1"

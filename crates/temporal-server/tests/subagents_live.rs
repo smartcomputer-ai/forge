@@ -132,7 +132,7 @@ impl SubagentScriptedLlm {
             if matches_kind(&entry.kind) {
                 return self
                     .blobs
-                    .read_text(&entry.content_ref)
+                    .read_text(&entry.content.content_ref)
                     .await
                     .map(Some)
                     .map_err(io_error);
@@ -169,11 +169,13 @@ impl SubagentScriptedLlm {
                     call_id: call_id.clone(),
                     name: tool_name.clone(),
                 },
-                content_ref: arguments_ref.clone(),
-                media_type: Some("application/json".to_owned()),
+                content: engine::ContentRef {
+                    content_ref: arguments_ref.clone(),
+                    media_type: Some("application/json".to_owned()),
+                    provider_kind: Some("subagent-script".to_owned()),
+                },
                 preview: None,
-                provider_kind: Some("subagent-script".to_owned()),
-                provider_item_id: Some(call_id.as_str().to_owned()),
+                provenance_ref: None,
                 token_estimate: None,
             });
             tool_calls.push(ObservedToolCall {
@@ -210,7 +212,10 @@ impl SubagentScriptedLlm {
     ) -> Result<LlmGenerationResult, CoreAgentIoError> {
         let output_ref = self
             .blobs
-            .put_bytes(text.into_bytes())
+            .put_bytes(
+                serde_json::to_vec(&serde_json::json!([{ "type": "text", "text": text }]))
+                    .map_err(io_error)?,
+            )
             .await
             .map_err(io_error)?;
         Ok(LlmGenerationResult {
@@ -222,11 +227,15 @@ impl SubagentScriptedLlm {
                 kind: ContextEntryKind::Message {
                     role: ContextMessageRole::Assistant,
                 },
-                content_ref: output_ref,
-                media_type: Some("text/plain".to_owned()),
+                content: engine::ContentRef {
+                    content_ref: output_ref,
+                    media_type: Some("application/json".to_owned()),
+                    provider_kind: Some(
+                        engine::ANTHROPIC_MESSAGES_TEXT_BLOCKS_PROVIDER_KIND.to_owned(),
+                    ),
+                },
                 preview: Some("subagent scripted final".to_owned()),
-                provider_kind: Some("subagent-script".to_owned()),
-                provider_item_id: None,
+                provenance_ref: None,
                 token_estimate: None,
             }],
             facts: LlmGenerationFacts {
@@ -310,7 +319,7 @@ impl CoreAgentLlm for SubagentScriptedLlm {
                 .entries
                 .iter()
                 .filter(|entry| matches!(entry.kind, ContextEntryKind::ToolResult { .. }))
-                .map(|entry| entry.content_ref.clone())
+                .map(|entry| entry.content.content_ref.clone())
                 .collect::<Vec<_>>();
             let mut texts = Vec::with_capacity(results.len());
             for content_ref in results {
@@ -656,6 +665,33 @@ async fn run_agent_run_inline_live_client(
             && parent_output.contains("child completed 0"),
         "expected the child's result envelope inline, got: {parent_output}"
     );
+    let events = api
+        .read_session_events(SessionEventsReadParams {
+            session_id: session_id.as_str().to_owned(),
+            after: None,
+            limit: Some(500),
+            wait_ms: Some(0),
+        })
+        .await?
+        .result
+        .events;
+    let output = events
+        .iter()
+        .find_map(|event| match &event.kind {
+            api::SessionEventKindView::RunCompleted {
+                run_id: completed_run_id,
+                output,
+            } if completed_run_id == &run_id => output.clone(),
+            _ => None,
+        })
+        .expect("completed run must retain its native output descriptor");
+    assert_eq!(output.media_type.as_deref(), Some("application/json"));
+    assert_eq!(
+        output.provider_kind.as_deref(),
+        Some(engine::ANTHROPIC_MESSAGES_TEXT_BLOCKS_PROVIDER_KIND)
+    );
+    assert_eq!(parent_run.output.as_ref(), Some(&output));
+    assert_eq!(parent_run.output_text.as_deref(), Some(parent_output));
     let agent_calls = parent_run
         .tool_batches
         .iter()

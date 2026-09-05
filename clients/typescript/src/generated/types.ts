@@ -553,7 +553,7 @@ export type SessionEventKindView =
       type: "approvalCancelled";
     }
   | {
-      outputRef?: string | null;
+      output?: ContentRefView | null;
       runId: string;
       type: "runCompleted";
     }
@@ -1830,27 +1830,32 @@ export interface ContextView {
  * kind-tagged, ref-backed. Keys are a stable extension point — clients
  * reconstruct derived surfaces (e.g. the prompted instruction set via the
  * `prompt_instructions/` key prefix) by filtering on `key` and fetching
- * bodies through `blobs/read`. `text` inlines blob content only for
- * message and tool entries; every other kind is ref + preview.
+ * original bytes through `blobs/read`. `text` contains complete message and
+ * visible reasoning text; tool and catalog bodies use bounded text previews.
  *
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "ContextEntryView".
  */
 export interface ContextEntryView {
   /**
-   * Sources this assistant message cites, derived from the provider-native
-   * cited entry that follows it. Empty for every other entry kind.
+   * Sources this assistant message cites, derived from its own native
+   * payload. Empty for every other entry kind.
    */
   citations?: CitationView[];
-  contentRef: string;
+  content: ContentRefView;
   display?: ProviderContextDisplayView | null;
   id: string;
   key?: string | null;
   kind: ContextEntryKindView;
-  mediaType?: string | null;
   preview?: string | null;
+  /**
+   * Immutable artifact recording this entry's origin or construction.
+   */
+  provenanceRef?: string | null;
+  /**
+   * Native item identity derived from the payload, when present.
+   */
   providerItemId?: string | null;
-  providerKind?: string | null;
   /**
    * Where the entry came from: run input, a steering batch, model output,
    * a tool result, reasoning state, a context edit, or the runtime. Lets
@@ -1871,8 +1876,8 @@ export interface ContextEntryView {
   supersedes?: string | null;
   text?: string | null;
   /**
-   * True when `text` is a bounded prefix of the blob body; fetch
-   * `contentRef` for the complete content.
+   * True when a tool or catalog body's `text` is a bounded prefix. Fetch
+   * its original content through `blobs/read`. Messages and reasoning are full.
    */
   textTruncated?: boolean;
   tokenEstimate?: TokenEstimateView | null;
@@ -1888,6 +1893,18 @@ export interface CitationView {
   citedText?: string | null;
   title?: string | null;
   url: string;
+}
+/**
+ * Immutable content and its encoding. A reference can name plain text,
+ * provider-native JSON, or media; it does not imply a UTF-8 text payload.
+ *
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "ContentRefView".
+ */
+export interface ContentRefView {
+  contentRef: string;
+  mediaType?: string | null;
+  providerKind?: string | null;
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
@@ -2414,12 +2431,13 @@ export interface EventJoinsView {
  * via the `definition` "ContextEntryInputView".
  */
 export interface ContextEntryInputView {
-  contentRef: string;
+  content: ContentRefView;
   kind: ContextEntryKindView;
-  mediaType?: string | null;
   preview?: string | null;
-  providerItemId?: string | null;
-  providerKind?: string | null;
+  /**
+   * Immutable artifact recording this entry's origin or construction.
+   */
+  provenanceRef?: string | null;
   tokenEstimate?: TokenEstimateView | null;
 }
 /**
@@ -2467,6 +2485,15 @@ export interface RunView {
   completedAtMs?: number | null;
   entries?: ContextEntryView[];
   id: string;
+  /**
+   * Authoritative terminal output, retained independently of active context.
+   */
+  output?: ContentRefView | null;
+  /**
+   * Complete visible text derived from `output`; absent for non-text output
+   * or runs without a terminal output. Native metadata stays in the blob.
+   */
+  outputText?: string | null;
   pendingApprovals?: PendingApprovalView[];
   source: RunViewSource;
   /**
@@ -5518,7 +5545,8 @@ export interface AgentApiOutcomeOfRunReadResponse {
  * run's events, so partial pages would silently lose cross-event state; a
  * run whose interval exceeds the server's detail ceiling is rejected with a
  * typed error and remains readable through `session/events/read`. Inline
- * entry text is bounded; full bodies stay blob-addressed via `contentRef`.
+ * message and reasoning text is complete. Tool and catalog previews are bounded;
+ * their full bodies remain available through `blobs/read`.
  *
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "RunReadResponse".

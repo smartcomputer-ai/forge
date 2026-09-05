@@ -24,15 +24,14 @@ use api::{
     WorkflowToolTargetInput,
 };
 use engine::{
-    ANTHROPIC_MESSAGES_CITED_TEXT_PROVIDER_KIND,
     ANTHROPIC_MESSAGES_SERVER_TOOL_RESULT_PROVIDER_KIND,
-    ANTHROPIC_MESSAGES_SERVER_TOOL_USE_PROVIDER_KIND, CompactionPolicy, ContextCompactionStatus,
-    ContextCompactionTrigger, ContextEntry, ContextEntryId, ContextEntryInput, ContextEntryKind,
-    ContextEntrySource, ContextEvent, ContextMessageRole, ContextRemovalReason,
-    ContextRewriteReason, CoreAgentCodec, CoreAgentEntry, CoreAgentEvent, CoreAgentJoins,
-    CoreAgentLifecycleEvent, CoreAgentState, CoreAgentStatus, EventSeq, LlmGenerationStatus,
-    ModelSelection, OPENAI_RESPONSES_CITED_TEXT_PROVIDER_KIND,
-    OPENAI_RESPONSES_MCP_CALL_PROVIDER_KIND, OPENAI_RESPONSES_WEB_SEARCH_CALL_PROVIDER_KIND,
+    ANTHROPIC_MESSAGES_SERVER_TOOL_USE_PROVIDER_KIND, ANTHROPIC_MESSAGES_TEXT_BLOCKS_PROVIDER_KIND,
+    CompactionPolicy, ContextCompactionStatus, ContextCompactionTrigger, ContextEntry,
+    ContextEntryId, ContextEntryInput, ContextEntryKind, ContextEntrySource, ContextEvent,
+    ContextMessageRole, ContextRemovalReason, ContextRewriteReason, CoreAgentCodec, CoreAgentEntry,
+    CoreAgentEvent, CoreAgentJoins, CoreAgentLifecycleEvent, CoreAgentState, CoreAgentStatus,
+    EventSeq, LlmGenerationStatus, ModelSelection, OPENAI_RESPONSES_MCP_CALL_PROVIDER_KIND,
+    OPENAI_RESPONSES_MESSAGE_PROVIDER_KIND, OPENAI_RESPONSES_WEB_SEARCH_CALL_PROVIDER_KIND,
     ObservedToolCall, ProviderApiKind, RunEvent, RunFailure, RunFailureKind, RunId, RunSource,
     RunStatus, SessionConfig, SessionId, SteeringId, ToolBatchId, ToolCallStatus, ToolChoice,
     ToolConfigEvent, ToolEvent, ToolKind, ToolParallelism, ToolSpec, TurnEvent, TurnId,
@@ -43,6 +42,9 @@ use engine::{
 };
 use futures_util::future::try_join_all;
 use serde_json::Value;
+
+mod content;
+pub use content::{content_ref_to_api, project_content_text};
 
 pub const DEFAULT_EVENT_PAGE_LIMIT: u32 = 128;
 pub const MAX_EVENT_PAGE_LIMIT: u32 = 512;
@@ -61,6 +63,7 @@ pub struct ProjectRun<'a> {
     pub entries: &'a [CoreAgentEntry],
     pub run_id: RunId,
     pub status: ApiRunStatus,
+    pub output: Option<&'a engine::ContentRef>,
     pub source: &'a RunSource,
     pub started_at_ms: Option<u64>,
     pub completed_at_ms: Option<u64>,
@@ -268,10 +271,12 @@ impl<'a> CoreAgentProjector<'a> {
         match source {
             Some(RunSource::Input { input }) => {
                 let first = input.first();
-                let content_ref = first.map(|entry| entry.content_ref.as_str().to_owned());
+                let content_ref = first.map(|entry| entry.content.content_ref.as_str().to_owned());
                 let text = match first {
-                    Some(entry) if is_text_message_media_type(entry.media_type.as_deref()) => {
-                        Some(self.read_blob_text(&entry.content_ref).await?)
+                    Some(entry)
+                        if is_text_message_media_type(entry.content.media_type.as_deref()) =>
+                    {
+                        project_content_text(self.blobs, &entry.content).await?
                     }
                     Some(entry) => entry.preview.clone(),
                     None => None,
@@ -305,6 +310,11 @@ impl<'a> CoreAgentProjector<'a> {
         Ok(RunView {
             id: api_run_id(params.run_id),
             status: params.status,
+            output: params.output.map(content_ref_to_api),
+            output_text: match params.output {
+                Some(content) => project_content_text(self.blobs, content).await?,
+                None => None,
+            },
             started_at_ms: params.started_at_ms,
             completed_at_ms: params.completed_at_ms,
             source: match params.source {
@@ -401,8 +411,8 @@ impl<'a> CoreAgentProjector<'a> {
         })
     }
 
-    /// Project one entry. Citations are attached by the group projections,
-    /// which can see the provider-native cited entry that follows a message.
+    /// Project one entry from its authoritative content. Group projection also
+    /// resolves fetch citations against earlier tool results.
     /// `superseded_by` is the newer catalog version that updated this one,
     /// known only when the caller holds the whole active context (state
     /// views); event projections pass `None`.
@@ -414,17 +424,15 @@ impl<'a> CoreAgentProjector<'a> {
         let text = match &entry.kind {
             // Binary media entries render from their preview; decoding
             // the blob as UTF-8 text would fail.
-            ContextEntryKind::Message { .. } => {
-                if is_text_message_media_type(entry.media_type.as_deref()) {
-                    Some(self.bounded_blob_text(&entry.content_ref).await?)
-                } else {
-                    None
-                }
+            ContextEntryKind::Message { .. } | ContextEntryKind::ReasoningState => {
+                project_content_text(self.blobs, &entry.content)
+                    .await?
+                    .map(|full| (full, false))
             }
             ContextEntryKind::ToolCall { .. }
             | ContextEntryKind::ToolResult { .. }
             | ContextEntryKind::Catalog { .. } => {
-                Some(self.bounded_blob_text(&entry.content_ref).await?)
+                Some(self.bounded_blob_text(&entry.content.content_ref).await?)
             }
             _ => None,
         };
@@ -440,11 +448,13 @@ impl<'a> CoreAgentProjector<'a> {
             id: api_item_id(entry.entry_id),
             key: entry.key.as_ref().map(|key| key.as_str().to_owned()),
             kind: context_entry_kind_to_api(&entry.kind),
-            content_ref: entry.content_ref.as_str().to_owned(),
-            media_type: entry.media_type.clone(),
+            content: content_ref_to_api(&entry.content),
+            provenance_ref: entry
+                .provenance_ref
+                .as_ref()
+                .map(|reference| reference.as_str().to_owned()),
             preview: entry.preview.clone(),
-            provider_kind: entry.provider_kind.clone(),
-            provider_item_id: entry.provider_item_id.clone(),
+            provider_item_id: self.native_item_id(&entry.content).await,
             token_estimate: entry.token_estimate.as_ref().map(token_estimate_to_api),
             text,
             text_truncated,
@@ -454,6 +464,21 @@ impl<'a> CoreAgentProjector<'a> {
             supersedes: entry.supersedes.map(api_item_id),
             superseded_by: superseded_by.map(api_item_id),
         })
+    }
+
+    /// Native identity is diagnostic; missing blobs or payload IDs do not invent one.
+    async fn native_item_id(&self, content: &engine::ContentRef) -> Option<String> {
+        if content.media_type.as_deref() != Some("application/json")
+            || !content
+                .provider_kind
+                .as_deref()
+                .is_some_and(|kind| kind.starts_with("openai.") || kind.starts_with("anthropic."))
+        {
+            return None;
+        }
+        let bytes = self.blobs.read_bytes(&content.content_ref).await.ok()?;
+        let raw: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+        raw.get("id")?.as_str().map(str::to_owned)
     }
 
     /// Read a blob's text bounded to the inline budget, reporting whether the
@@ -498,24 +523,20 @@ impl<'a> CoreAgentProjector<'a> {
         Ok(views)
     }
 
-    /// A provider-native cited entry follows the assistant message it came
-    /// from. Its sources project onto that message; the native entry itself
-    /// stays a replay payload with no citations of its own.
+    /// Project citations from each assistant message's own native payload.
+    /// Fetch citations may refer to earlier tool results in the same turn.
     async fn attach_citations(&self, entries: &[&ContextEntry], views: &mut [ContextEntryView]) {
-        for index in 1..entries.len() {
-            let entry = entries[index];
-            let message = entries[index - 1];
-            let is_message = matches!(
-                message.kind,
+        for (index, entry) in entries.iter().enumerate() {
+            if !matches!(
+                entry.kind,
                 ContextEntryKind::Message {
                     role: ContextMessageRole::Assistant
                 }
-            );
-            if !(is_message && message.source == entry.source) {
+            ) {
                 continue;
             }
-            let citations = match entry.provider_kind.as_deref() {
-                Some(ANTHROPIC_MESSAGES_CITED_TEXT_PROVIDER_KIND) => {
+            let citations = match entry.content.provider_kind.as_deref() {
+                Some(ANTHROPIC_MESSAGES_TEXT_BLOCKS_PROVIDER_KIND) => {
                     let Some(blocks) = self.read_context_json(entry).await else {
                         continue;
                     };
@@ -526,7 +547,10 @@ impl<'a> CoreAgentProjector<'a> {
                     };
                     anthropic_citations(&blocks, &fetched_urls)
                 }
-                Some(OPENAI_RESPONSES_CITED_TEXT_PROVIDER_KIND) => {
+                Some(
+                    OPENAI_RESPONSES_MESSAGE_PROVIDER_KIND
+                    | llm_clients::content::OPENAI_COMPLETIONS_MESSAGE_PROVIDER_KIND,
+                ) => {
                     let Some(item) = self.read_context_json(entry).await else {
                         continue;
                     };
@@ -534,7 +558,7 @@ impl<'a> CoreAgentProjector<'a> {
                 }
                 _ => continue,
             };
-            views[index - 1].citations = citations;
+            views[index].citations = citations;
         }
     }
 
@@ -546,7 +570,7 @@ impl<'a> CoreAgentProjector<'a> {
         let mut urls = Vec::new();
         for entry in entries[..index].iter().filter(|entry| {
             entry.source == *source
-                && entry.provider_kind.as_deref()
+                && entry.content.provider_kind.as_deref()
                     == Some(ANTHROPIC_MESSAGES_SERVER_TOOL_RESULT_PROVIDER_KIND)
         }) {
             let Some(block) = self.read_context_json(entry).await else {
@@ -567,7 +591,7 @@ impl<'a> CoreAgentProjector<'a> {
     }
 
     async fn read_context_json(&self, entry: &ContextEntry) -> Option<Value> {
-        let text = self.read_blob_text(&entry.content_ref).await.ok()?;
+        let text = self.read_blob_text(&entry.content.content_ref).await.ok()?;
         serde_json::from_str(&text).ok()
     }
 
@@ -582,17 +606,16 @@ impl<'a> CoreAgentProjector<'a> {
                 } => {
                     // Binary media entries project as media items; decoding
                     // the blob as UTF-8 text would fail.
-                    if is_text_message_media_type(entry.media_type.as_deref()) {
+                    if is_text_message_media_type(entry.content.media_type.as_deref()) {
                         InputItem::Text {
-                            text: truncate_utf8(
-                                &self.read_blob_text(&entry.content_ref).await?,
-                                MAX_INLINE_TEXT_BYTES,
-                            ),
+                            text: project_content_text(self.blobs, &entry.content)
+                                .await?
+                                .unwrap_or_default(),
                         }
                     } else {
-                        let mime = entry.media_type.clone().unwrap_or_default();
+                        let mime = entry.content.media_type.clone().unwrap_or_default();
                         InputItem::Media {
-                            blob_ref: entry.content_ref.as_str().to_owned(),
+                            blob_ref: entry.content.content_ref.as_str().to_owned(),
                             kind: media_kind_for_mime(&mime),
                             mime,
                             name: None,
@@ -600,7 +623,7 @@ impl<'a> CoreAgentProjector<'a> {
                     }
                 }
                 _ => InputItem::TextRef {
-                    blob_ref: entry.content_ref.as_str().to_owned(),
+                    blob_ref: entry.content.content_ref.as_str().to_owned(),
                 },
             })
         }))
@@ -768,12 +791,10 @@ impl<'a> CoreAgentProjector<'a> {
                         run_id: api_run_id(*run_id),
                     })
                 }
-                RunEvent::Completed { run_id, output_ref } => {
-                    Ok(SessionEventKindView::RunCompleted {
-                        run_id: api_run_id(*run_id),
-                        output_ref: output_ref.as_ref().map(|ref_| ref_.as_str().to_owned()),
-                    })
-                }
+                RunEvent::Completed { run_id, output } => Ok(SessionEventKindView::RunCompleted {
+                    run_id: api_run_id(*run_id),
+                    output: output.as_ref().map(content_ref_to_api),
+                }),
                 RunEvent::Failed { run_id, failure } => Ok(SessionEventKindView::RunFailed {
                     run_id: api_run_id(*run_id),
                     kind: run_failure_kind_to_api(failure.kind.clone()),
@@ -1241,7 +1262,7 @@ impl<'a> CoreAgentProjector<'a> {
                     call_id.as_str().to_owned(),
                     ProjectedToolResult {
                         output: Some(truncate_utf8(
-                            &self.read_blob_text(&item.content_ref).await?,
+                            &self.read_blob_text(&item.content.content_ref).await?,
                             MAX_INLINE_TEXT_BYTES,
                         )),
                         is_error: *is_error,
@@ -1262,18 +1283,18 @@ impl<'a> CoreAgentProjector<'a> {
         &self,
         item: &ContextEntry,
     ) -> Option<ProviderContextDisplayView> {
-        let display: fn(&Value) -> Option<ProviderContextDisplayView> = match item
-            .provider_kind
-            .as_deref()
-        {
-            Some(OPENAI_RESPONSES_MCP_CALL_PROVIDER_KIND) => openai_mcp_call_display,
-            Some(OPENAI_RESPONSES_WEB_SEARCH_CALL_PROVIDER_KIND) => openai_web_search_call_display,
-            Some(ANTHROPIC_MESSAGES_SERVER_TOOL_USE_PROVIDER_KIND) => {
-                anthropic_server_tool_use_display
-            }
-            _ => return None,
-        };
-        let text = self.read_blob_text(&item.content_ref).await.ok()?;
+        let display: fn(&Value) -> Option<ProviderContextDisplayView> =
+            match item.content.provider_kind.as_deref() {
+                Some(OPENAI_RESPONSES_MCP_CALL_PROVIDER_KIND) => openai_mcp_call_display,
+                Some(OPENAI_RESPONSES_WEB_SEARCH_CALL_PROVIDER_KIND) => {
+                    openai_web_search_call_display
+                }
+                Some(ANTHROPIC_MESSAGES_SERVER_TOOL_USE_PROVIDER_KIND) => {
+                    anthropic_server_tool_use_display
+                }
+                _ => return None,
+            };
+        let text = self.read_blob_text(&item.content.content_ref).await.ok()?;
         let value = serde_json::from_str::<Value>(&text).ok()?;
         display(&value)
     }
@@ -1377,11 +1398,24 @@ fn anthropic_fetched_citation_url<'a>(
 /// by URL. The cited text is the annotated span of the output text.
 fn openai_citations(item: &Value) -> Vec<api::CitationView> {
     let mut seen = BTreeSet::new();
-    item.get("content")
+    let text = llm_clients::content::openai_completion_message(item);
+    let root_annotations = item
+        .get("annotations")
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
-        .filter(|part| part.get("type").and_then(Value::as_str) == Some("output_text"))
+        .map(|annotation| (text.as_deref(), annotation));
+    let part_annotations = item
+        .get("content")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|part| {
+            matches!(
+                part.get("type").and_then(Value::as_str),
+                Some("output_text" | "text")
+            )
+        })
         .flat_map(|part| {
             let text = part.get("text").and_then(Value::as_str);
             part.get("annotations")
@@ -1389,19 +1423,22 @@ fn openai_citations(item: &Value) -> Vec<api::CitationView> {
                 .into_iter()
                 .flatten()
                 .map(move |annotation| (text, annotation))
-        })
+        });
+    root_annotations
+        .chain(part_annotations)
         .filter_map(|(text, annotation)| {
             if annotation.get("type").and_then(Value::as_str) != Some("url_citation") {
                 return None;
             }
-            let url = annotation.get("url").and_then(Value::as_str)?;
+            let citation = annotation.get("url_citation").unwrap_or(annotation);
+            let url = citation.get("url").and_then(Value::as_str)?;
             if !seen.insert(url.to_owned()) {
                 return None;
             }
-            let cited_text = text.and_then(|text| openai_annotated_span(text, annotation));
+            let cited_text = text.and_then(|text| openai_annotated_span(text, citation));
             citation_view(
                 url,
-                annotation.get("title").and_then(Value::as_str),
+                citation.get("title").and_then(Value::as_str),
                 cited_text.as_deref(),
             )
         })
@@ -2283,11 +2320,13 @@ pub fn project_context_entry_inputs(input: &[ContextEntryInput]) -> Vec<ContextE
         .iter()
         .map(|entry| ContextEntryInputView {
             kind: context_entry_kind_to_api(&entry.kind),
-            content_ref: entry.content_ref.as_str().to_owned(),
-            media_type: entry.media_type.clone(),
+            content: content_ref_to_api(&entry.content),
+            provenance_ref: entry
+                .provenance_ref
+                .as_ref()
+                .map(|reference| reference.as_str().to_owned()),
             preview: entry.preview.clone(),
-            provider_kind: entry.provider_kind.clone(),
-            provider_item_id: entry.provider_item_id.clone(),
+
             token_estimate: entry.token_estimate.as_ref().map(token_estimate_to_api),
         })
         .collect()
@@ -3024,6 +3063,68 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn native_content_full_text_is_projected_independently_of_preview() {
+        let blobs = InMemoryBlobStore::new();
+        let full = "héllo ".repeat(2000);
+        let raw = serde_json::json!([
+            {"type": "text", "text": &full[..7000]},
+            {"type": "text", "text": &full[7000..], "citations": []}
+        ]);
+        let mut entry =
+            json_entry(&blobs, 1, ANTHROPIC_MESSAGES_TEXT_BLOCKS_PROVIDER_KIND, raw).await;
+        entry.kind = ContextEntryKind::Message {
+            role: ContextMessageRole::Assistant,
+        };
+        entry.preview = Some("not the answer".to_owned());
+        let content = entry.content.clone();
+        let projected = CoreAgentProjector::new(&blobs)
+            .project_context_entry(&entry, None)
+            .await
+            .expect("project message");
+        assert!(!projected.text_truncated);
+        assert_eq!(projected.text.as_deref(), Some(full.as_str()));
+        assert_eq!(
+            project_content_text(&blobs, &content)
+                .await
+                .expect("full text"),
+            Some(full)
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn content_projection_distinguishes_authored_json_native_json_and_media() {
+        let blobs = InMemoryBlobStore::new();
+        let authored = engine::ContentRef::text(blobs.insert_text("{\"answer\":42}").await);
+        assert_eq!(
+            project_content_text(&blobs, &authored)
+                .await
+                .expect("authored JSON"),
+            Some("{\"answer\":42}".to_owned())
+        );
+        let mut content = engine::ContentRef {
+            content_ref: blobs.insert_text("{\"answer\":42}").await,
+            media_type: Some("application/json".to_owned()),
+            provider_kind: Some(ANTHROPIC_MESSAGES_TEXT_BLOCKS_PROVIDER_KIND.to_owned()),
+        };
+        assert!(
+            project_content_text(&blobs, &content).await.is_err(),
+            "malformed recognized payload must fail"
+        );
+        content.provider_kind = Some("unknown.native_message".to_owned());
+        assert!(
+            project_content_text(&blobs, &content).await.is_err(),
+            "unknown provider JSON must not leak as display text"
+        );
+        content.media_type = Some("image/png".to_owned());
+        assert_eq!(
+            project_content_text(&blobs, &content)
+                .await
+                .expect("binary media"),
+            None
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn run_summaries_page_newest_first_with_explicit_continuation() {
         let blobs = InMemoryBlobStore::new();
         let projector = CoreAgentProjector::new(&blobs);
@@ -3041,7 +3142,7 @@ mod tests {
                 started_at_ms: Some(id + 10),
                 completed_at_ms: id + 20,
                 usage: None,
-                output_ref: None,
+                output: None,
                 failure: None,
                 notify_on_terminal: Vec::new(),
             });
@@ -3143,17 +3244,18 @@ mod tests {
             kind: ContextEntryKind::Message {
                 role: ContextMessageRole::User,
             },
-            content_ref: blob_ref.clone(),
-            media_type: Some("text/plain".to_owned()),
+            content: engine::ContentRef::text(blob_ref.clone()),
             preview: Some("hello".to_owned()),
-            provider_kind: None,
-            provider_item_id: None,
+            provenance_ref: None,
             token_estimate: None,
         }]);
 
         assert_eq!(projected.len(), 1);
-        assert_eq!(projected[0].content_ref, blob_ref.as_str());
-        assert_eq!(projected[0].media_type.as_deref(), Some("text/plain"));
+        assert_eq!(projected[0].content.content_ref, blob_ref.as_str());
+        assert_eq!(
+            projected[0].content.media_type.as_deref(),
+            Some("text/plain")
+        );
         assert!(matches!(
             projected[0].kind,
             ContextEntryKindView::Message {
@@ -3176,11 +3278,13 @@ mod tests {
                 kind: ContextEntryKind::Message {
                     role: ContextMessageRole::User,
                 },
-                content_ref: image_ref.clone(),
-                media_type: Some("image/jpeg".to_owned()),
+                content: engine::ContentRef {
+                    content_ref: image_ref.clone(),
+                    media_type: Some("image/jpeg".to_owned()),
+                    provider_kind: None,
+                },
                 preview: Some("[image: photo.jpg]".to_owned()),
-                provider_kind: None,
-                provider_item_id: None,
+                provenance_ref: None,
                 token_estimate: None,
             }])
             .await
@@ -3368,6 +3472,10 @@ mod tests {
     async fn provider_context_item_exposes_debug_metadata() {
         let blobs = InMemoryBlobStore::new();
         let projector = CoreAgentProjector::new(&blobs);
+        blobs
+            .put_bytes(br#"{"type":"compaction","id":"item_compaction_1"}"#.to_vec())
+            .await
+            .expect("store native item");
         let item = ContextEntry {
             entry_id: ContextEntryId::new(42),
             key: None,
@@ -3376,11 +3484,15 @@ mod tests {
                 run_id: RunId::new(7),
                 turn_id: TurnId::new(8),
             },
-            content_ref: BlobRef::from_bytes(br#"{"type":"compaction"}"#),
-            media_type: Some("application/json".to_owned()),
+            content: engine::ContentRef {
+                content_ref: BlobRef::from_bytes(
+                    br#"{"type":"compaction","id":"item_compaction_1"}"#,
+                ),
+                media_type: Some("application/json".to_owned()),
+                provider_kind: Some("openai.responses.compaction".to_owned()),
+            },
             preview: Some("OpenAI Responses compaction item".to_owned()),
-            provider_kind: Some("openai.responses.compaction".to_owned()),
-            provider_item_id: Some("item_compaction_1".to_owned()),
+            provenance_ref: None,
             token_estimate: Some(TokenEstimate {
                 tokens: 123,
                 quality: TokenEstimateQuality::ProviderCounted,
@@ -3399,12 +3511,17 @@ mod tests {
                 id: "item_42".to_owned(),
                 key: None,
                 kind: ContextEntryKindView::ProviderOpaque,
-                content_ref: BlobRef::from_bytes(br#"{"type":"compaction"}"#)
+                content: api::ContentRefView {
+                    content_ref: BlobRef::from_bytes(
+                        br#"{"type":"compaction","id":"item_compaction_1"}"#
+                    )
                     .as_str()
                     .to_owned(),
-                media_type: Some("application/json".to_owned()),
+                    media_type: Some("application/json".to_owned()),
+                    provider_kind: Some("openai.responses.compaction".to_owned())
+                },
+                provenance_ref: None,
                 preview: Some("OpenAI Responses compaction item".to_owned()),
-                provider_kind: Some("openai.responses.compaction".to_owned()),
                 provider_item_id: Some("item_compaction_1".to_owned()),
                 token_estimate: Some(TokenEstimateView {
                     tokens: 123,
@@ -3429,7 +3546,7 @@ mod tests {
         let blobs = InMemoryBlobStore::new();
         let content_ref = blobs
             .put_bytes(
-                br#"{"type":"mcp_call","server_label":"echo","name":"echo","arguments":"{\"data\":\"simba\"}","output":"Echoing your input: simba","error":null,"status":"completed"}"#
+                br#"{"id":"mcp_1","type":"mcp_call","server_label":"echo","name":"echo","arguments":"{\"data\":\"simba\"}","output":"Echoing your input: simba","error":null,"status":"completed"}"#
                     .to_vec(),
             )
             .await
@@ -3443,11 +3560,13 @@ mod tests {
                 run_id: RunId::new(7),
                 turn_id: TurnId::new(8),
             },
-            content_ref: content_ref.clone(),
-            media_type: Some("application/json".to_owned()),
+            content: engine::ContentRef {
+                content_ref: content_ref.clone(),
+                media_type: Some("application/json".to_owned()),
+                provider_kind: Some(OPENAI_RESPONSES_MCP_CALL_PROVIDER_KIND.to_owned()),
+            },
             preview: Some("OpenAI Responses MCP tool call: echo.echo".to_owned()),
-            provider_kind: Some(OPENAI_RESPONSES_MCP_CALL_PROVIDER_KIND.to_owned()),
-            provider_item_id: Some("mcp_1".to_owned()),
+            provenance_ref: None,
             token_estimate: None,
             supersedes: None,
         };
@@ -3463,10 +3582,13 @@ mod tests {
                 id: "item_43".to_owned(),
                 key: None,
                 kind: ContextEntryKindView::ProviderOpaque,
-                content_ref: content_ref.as_str().to_owned(),
-                media_type: Some("application/json".to_owned()),
+                content: api::ContentRefView {
+                    content_ref: content_ref.as_str().to_owned(),
+                    media_type: Some("application/json".to_owned()),
+                    provider_kind: Some(OPENAI_RESPONSES_MCP_CALL_PROVIDER_KIND.to_owned())
+                },
+                provenance_ref: None,
                 preview: Some("OpenAI Responses MCP tool call: echo.echo".to_owned()),
-                provider_kind: Some(OPENAI_RESPONSES_MCP_CALL_PROVIDER_KIND.to_owned()),
                 provider_item_id: Some("mcp_1".to_owned()),
                 token_estimate: None,
                 text: None,
@@ -3510,11 +3632,13 @@ mod tests {
                 run_id: RunId::new(7),
                 turn_id: TurnId::new(8),
             },
-            content_ref,
-            media_type: None,
+            content: engine::ContentRef {
+                content_ref,
+                media_type: None,
+                provider_kind: Some(provider_kind.to_owned()),
+            },
             preview: None,
-            provider_kind: Some(provider_kind.to_owned()),
-            provider_item_id: None,
+            provenance_ref: None,
             token_estimate: None,
             supersedes: None,
         }
@@ -3536,36 +3660,18 @@ mod tests {
             content_ref,
             provider_kind,
         );
-        entry.media_type = Some("application/json".to_owned());
-        entry
-    }
-
-    async fn assistant_message(
-        blobs: &InMemoryBlobStore,
-        entry_id: u64,
-        text: &str,
-    ) -> ContextEntry {
-        let mut entry = assistant_output_entry(
-            entry_id,
-            ContextEntryKind::Message {
-                role: ContextMessageRole::Assistant,
-            },
-            blobs.insert_text(text).await,
-            "anthropic.messages.text",
-        );
-        entry.media_type = Some("text/plain".to_owned());
+        entry.content.media_type = Some("application/json".to_owned());
         entry
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn anthropic_cited_blocks_project_sources_onto_the_preceding_message() {
+    async fn anthropic_native_message_projects_its_text_and_citations() {
         let blobs = InMemoryBlobStore::new();
         let projector = CoreAgentProjector::new(&blobs);
-        let message = assistant_message(&blobs, 43, "A sourced answer.").await;
-        let cited = json_entry(
+        let mut cited = json_entry(
             &blobs,
             44,
-            ANTHROPIC_MESSAGES_CITED_TEXT_PROVIDER_KIND,
+            ANTHROPIC_MESSAGES_TEXT_BLOCKS_PROVIDER_KIND,
             serde_json::json!([{
                 "type": "text",
                 "text": "A sourced answer.",
@@ -3585,8 +3691,11 @@ mod tests {
         )
         .await;
 
+        cited.kind = ContextEntryKind::Message {
+            role: ContextMessageRole::Assistant,
+        };
         let projected = projector
-            .project_context_state(0, &[message, cited])
+            .project_context_state(0, &[cited])
             .await
             .expect("project cited message");
 
@@ -3602,7 +3711,7 @@ mod tests {
                 cited_text: Some("A sourced answer".to_owned()),
             }]
         );
-        assert!(projected.entries[1].citations.is_empty());
+        assert_eq!(projected.entries.len(), 1);
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -3624,11 +3733,10 @@ mod tests {
             }),
         )
         .await;
-        let message = assistant_message(&blobs, 43, "A fetched answer.").await;
-        let cited = json_entry(
+        let mut cited = json_entry(
             &blobs,
             44,
-            ANTHROPIC_MESSAGES_CITED_TEXT_PROVIDER_KIND,
+            ANTHROPIC_MESSAGES_TEXT_BLOCKS_PROVIDER_KIND,
             serde_json::json!([{
                 "type": "text",
                 "text": "A fetched answer.",
@@ -3642,8 +3750,11 @@ mod tests {
         )
         .await;
 
+        cited.kind = ContextEntryKind::Message {
+            role: ContextMessageRole::Assistant,
+        };
         let projected = projector
-            .project_context_state(0, &[fetched, message, cited])
+            .project_context_state(0, &[fetched, cited])
             .await
             .expect("project fetch citation");
 
@@ -3656,19 +3767,17 @@ mod tests {
             }]
         );
         assert!(projected.entries[0].citations.is_empty());
-        assert!(projected.entries[2].citations.is_empty());
+        assert_eq!(projected.entries.len(), 2);
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn openai_cited_item_projects_sources_onto_the_preceding_message() {
+    async fn openai_native_message_projects_its_text_and_citations() {
         let blobs = InMemoryBlobStore::new();
         let projector = CoreAgentProjector::new(&blobs);
-        let mut message = assistant_message(&blobs, 43, "A sourced answer.").await;
-        message.provider_kind = Some("openai.responses.message".to_owned());
-        let cited = json_entry(
+        let mut cited = json_entry(
             &blobs,
             44,
-            OPENAI_RESPONSES_CITED_TEXT_PROVIDER_KIND,
+            OPENAI_RESPONSES_MESSAGE_PROVIDER_KIND,
             serde_json::json!({
                 "type": "message",
                 "content": [{
@@ -3686,10 +3795,13 @@ mod tests {
         )
         .await;
 
+        cited.kind = ContextEntryKind::Message {
+            role: ContextMessageRole::Assistant,
+        };
         let projected = projector
             .project_event_kind(&CoreAgentEvent::Context(ContextEvent::EntriesApplied {
                 base_revision: 0,
-                entries: vec![message, cited],
+                entries: vec![cited],
             }))
             .await
             .expect("project cited context event");
@@ -3705,7 +3817,7 @@ mod tests {
                 cited_text: Some("A sourced answer".to_owned()),
             }]
         );
-        assert!(entries[1].citations.is_empty());
+        assert_eq!(entries.len(), 1);
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -4041,11 +4153,13 @@ mod tests {
                 role: ContextMessageRole::User,
             },
             source,
-            content_ref: BlobRef::default(),
-            media_type: None,
+            content: engine::ContentRef {
+                content_ref: BlobRef::default(),
+                media_type: None,
+                provider_kind: None,
+            },
             preview: None,
-            provider_kind: None,
-            provider_item_id: None,
+            provenance_ref: None,
             token_estimate: None,
             supersedes: None,
         }

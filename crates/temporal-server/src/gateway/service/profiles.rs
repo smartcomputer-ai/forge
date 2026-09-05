@@ -356,11 +356,9 @@ impl GatewayAgentApi {
                 ContextEntryKey::new(PROFILE_INSTRUCTIONS_CONTEXT_KEY),
                 ContextEntryInput {
                     kind: ContextEntryKind::Instructions,
-                    content_ref,
-                    media_type: Some("text/plain".to_owned()),
+                    content: engine::ContentRef::text(content_ref),
                     preview: Some("Profile instructions".to_owned()),
-                    provider_kind: None,
-                    provider_item_id: None,
+                    provenance_ref: None,
                     token_estimate: None,
                 },
             );

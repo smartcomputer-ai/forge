@@ -12,17 +12,17 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use engine::{
-    ANTHROPIC_MESSAGES_CITED_TEXT_PROVIDER_KIND, ANTHROPIC_MESSAGES_COMPACTION_PROVIDER_KIND,
-    ANTHROPIC_MESSAGES_MCP_TOOL_RESULT_PROVIDER_KIND,
+    ANTHROPIC_MESSAGES_COMPACTION_PROVIDER_KIND, ANTHROPIC_MESSAGES_MCP_TOOL_RESULT_PROVIDER_KIND,
     ANTHROPIC_MESSAGES_MCP_TOOL_USE_PROVIDER_KIND,
     ANTHROPIC_MESSAGES_SERVER_TOOL_RESULT_PROVIDER_KIND,
-    ANTHROPIC_MESSAGES_SERVER_TOOL_USE_PROVIDER_KIND, CompactionPolicy, ContextCompactionRequest,
-    ContextCompactionResult, ContextCompactionStatus, ContextCompactionTask, ContextEntry,
-    ContextEntryInput, ContextEntryKind, ContextMessageRole, LlmFinish, LlmGenerationFacts,
-    LlmGenerationRequest, LlmGenerationResult, LlmGenerationStatus, LlmRequest, LlmUsage,
-    ObservedToolCall, ProviderApiKind, ProviderNativeToolExecution, RemoteMcpApprovalPolicy,
-    RemoteMcpExecution, RemoteMcpExposure, RemoteMcpToolSpec, TokenEstimate, TokenEstimateQuality,
-    ToolCallId, ToolChoice, ToolKind, ToolName, ToolSpec, storage::BlobStore,
+    ANTHROPIC_MESSAGES_SERVER_TOOL_USE_PROVIDER_KIND, ANTHROPIC_MESSAGES_TEXT_BLOCKS_PROVIDER_KIND,
+    CompactionPolicy, ContextCompactionRequest, ContextCompactionResult, ContextCompactionStatus,
+    ContextCompactionTask, ContextEntry, ContextEntryInput, ContextEntryKind, ContextMessageRole,
+    LlmFinish, LlmGenerationFacts, LlmGenerationRequest, LlmGenerationResult, LlmGenerationStatus,
+    LlmRequest, LlmUsage, ObservedToolCall, ProviderApiKind, ProviderNativeToolExecution,
+    RemoteMcpApprovalPolicy, RemoteMcpExecution, RemoteMcpExposure, RemoteMcpToolSpec,
+    TokenEstimate, TokenEstimateQuality, ToolCallId, ToolChoice, ToolKind, ToolName, ToolSpec,
+    storage::BlobStore,
 };
 use llm_clients::{ApiResponse, anthropic::messages as am};
 use serde_json::{Value, json};
@@ -48,9 +48,8 @@ use crate::{
     },
 };
 
-const PROVIDER_KIND_TEXT: &str = "anthropic.messages.text";
 const PROVIDER_KIND_TOOL_USE: &str = "anthropic.messages.tool_use";
-const PROVIDER_KIND_THINKING: &str = "anthropic.messages.thinking";
+use llm_clients::content::ANTHROPIC_THINKING_PROVIDER_KIND as PROVIDER_KIND_THINKING;
 const PROVIDER_KIND_BLOCK: &str = "anthropic.messages.block";
 const TOOL_SEARCH_TOOL_TYPE: &str = "tool_search_tool_bm25_20251119";
 const TOOL_SEARCH_TOOL_NAME: &str = "tool_search_tool_bm25";
@@ -510,7 +509,7 @@ async fn materialize_system(
     let mut parts = Vec::new();
     for entry in entries {
         if matches!(entry.kind, ContextEntryKind::Instructions) {
-            let text = read_text(blobs, &entry.content_ref).await?;
+            let text = read_text(blobs, &entry.content.content_ref).await?;
             let text = text.trim();
             if !text.is_empty() {
                 parts.push(text.to_owned());
@@ -653,7 +652,7 @@ async fn materialize_messages(
     entries: &[ContextEntry],
 ) -> LlmAdapterResult<Vec<am::MessageParam>> {
     let mut messages: Vec<am::MessageParam> = Vec::new();
-    for (index, entry) in entries.iter().enumerate() {
+    for entry in entries {
         if is_raw_input_message(entry) {
             let (role, blocks) = materialize_input_message(blobs, entry).await?;
             for block in blocks {
@@ -661,14 +660,10 @@ async fn materialize_messages(
             }
             continue;
         }
-        // The exact cited blocks follow the assistant message they came from
-        // and replay in its place, so the neutral text is skipped. Without
-        // them (a truncated turn, or a removed entry) the text replays as is.
-        if replaced_by_cited_blocks(entry, entries.get(index + 1)) {
-            continue;
-        }
-        if is_cited_text_blocks(entry) {
-            for block in cited_text_blocks(blobs, entry).await? {
+        if entry.content.provider_kind.as_deref()
+            == Some(ANTHROPIC_MESSAGES_TEXT_BLOCKS_PROVIDER_KIND)
+        {
+            for block in text_blocks(blobs, entry).await? {
                 push_block(
                     &mut messages,
                     am::MessageRole::Assistant,
@@ -683,27 +678,8 @@ async fn materialize_messages(
     Ok(messages)
 }
 
-fn is_cited_text_blocks(entry: &ContextEntry) -> bool {
-    matches!(entry.kind, ContextEntryKind::ProviderOpaque)
-        && entry.provider_kind.as_deref() == Some(ANTHROPIC_MESSAGES_CITED_TEXT_PROVIDER_KIND)
-}
-
-/// True when `entry` is the neutral text of an assistant message and `next`
-/// carries that message's exact provider blocks.
-fn replaced_by_cited_blocks(entry: &ContextEntry, next: Option<&ContextEntry>) -> bool {
-    matches!(
-        entry.kind,
-        ContextEntryKind::Message {
-            role: ContextMessageRole::Assistant
-        }
-    ) && next.is_some_and(|next| is_cited_text_blocks(next) && next.source == entry.source)
-}
-
-async fn cited_text_blocks(
-    blobs: &dyn BlobStore,
-    entry: &ContextEntry,
-) -> LlmAdapterResult<Vec<Value>> {
-    match read_json(blobs, &entry.content_ref).await? {
+async fn text_blocks(blobs: &dyn BlobStore, entry: &ContextEntry) -> LlmAdapterResult<Vec<Value>> {
+    match read_json(blobs, &entry.content.content_ref).await? {
         Value::Array(blocks) => Ok(blocks),
         _ => Err(LlmAdapterError::InvalidProviderRequest {
             message: format!(
@@ -742,14 +718,15 @@ fn push_block(
 
 fn is_raw_input_message(entry: &ContextEntry) -> bool {
     matches!(entry.kind, ContextEntryKind::ProviderOpaque)
-        && entry.provider_kind.as_deref() == Some(ANTHROPIC_MESSAGES_INPUT_MESSAGE_PROVIDER_KIND)
+        && entry.content.provider_kind.as_deref()
+            == Some(ANTHROPIC_MESSAGES_INPUT_MESSAGE_PROVIDER_KIND)
 }
 
 async fn materialize_input_message(
     blobs: &dyn BlobStore,
     entry: &ContextEntry,
 ) -> LlmAdapterResult<(am::MessageRole, Vec<am::ContentBlockParam>)> {
-    let raw = read_json(blobs, &entry.content_ref).await?;
+    let raw = read_json(blobs, &entry.content.content_ref).await?;
     let message: am::MessageParam =
         serde_json::from_value(raw).map_err(|error| LlmAdapterError::InvalidProviderRequest {
             message: format!(
@@ -774,28 +751,28 @@ async fn materialize_block(
                 ContextMessageRole::User => am::MessageRole::User,
                 ContextMessageRole::Assistant => am::MessageRole::Assistant,
             };
-            if let Some(mime) = crate::blob_io::image_media_type(entry.media_type.as_deref()) {
-                let data = crate::blob_io::read_base64(blobs, &entry.content_ref).await?;
+            if let Some(mime) = crate::blob_io::image_media_type(entry.content.media_type.as_deref()) {
+                let data = crate::blob_io::read_base64(blobs, &entry.content.content_ref).await?;
                 return Ok((role, am::ContentBlockParam::image_base64(mime, data)));
             }
             if let Some(document) = crate::blob_io::document_entry(
-                entry.media_type.as_deref(),
+                entry.content.media_type.as_deref(),
                 entry.preview.as_deref(),
             ) {
                 let block = if document.is_pdf {
-                    let data = crate::blob_io::read_base64(blobs, &entry.content_ref).await?;
+                    let data = crate::blob_io::read_base64(blobs, &entry.content.content_ref).await?;
                     am::ContentBlockParam::document_base64(document.mime, data, document.name)
                 } else {
-                    let text = read_text(blobs, &entry.content_ref).await?;
+                    let text = read_text(blobs, &entry.content.content_ref).await?;
                     am::ContentBlockParam::document_text(text, document.name)
                 };
                 return Ok((role, block));
             }
-            let text = read_text(blobs, &entry.content_ref).await?;
+            let text = crate::blob_io::read_message_text(blobs, &entry.content).await?;
             Ok((role, am::ContentBlockParam::text(text)))
         }
         ContextEntryKind::ToolResult { call_id, is_error } => {
-            let output = read_text(blobs, &entry.content_ref).await?;
+            let output = read_text(blobs, &entry.content.content_ref).await?;
             Ok((
                 am::MessageRole::User,
                 am::ContentBlockParam::ToolResult(am::ToolResultBlockParam {
@@ -813,7 +790,7 @@ async fn materialize_block(
         }),
         ContextEntryKind::VfsCatalog => {
             let catalog =
-                crate::environment_prompts::read_vfs_catalog(blobs, &entry.content_ref).await?;
+                crate::environment_prompts::read_vfs_catalog(blobs, &entry.content.content_ref).await?;
             Ok((
                 am::MessageRole::User,
                 am::ContentBlockParam::text(crate::catalog_prompts::catalog_text(
@@ -824,7 +801,7 @@ async fn materialize_block(
         }
         ContextEntryKind::SkillCatalog => {
             let catalog =
-                crate::skill_prompts::read_skill_catalog(blobs, &entry.content_ref).await?;
+                crate::skill_prompts::read_skill_catalog(blobs, &entry.content.content_ref).await?;
             Ok((
                 am::MessageRole::User,
                 am::ContentBlockParam::text(crate::catalog_prompts::catalog_text(
@@ -835,7 +812,7 @@ async fn materialize_block(
         }
         ContextEntryKind::SubagentCatalog => {
             let catalog =
-                crate::subagent_prompts::read_subagent_catalog(blobs, &entry.content_ref).await?;
+                crate::subagent_prompts::read_subagent_catalog(blobs, &entry.content.content_ref).await?;
             Ok((
                 am::MessageRole::User,
                 am::ContentBlockParam::text(crate::catalog_prompts::catalog_text(
@@ -847,12 +824,12 @@ async fn materialize_block(
         ContextEntryKind::Catalog { .. } => Ok((
             am::MessageRole::User,
             am::ContentBlockParam::text(
-                crate::catalog_prompts::external_catalog_text(blobs, entry, &entry.content_ref)
+                crate::catalog_prompts::external_catalog_text(blobs, entry, &entry.content.content_ref)
                     .await?,
             ),
         )),
         ContextEntryKind::SkillActivation { skill_id, .. } => {
-            let text = read_text(blobs, &entry.content_ref).await?;
+            let text = read_text(blobs, &entry.content.content_ref).await?;
             Ok((
                 am::MessageRole::User,
                 am::ContentBlockParam::text(crate::skill_prompts::skill_activation_text(
@@ -863,7 +840,7 @@ async fn materialize_block(
         ContextEntryKind::ToolCall { .. }
         | ContextEntryKind::ReasoningState
         | ContextEntryKind::ProviderOpaque => {
-            if entry.media_type.as_deref() != Some(MEDIA_TYPE_JSON) {
+            if entry.content.media_type.as_deref() != Some(MEDIA_TYPE_JSON) {
                 return Err(LlmAdapterError::InvalidProviderRequest {
                     message: format!(
                         "Anthropic context entry {} must carry a raw JSON content block",
@@ -871,7 +848,7 @@ async fn materialize_block(
                     ),
                 });
             }
-            let raw = read_json(blobs, &entry.content_ref).await?;
+            let raw = read_json(blobs, &entry.content.content_ref).await?;
             Ok((am::MessageRole::Assistant, am::ContentBlockParam::Raw(raw)))
         }
         ContextEntryKind::McpApprovalResponse { .. } => {
@@ -1295,7 +1272,7 @@ pub async fn result_from_response(
         (
             LlmGenerationStatus::Failed,
             Some(failure_ref),
-            partial_output_entries(context_entries),
+            partial_output_entries(blobs, context_entries).await?,
             Vec::new(),
         )
     } else {
@@ -1487,11 +1464,13 @@ pub async fn result_from_compact_response(
             kind: ContextEntryKind::Message {
                 role: ContextMessageRole::User,
             },
-            content_ref,
-            media_type: Some(MEDIA_TYPE_TEXT.to_owned()),
+            content: engine::ContentRef {
+                content_ref,
+                media_type: Some(MEDIA_TYPE_TEXT.to_owned()),
+                provider_kind: Some(ANTHROPIC_MESSAGES_COMPACTION_PROVIDER_KIND.to_owned()),
+            },
             preview: Some(summary.to_owned()),
-            provider_kind: Some(ANTHROPIC_MESSAGES_COMPACTION_PROVIDER_KIND.to_owned()),
-            provider_item_id: Some(response.parsed.id.clone()),
+            provenance_ref: None,
             token_estimate: None,
         }],
     })
@@ -1514,11 +1493,8 @@ fn raw_content_block(
     })
 }
 
-/// One assistant message from a run of consecutive `text` blocks. The neutral
-/// text is their exact concatenation. When any block carries citations the
-/// run is also kept verbatim in a following provider-opaque entry, so replay
-/// returns the provider's own blocks, encrypted citation indexes included, and
-/// the API projects the sources onto the message.
+/// One assistant message owns the original consecutive text blocks. Display
+/// text and citations are projected from this payload; replay uses it unchanged.
 async fn text_run_context_entries(
     blobs: &dyn BlobStore,
     blocks: Vec<Value>,
@@ -1530,37 +1506,19 @@ async fn text_run_context_entries(
     if text.is_empty() {
         return Ok(Vec::new());
     }
-    let content_ref = put_text(blobs, text.as_str()).await?;
-    let mut entries = vec![ContextEntryInput {
+    Ok(vec![ContextEntryInput {
         kind: ContextEntryKind::Message {
             role: ContextMessageRole::Assistant,
         },
-        content_ref,
-        media_type: Some(MEDIA_TYPE_TEXT.to_owned()),
-        preview: Some(text),
-        provider_kind: Some(PROVIDER_KIND_TEXT.to_owned()),
-        provider_item_id: None,
-        token_estimate: None,
-    }];
-    if blocks.iter().any(has_citations) {
-        entries.push(ContextEntryInput {
-            kind: ContextEntryKind::ProviderOpaque,
+        content: engine::ContentRef {
             content_ref: put_json(blobs, &Value::Array(blocks)).await?,
             media_type: Some(MEDIA_TYPE_JSON.to_owned()),
-            preview: Some("Anthropic Messages cited text".to_owned()),
-            provider_kind: Some(ANTHROPIC_MESSAGES_CITED_TEXT_PROVIDER_KIND.to_owned()),
-            provider_item_id: None,
-            token_estimate: None,
-        });
-    }
-    Ok(entries)
-}
-
-fn has_citations(block: &Value) -> bool {
-    block
-        .get("citations")
-        .and_then(Value::as_array)
-        .is_some_and(|citations| !citations.is_empty())
+            provider_kind: Some(ANTHROPIC_MESSAGES_TEXT_BLOCKS_PROVIDER_KIND.to_owned()),
+        },
+        preview: Some(text.chars().take(256).collect()),
+        provenance_ref: None,
+        token_estimate: None,
+    }])
 }
 
 async fn tool_use_context(
@@ -1595,11 +1553,13 @@ async fn tool_use_context(
             call_id: call_id.clone(),
             name: tool_name.clone(),
         },
-        content_ref: native_call_ref.clone(),
-        media_type: Some(MEDIA_TYPE_JSON.to_owned()),
+        content: engine::ContentRef {
+            content_ref: native_call_ref.clone(),
+            media_type: Some(MEDIA_TYPE_JSON.to_owned()),
+            provider_kind: Some(PROVIDER_KIND_TOOL_USE.to_owned()),
+        },
         preview: None,
-        provider_kind: Some(PROVIDER_KIND_TOOL_USE.to_owned()),
-        provider_item_id: block.id.clone(),
+        provenance_ref: None,
         token_estimate: None,
     };
     let tool_call = ObservedToolCall {
@@ -1619,24 +1579,26 @@ async fn thinking_context_entry(
     raw_block: Value,
 ) -> LlmAdapterResult<ContextEntryInput> {
     let content_ref = put_json(blobs, &raw_block).await?;
-    let preview = if block.r#type == "redacted_thinking" {
-        REDACTED_THINKING_PREVIEW.to_owned()
+    let text = llm_clients::content::anthropic_thinking(&raw_block).unwrap_or_default();
+    let preview = if text.trim().is_empty() {
+        if block.r#type == "redacted_thinking" {
+            REDACTED_THINKING_PREVIEW
+        } else {
+            OMITTED_THINKING_PREVIEW
+        }
+        .to_owned()
     } else {
-        block
-            .thinking
-            .as_deref()
-            .map(str::trim)
-            .filter(|thinking| !thinking.is_empty())
-            .map(ToOwned::to_owned)
-            .unwrap_or_else(|| OMITTED_THINKING_PREVIEW.to_owned())
+        text.trim().chars().take(256).collect()
     };
     Ok(ContextEntryInput {
         kind: ContextEntryKind::ReasoningState,
-        content_ref,
-        media_type: Some(MEDIA_TYPE_JSON.to_owned()),
+        content: engine::ContentRef {
+            content_ref,
+            media_type: Some(MEDIA_TYPE_JSON.to_owned()),
+            provider_kind: Some(PROVIDER_KIND_THINKING.to_owned()),
+        },
         preview: Some(preview),
-        provider_kind: Some(PROVIDER_KIND_THINKING.to_owned()),
-        provider_item_id: None,
+        provenance_ref: None,
         token_estimate: None,
     })
 }
@@ -1661,11 +1623,13 @@ async fn opaque_context_entry(
     let content_ref = put_json(blobs, &raw_block).await?;
     Ok(ContextEntryInput {
         kind: ContextEntryKind::ProviderOpaque,
-        content_ref,
-        media_type: Some(MEDIA_TYPE_JSON.to_owned()),
+        content: engine::ContentRef {
+            content_ref,
+            media_type: Some(MEDIA_TYPE_JSON.to_owned()),
+            provider_kind: Some(provider_kind.to_owned()),
+        },
         preview: Some(opaque_preview(block)),
-        provider_kind: Some(provider_kind.to_owned()),
-        provider_item_id: block.id.clone(),
+        provenance_ref: None,
         token_estimate: None,
     })
 }
@@ -2156,11 +2120,13 @@ mod tests {
                 run_id: RunId::new(1),
                 input_index: 0,
             },
-            content_ref,
-            media_type: None,
+            content: engine::ContentRef {
+                content_ref,
+                media_type: None,
+                provider_kind: None,
+            },
             preview: None,
-            provider_kind: None,
-            provider_item_id: None,
+            provenance_ref: None,
             token_estimate: None,
             supersedes: None,
         }
@@ -2181,11 +2147,9 @@ mod tests {
                     turn_id: TurnId::new(1),
                 },
             },
-            content_ref: item.content_ref.clone(),
-            media_type: item.media_type.clone(),
+            content: item.content.clone(),
             preview: item.preview.clone(),
-            provider_kind: item.provider_kind.clone(),
-            provider_item_id: item.provider_item_id.clone(),
+            provenance_ref: item.provenance_ref.clone(),
             token_estimate: item.token_estimate.clone(),
             supersedes: None,
         }
@@ -2216,11 +2180,9 @@ mod tests {
             entry_id: ContextEntryId::new(1),
             kind: ContextEntryKind::Instructions,
             source: ContextEntrySource::ContextEdit,
-            content_ref: instructions_ref,
-            media_type: Some("text/plain".to_owned()),
+            content: engine::ContentRef::text(instructions_ref),
             preview: None,
-            provider_kind: None,
-            provider_item_id: None,
+            provenance_ref: None,
             token_estimate: None,
             supersedes: None,
         };
@@ -2349,11 +2311,13 @@ mod tests {
                     run_id: RunId::new(1),
                     turn_id: TurnId::new(1),
                 },
-                content_ref: thinking_ref,
-                media_type: Some(MEDIA_TYPE_JSON.to_owned()),
+                content: engine::ContentRef {
+                    content_ref: thinking_ref,
+                    media_type: Some(MEDIA_TYPE_JSON.to_owned()),
+                    provider_kind: Some(PROVIDER_KIND_THINKING.to_owned()),
+                },
                 preview: None,
-                provider_kind: Some(PROVIDER_KIND_THINKING.to_owned()),
-                provider_item_id: None,
+                provenance_ref: None,
                 token_estimate: None,
                 supersedes: None,
             },
@@ -2367,11 +2331,13 @@ mod tests {
                     run_id: RunId::new(1),
                     turn_id: TurnId::new(1),
                 },
-                content_ref: assistant_ref,
-                media_type: Some("text/plain".to_owned()),
+                content: engine::ContentRef {
+                    content_ref: assistant_ref,
+                    media_type: Some("text/plain".to_owned()),
+                    provider_kind: Some("anthropic.messages.text".to_owned()),
+                },
                 preview: None,
-                provider_kind: Some(PROVIDER_KIND_TEXT.to_owned()),
-                provider_item_id: None,
+                provenance_ref: None,
                 token_estimate: None,
                 supersedes: None,
             },
@@ -2386,11 +2352,13 @@ mod tests {
                     run_id: RunId::new(1),
                     turn_id: TurnId::new(1),
                 },
-                content_ref: tool_use_ref,
-                media_type: Some(MEDIA_TYPE_JSON.to_owned()),
+                content: engine::ContentRef {
+                    content_ref: tool_use_ref,
+                    media_type: Some(MEDIA_TYPE_JSON.to_owned()),
+                    provider_kind: Some(PROVIDER_KIND_TOOL_USE.to_owned()),
+                },
                 preview: None,
-                provider_kind: Some(PROVIDER_KIND_TOOL_USE.to_owned()),
-                provider_item_id: Some("toolu_1".to_owned()),
+                provenance_ref: None,
                 token_estimate: None,
                 supersedes: None,
             },
@@ -2406,11 +2374,9 @@ mod tests {
                     turn_id: TurnId::new(1),
                     batch_id: None,
                 },
-                content_ref: tool_result_ref,
-                media_type: Some("text/plain".to_owned()),
+                content: engine::ContentRef::text(tool_result_ref),
                 preview: None,
-                provider_kind: None,
-                provider_item_id: None,
+                provenance_ref: None,
                 token_estimate: None,
                 supersedes: None,
             },
@@ -2474,11 +2440,13 @@ mod tests {
             entry_id: ContextEntryId::new(1),
             kind: ContextEntryKind::ProviderOpaque,
             source: ContextEntrySource::ContextEdit,
-            content_ref: raw_message_ref,
-            media_type: Some(MEDIA_TYPE_JSON.to_owned()),
+            content: engine::ContentRef {
+                content_ref: raw_message_ref,
+                media_type: Some(MEDIA_TYPE_JSON.to_owned()),
+                provider_kind: Some(ANTHROPIC_MESSAGES_INPUT_MESSAGE_PROVIDER_KIND.to_owned()),
+            },
             preview: None,
-            provider_kind: Some(ANTHROPIC_MESSAGES_INPUT_MESSAGE_PROVIDER_KIND.to_owned()),
-            provider_item_id: None,
+            provenance_ref: None,
             token_estimate: None,
             supersedes: None,
         };
@@ -3341,7 +3309,7 @@ mod tests {
             result.context_entries[0].preview.as_deref(),
             Some("reasoning state")
         );
-        let replayed = read_json(&blobs, &result.context_entries[0].content_ref)
+        let replayed = read_json(&blobs, &result.context_entries[0].content.content_ref)
             .await
             .expect("raw block");
         assert_eq!(replayed["signature"], "sig_1");
@@ -3391,14 +3359,14 @@ mod tests {
         assert_eq!(result.context_entries.len(), 3);
         assert!(result.facts.tool_calls.is_empty());
         assert_eq!(
-            result.context_entries[0].provider_kind.as_deref(),
+            result.context_entries[0].content.provider_kind.as_deref(),
             Some(ANTHROPIC_MESSAGES_SERVER_TOOL_USE_PROVIDER_KIND)
         );
         assert_eq!(
-            result.context_entries[1].provider_kind.as_deref(),
+            result.context_entries[1].content.provider_kind.as_deref(),
             Some(ANTHROPIC_MESSAGES_SERVER_TOOL_RESULT_PROVIDER_KIND)
         );
-        let retained: Value = read_json(&blobs, &result.context_entries[0].content_ref)
+        let retained: Value = read_json(&blobs, &result.context_entries[0].content.content_ref)
             .await
             .expect("raw server tool use");
         assert_eq!(retained, server_tool_use);
@@ -3444,7 +3412,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn cited_text_run_is_one_message_followed_by_its_exact_blocks() {
+    async fn text_run_is_one_native_message_with_exact_blocks() {
         let blobs = InMemoryBlobStore::new();
         let blocks = json!([
             { "type": "text", "text": "The big one is " },
@@ -3467,7 +3435,7 @@ mod tests {
             .await
             .expect("result");
 
-        assert_eq!(result.context_entries.len(), 2);
+        assert_eq!(result.context_entries.len(), 1);
         let message = &result.context_entries[0];
         assert!(matches!(
             message.kind,
@@ -3475,21 +3443,13 @@ mod tests {
                 role: ContextMessageRole::Assistant
             }
         ));
+        let native = read_json(&blobs, &message.content.content_ref)
+            .await
+            .expect("native text blocks");
+        assert_eq!(native, blocks);
         assert_eq!(
-            read_text(&blobs, &message.content_ref).await.expect("text"),
-            "The big one is documented here."
-        );
-        let cited = &result.context_entries[1];
-        assert!(matches!(cited.kind, ContextEntryKind::ProviderOpaque));
-        assert_eq!(
-            cited.provider_kind.as_deref(),
-            Some(ANTHROPIC_MESSAGES_CITED_TEXT_PROVIDER_KIND)
-        );
-        assert_eq!(
-            read_json(&blobs, &cited.content_ref)
-                .await
-                .expect("cited blocks"),
-            blocks
+            llm_clients::content::anthropic_text_blocks(&native).as_deref(),
+            Some("The big one is documented here.")
         );
         assert_eq!(replayed_content(&blobs, &result).await, blocks);
     }
@@ -3553,9 +3513,6 @@ mod tests {
             result.context_entries[3].preview.as_deref(),
             Some("Found it.")
         );
-        assert!(result.context_entries.iter().all(|entry| {
-            entry.provider_kind.as_deref() != Some(ANTHROPIC_MESSAGES_CITED_TEXT_PROVIDER_KIND)
-        }));
 
         let replayed = replayed_content(&blobs, &result).await;
         assert_eq!(replayed[0]["text"], "I'll look that up.");
@@ -3600,14 +3557,13 @@ mod tests {
         let kinds = result
             .context_entries
             .iter()
-            .map(|entry| entry.provider_kind.as_deref().unwrap_or_default())
+            .map(|entry| entry.content.provider_kind.as_deref().unwrap_or_default())
             .collect::<Vec<_>>();
         assert_eq!(
             kinds,
             vec![
                 ANTHROPIC_MESSAGES_SERVER_TOOL_RESULT_PROVIDER_KIND,
-                PROVIDER_KIND_TEXT,
-                ANTHROPIC_MESSAGES_CITED_TEXT_PROVIDER_KIND,
+                ANTHROPIC_MESSAGES_TEXT_BLOCKS_PROVIDER_KIND,
             ]
         );
         assert_eq!(
@@ -3877,13 +3833,12 @@ mod tests {
             }
         ));
         assert_eq!(
-            entry.provider_kind.as_deref(),
+            entry.content.provider_kind.as_deref(),
             Some(ANTHROPIC_MESSAGES_COMPACTION_PROVIDER_KIND)
         );
-        assert_eq!(entry.provider_item_id.as_deref(), Some("msg_summary"));
         assert_eq!(
             blobs
-                .read_text(&entry.content_ref)
+                .read_text(&entry.content.content_ref)
                 .await
                 .expect("summary text"),
             "Summary: the user chose Postgres as the session store."
@@ -3919,11 +3874,13 @@ mod tests {
             source: ContextEntrySource::Runtime {
                 label: "skills.activation".to_string(),
             },
-            content_ref: activation_ref,
-            media_type: None,
+            content: engine::ContentRef {
+                content_ref: activation_ref,
+                media_type: None,
+                provider_kind: None,
+            },
             preview: None,
-            provider_kind: None,
-            provider_item_id: None,
+            provenance_ref: None,
             token_estimate: None,
             supersedes: None,
         };
@@ -3963,11 +3920,13 @@ mod tests {
                 run_id: RunId::new(1),
                 input_index: 0,
             },
-            content_ref,
-            media_type: Some("image/jpeg".to_owned()),
+            content: engine::ContentRef {
+                content_ref,
+                media_type: Some("image/jpeg".to_owned()),
+                provider_kind: None,
+            },
             preview: Some("[image]".to_owned()),
-            provider_kind: None,
-            provider_item_id: None,
+            provenance_ref: None,
             token_estimate: None,
             supersedes: None,
         };
@@ -4005,11 +3964,13 @@ mod tests {
                 run_id: RunId::new(1),
                 input_index: 0,
             },
-            content_ref,
-            media_type: Some("application/pdf".to_owned()),
+            content: engine::ContentRef {
+                content_ref,
+                media_type: Some("application/pdf".to_owned()),
+                provider_kind: None,
+            },
             preview: Some("[document: offer.pdf]".to_owned()),
-            provider_kind: None,
-            provider_item_id: None,
+            provenance_ref: None,
             token_estimate: None,
             supersedes: None,
         };
@@ -4043,11 +4004,13 @@ mod tests {
                 run_id: RunId::new(1),
                 input_index: 0,
             },
-            content_ref,
-            media_type: Some("text/markdown".to_owned()),
+            content: engine::ContentRef {
+                content_ref,
+                media_type: Some("text/markdown".to_owned()),
+                provider_kind: None,
+            },
             preview: Some("[document: notes.md]".to_owned()),
-            provider_kind: None,
-            provider_item_id: None,
+            provenance_ref: None,
             token_estimate: None,
             supersedes: None,
         };
@@ -4082,11 +4045,9 @@ mod tests {
                 run_id: RunId::new(1),
                 input_index: 0,
             },
-            content_ref,
-            media_type: Some("text/plain".to_owned()),
+            content: engine::ContentRef::text(content_ref),
             preview: None,
-            provider_kind: None,
-            provider_item_id: None,
+            provenance_ref: None,
             token_estimate: None,
             supersedes: None,
         };
@@ -4108,11 +4069,13 @@ mod tests {
                 title: "Bot directory".to_string(),
             },
             source: ContextEntrySource::ContextEdit,
-            content_ref,
-            media_type: Some("text/markdown".to_string()),
+            content: engine::ContentRef {
+                content_ref,
+                media_type: Some("text/markdown".to_string()),
+                provider_kind: None,
+            },
             preview: None,
-            provider_kind: None,
-            provider_item_id: None,
+            provenance_ref: None,
             token_estimate: None,
             supersedes: supersedes.map(ContextEntryId::new),
         }
@@ -4142,11 +4105,13 @@ mod tests {
                 run_id: RunId::new(1),
                 input_index: 0,
             },
-            content_ref: input_ref,
-            media_type: None,
+            content: engine::ContentRef {
+                content_ref: input_ref,
+                media_type: None,
+                provider_kind: None,
+            },
             preview: None,
-            provider_kind: None,
-            provider_item_id: None,
+            provenance_ref: None,
             token_estimate: None,
             supersedes: None,
         };
@@ -4221,11 +4186,9 @@ mod tests {
             entry_id: ContextEntryId::new(1),
             kind: ContextEntryKind::Instructions,
             source: ContextEntrySource::ContextEdit,
-            content_ref: instructions_ref,
-            media_type: Some("text/plain".to_owned()),
+            content: engine::ContentRef::text(instructions_ref),
             preview: None,
-            provider_kind: None,
-            provider_item_id: None,
+            provenance_ref: None,
             token_estimate: None,
             supersedes: None,
         };

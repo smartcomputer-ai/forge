@@ -152,11 +152,9 @@ pub(super) fn validate_session_creation_identity(
 fn instruction_context_input(content_ref: BlobRef) -> ContextEntryInput {
     ContextEntryInput {
         kind: ContextEntryKind::Instructions,
-        content_ref,
-        media_type: Some("text/plain".to_owned()),
+        content: engine::ContentRef::text(content_ref),
         preview: None,
-        provider_kind: None,
-        provider_item_id: None,
+        provenance_ref: None,
         token_estimate: None,
     }
 }

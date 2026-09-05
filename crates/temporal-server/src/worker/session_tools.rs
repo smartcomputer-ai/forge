@@ -922,8 +922,14 @@ impl SessionTools {
                 let groups = self
                     .environment_groups(std::slice::from_ref(&environment))
                     .await;
-                let output =
+                let mut output =
                     environment_model_view(&environment, active, group_of(&environment, &groups));
+                if crate::environment_resolver::wake_on_use_applies(&environment) {
+                    output["status_message"] = serde_json::json!(format!(
+                        "Environment is {}. Tools that use this environment will automatically wake it and wait until it is ready. You can proceed normally.",
+                        format!("{:?}", environment.status).to_lowercase(),
+                    ));
+                }
                 self.succeeded_tool_result(
                     call,
                     &output,
@@ -1998,7 +2004,7 @@ mod tests {
             .iter()
             .find_map(|entry| {
                 matches!(entry.kind, ContextEntryKind::ToolResult { .. })
-                    .then(|| entry.content_ref.clone())
+                    .then(|| entry.content.content_ref.clone())
             })
             .expect("visible ref")
     }
@@ -3143,6 +3149,102 @@ mod tests {
             })
             .await
             .expect("observe environment");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn environment_read_status_message_only_describes_supported_wake_on_use() {
+        use environments::PowerState;
+
+        for (status, power_states, expected_status, expected_message) in [
+            (
+                EnvironmentStatus::Paused,
+                vec![PowerState::Running],
+                "paused",
+                true,
+            ),
+            (
+                EnvironmentStatus::Suspended,
+                vec![PowerState::Running],
+                "suspended",
+                true,
+            ),
+            (
+                EnvironmentStatus::Offline,
+                vec![PowerState::Running],
+                "offline",
+                true,
+            ),
+            (EnvironmentStatus::Paused, Vec::new(), "paused", false),
+            (EnvironmentStatus::Suspended, Vec::new(), "suspended", false),
+            (EnvironmentStatus::Offline, Vec::new(), "offline", false),
+            (
+                EnvironmentStatus::Ready,
+                vec![PowerState::Running],
+                "ready",
+                false,
+            ),
+            (
+                EnvironmentStatus::Failed,
+                vec![PowerState::Running],
+                "failed",
+                false,
+            ),
+        ] {
+            let blobs = Arc::new(InMemoryBlobStore::new());
+            let registry = Arc::new(InMemoryEnvironmentRegistryStore::new());
+            register_test_environment_provider(registry.as_ref(), "allowed").await;
+            let environment_id = EnvironmentId::new("environment-allowed-1");
+            observe_test_environment(registry.as_ref(), environment_id.as_str(), "allowed", 10).await;
+            registry
+                .observe_provisioned_environment(ObserveProvisionedEnvironment {
+                    environment_id: environment_id.clone(),
+                    provider_target_id: ProviderTargetId::new("target-environment-allowed-1"),
+                    status,
+                    power_states,
+                    observed_at_ms: 11,
+                })
+                .await
+                .expect("observe status and power support");
+            let resolver =
+                crate::environment_resolver::EnvironmentResolver::new(registry.clone(), registry);
+            let tools = SessionTools::new(blobs.clone(), Arc::new(TestCatalog::default()))
+                .with_environment_resolver(resolver);
+            blobs.put_bytes(b"{}".to_vec()).await.expect("arguments");
+
+            for tool_name in ["environment_read", "environment_list"] {
+                let mut request = per_call_request(tool_name, b"{}", &[]);
+                request.active_environment_id = Some(environment_id.clone());
+                request.environment_policy = Some(engine::EnvironmentPolicyRuntime::new(
+                    Some(vec!["allowed".to_owned()]),
+                    None,
+                ));
+                let result = tools.invoke_call(request).await.expect("invoke tool");
+                assert_eq!(result.status, ToolCallStatus::Succeeded);
+                let output: serde_json::Value = serde_json::from_str(
+                    &blobs
+                        .read_text(&visible_tool_result_ref(&result))
+                        .await
+                        .expect("model-visible output"),
+                )
+                .expect("decode output");
+                let view = if tool_name == "environment_read" {
+                    &output
+                } else {
+                    &output["environments"][0]
+                };
+                assert_eq!(view["status"], expected_status);
+                if tool_name == "environment_read" && expected_message {
+                    assert_eq!(
+                        view["status_message"],
+                        format!(
+                            "Environment is {expected_status}. Tools that use this environment will automatically wake it and wait until it is ready. You can proceed normally."
+                        ),
+                    );
+                } else {
+                    assert!(view.get("status_message").is_none(), "{tool_name}: {view}");
+                }
+            }
+        }
     }
 
     #[tokio::test(flavor = "current_thread")]

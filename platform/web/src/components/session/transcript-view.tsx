@@ -5,10 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Marker, MarkerContent, MarkerIcon } from "@/components/ui/marker";
 import { Message, MessageContent } from "@/components/ui/message";
 import { MarkdownContent } from "@/components/session/markdown-content";
-import {
-  ExpandableContent,
-  type FullTextLoader,
-} from "@/components/session/expandable-content";
+import type { FullTextLoader } from "@/components/session/expandable-content";
 import { ReasoningTrace, ToolGroupTrace } from "@/components/session/tool-trace";
 import {
   type ActiveRun,
@@ -29,44 +26,35 @@ export function TranscriptEntryView({
 }) {
   switch (entry.kind) {
     case "message":
-      return (
-        <ExpandableContent
-          text={entry.text}
-          truncated={entry.textTruncated}
-          contentRef={entry.contentRef}
-          loadFullText={loadFullText}
-        >
-          {(text) => entry.role === "user" ? (
-            <UserBand text={text} steering={entry.steering === true} />
-          ) : (
-            <Message>
-              <MessageContent>
-                <Bubble variant="ghost" className="max-w-full">
-                  <BubbleContent>
-                    <MarkdownContent>{text}</MarkdownContent>
-                    {entry.citations?.length ? (
-                      <div className="mt-3 flex flex-wrap gap-2 border-t pt-3 pb-1 text-xs text-muted-foreground">
-                        <span className="font-medium">Sources</span>
-                        {entry.citations.map((citation, index) => (
-                          <a
-                            key={`${citation.url}:${index}`}
-                            href={citation.url}
-                            target="_blank"
-                            rel="noreferrer"
-                            title={citation.citedText ?? undefined}
-                            className="text-primary underline underline-offset-4"
-                          >
-                            {citation.title || citationHost(citation.url)}
-                          </a>
-                        ))}
-                      </div>
-                    ) : null}
-                  </BubbleContent>
-                </Bubble>
-              </MessageContent>
-            </Message>
-          )}
-        </ExpandableContent>
+      return entry.role === "user" ? (
+        <UserBand text={entry.text} steering={entry.steering === true} />
+      ) : (
+        <Message>
+          <MessageContent>
+            <Bubble variant="ghost" className="max-w-full">
+              <BubbleContent>
+                <MarkdownContent>{entry.text}</MarkdownContent>
+                {entry.citations?.length ? (
+                  <div className="mt-3 flex flex-wrap gap-2 border-t pt-3 pb-1 text-xs text-muted-foreground">
+                    <span className="font-medium">Sources</span>
+                    {entry.citations.map((citation, index) => (
+                      <a
+                        key={`${citation.url}:${index}`}
+                        href={citation.url}
+                        target="_blank"
+                        rel="noreferrer"
+                        title={citation.citedText ?? undefined}
+                        className="text-primary underline underline-offset-4"
+                      >
+                        {citation.title || citationHost(citation.url)}
+                      </a>
+                    ))}
+                  </div>
+                ) : null}
+              </BubbleContent>
+            </Bubble>
+          </MessageContent>
+        </Message>
       );
     case "system":
       return (

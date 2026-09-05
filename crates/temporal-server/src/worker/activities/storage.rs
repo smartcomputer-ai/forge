@@ -751,13 +751,15 @@ mod tests {
                         key: engine::ContextEntryKey::new("note.live"),
                         entry: engine::ContextEntryInput {
                             kind: engine::ContextEntryKind::ProviderOpaque,
-                            content_ref: engine::BlobRef::from_bytes(
-                                format!("note-content-{index}").as_bytes(),
-                            ),
-                            media_type: Some("application/json".to_owned()),
+                            content: engine::ContentRef {
+                                content_ref: engine::BlobRef::from_bytes(
+                                    format!("note-content-{index}").as_bytes(),
+                                ),
+                                media_type: Some("application/json".to_owned()),
+                                provider_kind: None,
+                            },
                             preview: Some(big_preview.clone()),
-                            provider_kind: None,
-                            provider_item_id: None,
+                            provenance_ref: None,
                             token_estimate: None,
                         },
                     },
@@ -1127,11 +1129,13 @@ mod tests {
                             kind: ContextEntryKind::Message {
                                 role: ContextMessageRole::User,
                             },
-                            content_ref: BlobRef::from_bytes(b"complete the work"),
-                            media_type: None,
+                            content: engine::ContentRef {
+                                content_ref: BlobRef::from_bytes(b"complete the work"),
+                                media_type: None,
+                                provider_kind: None,
+                            },
                             preview: None,
-                            provider_kind: None,
-                            provider_item_id: None,
+                            provenance_ref: None,
                             token_estimate: None,
                         }],
                     },
