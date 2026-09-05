@@ -141,6 +141,12 @@ scripts/dev/infra/minio-reset.sh
 clears the Lightspeed MinIO prefix. Platform applies its independently owned
 database migrations when the Platform server starts.
 
+The runtime's fresh PostgreSQL baseline is organized into nine domain migrations
+in `crates/store-pg/migrations/`. Databases created before that consolidation
+require a reset of the schema and migration ledger; deleting rows alone is not
+enough. The migrator keeps rejecting changed checksums and never resets data
+automatically. Use `./dev.sh reset` for disposable local development state.
+
 Run the `store-pg` live integration tests against this stack:
 
 ```bash

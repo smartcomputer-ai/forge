@@ -3194,7 +3194,8 @@ mod tests {
             let registry = Arc::new(InMemoryEnvironmentRegistryStore::new());
             register_test_environment_provider(registry.as_ref(), "allowed").await;
             let environment_id = EnvironmentId::new("environment-allowed-1");
-            observe_test_environment(registry.as_ref(), environment_id.as_str(), "allowed", 10).await;
+            observe_test_environment(registry.as_ref(), environment_id.as_str(), "allowed", 10)
+                .await;
             registry
                 .observe_provisioned_environment(ObserveProvisionedEnvironment {
                     environment_id: environment_id.clone(),

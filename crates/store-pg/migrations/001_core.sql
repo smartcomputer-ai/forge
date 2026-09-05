@@ -9,7 +9,7 @@
 -- - Large CAS payloads are stored externally; object_key points at the bytes.
 -- - Packed CAS objects are intentionally omitted from v1. put_many can batch
 --   hashes, external uploads, and INSERTs without changing this schema.
--- - Generated columns require PostgreSQL 12 or newer.
+-- - Column-scoped lineage deletion requires PostgreSQL 15 or newer.
 
 CREATE TABLE IF NOT EXISTS universes (
     universe_id uuid PRIMARY KEY,
@@ -23,20 +23,24 @@ CREATE TABLE IF NOT EXISTS universes (
         CHECK (slug IS NULL OR slug ~ '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$')
 );
 
-ALTER TABLE universes
-    ADD COLUMN IF NOT EXISTS created_at_ms bigint NOT NULL
-        DEFAULT ((extract(epoch FROM now()) * 1000)::bigint);
-
 CREATE TABLE IF NOT EXISTS sessions (
     universe_id uuid NOT NULL
         REFERENCES universes (universe_id) ON DELETE CASCADE,
     session_id text NOT NULL,
     -- Human-readable name; store metadata only, never event-log state.
     display_name text,
+    metadata_json jsonb NOT NULL DEFAULT '{}',
     -- Materialized CoreAgent lifecycle for cheap list/filter operations. The
     -- event log remains authoritative and this is updated transactionally.
     lifecycle_status text NOT NULL DEFAULT 'new',
     closed_at_seq bigint,
+    closed_at_ms bigint,
+    -- History forks and delegated children share their owner's retention root;
+    -- config-only clones are independent roots. Only roots carry a policy.
+    retention_root_session_id text NOT NULL,
+    delete_after_close_ms bigint,
+    delete_at_ms bigint GENERATED ALWAYS AS
+        (closed_at_ms + delete_after_close_ms) STORED,
     -- Cheap catalog projection of external lifecycle ownership. Workflow-tool
     -- declarations without a lifecycle controller do not make a session
     -- managed; controller/tool details remain in the log.
@@ -76,8 +80,10 @@ CREATE TABLE IF NOT EXISTS sessions (
 
     PRIMARY KEY (universe_id, session_id),
 
-    FOREIGN KEY (universe_id, source_session_id)
-        REFERENCES sessions (universe_id, session_id) ON DELETE SET NULL,
+    -- Deleting a clone's source clears its lineage without clearing its universe.
+    CONSTRAINT sessions_source_session_id_fkey
+        FOREIGN KEY (universe_id, source_session_id)
+        REFERENCES sessions (universe_id, session_id) ON DELETE SET NULL (source_session_id),
 
     CONSTRAINT sessions_session_id_format
         CHECK (session_id ~ '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$'),
@@ -115,6 +121,21 @@ CREATE TABLE IF NOT EXISTS sessions (
                 AND origin_parent_session_id <> ''
             )
         ),
+    CONSTRAINT sessions_closed_at_pair
+        CHECK ((closed_at_ms IS NULL) = (closed_at_seq IS NULL)),
+    CONSTRAINT sessions_closed_at_ms_nonnegative
+        CHECK (closed_at_ms IS NULL OR closed_at_ms >= 0),
+    CONSTRAINT sessions_retention_root_format
+        CHECK (retention_root_session_id ~ '^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$'),
+    CONSTRAINT sessions_delete_after_close_positive
+        CHECK (delete_after_close_ms IS NULL OR delete_after_close_ms > 0),
+    CONSTRAINT sessions_retention_policy_on_root
+        CHECK (
+            retention_root_session_id = session_id
+            OR delete_after_close_ms IS NULL
+        ),
+    CONSTRAINT sessions_metadata_object
+        CHECK (jsonb_typeof(metadata_json) = 'object'),
     CONSTRAINT sessions_created_at_ms_nonnegative
         CHECK (created_at_ms >= 0),
     CONSTRAINT sessions_updated_at_ms_nonnegative
@@ -122,70 +143,6 @@ CREATE TABLE IF NOT EXISTS sessions (
     CONSTRAINT sessions_updated_after_created
         CHECK (updated_at_ms >= created_at_ms)
 );
-
-ALTER TABLE sessions
-    ADD COLUMN IF NOT EXISTS display_name text;
-
-ALTER TABLE sessions
-    ADD COLUMN IF NOT EXISTS lifecycle_status text NOT NULL DEFAULT 'new';
-
-ALTER TABLE sessions
-    ADD COLUMN IF NOT EXISTS closed_at_seq bigint;
-
-ALTER TABLE sessions
-    ADD COLUMN IF NOT EXISTS managed boolean NOT NULL DEFAULT false;
-
-ALTER TABLE sessions
-    ADD COLUMN IF NOT EXISTS source_session_id text;
-
-ALTER TABLE sessions
-    ADD COLUMN IF NOT EXISTS source_seq bigint;
-
-DO $$
-BEGIN
-    IF NOT EXISTS (
-        SELECT 1
-        FROM pg_constraint
-        WHERE conrelid = 'sessions'::regclass
-          AND conname = 'sessions_source_session_id_fkey'
-    ) THEN
-        ALTER TABLE sessions
-            ADD CONSTRAINT sessions_source_session_id_fkey
-            FOREIGN KEY (universe_id, source_session_id)
-            REFERENCES sessions (universe_id, session_id) ON DELETE SET NULL;
-    END IF;
-END
-$$;
-
-DO $$
-BEGIN
-    IF NOT EXISTS (
-        SELECT 1
-        FROM pg_constraint
-        WHERE conrelid = 'sessions'::regclass
-          AND conname = 'sessions_source_seq_requires_source'
-    ) THEN
-        ALTER TABLE sessions
-            ADD CONSTRAINT sessions_source_seq_requires_source
-            CHECK (source_seq IS NULL OR source_session_id IS NOT NULL);
-    END IF;
-END
-$$;
-
-DO $$
-BEGIN
-    IF NOT EXISTS (
-        SELECT 1
-        FROM pg_constraint
-        WHERE conrelid = 'sessions'::regclass
-          AND conname = 'sessions_source_not_self'
-    ) THEN
-        ALTER TABLE sessions
-            ADD CONSTRAINT sessions_source_not_self
-            CHECK (source_session_id IS NULL OR source_session_id <> session_id);
-    END IF;
-END
-$$;
 
 CREATE INDEX IF NOT EXISTS sessions_source_session_id_idx
     ON sessions (universe_id, source_session_id)
@@ -206,15 +163,14 @@ CREATE INDEX IF NOT EXISTS sessions_updated_at_idx
 CREATE INDEX IF NOT EXISTS sessions_lifecycle_updated_at_idx
     ON sessions (universe_id, lifecycle_status, updated_at_ms DESC, session_id DESC);
 
-ALTER TABLE sessions
-    DROP CONSTRAINT IF EXISTS sessions_source_seq_positive;
+CREATE INDEX IF NOT EXISTS sessions_retention_root_idx
+    ON sessions (universe_id, retention_root_session_id, session_id);
+CREATE INDEX IF NOT EXISTS sessions_retention_due_idx
+    ON sessions (universe_id, delete_at_ms, session_id)
+    WHERE lifecycle_status = 'closed' AND delete_at_ms IS NOT NULL;
 
-ALTER TABLE sessions
-    DROP CONSTRAINT IF EXISTS sessions_source_seq_nonnegative;
-
-ALTER TABLE sessions
-    ADD CONSTRAINT sessions_source_seq_nonnegative
-        CHECK (source_seq IS NULL OR source_seq >= 0);
+CREATE INDEX IF NOT EXISTS sessions_metadata_idx
+    ON sessions USING gin (metadata_json jsonb_path_ops);
 
 CREATE TABLE IF NOT EXISTS session_events (
     universe_id uuid NOT NULL,
@@ -228,6 +184,14 @@ CREATE TABLE IF NOT EXISTS session_events (
         (entry_json #>> '{event,kind}') STORED,
     event_version integer GENERATED ALWAYS AS
         ((entry_json #>> '{event,version}')::integer) STORED,
+
+    -- Every embedded CAS reference roots its blob for the lifetime of this event.
+    blob_refs jsonb GENERATED ALWAYS AS (
+        jsonb_path_query_array(
+            entry_json,
+            'strict $.** ? (@.type() == "string" && @ like_regex "^sha256:[0-9a-f]{64}$")'
+        )
+    ) STORED,
 
     PRIMARY KEY (universe_id, session_id, seq),
     FOREIGN KEY (universe_id, session_id)
@@ -255,6 +219,9 @@ CREATE TABLE IF NOT EXISTS session_events (
 CREATE INDEX IF NOT EXISTS session_events_event_kind_idx
     ON session_events (universe_id, event_kind);
 
+CREATE INDEX IF NOT EXISTS session_events_blob_refs_idx
+    ON session_events USING gin (blob_refs jsonb_path_ops);
+
 CREATE TABLE IF NOT EXISTS cas_blobs (
     universe_id uuid NOT NULL
         REFERENCES universes (universe_id) ON DELETE CASCADE,
@@ -266,6 +233,8 @@ CREATE TABLE IF NOT EXISTS cas_blobs (
     object_key text,
     object_etag text,
     object_version text,
+    created_at_ms bigint NOT NULL,
+    touched_at_ms bigint NOT NULL,
 
     PRIMARY KEY (universe_id, digest),
 
@@ -273,6 +242,10 @@ CREATE TABLE IF NOT EXISTS cas_blobs (
         CHECK (digest ~ '^[0-9a-f]{64}$'),
     CONSTRAINT cas_blobs_byte_len_nonnegative
         CHECK (byte_len >= 0),
+    CONSTRAINT cas_blobs_created_at_ms_nonnegative
+        CHECK (created_at_ms >= 0),
+    CONSTRAINT cas_blobs_touched_after_created
+        CHECK (touched_at_ms >= created_at_ms),
     CONSTRAINT cas_blobs_storage_kind_known
         CHECK (storage_kind IN ('inline', 'object')),
     CONSTRAINT cas_blobs_inline_or_object
@@ -302,36 +275,46 @@ CREATE UNIQUE INDEX IF NOT EXISTS cas_blobs_object_key_idx
     ON cas_blobs (object_key)
     WHERE object_key IS NOT NULL;
 
-CREATE TABLE IF NOT EXISTS cas_session_roots (
+-- The sweep considers the oldest untouched blobs after its grace period.
+CREATE INDEX IF NOT EXISTS cas_blobs_touched_at_idx
+    ON cas_blobs (universe_id, touched_at_ms);
+
+-- Disposable, advance-only pointers to CAS-backed session reducer state.
+-- The append-only event log remains the sole durable authority.
+
+CREATE TABLE IF NOT EXISTS session_checkpoints (
     universe_id uuid NOT NULL,
     session_id text NOT NULL,
-    digest text NOT NULL,
-    root_kind text NOT NULL DEFAULT 'session',
-    first_seq bigint,
-    last_seq bigint,
+    through_seq bigint NOT NULL,
+    format_version integer NOT NULL,
+    state_digest text NOT NULL,
+    lineage_source_session_id text,
+    lineage_source_seq bigint,
+    byte_len bigint NOT NULL,
+    created_at_ms bigint NOT NULL,
 
-    PRIMARY KEY (universe_id, session_id, digest, root_kind),
+    PRIMARY KEY (universe_id, session_id),
     FOREIGN KEY (universe_id, session_id)
         REFERENCES sessions (universe_id, session_id) ON DELETE CASCADE,
-    FOREIGN KEY (universe_id, digest)
+    FOREIGN KEY (universe_id, state_digest)
         REFERENCES cas_blobs (universe_id, digest) ON DELETE RESTRICT,
 
-    CONSTRAINT cas_session_roots_root_kind_present
-        CHECK (root_kind <> ''),
-    CONSTRAINT cas_session_roots_first_seq_positive
-        CHECK (first_seq IS NULL OR first_seq > 0),
-    CONSTRAINT cas_session_roots_last_seq_positive
-        CHECK (last_seq IS NULL OR last_seq > 0),
-    CONSTRAINT cas_session_roots_seq_order
-        CHECK (
-            first_seq IS NULL
-            OR last_seq IS NULL
-            OR last_seq >= first_seq
-        )
+    CONSTRAINT session_checkpoints_through_seq_positive CHECK (through_seq > 0),
+    CONSTRAINT session_checkpoints_format_version_positive CHECK (format_version > 0),
+    CONSTRAINT session_checkpoints_byte_len_nonnegative CHECK (byte_len >= 0),
+    CONSTRAINT session_checkpoints_created_at_ms_nonnegative CHECK (created_at_ms >= 0),
+    -- Clones record a source session with no source sequence (fresh log);
+    -- only a sequence without a session is malformed.
+    CONSTRAINT session_checkpoints_lineage_pair CHECK (
+        NOT (lineage_source_session_id IS NULL AND lineage_source_seq IS NOT NULL)
+    )
 );
 
-CREATE INDEX IF NOT EXISTS cas_session_roots_digest_idx
-    ON cas_session_roots (universe_id, digest);
+CREATE INDEX IF NOT EXISTS session_checkpoints_state_digest_idx
+    ON session_checkpoints (universe_id, state_digest);
+
+COMMENT ON TABLE session_checkpoints IS
+    'Disposable advance-only pointers to CAS-backed reducer state; session_events remains authoritative.';
 
 CREATE TABLE IF NOT EXISTS cas_blob_edges (
     universe_id uuid NOT NULL,
@@ -366,7 +349,13 @@ COMMENT ON TABLE session_events IS
     'Append-only stored session entries as canonical JSONB with generated query columns.';
 COMMENT ON TABLE cas_blobs IS
     'Universe-scoped CAS catalog keyed by sha256 digest; small payloads inline, large payloads external.';
-COMMENT ON TABLE cas_session_roots IS
-    'Session-scoped CAS roots used by future reachability and garbage collection.';
 COMMENT ON TABLE cas_blob_edges IS
     'Optional best-effort parent-child CAS edges recorded outside put_bytes.';
+COMMENT ON COLUMN sessions.metadata_json IS
+    'Descriptive key/value metadata; never routing, authority, or selection.';
+COMMENT ON COLUMN cas_blobs.created_at_ms IS
+    'Unix milliseconds of the first put of this content in the universe.';
+COMMENT ON COLUMN cas_blobs.touched_at_ms IS
+    'Unix milliseconds of the most recent put of this content; the collection grace period counts from here.';
+COMMENT ON COLUMN session_events.blob_refs IS
+    'Generated: every sha256 blob ref string the stored entry embeds; the blobs it names are live while the row exists.';

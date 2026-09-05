@@ -99,39 +99,9 @@ pub const MIGRATIONS: &[EmbeddedMigration] = &[
         name: "channels",
         sql: include_str!("../migrations/009_channels.sql"),
     },
-    EmbeddedMigration {
-        version: 10,
-        name: "mcp_runtime",
-        sql: include_str!("../migrations/010_mcp_runtime.sql"),
-    },
-    EmbeddedMigration {
-        version: 11,
-        name: "session_checkpoints",
-        sql: include_str!("../migrations/011_session_checkpoints.sql"),
-    },
-    EmbeddedMigration {
-        version: 12,
-        name: "environment_registration",
-        sql: include_str!("../migrations/012_environment_registration.sql"),
-    },
-    EmbeddedMigration {
-        version: 13,
-        name: "session_metadata",
-        sql: include_str!("../migrations/013_session_metadata.sql"),
-    },
-    EmbeddedMigration {
-        version: 14,
-        name: "session_retention",
-        sql: include_str!("../migrations/014_session_retention.sql"),
-    },
-    EmbeddedMigration {
-        version: 15,
-        name: "cas_blob_gc",
-        sql: include_str!("../migrations/015_cas_blob_gc.sql"),
-    },
 ];
 
-pub const REQUIRED_SCHEMA_REVISION: i64 = 15;
+pub const REQUIRED_SCHEMA_REVISION: i64 = 9;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SchemaStatus {

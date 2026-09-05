@@ -139,8 +139,7 @@ impl PgStore {
                     lifecycle_status = $5,
                     closed_at_seq = $6,
                     managed = $7,
-                    closed_at_ms = $8,
-                    delete_at_ms = $9
+                    closed_at_ms = $8
                 WHERE universe_id = $1 AND session_id = $2
                 "#,
             )
@@ -155,7 +154,6 @@ impl PgStore {
             )?)
             .bind(record.managed)
             .bind(optional_u64_to_i64(record.closed_at_ms, "closed_at_ms")?)
-            .bind(optional_u64_to_i64(record.delete_at_ms, "delete_at_ms")?)
             .execute(&mut *tx)
             .await
             .map_err(|error| session_sql_error("update session head", error))?;
@@ -711,7 +709,7 @@ impl SessionStore for PgStore {
             .begin()
             .await
             .map_err(|error| session_sql_error("begin retention transaction", error))?;
-        let mut record = lock_session(
+        let record = lock_session(
             &mut tx,
             self.config.universe_id,
             session_id,
@@ -724,23 +722,10 @@ impl SessionStore for PgStore {
                 retention_root_session_id: record.retention_root_session_id,
             });
         }
-        record.delete_after_close_ms = delete_after_close_ms;
-        record.delete_at_ms = record
-            .closed_at_ms
-            .zip(delete_after_close_ms)
-            .map(|(closed_at_ms, duration_ms)| {
-                closed_at_ms.checked_add(duration_ms).ok_or_else(|| {
-                    SessionStoreError::InvalidRetention {
-                        message: "deleteAfterCloseMs overflows the deletion deadline".to_owned(),
-                    }
-                })
-            })
-            .transpose()?;
         let query = format!(
             r#"
             UPDATE sessions
-            SET delete_after_close_ms = $3,
-                delete_at_ms = $4
+            SET delete_after_close_ms = $3
             WHERE universe_id = $1 AND session_id = $2
             RETURNING {SESSION_COLUMNS}
             "#,
@@ -749,10 +734,9 @@ impl SessionStore for PgStore {
             .bind(self.config.universe_id)
             .bind(session_id.as_str())
             .bind(optional_u64_to_i64(
-                record.delete_after_close_ms,
+                delete_after_close_ms,
                 "delete_after_close_ms",
             )?)
-            .bind(optional_u64_to_i64(record.delete_at_ms, "delete_at_ms")?)
             .fetch_one(&mut *tx)
             .await
             .map_err(|error| session_sql_error("set session retention", error))?;
@@ -1685,8 +1669,7 @@ async fn append_events_in_tx(
                 lifecycle_status = $5,
                 closed_at_seq = $6,
                 managed = $7,
-                closed_at_ms = $8,
-                delete_at_ms = $9
+                closed_at_ms = $8
             WHERE universe_id = $1 AND session_id = $2
             "#,
         )
@@ -1701,7 +1684,6 @@ async fn append_events_in_tx(
         )?)
         .bind(record.managed)
         .bind(optional_u64_to_i64(record.closed_at_ms, "closed_at_ms")?)
-        .bind(optional_u64_to_i64(record.delete_at_ms, "delete_at_ms")?)
         .execute(&mut **tx)
         .await
         .map_err(|error| session_sql_error("update session head", error))?;

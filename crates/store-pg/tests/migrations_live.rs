@@ -105,6 +105,48 @@ async fn exercise_migrator(pool: &sqlx::PgPool) -> Result<(), String> {
         return Err(format!("unexpected migrated status: {status:?}"));
     }
 
+    // The public schema can have these same names. Every newly migrated schema
+    // must still receive its own foreign keys, including the deferred cycle.
+    let foreign_keys: Vec<(String, bool, bool, bool)> = sqlx::query_as(
+        "SELECT constraint_row.conname::text, constraint_row.condeferrable,
+                constraint_row.condeferred,
+                source.relnamespace = target.relnamespace
+         FROM pg_constraint AS constraint_row
+         JOIN pg_class AS source ON source.oid = constraint_row.conrelid
+         JOIN pg_class AS target ON target.oid = constraint_row.confrelid
+         WHERE source.relnamespace = current_schema()::regnamespace
+           AND constraint_row.conname IN (
+               'environments_current_incarnation_fk',
+               'environments_registration_key_fk',
+               'mcp_servers_auth_grant_fk'
+           )
+         ORDER BY constraint_row.conname",
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(|error| error.to_string())?;
+    if foreign_keys
+        != vec![
+            (
+                "environments_current_incarnation_fk".to_owned(),
+                true,
+                true,
+                true,
+            ),
+            (
+                "environments_registration_key_fk".to_owned(),
+                false,
+                false,
+                true,
+            ),
+            ("mcp_servers_auth_grant_fk".to_owned(), false, false, true),
+        ]
+    {
+        return Err(format!(
+            "missing or incorrect local foreign keys: {foreign_keys:?}"
+        ));
+    }
+
     let rows: Vec<(i64, String, String)> =
         sqlx::query_as("SELECT version, name, checksum FROM schema_migrations ORDER BY version")
             .fetch_all(pool)
