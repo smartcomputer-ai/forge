@@ -1162,7 +1162,7 @@ async fn pg_live_sweep_frees_only_unreachable_blobs_after_grace() {
     // roots in the same transaction (covered by the bot-store live tests).
     sqlx::query("INSERT INTO cas_bot_event_roots (universe_id, bot_id, event_id, digest) SELECT $1, 'sweep-bot', 'evt-1', unnest($2::text[])")
         .bind(universe_id)
-        .bind([&bot_document, &bot_prompt, &bot_media].map(|r| digest(r)))
+        .bind([&bot_document, &bot_prompt, &bot_media].map(digest))
         .execute(store.pool()).await.expect("fixture bot roots");
     store
         .record_blob_edges(vec![BlobEdge::contains(parent.clone(), child.clone())])
