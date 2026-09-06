@@ -129,3 +129,30 @@ fn committed_schema_artifacts_are_current() {
         "crates/api/contract/api-reference.md is stale; run `cargo run -p api --bin export-schema` and commit the result"
     );
 }
+
+#[test]
+fn compaction_schema_exposes_editor_field_names() {
+    let bundle = committed("api.schema.json");
+    let policy = &bundle["definitions"]["CompactionPolicy"];
+    let variants = policy["oneOf"].as_array().expect("compaction variants");
+    let mut thresholds = 0;
+    let mut targets = 0;
+    for variant in variants {
+        let properties = variant["properties"]
+            .as_object()
+            .expect("variant properties");
+        assert!(!properties.contains_key("compact_threshold_tokens"));
+        assert!(!properties.contains_key("target_tokens"));
+        thresholds += usize::from(properties.contains_key("compactThresholdTokens"));
+        targets += usize::from(properties.contains_key("targetTokens"));
+    }
+    assert_eq!(thresholds, 2);
+    assert_eq!(targets, 1);
+    assert_validates(
+        &bundle,
+        "CompactionPolicy",
+        &json!({
+            "mode": "providerStandalone", "compactThresholdTokens": 250000, "targetTokens": 100000
+        }),
+    );
+}

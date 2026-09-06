@@ -270,13 +270,13 @@ export type CompactionPolicy =
       mode: "disabled";
     }
   | {
-      compact_threshold_tokens?: number | null;
+      compactThresholdTokens?: number | null;
       mode: "providerTriggered";
     }
   | {
-      compact_threshold_tokens?: number | null;
+      compactThresholdTokens?: number | null;
       mode: "providerStandalone";
-      target_tokens?: number | null;
+      targetTokens?: number | null;
     };
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema

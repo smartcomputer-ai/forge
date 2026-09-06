@@ -7031,7 +7031,7 @@
         },
         {
           "properties": {
-            "compact_threshold_tokens": {
+            "compactThresholdTokens": {
               "format": "uint32",
               "minimum": 0,
               "type": [
@@ -7051,7 +7051,7 @@
         },
         {
           "properties": {
-            "compact_threshold_tokens": {
+            "compactThresholdTokens": {
               "format": "uint32",
               "minimum": 0,
               "type": [
@@ -7063,7 +7063,7 @@
               "const": "providerStandalone",
               "type": "string"
             },
-            "target_tokens": {
+            "targetTokens": {
               "format": "uint32",
               "minimum": 0,
               "type": [
