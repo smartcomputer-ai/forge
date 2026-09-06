@@ -85,6 +85,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { sessionDraftKey } from "@/lib/sessions/draft";
 import { SessionComposer, type ComposerMode } from "@/components/session/composer";
 import { Switch } from "@/components/ui/switch";
 import {
@@ -161,7 +162,7 @@ export function SessionsPage({ admin }: { admin: boolean }) {
         <ProviderReadinessBanner universeId={universe.id} slug={slug!} />
         {sessionId ? (
           <SessionDetail
-            key={sessionId}
+            key={sessionDraftKey(universe.id, sessionId)}
             universeId={universe.id}
             slug={slug!}
             sessionId={sessionId}
@@ -1346,6 +1347,7 @@ export function SessionDetail({
   const [notices, setNotices] = useState<{ id: string; text: string }[]>([]);
   const [stoppingRunId, setStoppingRunId] = useState<string | null>(null);
   const [cancellingQueued, setCancellingQueued] = useState<Set<string>>(() => new Set());
+  const [followRequest, setFollowRequest] = useState(0);
   const [sendError, setSendError] = useState<string | null>(null);
   const [closeError, setCloseError] = useState<string | null>(null);
   const [closeOpen, setCloseOpen] = useState(false);
@@ -1609,6 +1611,7 @@ export function SessionDetail({
         `/api/v1/universes/${universeId}/sessions/${sessionId}/messages`,
         { text, submissionId },
       );
+      setFollowRequest((request) => request + 1);
       setPending((prev) =>
         prev.map((message) =>
           message.id === submissionId
@@ -1642,6 +1645,7 @@ export function SessionDetail({
         `/api/v1/universes/${universeId}/sessions/${sessionId}/runs/${runId}/steer`,
         { text },
       );
+      setFollowRequest((request) => request + 1);
     } catch (error) {
       setPendingSteers((prev) => prev.filter((steer) => steer.id !== id));
       setSendError(error instanceof Error ? error.message : String(error));
@@ -2073,6 +2077,7 @@ export function SessionDetail({
           <MessageScrollerButton />
         </MessageScroller>
         <SessionScrollFollower
+          followRequest={followRequest}
           ready={tail.phase === "live"}
           entries={entries}
           pending={pendingInTranscript}
@@ -2083,6 +2088,8 @@ export function SessionDetail({
         <QueuedRunsBar items={queuedItems} onCancel={(runId) => void cancelQueued(runId)} />
       )}
       <SessionComposer
+        key={sessionDraftKey(universeId, sessionId)}
+        draftKey={sessionDraftKey(universeId, sessionId)}
         runActive={runActive}
         canSteer={canSteer}
         stopping={stopping}
@@ -2166,11 +2173,13 @@ function queuedRunText(
 }
 
 function SessionScrollFollower({
+  followRequest,
   ready,
   entries,
   pending,
   activeRun,
 }: {
+  followRequest: number;
   ready: boolean;
   entries: TranscriptEntry[];
   pending: { id: string; text: string }[];
@@ -2179,8 +2188,15 @@ function SessionScrollFollower({
   const { scrollToEnd } = useMessageScroller();
   const scrollable = useMessageScrollerScrollable();
   const initialized = useRef(false);
+  const followedRequest = useRef(0);
 
   useLayoutEffect(() => {
+    if (followRequest !== followedRequest.current) {
+      followedRequest.current = followRequest;
+      // With autoScroll enabled, scrollToEnd also switches the scroller
+      // from manual reading back to following-bottom, including during catch-up.
+      scrollToEnd({ behavior: "auto" });
+    }
     if (!ready) {
       return;
     }
@@ -2192,7 +2208,7 @@ function SessionScrollFollower({
       initialized.current = true;
       scrollToEnd({ behavior: "auto" });
     }
-  }, [ready, entries, pending, activeRun, scrollable.end, scrollToEnd]);
+  }, [followRequest, ready, entries, pending, activeRun, scrollable.end, scrollToEnd]);
 
   return null;
 }

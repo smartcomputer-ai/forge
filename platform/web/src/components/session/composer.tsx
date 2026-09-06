@@ -1,6 +1,7 @@
 import { useState, type KeyboardEvent, type ReactNode } from "react";
 import { ArrowUp, LoaderCircle, Square } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { readSessionDraft, writeSessionDraft } from "@/lib/sessions/draft";
 
 /// How a message sent while a run is in progress is delivered.
 /// - `queue`: starts the next run once the active one (and anything
@@ -18,6 +19,7 @@ const steerKeyLabel = isMac ? "⌘↵" : "Ctrl+↵";
 /// run, and a Stop button cancels the active run. Closed sessions render
 /// the composer read-only for transcript inspection.
 export function SessionComposer({
+  draftKey,
   runActive,
   canSteer,
   stopping = false,
@@ -28,6 +30,8 @@ export function SessionComposer({
   onSend,
   onStop,
 }: {
+  /// Stable universe + session storage key; also used as the React key.
+  draftKey: string;
   /// A run is running, cancelling, or queued: Enter queues, ⌘/Ctrl+Enter
   /// steers.
   runActive: boolean;
@@ -45,7 +49,12 @@ export function SessionComposer({
   onSend: (text: string, mode: ComposerMode | null) => void;
   onStop: () => void;
 }) {
-  const [text, setText] = useState("");
+  const [text, setText] = useState(() => readSessionDraft(draftKey));
+  const updateText = (value: string) => {
+    setText(value);
+    // Write on input rather than on unmount, so navigation cannot lose edits.
+    writeSessionDraft(draftKey, value);
+  };
 
   const submit = (steer: boolean) => {
     const trimmed = text.trim();
@@ -58,7 +67,7 @@ export function SessionComposer({
     const mode: ComposerMode | null = !runActive ? null : steer ? "steer" : "queue";
     onSend(trimmed, mode);
     if (mode !== "steer" || canSteer) {
-      setText("");
+      updateText("");
     }
   };
 
@@ -90,7 +99,7 @@ export function SessionComposer({
         <textarea
           disabled={disabled}
           value={text}
-          onChange={(event) => setText(event.target.value)}
+          onChange={(event) => updateText(event.target.value)}
           onKeyDown={onKeyDown}
           placeholder={placeholder}
           aria-label="Message"

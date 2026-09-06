@@ -2,6 +2,7 @@ import { useEffect, useRef } from "react";
 import { LoaderCircle } from "lucide-react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { api, botLabel, type BotControllerSnapshot, type BotStateView, type BotView } from "@/api";
+import { sessionDraftKey } from "@/lib/sessions/draft";
 import { SessionDetail } from "@/pages/SessionsPage";
 
 /** The first thing a freshly created bot hears; its answer is the smoke test. */
@@ -71,7 +72,7 @@ export function BotChat({
   }
   return (
     <SessionDetail
-      key={selected}
+      key={sessionDraftKey(universeId, selected)}
       universeId={universeId}
       slug={slug}
       sessionId={selected}
