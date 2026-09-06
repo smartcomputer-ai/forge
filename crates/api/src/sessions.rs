@@ -359,17 +359,33 @@ pub struct ContextConfig {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase", tag = "mode")]
+#[serde(
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    tag = "mode"
+)]
 pub enum CompactionPolicy {
     Disabled,
     ProviderTriggered {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(
+            default,
+            alias = "compact_threshold_tokens",
+            skip_serializing_if = "Option::is_none"
+        )]
         compact_threshold_tokens: Option<u32>,
     },
     ProviderStandalone {
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(
+            default,
+            alias = "compact_threshold_tokens",
+            skip_serializing_if = "Option::is_none"
+        )]
         compact_threshold_tokens: Option<u32>,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[serde(
+            default,
+            alias = "target_tokens",
+            skip_serializing_if = "Option::is_none"
+        )]
         target_tokens: Option<u32>,
     },
 }
@@ -1460,4 +1476,47 @@ pub struct ToolCallEventView {
     pub arguments: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display: Option<ToolCallDisplayView>,
+}
+
+#[cfg(test)]
+mod compaction_wire_tests {
+    use super::CompactionPolicy;
+    use serde_json::json;
+
+    #[test]
+    fn editor_compaction_fields_round_trip() {
+        for (value, expected) in [
+            (
+                json!({"mode": "providerTriggered", "compactThresholdTokens": 250000}),
+                CompactionPolicy::ProviderTriggered {
+                    compact_threshold_tokens: Some(250000),
+                },
+            ),
+            (
+                json!({"mode": "providerStandalone", "compactThresholdTokens": 250000, "targetTokens": 100000}),
+                CompactionPolicy::ProviderStandalone {
+                    compact_threshold_tokens: Some(250000),
+                    target_tokens: Some(100000),
+                },
+            ),
+        ] {
+            let decoded: CompactionPolicy = serde_json::from_value(value.clone()).unwrap();
+            assert_eq!(decoded, expected);
+            assert_eq!(serde_json::to_value(decoded).unwrap(), value);
+        }
+    }
+
+    #[test]
+    fn legacy_compaction_fields_remain_readable() {
+        for mode in ["providerTriggered", "providerStandalone"] {
+            let mut legacy = json!({"mode": mode, "compact_threshold_tokens": 250000});
+            let mut canonical = json!({"mode": mode, "compactThresholdTokens": 250000});
+            if mode == "providerStandalone" {
+                legacy["target_tokens"] = json!(100000);
+                canonical["targetTokens"] = json!(100000);
+            }
+            let decoded: CompactionPolicy = serde_json::from_value(legacy).unwrap();
+            assert_eq!(serde_json::to_value(decoded).unwrap(), canonical);
+        }
+    }
 }

@@ -97,7 +97,7 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
             },
             {
               "properties": {
-                "compact_threshold_tokens": {
+                "compactThresholdTokens": {
                   "format": "uint32",
                   "minimum": 0,
                   "type": [
@@ -117,7 +117,7 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
             },
             {
               "properties": {
-                "compact_threshold_tokens": {
+                "compactThresholdTokens": {
                   "format": "uint32",
                   "minimum": 0,
                   "type": [
@@ -129,7 +129,7 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                   "const": "providerStandalone",
                   "type": "string"
                 },
-                "target_tokens": {
+                "targetTokens": {
                   "format": "uint32",
                   "minimum": 0,
                   "type": [
@@ -1408,7 +1408,7 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
             },
             {
               "properties": {
-                "compact_threshold_tokens": {
+                "compactThresholdTokens": {
                   "format": "uint32",
                   "minimum": 0,
                   "type": [
@@ -1428,7 +1428,7 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
             },
             {
               "properties": {
-                "compact_threshold_tokens": {
+                "compactThresholdTokens": {
                   "format": "uint32",
                   "minimum": 0,
                   "type": [
@@ -1440,7 +1440,7 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                   "const": "providerStandalone",
                   "type": "string"
                 },
-                "target_tokens": {
+                "targetTokens": {
                   "format": "uint32",
                   "minimum": 0,
                   "type": [
@@ -3366,7 +3366,7 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
             },
             {
               "properties": {
-                "compact_threshold_tokens": {
+                "compactThresholdTokens": {
                   "format": "uint32",
                   "minimum": 0,
                   "type": [
@@ -3386,7 +3386,7 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
             },
             {
               "properties": {
-                "compact_threshold_tokens": {
+                "compactThresholdTokens": {
                   "format": "uint32",
                   "minimum": 0,
                   "type": [
@@ -3398,7 +3398,7 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                   "const": "providerStandalone",
                   "type": "string"
                 },
-                "target_tokens": {
+                "targetTokens": {
                   "format": "uint32",
                   "minimum": 0,
                   "type": [
@@ -5346,7 +5346,7 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
             },
             {
               "properties": {
-                "compact_threshold_tokens": {
+                "compactThresholdTokens": {
                   "format": "uint32",
                   "minimum": 0,
                   "type": [
@@ -5366,7 +5366,7 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
             },
             {
               "properties": {
-                "compact_threshold_tokens": {
+                "compactThresholdTokens": {
                   "format": "uint32",
                   "minimum": 0,
                   "type": [
@@ -5378,7 +5378,7 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                   "const": "providerStandalone",
                   "type": "string"
                 },
-                "target_tokens": {
+                "targetTokens": {
                   "format": "uint32",
                   "minimum": 0,
                   "type": [
@@ -6537,7 +6537,7 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
             },
             {
               "properties": {
-                "compact_threshold_tokens": {
+                "compactThresholdTokens": {
                   "format": "uint32",
                   "minimum": 0,
                   "type": [
@@ -6557,7 +6557,7 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
             },
             {
               "properties": {
-                "compact_threshold_tokens": {
+                "compactThresholdTokens": {
                   "format": "uint32",
                   "minimum": 0,
                   "type": [
@@ -6569,7 +6569,7 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                   "const": "providerStandalone",
                   "type": "string"
                 },
-                "target_tokens": {
+                "targetTokens": {
                   "format": "uint32",
                   "minimum": 0,
                   "type": [

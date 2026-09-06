@@ -8,8 +8,8 @@ export const PROFILE_CONFIG_REFERENCE = `// Every field is optional — omit any
   "context": {
     "compaction": // one of:
       { "mode": "disabled" } |
-      { "compact_threshold_tokens": 0, "mode": "providerTriggered" } |
-      { "compact_threshold_tokens": 0, "mode": "providerStandalone", "target_tokens": 0 },
+      { "compactThresholdTokens": 0, "mode": "providerTriggered" } |
+      { "compactThresholdTokens": 0, "mode": "providerStandalone", "targetTokens": 0 },
   },
   // Capability grants. An absent feature is not granted; \`{}\` grants it with defaults. Every block carries a behavior \`version\` that pins semantics.
   "features": {
