@@ -600,7 +600,14 @@ function applyNonToolCallItem(
       break;
     }
     case "providerOpaque":
-      if (item.display?.toolName) {
+      if (item.content.providerKind === "openai.responses.compaction") {
+        state.entries.push({
+          kind: "marker",
+          key: item.id,
+          text: "context compacted",
+          tone: "muted",
+        });
+      } else if (item.display?.toolName) {
         const groupIndex = createToolGroup(
           state,
           item.id,
