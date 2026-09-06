@@ -227,6 +227,69 @@ describe("session transcript traces", () => {
     }]);
   });
 
+  it("shows native compaction once across repeated context events without its payload", () => {
+    const compacted = item("native-compaction", { type: "providerOpaque" }, {
+      content: {
+        contentRef: "sha256:compaction",
+        mediaType: "application/json",
+        providerKind: "openai.responses.compaction",
+      },
+      text: '{"encrypted_content":"hidden-encrypted-payload"}',
+      preview: "hidden-encrypted-preview",
+    });
+    const events = [
+      event(1, { type: "contextEntriesApplied", entries: [compacted] }),
+      event(2, { type: "contextKeyPrefixReplaced", entries: [compacted] }),
+      event(3, { type: "contextStateReplaced", entries: [compacted] }),
+    ];
+    const state = applyEvents(emptyTranscript(), events);
+    const streamed = events.reduce((previous, next) => applyEvents(previous, [next]), emptyTranscript());
+    expect(streamed.entries).toEqual(state.entries);
+    expect(state.entries).toEqual([{
+      kind: "marker", key: "native-compaction", text: "context compacted", tone: "muted",
+    }]);
+    expect(JSON.stringify(state.entries)).not.toContain("hidden-encrypted");
+  });
+
+  it("preserves the standalone compaction marker", () => {
+    const state = applyEvents(emptyTranscript(), [
+      event(1, { type: "contextCompactionFinished" }),
+    ]);
+    expect(state.entries).toEqual([{
+      kind: "marker", key: "evt-1", text: "context compacted", tone: "muted",
+    }]);
+  });
+
+  it("preserves opaque tool displays while hiding unrelated opaque payloads", () => {
+    const state = applyEvents(emptyTranscript(), [event(1, {
+      type: "contextEntriesApplied",
+      entries: [
+        item("search", { type: "providerOpaque" }, {
+          display: {
+            toolName: "web_search", status: "succeeded",
+            arguments: "query", output: "search result", isError: false,
+            summary: { group: "explore", verb: "Search", target: "query" },
+          },
+        }),
+        item("unrelated", { type: "providerOpaque" }, {
+          content: {
+            contentRef: "sha256:unrelated", mediaType: "application/json",
+            providerKind: "unrelated.compaction",
+          },
+          text: "hidden opaque text", preview: "context compacted",
+        }),
+      ],
+    })]);
+    expect(state.entries).toHaveLength(1);
+    expect(state.entries[0]).toMatchObject({
+      kind: "tool-group", key: "search", status: "succeeded",
+      calls: [{
+        callId: "search", toolName: "web_search", status: "succeeded",
+        argumentsJson: "query", output: "search result", isError: false,
+      }],
+    });
+  });
+
   it("merges context calls, batch metadata, results, and status into one group", () => {
     const state = applyEvents(emptyTranscript(), [
       event(1, {
