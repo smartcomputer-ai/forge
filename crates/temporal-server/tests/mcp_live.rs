@@ -302,6 +302,7 @@ impl MatrixScriptedLlm {
                     provider_kind: Some("mcp-live-matrix".to_owned()),
                 },
                 preview: None,
+                origin: None,
                 provenance_ref: None,
                 token_estimate: None,
             }],
@@ -349,6 +350,7 @@ impl MatrixScriptedLlm {
                     provider_kind: Some("mcp-live-matrix".to_owned()),
                 },
                 preview: None,
+                origin: None,
                 provenance_ref: None,
                 token_estimate: None,
             }],
@@ -458,6 +460,7 @@ async fn run_matrix_client(
             session_id: session_id.as_str().to_owned(),
             source: RunStartSource::Input {
                 items: vec![InputItem::Text {
+                    origin: None,
                     text: "Exercise the native MCP matrix".to_owned(),
                 }],
             },
@@ -1069,6 +1072,7 @@ impl NativeMcpScriptedLlm {
                     provider_kind: Some("native-mcp-script".to_owned()),
                 },
                 preview: None,
+                origin: None,
                 provenance_ref: None,
                 token_estimate: None,
             }],
@@ -1116,6 +1120,7 @@ impl NativeMcpScriptedLlm {
                     provider_kind: Some("native-mcp-script".to_owned()),
                 },
                 preview: None,
+                origin: None,
                 provenance_ref: None,
                 token_estimate: None,
             }],
@@ -1183,6 +1188,7 @@ impl CoreAgentLlm for ApprovalScriptedLlm {
                         provider_kind: Some("approval-script".to_owned()),
                     },
                     preview: None,
+                    origin: None,
                     provenance_ref: None,
                     token_estimate: None,
                 }],
@@ -1238,6 +1244,7 @@ impl CoreAgentLlm for ApprovalScriptedLlm {
                     ),
                 },
                 preview: None,
+                origin: None,
                 provenance_ref: None,
                 token_estimate: None,
             }],
@@ -1298,6 +1305,7 @@ async fn run_approval_live_client(
                 session_id: session_id.as_str().to_owned(),
                 source: RunStartSource::Input {
                     items: vec![InputItem::Text {
+                        origin: None,
                         text: format!("approval test {index}"),
                     }],
                 },
@@ -1468,6 +1476,7 @@ async fn run_native_mcp_live_client(
             session_id: session_id.as_str().to_owned(),
             source: RunStartSource::Input {
                 items: vec![InputItem::Text {
+                    origin: None,
                     text: "List the configured models through the Configurator MCP".to_owned(),
                 }],
             },
@@ -1990,6 +1999,7 @@ impl MixedBatchScriptedLlm {
                     provider_kind: Some("mixed-batch-script".to_owned()),
                 },
                 preview: None,
+                origin: None,
                 provenance_ref: None,
                 token_estimate: None,
             });
@@ -2045,6 +2055,7 @@ impl MixedBatchScriptedLlm {
                     provider_kind: Some("mixed-batch-script".to_owned()),
                 },
                 preview: None,
+                origin: None,
                 provenance_ref: None,
                 token_estimate: None,
             }],
@@ -2132,6 +2143,7 @@ async fn run_mixed_batch_live_client(
             session_id: session_id.as_str().to_owned(),
             source: RunStartSource::Input {
                 items: vec![InputItem::Text {
+                    origin: None,
                     text: "Schedule a timer, then await it while listing models".to_owned(),
                 }],
             },

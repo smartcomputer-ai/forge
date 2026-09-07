@@ -34,6 +34,7 @@ fn entry(id: u64, kind: ContextEntryKind, content_ref: engine::BlobRef) -> Conte
             provider_kind: None,
         },
         preview: None,
+        origin: None,
         provenance_ref: None,
         token_estimate: None,
         supersedes: None,

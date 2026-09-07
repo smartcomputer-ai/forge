@@ -470,6 +470,7 @@ fn active_entry_input(entry: &ContextEntry) -> ContextEntryInput {
         kind: entry.kind.clone(),
         content: entry.content.clone(),
         preview: entry.preview.clone(),
+        origin: entry.origin.clone(),
         provenance_ref: entry.provenance_ref.clone(),
         token_estimate: entry.token_estimate.clone(),
     }
@@ -3228,7 +3229,7 @@ impl AgentApiService for GatewayAgentApi {
             match context_entry_input_from_api(self.store.as_ref(), &entry.item).await {
                 Ok(input) => {
                     let text = match &entry.item {
-                        InputItem::Text { text } => Some(text.trim().to_owned()),
+                        InputItem::Text { text, .. } => Some(text.trim().to_owned()),
                         _ => None,
                     };
                     prepared.push(PreparedAppend::Ready { key, input, text });
@@ -3707,6 +3708,7 @@ impl AgentApiService for GatewayAgentApi {
                             }
                             .to_owned(),
                         ),
+                        origin: None,
                         provenance_ref: None,
                         token_estimate: None,
                     })

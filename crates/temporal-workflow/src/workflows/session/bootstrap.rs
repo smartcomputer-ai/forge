@@ -154,6 +154,7 @@ fn instruction_context_input(content_ref: BlobRef) -> ContextEntryInput {
         kind: ContextEntryKind::Instructions,
         content: engine::ContentRef::text(content_ref),
         preview: None,
+        origin: None,
         provenance_ref: None,
         token_estimate: None,
     }

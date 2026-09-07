@@ -216,6 +216,7 @@ pub fn subagent_catalog_context_input(catalog_ref: BlobRef) -> ContextEntryInput
             provider_kind: None,
         },
         preview: Some("Sub-agent catalog".to_owned()),
+        origin: None,
         provenance_ref: None,
         token_estimate: None,
     }

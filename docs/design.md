@@ -80,7 +80,12 @@ Lightspeed solves this by offloading all data that is not directly needed by the
 Context inputs, committed entries, and terminal outputs share one `ContentRef`:
 `content_ref`, `media_type`, and `provider_kind` describe the immutable payload
 and its decoding format. Context adds semantic kind, insertion source, preview,
-and accounting. Its optional `provenance_ref` names an immutable origin or
+and accounting. An optional `origin` string follows each input through admission,
+preprocessing, context materialization, replay, and API projection. It describes
+application-supplied display provenance, independently of model role and insertion
+source; it is not provider message text or an authorization identity. The platform
+uses `user:<id>` for authenticated composer input and `event` for bot delivery.
+Other strings are allowed, and missing origin means unknown. Its optional `provenance_ref` names an immutable origin or
 construction artifact: source audio, a prompt assembly report, or a skill
 catalog snapshot. Native provider IDs stay in the native payload and can be
 projected for clients; they are not duplicated in reducer state.

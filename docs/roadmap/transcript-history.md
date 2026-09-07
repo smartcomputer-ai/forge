@@ -21,6 +21,21 @@ Status: implemented and verified.
   children. Background requests and errors retain the current lineage so the
   transcript viewport does not briefly expand and contract on message submission.
 
+## Input origin
+
+Implemented optional string `origin` on text, text-reference, and media inputs,
+accepted input views, and projected context items. It is persisted per entry,
+separate from insertion `source` and model role. Platform composer and steering
+requests stamp `user:<authenticated-user-id>`; bot event bodies, media, framing,
+steering, and context append stamp `event`. Arbitrary application values are
+accepted within 1–200 nonblank bytes; old history stays unknown. Audio
+preprocessing and context copies retain origin. No schema migration, history
+backfill, labels, or styling changes are required.
+
+Verification covers mixed input origins, custom values, projection, context
+append, audio transcription, run/steering replay, checkpoints, legacy events,
+and authenticated origin stamping despite a conflicting request-body value.
+
 ## Implementation
 
 `session/events/read` with `direction: "backward"` uses contiguous event sequence

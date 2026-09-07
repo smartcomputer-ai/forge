@@ -605,12 +605,14 @@ fn media_kind(kind: BotEventMediaKind) -> MediaKind {
 /// and its media.
 fn event_input_items(event: &BotEvent) -> impl Iterator<Item = InputItem> + '_ {
     std::iter::once(InputItem::TextRef {
+        origin: Some("event".to_owned()),
         blob_ref: event
             .prompt_ref
             .clone()
             .unwrap_or_else(|| event.document_ref.clone()),
     })
     .chain(event.media.iter().map(|item| InputItem::Media {
+        origin: Some("event".to_owned()),
         blob_ref: item.blob_ref.clone(),
         mime: item.mime.clone(),
         kind: media_kind(item.kind),
@@ -625,7 +627,7 @@ fn event_input_items(event: &BotEvent) -> impl Iterator<Item = InputItem> + '_ {
 pub fn delivery_input_items(events: &[BotEvent]) -> Vec<InputItem> {
     let mut items = Vec::new();
     if events.len() > 1 {
-        items.push(InputItem::Text {
+        items.push(InputItem::Text { origin: Some("event".to_owned()),
             text: format!(
                 "{} events delivered as one batch — handle them together and resolve the delivery once.",
                 events.len()
@@ -639,6 +641,7 @@ pub fn delivery_input_items(events: &[BotEvent]) -> Vec<InputItem> {
 /// Steering input for events folded into a running run.
 pub fn steer_input_items(events: &[BotEvent]) -> Vec<InputItem> {
     let mut items = vec![InputItem::Text {
+        origin: Some("event".to_owned()),
         text: format!(
             "{} more event(s) arrived while you were working — fold them into your current work where relevant.",
             events.len()
@@ -1466,6 +1469,7 @@ mod tests {
         assert_eq!(
             delivery_input_items(&[signal_event(&document_ref, Some(&prompt_ref))]),
             vec![InputItem::TextRef {
+                origin: Some("event".to_owned()),
                 blob_ref: prompt_ref.clone(),
             }]
         );
@@ -1473,6 +1477,7 @@ mod tests {
         assert_eq!(
             delivery_input_items(&[signal_event(&document_ref, None)]),
             vec![InputItem::TextRef {
+                origin: Some("event".to_owned()),
                 blob_ref: document_ref.clone(),
             }]
         );
@@ -1489,6 +1494,7 @@ mod tests {
         assert_eq!(
             items[1],
             InputItem::Media {
+                origin: Some("event".to_owned()),
                 blob_ref: format!("sha256:{}", "c".repeat(64)),
                 mime: "image/png".to_owned(),
                 kind: MediaKind::Image,
@@ -1503,20 +1509,23 @@ mod tests {
         let b = format!("sha256:{}", "b".repeat(64));
         let items = delivery_input_items(&[signal_event(&a, Some(&b)), signal_event(&b, Some(&a))]);
         assert_eq!(items.len(), 3);
-        let InputItem::Text { text } = &items[0] else {
+        let InputItem::Text { text, origin } = &items[0] else {
             panic!("expected a text header, got {:?}", items[0]);
         };
+        assert_eq!(origin.as_deref(), Some("event"));
         assert!(text.contains("2 events"), "{text}");
         assert!(text.contains("resolve the delivery once"), "{text}");
         assert_eq!(
             items[1],
             InputItem::TextRef {
+                origin: Some("event".to_owned()),
                 blob_ref: b.clone()
             }
         );
         assert_eq!(
             items[2],
             InputItem::TextRef {
+                origin: Some("event".to_owned()),
                 blob_ref: a.clone()
             }
         );
@@ -1528,11 +1537,18 @@ mod tests {
         let b = format!("sha256:{}", "b".repeat(64));
         let items = steer_input_items(&[signal_event(&a, Some(&b))]);
         assert_eq!(items.len(), 2);
-        let InputItem::Text { text } = &items[0] else {
+        let InputItem::Text { text, origin } = &items[0] else {
             panic!("expected a text header, got {:?}", items[0]);
         };
+        assert_eq!(origin.as_deref(), Some("event"));
         assert!(text.contains("1 more event(s)"), "{text}");
         assert!(text.contains("fold them into your current work"), "{text}");
-        assert_eq!(items[1], InputItem::TextRef { blob_ref: b });
+        assert_eq!(
+            items[1],
+            InputItem::TextRef {
+                origin: Some("event".to_owned()),
+                blob_ref: b
+            }
+        );
     }
 }

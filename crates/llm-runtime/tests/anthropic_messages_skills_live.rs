@@ -338,6 +338,7 @@ async fn anthropic_messages_live_selects_and_reads_the_matching_skill() {
                             provider_kind: None,
                         },
                         preview: None,
+                        origin: None,
                         provenance_ref: None,
                         token_estimate: None,
                     }],

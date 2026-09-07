@@ -286,6 +286,7 @@ pub(super) fn active_catalog_entry(catalog_ref: BlobRef) -> ContextEntry {
         },
         content: input.content,
         preview: input.preview,
+        origin: input.origin,
         provenance_ref: input.provenance_ref,
         token_estimate: input.token_estimate,
         supersedes: None,
@@ -365,6 +366,7 @@ pub(super) fn skill_activation_context_input(
             provider_kind: Some(skill_activation_provider_kind(scope).to_owned()),
         },
         preview: skill.map(|skill| format!("skill activated: {}", skill.name)),
+        origin: None,
         provenance_ref: Some(catalog_ref),
         token_estimate: None,
     }

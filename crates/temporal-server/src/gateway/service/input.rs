@@ -38,8 +38,10 @@ pub(super) async fn run_input_from_api(
     let mut entries = Vec::new();
     let mut media_items = 0usize;
     for item in input {
+        let origin = input_origin_from_api(item)?;
+        let first = entries.len();
         match item {
-            InputItem::Text { text } => {
+            InputItem::Text { text, .. } => {
                 let text = text.trim();
                 if !text.is_empty() {
                     let content_ref = store
@@ -49,7 +51,7 @@ pub(super) async fn run_input_from_api(
                     entries.push(user_message_input(content_ref));
                 }
             }
-            InputItem::TextRef { blob_ref } => {
+            InputItem::TextRef { blob_ref, .. } => {
                 let blob_ref = parse_blob_ref(blob_ref)?;
                 let text = store
                     .read_text(&blob_ref)
@@ -61,6 +63,7 @@ pub(super) async fn run_input_from_api(
                 }
             }
             InputItem::Media {
+                origin: _,
                 blob_ref,
                 mime,
                 kind,
@@ -81,6 +84,9 @@ pub(super) async fn run_input_from_api(
                     "catalog items are context, not conversation: publish them with session/context/append",
                 ));
             }
+        }
+        for entry in &mut entries[first..] {
+            entry.origin = origin.clone();
         }
     }
 
@@ -178,6 +184,7 @@ async fn media_message_input(
             provider_kind: None,
         },
         preview: Some(preview),
+        origin: None,
         provenance_ref: None,
         token_estimate: None,
     })
@@ -187,8 +194,9 @@ pub(super) async fn context_entry_input_from_api(
     store: &dyn BlobStore,
     item: &InputItem,
 ) -> Result<ContextEntryInput, AgentApiError> {
-    match item {
-        InputItem::Text { text } => {
+    let origin = input_origin_from_api(item)?;
+    let mut entry = match item {
+        InputItem::Text { text, .. } => {
             let text = text.trim();
             if text.is_empty() {
                 return Err(empty_context_append_item_error());
@@ -199,7 +207,7 @@ pub(super) async fn context_entry_input_from_api(
                 .map_err(map_blob_store_error)?;
             Ok(user_message_input(content_ref))
         }
-        InputItem::TextRef { blob_ref } => {
+        InputItem::TextRef { blob_ref, .. } => {
             let blob_ref = parse_blob_ref(blob_ref)?;
             let text = store
                 .read_text(&blob_ref)
@@ -211,6 +219,7 @@ pub(super) async fn context_entry_input_from_api(
             Ok(user_message_input(blob_ref))
         }
         InputItem::Media {
+            origin: _,
             blob_ref,
             mime,
             kind,
@@ -233,7 +242,9 @@ pub(super) async fn context_entry_input_from_api(
                 .map_err(map_blob_store_error)?;
             Ok(catalog_input(title.to_owned(), content_ref))
         }
-    }
+    }?;
+    entry.origin = origin;
+    Ok(entry)
 }
 
 fn empty_context_append_item_error() -> AgentApiError {
@@ -253,6 +264,7 @@ pub(super) fn catalog_input(title: String, content_ref: BlobRef) -> ContextEntry
             provider_kind: None,
         },
         preview: Some(title),
+        origin: None,
         provenance_ref: None,
         token_estimate: None,
     }
@@ -265,6 +277,7 @@ pub(super) fn user_message_input(content_ref: BlobRef) -> ContextEntryInput {
         },
         content: engine::ContentRef::text(content_ref),
         preview: None,
+        origin: None,
         provenance_ref: None,
         token_estimate: None,
     }
@@ -293,4 +306,21 @@ fn normalize_audio_mime(mime: &str) -> String {
         other => other,
     }
     .to_owned()
+}
+
+fn input_origin_from_api(item: &InputItem) -> Result<Option<String>, AgentApiError> {
+    let origin = match item {
+        InputItem::Text { origin, .. }
+        | InputItem::TextRef { origin, .. }
+        | InputItem::Media { origin, .. } => origin,
+        InputItem::Catalog { .. } => return Ok(None),
+    };
+    if let Some(origin) = origin {
+        if origin.trim().is_empty() || origin.len() > 200 {
+            return Err(AgentApiError::invalid_request(
+                "origin must contain 1–200 bytes and cannot be blank",
+            ));
+        }
+    }
+    Ok(origin.clone())
 }

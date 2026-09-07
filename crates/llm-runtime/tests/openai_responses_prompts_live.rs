@@ -310,6 +310,7 @@ async fn openai_responses_live_uses_vfs_prompt_instructions() {
                             provider_kind: None,
                         },
                         preview: None,
+                        origin: None,
                         provenance_ref: None,
                         token_estimate: None,
                     }],

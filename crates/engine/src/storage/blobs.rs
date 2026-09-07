@@ -890,6 +890,7 @@ mod tests {
             },
             content: crate::ContentRef::text(payload.clone()),
             preview: None,
+            origin: None,
             provenance_ref: Some(origin.clone()),
             token_estimate: None,
         };

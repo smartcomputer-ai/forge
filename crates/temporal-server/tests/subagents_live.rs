@@ -175,6 +175,7 @@ impl SubagentScriptedLlm {
                     provider_kind: Some("subagent-script".to_owned()),
                 },
                 preview: None,
+                origin: None,
                 provenance_ref: None,
                 token_estimate: None,
             });
@@ -235,6 +236,7 @@ impl SubagentScriptedLlm {
                     ),
                 },
                 preview: Some("subagent scripted final".to_owned()),
+                origin: None,
                 provenance_ref: None,
                 token_estimate: None,
             }],
@@ -572,6 +574,7 @@ async fn start_subagent_parent_with_features(
             session_id: session_id.as_str().to_owned(),
             source: RunStartSource::Input {
                 items: vec![InputItem::Text {
+                    origin: None,
                     text: script.to_owned(),
                 }],
             },
@@ -1066,6 +1069,7 @@ async fn run_agent_run_inherit_environment_live_client(
             session_id: session_id.as_str().to_owned(),
             source: RunStartSource::Input {
                 items: vec![InputItem::Text {
+                    origin: None,
                     text: format!("AGENT_RUN {child_profile_id}"),
                 }],
             },

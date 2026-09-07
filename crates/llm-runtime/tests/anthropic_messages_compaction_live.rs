@@ -218,6 +218,7 @@ async fn anthropic_messages_live_manual_standalone_compaction_preserves_marker()
                             provider_kind: None,
                         },
                         preview: None,
+                        origin: None,
                         provenance_ref: None,
                         token_estimate: None,
                     }],
@@ -411,6 +412,7 @@ fn anthropic_raw_context_input(
             provider_kind: Some(ANTHROPIC_MESSAGES_INPUT_MESSAGE_PROVIDER_KIND.to_owned()),
         },
         preview: Some("Anthropic raw input message".to_owned()),
+        origin: None,
         provenance_ref: None,
         token_estimate: token_estimate.map(|tokens| TokenEstimate {
             tokens,

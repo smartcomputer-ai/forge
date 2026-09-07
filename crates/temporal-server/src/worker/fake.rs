@@ -235,6 +235,7 @@ impl FakeLlm {
                     provider_kind: Some("fake".to_owned()),
                 },
                 preview: None,
+                origin: None,
                 provenance_ref: None,
                 token_estimate: None,
             });
@@ -304,6 +305,7 @@ impl FakeLlm {
                     provider_kind: Some("fake".to_owned()),
                 },
                 preview: Some("fake final answer".to_owned()),
+                origin: None,
                 provenance_ref: None,
                 token_estimate: None,
             }],

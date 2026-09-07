@@ -480,7 +480,7 @@ impl ChatSessionDriver {
                 notify_on_terminal: None,
                 session_id,
                 source: RunStartSource::Input {
-                    items: vec![InputItem::Text { text }],
+                    items: vec![InputItem::Text { origin: None, text }],
                 },
                 submission_id: Some(new_submission_id()),
                 config: Some(config),
@@ -547,7 +547,7 @@ impl ChatSessionDriver {
             .steer_run(api::RunSteerParams {
                 session_id: self.session_id.clone(),
                 run_id,
-                items: vec![InputItem::Text { text }],
+                items: vec![InputItem::Text { origin: None, text }],
             })
             .await
             .map_err(api_error)?
@@ -1969,6 +1969,7 @@ mod tests {
                     media_type: Some("application/json".into()),
                     provider_kind: Some("openai.responses.mcp_call".into()),
                 },
+                origin: None,
                 provenance_ref: None,
                 preview: Some("OpenAI Responses MCP tool call: echo.echo".into()),
                 provider_item_id: Some("mcp_1".into()),

@@ -2432,6 +2432,13 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
           "oneOf": [
             {
               "properties": {
+                "origin": {
+                  "description": "Application-supplied display provenance (1–200 nonblank bytes).\nThe platform uses `user:<id>` for direct human input and `event` for\nbot deliveries; other values are allowed. Omitted means unknown.\nThis metadata is not an authorization identity or model input text.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
                 "text": {
                   "type": "string"
                 },
@@ -2450,6 +2457,13 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
               "properties": {
                 "blobRef": {
                   "type": "string"
+                },
+                "origin": {
+                  "description": "Application-supplied display provenance (1–200 nonblank bytes).\nThe platform uses `user:<id>` for direct human input and `event` for\nbot deliveries; other values are allowed. Omitted means unknown.\nThis metadata is not an authorization identity or model input text.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
                 },
                 "type": {
                   "const": "textRef",
@@ -2474,6 +2488,13 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                   "type": "string"
                 },
                 "name": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "origin": {
+                  "description": "Application-supplied display provenance (1–200 nonblank bytes).\nThe platform uses `user:<id>` for direct human input and `event` for\nbot deliveries; other values are allowed. Omitted means unknown.\nThis metadata is not an authorization identity or model input text.",
                   "type": [
                     "string",
                     "null"
@@ -2683,6 +2704,13 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
           "oneOf": [
             {
               "properties": {
+                "origin": {
+                  "description": "Application-supplied display provenance (1–200 nonblank bytes).\nThe platform uses `user:<id>` for direct human input and `event` for\nbot deliveries; other values are allowed. Omitted means unknown.\nThis metadata is not an authorization identity or model input text.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
                 "text": {
                   "type": "string"
                 },
@@ -2701,6 +2729,13 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
               "properties": {
                 "blobRef": {
                   "type": "string"
+                },
+                "origin": {
+                  "description": "Application-supplied display provenance (1–200 nonblank bytes).\nThe platform uses `user:<id>` for direct human input and `event` for\nbot deliveries; other values are allowed. Omitted means unknown.\nThis metadata is not an authorization identity or model input text.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
                 },
                 "type": {
                   "const": "textRef",
@@ -2725,6 +2760,13 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                   "type": "string"
                 },
                 "name": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "origin": {
+                  "description": "Application-supplied display provenance (1–200 nonblank bytes).\nThe platform uses `user:<id>` for direct human input and `event` for\nbot deliveries; other values are allowed. Omitted means unknown.\nThis metadata is not an authorization identity or model input text.",
                   "type": [
                     "string",
                     "null"
@@ -3136,6 +3178,13 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
           "oneOf": [
             {
               "properties": {
+                "origin": {
+                  "description": "Application-supplied display provenance (1–200 nonblank bytes).\nThe platform uses `user:<id>` for direct human input and `event` for\nbot deliveries; other values are allowed. Omitted means unknown.\nThis metadata is not an authorization identity or model input text.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
                 "text": {
                   "type": "string"
                 },
@@ -3154,6 +3203,13 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
               "properties": {
                 "blobRef": {
                   "type": "string"
+                },
+                "origin": {
+                  "description": "Application-supplied display provenance (1–200 nonblank bytes).\nThe platform uses `user:<id>` for direct human input and `event` for\nbot deliveries; other values are allowed. Omitted means unknown.\nThis metadata is not an authorization identity or model input text.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
                 },
                 "type": {
                   "const": "textRef",
@@ -3178,6 +3234,13 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                   "type": "string"
                 },
                 "name": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "origin": {
+                  "description": "Application-supplied display provenance (1–200 nonblank bytes).\nThe platform uses `user:<id>` for direct human input and `event` for\nbot deliveries; other values are allowed. Omitted means unknown.\nThis metadata is not an authorization identity or model input text.",
                   "type": [
                     "string",
                     "null"

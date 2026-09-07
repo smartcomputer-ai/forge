@@ -317,12 +317,30 @@ pub enum RunStatus {
 )]
 pub enum InputItem {
     Text {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        /// Application-supplied display provenance (1–200 nonblank bytes).
+        /// The platform uses `user:<id>` for direct human input and `event` for
+        /// bot deliveries; other values are allowed. Omitted means unknown.
+        /// This metadata is not an authorization identity or model input text.
+        origin: Option<String>,
         text: String,
     },
     TextRef {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        /// Application-supplied display provenance (1–200 nonblank bytes).
+        /// The platform uses `user:<id>` for direct human input and `event` for
+        /// bot deliveries; other values are allowed. Omitted means unknown.
+        /// This metadata is not an authorization identity or model input text.
+        origin: Option<String>,
         blob_ref: String,
     },
     Media {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        /// Application-supplied display provenance (1–200 nonblank bytes).
+        /// The platform uses `user:<id>` for direct human input and `event` for
+        /// bot deliveries; other values are allowed. Omitted means unknown.
+        /// This metadata is not an authorization identity or model input text.
+        origin: Option<String>,
         blob_ref: String,
         mime: String,
         kind: MediaKind,
@@ -355,6 +373,11 @@ pub enum MediaKind {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ContextEntryInputView {
+    /// Application-supplied display origin, independent of role and insertion source.
+    /// `user:<id>` identifies platform composer input; `event` marks bot deliveries.
+    /// Other values are allowed; omission means unknown. Not an authorization identity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
     pub kind: ContextEntryKindView,
     pub content: crate::ContentRefView,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -434,6 +457,11 @@ pub enum TokenEstimateQualityView {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ContextEntryView {
+    /// Application-supplied display origin, independent of role and insertion source.
+    /// `user:<id>` identifies platform composer input; `event` marks bot deliveries.
+    /// Other values are allowed; omission means unknown. Not an authorization identity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
     pub id: ItemId,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key: Option<String>,

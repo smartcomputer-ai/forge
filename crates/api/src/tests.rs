@@ -50,6 +50,7 @@ fn notification_serializes_as_json_rpc_lite_shape() {
             completed_at_ms: Some(20),
             source: RunViewSource::Input {
                 items: vec![InputItem::Text {
+                    origin: None,
                     text: "hello".to_owned(),
                 }],
             },
@@ -1598,6 +1599,7 @@ fn provider_context_entry_serializes_debug_metadata() {
             media_type: Some("application/json".to_owned()),
             provider_kind: Some("openai.responses.compaction".to_owned()),
         },
+        origin: None,
         provenance_ref: None,
         preview: Some("OpenAI Responses compaction item".to_owned()),
         provider_item_id: Some("item_compaction_1".to_owned()),
@@ -1643,6 +1645,7 @@ fn provider_context_entry_serializes_mcp_display() {
             media_type: Some("application/json".to_owned()),
             provider_kind: Some("openai.responses.mcp_call".to_owned()),
         },
+        origin: None,
         provenance_ref: None,
         preview: Some("OpenAI Responses MCP tool call: echo.echo".to_owned()),
         provider_item_id: Some("mcp_1".to_owned()),

@@ -190,6 +190,7 @@ pub fn skill_catalog_context_input(catalog_ref: BlobRef) -> ContextEntryInput {
             provider_kind: None,
         },
         preview: Some("VFS skill catalog".to_owned()),
+        origin: None,
         provenance_ref: None,
         token_estimate: None,
     }
@@ -933,6 +934,7 @@ mod tests {
                 provider_kind: None,
             },
             preview: Some("skills catalog".to_owned()),
+            origin: None,
             provenance_ref: None,
             token_estimate: None,
             supersedes: None,

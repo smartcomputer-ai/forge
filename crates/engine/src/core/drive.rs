@@ -2110,6 +2110,87 @@ mod tests {
         drive.resume_appended(entries).expect("resume appended")
     }
 
+    #[test]
+    fn input_origin_survives_run_and_steering_replay_and_legacy_events() {
+        let mut drive = CoreAgentDrive::from_replayed(
+            SessionId::new("origin-test"),
+            CoreAgentState::new(),
+            None,
+        );
+        open_session(&mut drive);
+        let checkpoint = drive.state().clone();
+        let mut input = user_input(BlobRef::from_bytes(b"hello"));
+        input[0].origin = Some("user:operator".into());
+        let action = drive
+            .admit_command(request_run_command(None, input, run_config()), 20)
+            .unwrap();
+        let mut log = commit_action(&mut drive, action);
+        for at in [21, 22] {
+            let action = drive.next_action(at, 64).unwrap();
+            log.extend(commit_action(&mut drive, action));
+        }
+        let mut input = user_input(BlobRef::from_bytes(b"automated steering"));
+        input[0].origin = Some("event".into());
+        let action = drive
+            .admit_command(CoreAgentCommand::RequestRunSteering { input }, 23)
+            .unwrap();
+        log.extend(commit_action(&mut drive, action));
+        let action = drive.next_action(24, 64).unwrap();
+        log.extend(commit_action(&mut drive, action));
+        let origins: Vec<_> = drive
+            .state()
+            .context
+            .entries
+            .iter()
+            .map(|entry| entry.origin.as_deref())
+            .collect();
+        assert_eq!(origins, vec![Some("user:operator"), Some("event")]);
+        let mut replayed = checkpoint.clone();
+        for entry in &log {
+            let stored = CoreAgentCodec.encode_entry(entry).unwrap();
+            crate::apply_event(
+                &mut replayed,
+                &CoreAgentCodec.decode_entry(&stored).unwrap(),
+            )
+            .unwrap();
+        }
+        assert_eq!(&replayed, drive.state());
+        // Old event payloads and checkpoints omit origin. They still replay as unknown.
+        fn remove_origin(value: &mut serde_json::Value) {
+            match value {
+                serde_json::Value::Object(map) => {
+                    map.remove("origin");
+                    for value in map.values_mut() {
+                        remove_origin(value);
+                    }
+                }
+                serde_json::Value::Array(values) => {
+                    for value in values {
+                        remove_origin(value);
+                    }
+                }
+                _ => {}
+            }
+        }
+        let mut legacy = checkpoint;
+        for entry in &log {
+            let mut stored = CoreAgentCodec.encode_entry(entry).unwrap();
+            remove_origin(&mut stored.event.payload);
+            crate::apply_event(&mut legacy, &CoreAgentCodec.decode_entry(&stored).unwrap())
+                .unwrap();
+        }
+        assert!(
+            legacy
+                .context
+                .entries
+                .iter()
+                .all(|entry| entry.origin.is_none())
+        );
+        let checkpoint_json = serde_json::to_value(drive.state()).unwrap();
+        let restored: CoreAgentState = serde_json::from_value(checkpoint_json).unwrap();
+        assert_eq!(&restored, drive.state());
+    }
+
     fn commit_core_event_result(
         drive: &mut CoreAgentDrive,
         kind: CoreAgentEvent,
@@ -2146,6 +2227,7 @@ mod tests {
                 provider_kind: None,
             },
             preview: None,
+            origin: None,
             provenance_ref: None,
             token_estimate: None,
             supersedes: None,
@@ -2199,6 +2281,7 @@ mod tests {
                 provider_kind: None,
             },
             preview: None,
+            origin: None,
             provenance_ref: None,
             token_estimate: None,
         }
@@ -2213,6 +2296,7 @@ mod tests {
                 provider_kind: None,
             },
             preview: None,
+            origin: None,
             provenance_ref: None,
             token_estimate: None,
         }
@@ -2236,6 +2320,7 @@ mod tests {
                 provider_kind: Some(OPENAI_RESPONSES_COMPACTION_PROVIDER_KIND.to_owned()),
             },
             preview: Some("OpenAI Responses compaction item".to_owned()),
+            origin: None,
             provenance_ref: None,
             token_estimate: None,
         }
@@ -2246,6 +2331,7 @@ mod tests {
             kind: ContextEntryKind::Instructions,
             content: crate::ContentRef::text(content_ref),
             preview: None,
+            origin: None,
             provenance_ref: None,
             token_estimate: None,
         }
@@ -2260,6 +2346,7 @@ mod tests {
                 provider_kind: None,
             },
             preview: None,
+            origin: None,
             provenance_ref: None,
             token_estimate: None,
         }
@@ -2281,6 +2368,7 @@ mod tests {
                 provider_kind: provider_kind.map(str::to_owned),
             },
             preview: None,
+            origin: None,
             provenance_ref: None,
             token_estimate: None,
         }
@@ -2907,6 +2995,7 @@ mod tests {
                 provider_kind: None,
             },
             preview: Some(title.to_owned()),
+            origin: None,
             provenance_ref: None,
             token_estimate: None,
         }
@@ -3129,6 +3218,7 @@ mod tests {
                 provider_kind: None,
             },
             preview: Some("Sub-agent catalog".to_owned()),
+            origin: None,
             provenance_ref: None,
             token_estimate: None,
         };
@@ -4628,6 +4718,7 @@ mod tests {
                 },
                 content: crate::ContentRef::text(BlobRef::from_bytes(text)),
                 preview: None,
+                origin: None,
                 provenance_ref: None,
                 token_estimate: None,
             }],
@@ -5199,6 +5290,7 @@ mod tests {
                             provider_kind: None,
                         },
                         preview: None,
+                        origin: None,
                         provenance_ref: None,
                         token_estimate: None,
                     }],
@@ -8280,6 +8372,8 @@ mod tests {
                             media_type: Some("application/json".into()),
                             provider_kind: Some("tool_use".into()),
                         },
+
+                        origin: None,
 
                         provenance_ref: None,
                         preview: None,

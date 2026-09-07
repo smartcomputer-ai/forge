@@ -1038,6 +1038,7 @@ fn prompt_report_ref_reads_prompt_provider_metadata() {
         source: engine::ContextEntrySource::ContextEdit,
         content: input.content,
         preview: input.preview,
+        origin: input.origin,
         provenance_ref: input.provenance_ref,
         token_estimate: input.token_estimate,
         supersedes: None,
@@ -1617,6 +1618,7 @@ async fn context_entry_input_from_api_stores_text_as_user_message() {
     let entry = context_entry_input_from_api(
         &store,
         &InputItem::Text {
+            origin: None,
             text: " [telegram] Alice (12:01): hi ".to_owned(),
         },
     )
@@ -1646,6 +1648,7 @@ async fn context_entry_input_from_api_rejects_empty_text() {
     let error = context_entry_input_from_api(
         &store,
         &InputItem::Text {
+            origin: None,
             text: "   ".to_owned(),
         },
     )
@@ -1721,6 +1724,7 @@ async fn context_entry_input_from_api_preserves_text_ref() {
     let entry = context_entry_input_from_api(
         &store,
         &InputItem::TextRef {
+            origin: None,
             blob_ref: blob_ref.as_str().to_owned(),
         },
     )
@@ -1742,9 +1746,11 @@ async fn run_input_from_api_maps_image_media_to_user_message_entry() {
         &store,
         &[
             InputItem::Text {
+                origin: None,
                 text: "what is this?".to_owned(),
             },
             InputItem::Media {
+                origin: None,
                 blob_ref: blob_ref.as_str().to_owned(),
                 mime: "image/png".to_owned(),
                 kind: api::MediaKind::Image,
@@ -1784,12 +1790,14 @@ async fn run_input_from_api_maps_document_media_to_user_message_entry() {
         &store,
         &[
             InputItem::Media {
+                origin: None,
                 blob_ref: pdf_ref.as_str().to_owned(),
                 mime: "application/pdf".to_owned(),
                 kind: api::MediaKind::Document,
                 name: Some("offer.pdf".to_owned()),
             },
             InputItem::Media {
+                origin: None,
                 blob_ref: md_ref.as_str().to_owned(),
                 mime: "text/markdown".to_owned(),
                 kind: api::MediaKind::Document,
@@ -1821,6 +1829,7 @@ async fn run_input_from_api_rejects_unsupported_document_media() {
     let docx = run_input_from_api(
         &store,
         &[InputItem::Media {
+            origin: None,
             blob_ref: blob_ref.as_str().to_owned(),
             mime: "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
                 .to_owned(),
@@ -1840,6 +1849,7 @@ async fn run_input_from_api_rejects_unsupported_document_media() {
     let binary = run_input_from_api(
         &store,
         &[InputItem::Media {
+            origin: None,
             blob_ref: binary_ref.as_str().to_owned(),
             mime: "text/plain".to_owned(),
             kind: api::MediaKind::Document,
@@ -1862,6 +1872,7 @@ async fn run_input_from_api_maps_audio_media_to_user_message_entry() {
     let input = run_input_from_api(
         &store,
         &[InputItem::Media {
+            origin: None,
             blob_ref: blob_ref.as_str().to_owned(),
             mime: "audio/ogg".to_owned(),
             kind: api::MediaKind::Audio,
@@ -1885,6 +1896,7 @@ async fn run_input_from_api_rejects_unsupported_media() {
     let audio = run_input_from_api(
         &store,
         &[InputItem::Media {
+            origin: None,
             blob_ref: blob_ref.as_str().to_owned(),
             mime: "audio/flac".to_owned(),
             kind: api::MediaKind::Audio,
@@ -1898,6 +1910,7 @@ async fn run_input_from_api_rejects_unsupported_media() {
     let bad_mime = run_input_from_api(
         &store,
         &[InputItem::Media {
+            origin: None,
             blob_ref: blob_ref.as_str().to_owned(),
             mime: "image/tiff".to_owned(),
             kind: api::MediaKind::Image,
@@ -1917,6 +1930,7 @@ async fn run_input_from_api_accepts_transcodable_audio_media() {
     let input = run_input_from_api(
         &store,
         &[InputItem::Media {
+            origin: None,
             blob_ref: blob_ref.as_str().to_owned(),
             mime: "audio/x-aac".to_owned(),
             kind: api::MediaKind::Audio,
@@ -1942,6 +1956,7 @@ async fn run_input_from_api_rejects_audio_over_byte_cap() {
     let error = run_input_from_api(
         &store,
         &[InputItem::Media {
+            origin: None,
             blob_ref: blob_ref.as_str().to_owned(),
             mime: "audio/ogg".to_owned(),
             kind: api::MediaKind::Audio,
@@ -1961,6 +1976,7 @@ async fn run_input_from_api_rejects_missing_audio_blob() {
     let error = run_input_from_api(
         &store,
         &[InputItem::Media {
+            origin: None,
             blob_ref: BlobRef::from_bytes(b"missing-audio").as_str().to_owned(),
             mime: "audio/ogg".to_owned(),
             kind: api::MediaKind::Audio,
@@ -1981,6 +1997,7 @@ async fn context_entry_input_from_api_accepts_media() {
     let entry = context_entry_input_from_api(
         &store,
         &InputItem::Media {
+            origin: None,
             blob_ref: blob_ref.as_str().to_owned(),
             mime: "image/png".to_owned(),
             kind: api::MediaKind::Image,
@@ -2009,6 +2026,7 @@ async fn run_input_from_api_preserves_single_text_ref() {
     let input = run_input_from_api(
         &store,
         &[InputItem::TextRef {
+            origin: None,
             blob_ref: blob_ref.as_str().to_owned(),
         }],
     )
@@ -2034,9 +2052,11 @@ async fn run_input_from_api_stores_text_and_preserves_refs() {
         &store,
         &[
             InputItem::Text {
+                origin: None,
                 text: " first ".to_owned(),
             },
             InputItem::TextRef {
+                origin: None,
                 blob_ref: blob_ref.as_str().to_owned(),
             },
         ],
@@ -2200,6 +2220,7 @@ fn test_user_message_input(content_ref: BlobRef) -> ContextEntryInput {
         },
         content: engine::ContentRef::text(content_ref),
         preview: None,
+        origin: None,
         provenance_ref: None,
         token_estimate: None,
     }
@@ -2269,6 +2290,7 @@ fn direct_activation(
         source: engine::ContextEntrySource::ContextEdit,
         content: input.content,
         preview: input.preview,
+        origin: input.origin,
         provenance_ref: input.provenance_ref,
         token_estimate: input.token_estimate,
         supersedes: None,
@@ -2522,6 +2544,7 @@ async fn structured_transcript_append_keeps_spoken_headers_and_source_idempotenc
             provider_kind: None,
         },
         preview: Some("[audio: voice.ogg]".into()),
+        origin: None,
         provenance_ref: None,
         token_estimate: None,
     };
@@ -2540,6 +2563,7 @@ async fn structured_transcript_append_keeps_spoken_headers_and_source_idempotenc
             provider_kind: Some(AUDIO_TRANSCRIPT_PROVIDER_KIND.into()),
         },
         preview: Some(transcript.header()),
+        origin: None,
         provenance_ref: Some(audio_ref.clone()),
         token_estimate: None,
     };
@@ -2565,4 +2589,112 @@ async fn structured_transcript_append_keeps_spoken_headers_and_source_idempotenc
         result.entry.unwrap().provenance_ref.as_deref(),
         Some(audio_ref.as_str())
     );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn input_origin_survives_admission_and_projection_without_changing_model_content() {
+    let store = engine::storage::InMemoryBlobStore::new();
+    let body = store.put_bytes(b"event body".to_vec()).await.unwrap();
+    let items = vec![
+        InputItem::Text {
+            text: "human body".into(),
+            origin: Some("user:operator".into()),
+        },
+        InputItem::TextRef {
+            blob_ref: body.as_str().into(),
+            origin: Some("event".into()),
+        },
+        InputItem::Text {
+            text: "custom body".into(),
+            origin: Some("integration:example".into()),
+        },
+        InputItem::Text {
+            text: "unknown body".into(),
+            origin: None,
+        },
+    ];
+    let entries = run_input_from_api(&store, &items).await.unwrap();
+    let projector = api_projection::CoreAgentProjector::new(&store);
+    let inputs = projector.project_input_entries(&entries).await.unwrap();
+    let accepted = api_projection::project_context_entry_inputs(&entries);
+    for (i, expected) in [
+        Some("user:operator"),
+        Some("event"),
+        Some("integration:example"),
+        None,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        assert_eq!(entries[i].origin.as_deref(), expected);
+        assert_eq!(accepted[i].origin.as_deref(), expected);
+        let InputItem::Text { origin, text } = &inputs[i] else {
+            panic!("expected text input");
+        };
+        assert_eq!(origin.as_deref(), expected);
+        assert_eq!(
+            text,
+            &store
+                .read_text(&entries[i].content.content_ref)
+                .await
+                .unwrap()
+        );
+        let appended = context_entry_input_from_api(&store, &items[i])
+            .await
+            .unwrap();
+        assert_eq!(appended, entries[i]);
+        let entry = engine::ContextEntry {
+            entry_id: engine::ContextEntryId::new(i as u64 + 1),
+            key: None,
+            kind: entries[i].kind.clone(),
+            content: entries[i].content.clone(),
+            source: engine::ContextEntrySource::Steering {
+                run_id: engine::RunId::new(1),
+                steering_id: engine::SteeringId::new(1),
+                input_index: i as u32,
+            },
+            origin: entries[i].origin.clone(),
+            preview: None,
+            provenance_ref: None,
+            token_estimate: None,
+            supersedes: None,
+        };
+        let view = projector.project_context_entry(&entry, None).await.unwrap();
+        assert_eq!(view.origin.as_deref(), expected);
+        assert!(matches!(
+            view.kind,
+            api::ContextEntryKindView::Message {
+                role: api::ContextMessageRoleView::User
+            }
+        ));
+        assert!(matches!(
+            view.source,
+            Some(api::ContextEntrySourceView::Steering { .. })
+        ));
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn input_origin_rejects_blank_and_oversized_values() {
+    let store = engine::storage::InMemoryBlobStore::new();
+    for origin in ["".to_owned(), "   ".to_owned(), "x".repeat(201)] {
+        let item = InputItem::Text {
+            text: "hello".into(),
+            origin: Some(origin),
+        };
+        assert_eq!(
+            run_input_from_api(&store, std::slice::from_ref(&item))
+                .await
+                .unwrap_err()
+                .kind,
+            AgentApiErrorKind::InvalidRequest
+        );
+        assert_eq!(
+            context_entry_input_from_api(&store, &item)
+                .await
+                .unwrap_err()
+                .kind,
+            AgentApiErrorKind::InvalidRequest
+        );
+    }
 }

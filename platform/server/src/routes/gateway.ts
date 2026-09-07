@@ -793,7 +793,14 @@ export function gatewayRoutes(ctx: AppContext) {
       const client = engineClientFor(ctx, access.universe);
       const response = await client.call("session/runs/start", {
         sessionId: c.req.param("sessionId"),
-        source: { type: "input" as const, items: [{ type: "text" as const, text: input.text }] },
+        source: {
+          type: "input" as const,
+          items: [{
+            type: "text" as const,
+            text: input.text,
+            origin: `user:${c.get("session").user.id}`,
+          }],
+        },
         submissionId: input.submissionId,
       });
       const run = response.result.run;
@@ -837,7 +844,11 @@ export function gatewayRoutes(ctx: AppContext) {
       const response = await client.call("session/runs/steer", {
         sessionId: c.req.param("sessionId"),
         runId: c.req.param("runId"),
-        items: [{ type: "text" as const, text: body.data.text }],
+        items: [{
+          type: "text" as const,
+          text: body.data.text,
+          origin: `user:${c.get("session").user.id}`,
+        }],
       });
       const run = response.result.run;
       return c.json({

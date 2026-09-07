@@ -44,6 +44,16 @@ after the message leaves active context. The transcript renders messages and
 reasoning directly. Tool previews stay bounded and expand their original bytes
 through `blobs/read`.
 
+Conversation input items accept an optional `origin` string (1–200 bytes, not
+blank). The message and steering routes derive `user:<id>` from the authenticated
+platform session; request bodies cannot override it. Bot deliveries, their media,
+and batch framing use `event`, including steering and context-only delivery.
+Other API clients may supply other origin strings. Origin is display metadata,
+not an authorization claim, and absent origin means unknown. It is persisted on
+each input/context entry and returned by context, event, and detailed run reads.
+The web transcript styling is unchanged; this field enables later styling without
+inferring authorship from the model role or message text.
+
 Session transcripts open with one recent event window from
 `session/events/read` with `direction: "backward"`, then follow `session/events/read` strictly after
 that initial window's head. Scrolling near the top automatically requests

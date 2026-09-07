@@ -619,6 +619,7 @@ async fn run_profiles_live_client(
             session_id: session_id.as_str().to_owned(),
             source: RunStartSource::Input {
                 items: vec![InputItem::Text {
+                    origin: None,
                     text: "run after profile start".to_owned(),
                 }],
             },

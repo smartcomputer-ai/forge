@@ -186,6 +186,7 @@ fn user_input(content_ref: BlobRef) -> Vec<ContextEntryInput> {
             provider_kind: None,
         },
         preview: None,
+        origin: None,
         provenance_ref: None,
         token_estimate: None,
     }]

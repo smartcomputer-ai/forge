@@ -246,6 +246,7 @@ fn projection_context_input(
             provider_kind: None,
         },
         preview: Some(preview.to_owned()),
+        origin: None,
         provenance_ref: None,
         token_estimate: None,
     }
@@ -336,6 +337,7 @@ mod tests {
                 provider_kind: None,
             },
             preview: Some("VFS catalog".to_owned()),
+            origin: None,
             provenance_ref: None,
             token_estimate: None,
             supersedes: None,

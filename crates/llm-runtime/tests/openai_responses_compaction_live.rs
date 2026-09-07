@@ -498,6 +498,7 @@ fn user_input(content_ref: BlobRef) -> Vec<ContextEntryInput> {
             provider_kind: None,
         },
         preview: None,
+        origin: None,
         provenance_ref: None,
         token_estimate: None,
     }]
@@ -526,6 +527,7 @@ fn openai_raw_context_input(
             provider_kind: Some("openai.responses.input_message".to_owned()),
         },
         preview: Some("OpenAI raw input message".to_owned()),
+        origin: None,
         provenance_ref: None,
         token_estimate: token_estimate.map(|tokens| TokenEstimate {
             tokens,

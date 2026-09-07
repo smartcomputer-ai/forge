@@ -783,11 +783,25 @@ export type RunViewSource = {
  */
 export type InputItem =
   | {
+      /**
+       * Application-supplied display provenance (1–200 nonblank bytes).
+       * The platform uses `user:<id>` for direct human input and `event` for
+       * bot deliveries; other values are allowed. Omitted means unknown.
+       * This metadata is not an authorization identity or model input text.
+       */
+      origin?: string | null;
       text: string;
       type: "text";
     }
   | {
       blobRef: string;
+      /**
+       * Application-supplied display provenance (1–200 nonblank bytes).
+       * The platform uses `user:<id>` for direct human input and `event` for
+       * bot deliveries; other values are allowed. Omitted means unknown.
+       * This metadata is not an authorization identity or model input text.
+       */
+      origin?: string | null;
       type: "textRef";
     }
   | {
@@ -795,6 +809,13 @@ export type InputItem =
       kind: MediaKind;
       mime: string;
       name?: string | null;
+      /**
+       * Application-supplied display provenance (1–200 nonblank bytes).
+       * The platform uses `user:<id>` for direct human input and `event` for
+       * bot deliveries; other values are allowed. Omitted means unknown.
+       * This metadata is not an authorization identity or model input text.
+       */
+      origin?: string | null;
       type: "media";
     }
   | {
@@ -1852,6 +1873,12 @@ export interface ContextEntryView {
   id: string;
   key?: string | null;
   kind: ContextEntryKindView;
+  /**
+   * Application-supplied display origin, independent of role and insertion source.
+   * `user:<id>` identifies platform composer input; `event` marks bot deliveries.
+   * Other values are allowed; omission means unknown. Not an authorization identity.
+   */
+  origin?: string | null;
   preview?: string | null;
   /**
    * Immutable artifact recording this entry's origin or construction.
@@ -2438,6 +2465,12 @@ export interface EventJoinsView {
 export interface ContextEntryInputView {
   content: ContentRefView;
   kind: ContextEntryKindView;
+  /**
+   * Application-supplied display origin, independent of role and insertion source.
+   * `user:<id>` identifies platform composer input; `event` marks bot deliveries.
+   * Other values are allowed; omission means unknown. Not an authorization identity.
+   */
+  origin?: string | null;
   preview?: string | null;
   /**
    * Immutable artifact recording this entry's origin or construction.

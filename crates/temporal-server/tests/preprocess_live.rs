@@ -119,6 +119,7 @@ async fn run_audio_preprocess_live_client(
             session_id: session_id.as_str().to_owned(),
             source: RunStartSource::Input {
                 items: vec![InputItem::Media {
+                    origin: None,
                     blob_ref: audio.result.blobs[0].blob_ref.clone(),
                     mime: "audio/ogg".to_owned(),
                     kind: MediaKind::Audio,
@@ -234,6 +235,7 @@ async fn run_transcodable_audio_preprocess_live_client(
             session_id: session_id.as_str().to_owned(),
             source: RunStartSource::Input {
                 items: vec![InputItem::Media {
+                    origin: None,
                     blob_ref: audio.result.blobs[0].blob_ref.clone(),
                     mime: "audio/x-aac".to_owned(),
                     kind: MediaKind::Audio,
