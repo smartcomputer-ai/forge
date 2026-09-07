@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Marker, MarkerContent, MarkerIcon } from "@/components/ui/marker";
 import { Message, MessageContent } from "@/components/ui/message";
 import { MarkdownContent } from "@/components/session/markdown-content";
+import { RunStats } from "@/components/session/run-stats";
 import type { FullTextLoader } from "@/components/session/expandable-content";
 import { ReasoningTrace, ToolGroupTrace } from "@/components/session/tool-trace";
 import {
@@ -20,9 +21,11 @@ import { cn } from "@/lib/utils";
 export function TranscriptEntryView({
   entry,
   loadFullText,
+  showRunStatistics = true,
 }: {
   entry: TranscriptEntry;
   loadFullText?: FullTextLoader;
+  showRunStatistics?: boolean;
 }) {
   switch (entry.kind) {
     case "message":
@@ -73,6 +76,8 @@ export function TranscriptEntryView({
       return <ReasoningTrace text={entry.text} />;
     case "tool-group":
       return <ToolGroupTrace group={entry} loadFullText={loadFullText} />;
+    case "run-summary":
+      return <RunStats summary={entry} showStatistics={showRunStatistics} />;
     case "marker":
       return entry.tone === "error" ? (
         <Marker className="text-destructive">

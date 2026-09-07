@@ -55,6 +55,43 @@ Verified origin folding, palettes, optimistic sends, measured overflow,
 expansion/collapse, observer cleanup, demo echo provenance, and browser behavior
 at desktop/mobile widths in both themes, including expansion at the live end.
 
+## Run statistics
+
+Implemented a horizontal separator with centered, muted statistics: context
+at the last model call, cumulative input-plus-output usage, and always duration
+(or an explicit unavailable value). The hoverable summary button and chevron
+open a popover with input/output totals, model-call count, total tool calls, cache-hit share,
+and duration. Token counts
+below 1,000 remain exact and larger values use thousands with up to one decimal.
+Failures and cancellations keep visible statuses alongside their statistics.
+
+A shared "Show run statistics" checkbox lives in the session-title dropdown
+and the active bot-conversation dropdown. It defaults to on and is persisted
+in local storage under `lightspeed:user-preferences:<user-id>`, across sessions,
+bots, and universes in this browser. Other tabs observe storage changes. Account
+switches load that user's preference; blocked storage retains an in-memory choice.
+Hiding statistics removes completed-run rows while retaining failure and
+cancellation messages. The matching settings buttons remain unchanged.
+
+Statistics remain beneath each run, with no context indicator in the composer.
+Context describes measured input to the last call, not a live tokenizer or a
+context-capacity gauge. No backend or API changes are needed.
+
+Tool calls are deduplicated by call identity across lifecycle events and context
+items, including provider-native tool displays. Failed calls count as calls.
+Run totals and call counts remain hidden for partially loaded runs. Individual
+usage fields stay unavailable if any generation omitted them; explicit zero
+remains distinct from unknown. Missing input on the last generation clears its
+context measurement instead of reusing an earlier call's count. Historical
+reconstruction and duplicate-event filtering preserve these distinctions.
+
+Verification covers per-call versus cumulative counts, history hydration,
+missing and zero counts, failures/cancellation, number
+formatting, and popover content. Browser checks exercise keyboard opening,
+Escape and focus restoration, stable transcript position, mobile/desktop
+geometry and both themes. Preference tests cover shared consumers, reloads,
+account isolation, cross-tab changes, invalid data, and blocked storage.
+
 ## Implementation
 
 `session/events/read` with `direction: "backward"` uses contiguous event sequence

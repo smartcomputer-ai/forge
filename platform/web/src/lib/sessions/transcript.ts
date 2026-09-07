@@ -33,7 +33,20 @@ export type TranscriptEntry =
     }
   | { kind: "reasoning"; key: string; text: string }
   | TranscriptToolGroup
+  | TranscriptRunSummary
   | { kind: "marker"; key: string; text: string; tone: "muted" | "error" };
+
+export interface TranscriptRunSummary {
+  kind: "run-summary";
+  key: string;
+  status: "completed" | "failed" | "cancelled";
+  error?: string;
+  contextTokens?: number;
+  usage?: RunUsage;
+  usageComplete: boolean;
+  toolCalls?: number;
+  durationMs?: number;
+}
 
 export interface TranscriptToolCall {
   callId: string;
@@ -119,6 +132,10 @@ export interface TranscriptState {
   /// Provider-reported tokens per run, summed over its generations, with the
   /// share served from prompt cache — surfaced when the run finishes.
   runUsage: Map<string, RunUsage>;
+  /// Input to each run's last generation, never the cumulative usage.
+  runContextTokens: Map<string, number>;
+  /// Unique requested calls, including provider-native tool entries.
+  runToolCalls: Map<string, Set<string>>;
   /// Committed wall-clock start times used to calculate terminal duration.
   runStartedAtMs: Map<string, number>;
   /// Only a loaded runStarted event proves that accumulated usage is complete.
@@ -126,9 +143,11 @@ export interface TranscriptState {
 }
 
 export interface RunUsage {
-  inputTokens: number;
+  /// Undefined when any generation omitted this count.
+  inputTokens?: number;
   cachedInputTokens?: number;
-  outputTokens: number;
+  outputTokens?: number;
+  modelCalls: number;
 }
 
 export function emptyTranscript(): TranscriptState {
@@ -145,44 +164,18 @@ export function emptyTranscript(): TranscriptState {
     toolCallByCallId: new Map(),
     toolGroupByBatchId: new Map(),
     runUsage: new Map(),
+    runContextTokens: new Map(),
+    runToolCalls: new Map(),
     runStartedAtMs: new Map(),
     completeUsageRuns: new Set(),
   };
 }
 
-/// "8.2s · 12.3k tokens in (94% cached) · 750 tokens out" for a finished
-/// run. Duration is still useful when the provider reports no usage.
-export function describeRunSummary(
-  usage: RunUsage | undefined,
-  durationMs: number | undefined,
-): string | null {
-  const parts: string[] = [];
-  if (durationMs !== undefined) {
-    parts.push(formatDuration(durationMs));
-  }
-  if (usage && usage.inputTokens > 0) {
-    const cached = usage.cachedInputTokens;
-    const cacheLabel = cached !== undefined && cached > 0
-      ? ` (${Math.round((cached / usage.inputTokens) * 100)}% cached)`
-      : "";
-    parts.push(`${formatTokens(usage.inputTokens)} tokens in${cacheLabel}`);
-  }
-  if (usage && usage.outputTokens > 0) {
-    parts.push(`${formatTokens(usage.outputTokens)} tokens out`);
-  }
-  if (parts.length === 1 && durationMs !== undefined) return `run completed in ${parts[0]}`;
-  return parts.length ? parts.join(" · ") : null;
+export function formatTokens(count: number): string {
+  return count >= 1000 ? `${Number((count / 1000).toFixed(1))}k` : String(count);
 }
 
-function formatTokens(count: number): string {
-  return count >= 10_000
-    ? `${Math.round(count / 1000)}k`
-    : count >= 1000
-      ? `${(count / 1000).toFixed(1)}k`
-      : String(count);
-}
-
-function formatDuration(durationMs: number): string {
+export function formatDuration(durationMs: number): string {
   if (durationMs < 1_000) return `${durationMs}ms`;
   if (durationMs < 10_000) return `${(durationMs / 1_000).toFixed(1)}s`;
   const totalSeconds = Math.round(durationMs / 1_000);
@@ -222,6 +215,8 @@ export function applyEvents(
     toolCallByCallId: state.toolCallByCallId,
     toolGroupByBatchId: state.toolGroupByBatchId,
     runUsage: state.runUsage,
+    runContextTokens: state.runContextTokens,
+    runToolCalls: state.runToolCalls,
     runStartedAtMs: state.runStartedAtMs,
     completeUsageRuns: state.completeUsageRuns,
   };
@@ -274,31 +269,32 @@ export function applyEvents(
       case "turnGenerationRequested":
         setRunLabel(next, "thinking");
         break;
-      case "turnGenerationCompleted":
-        if (kind.usage && (kind.usage.inputTokens != null || kind.usage.outputTokens != null)) {
-          const runId = String(kind.runId);
-          const current = next.runUsage.get(runId) ?? {
-            inputTokens: 0,
-            outputTokens: 0,
-          };
-          const usage: RunUsage = {
-            inputTokens: current.inputTokens + (kind.usage.inputTokens ?? 0),
-            outputTokens: current.outputTokens + (kind.usage.outputTokens ?? 0),
-          };
-          if (kind.usage.cachedInputTokens != null) {
-            usage.cachedInputTokens = (current.cachedInputTokens ?? 0)
-              + kind.usage.cachedInputTokens;
-          } else if (current.cachedInputTokens !== undefined) {
-            usage.cachedInputTokens = current.cachedInputTokens;
-          }
-          next.runUsage.set(runId, usage);
+      case "turnGenerationCompleted": {
+        const runId = String(kind.runId);
+        const current = next.runUsage.get(runId);
+        const sum = (previous: number | undefined, value: number | null | undefined) =>
+          value == null || (current && previous === undefined) ? undefined : (previous ?? 0) + value;
+        next.runUsage.set(runId, {
+          inputTokens: sum(current?.inputTokens, kind.usage?.inputTokens),
+          outputTokens: sum(current?.outputTokens, kind.usage?.outputTokens),
+          cachedInputTokens: sum(current?.cachedInputTokens, kind.usage?.cachedInputTokens),
+          modelCalls: (current?.modelCalls ?? 0) + 1,
+        });
+        if (kind.usage?.inputTokens != null) {
+          next.runContextTokens.set(runId, kind.usage.inputTokens);
+        } else {
+          // An earlier call's measurement must not masquerade as the last call.
+          next.runContextTokens.delete(runId);
         }
         break;
+      }
       case "toolBatchStarted":
+        for (const call of kind.calls) recordToolCall(next, String(kind.runId), call.callId);
         applyToolBatchStarted(next, kind);
         setRunLabel(next, "running tools");
         break;
       case "toolCallStarted":
+        recordToolCall(next, String(kind.runId), kind.callId);
         ensureToolCall(next, kind.callId, kind.batchId);
         updateToolCall(next, String(kind.callId), (call) => ({
           ...call,
@@ -307,6 +303,7 @@ export function applyEvents(
         setRunLabel(next, "running tools");
         break;
       case "toolCallCompleted": {
+        recordToolCall(next, String(kind.runId), kind.callId);
         ensureToolCall(next, kind.callId, kind.batchId);
         updateToolCall(next, String(kind.callId), (call) => ({
           ...call,
@@ -331,43 +328,28 @@ export function applyEvents(
       case "runCompleted": {
         const runId = String(kind.runId);
         finishRun(next, runId);
-        const summary = describeRunSummary(
-          next.completeUsageRuns.has(runId) ? next.runUsage.get(runId) : undefined,
-          runDurationMs(next, runId, event.observedAtMs),
-        );
-        next.entries.push({
-          kind: "marker",
-          key: `evt-${event.cursor.seq}`,
-          text: summary ?? "run completed",
-          tone: "muted",
-        });
+        next.entries.push(runSummary(next, event, runId, "completed"));
         break;
       }
       case "runFailed": {
         const runId = String(kind.runId);
-        const durationMs = runDurationMs(next, runId, event.observedAtMs);
         finishRun(next, runId);
         next.entries.push({
-          kind: "marker",
-          key: `evt-${event.cursor.seq}`,
-          text: `run failed${durationMs === undefined ? "" : ` after ${formatDuration(durationMs)}`}: ${String(kind.message ?? "unknown error")}`,
-          tone: "error",
+          ...runSummary(next, event, runId, "failed"),
+          error: String(kind.message ?? "unknown error"),
         });
         break;
       }
       case "runCancelled": {
         const wasQueued = next.queuedRuns.some((run) => run.runId === String(kind.runId));
         const runId = String(kind.runId);
-        const durationMs = runDurationMs(next, runId, event.observedAtMs);
         finishRun(next, runId);
-        next.entries.push({
+        next.entries.push(wasQueued ? {
           kind: "marker",
           key: `evt-${event.cursor.seq}`,
-          text: wasQueued
-            ? "queued message cancelled"
-            : `run cancelled${durationMs === undefined ? "" : ` after ${formatDuration(durationMs)}`}`,
+          text: "queued message cancelled",
           tone: "muted",
-        });
+        } : runSummary(next, event, runId, "cancelled"));
         break;
       }
       case "contextCompactionFinished":
@@ -397,10 +379,35 @@ export function applyEvents(
   return next;
 }
 
+function runSummary(
+  state: TranscriptState,
+  event: SessionEvent,
+  runId: string,
+  status: TranscriptRunSummary["status"],
+): TranscriptRunSummary {
+  const usageComplete = state.completeUsageRuns.has(runId);
+  return {
+    kind: "run-summary",
+    key: `evt-${event.cursor.seq}`,
+    status,
+    contextTokens: state.runContextTokens.get(runId),
+    usage: usageComplete ? state.runUsage.get(runId) : undefined,
+    usageComplete,
+    toolCalls: usageComplete ? (state.runToolCalls.get(runId)?.size ?? 0) : undefined,
+    durationMs: runDurationMs(state, runId, event.observedAtMs),
+  };
+}
+
 function setRunLabel(state: TranscriptState, label: string) {
   if (state.activeRun && !state.activeRun.cancelling) {
     state.activeRun = { ...state.activeRun, label };
   }
+}
+
+function recordToolCall(state: TranscriptState, runId: string, callId: string) {
+  const calls = state.runToolCalls.get(runId) ?? new Set<string>();
+  calls.add(callId);
+  state.runToolCalls.set(runId, calls);
 }
 
 function enqueueRun(state: TranscriptState, runId: string) {
@@ -522,6 +529,15 @@ function applyItems(state: TranscriptState, items: SessionItem[]) {
     }
     state.seenItems.add(item.id);
     const kind = item.kind;
+    const source = item.source;
+    if (source && "runId" in source) {
+      if (kind.type === "toolCall" || kind.type === "toolResult") {
+        recordToolCall(state, String(source.runId), kind.callId);
+      } else if (kind.type === "providerOpaque" && item.display?.toolName
+        && item.content.providerKind !== "openai.responses.compaction") {
+        recordToolCall(state, String(source.runId), item.id);
+      }
+    }
 
     if (kind.type === "toolCall") {
       const existing = state.toolCallByCallId.get(kind.callId);

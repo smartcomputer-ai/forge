@@ -3,6 +3,7 @@ import type { SessionEvent, SessionItem } from "@/api";
 import {
   applyEvents,
   emptyTranscript,
+  formatTokens,
   isFailedToolCall,
   reconcileRuns,
   runInProgress,
@@ -59,7 +60,7 @@ describe("transcript history windows", () => {
     window.reconcile([runView("run-test", "completed")]);
     window.append([event(2, { type: "runCompleted" })]);
     window.append([event(2, { type: "runCompleted" })]);
-    expect(window.state.entries).toEqual([{ kind: "marker", key: "evt-2", text: "run completed in 1ms", tone: "muted" }]);
+    expect(window.state.entries).toMatchObject([{ kind: "run-summary", key: "evt-2", status: "completed", durationMs: 1 }]);
   });
   it("renders a result whose call began before the window, then hydrates it without regressing live controls", () => {
     const events = [
@@ -93,14 +94,14 @@ describe("transcript history windows", () => {
     window.append([event(5, { type: "turnGenerationCompleted", usage: { inputTokens: 200, outputTokens: 20 } })]);
     window.reconcile([{ ...runView("run-test", "running"), startedAtMs: 1 }]);
     window.append([event(6, { type: "runCompleted" })]);
-    expect(window.state.entries.at(-1)).toMatchObject({ kind: "marker", text: "run completed in 5ms" });
+    expect(window.state.entries.at(-1)).toMatchObject({ kind: "run-summary", durationMs: 5, contextTokens: 200, usage: undefined, usageComplete: false });
     window.prepend([event(4, { type: "turnPlanned" })]);
-    expect(window.state.entries.at(-1)).toMatchObject({ text: "run completed in 5ms" });
+    expect(window.state.entries.at(-1)).toMatchObject({ durationMs: 5, contextTokens: 200, usage: undefined, usageComplete: false });
     window.prepend([
       event(1, { type: "runStarted" }),
       event(2, { type: "turnGenerationCompleted", usage: { inputTokens: 100, outputTokens: 10 } }),
     ]);
-    expect(window.state.entries.at(-1)).toMatchObject({ text: "5ms · 300 tokens in · 30 tokens out" });
+    expect(window.state.entries.at(-1)).toMatchObject({ contextTokens: 200, usage: { inputTokens: 300, outputTokens: 30, modelCalls: 2 }, usageComplete: true });
   });
 
   it("can reconstruct a single run spanning more than the old catch-up cap", () => {
@@ -317,7 +318,7 @@ describe("session transcript traces", () => {
 
   it("preserves the standalone compaction marker", () => {
     const state = applyEvents(emptyTranscript(), [
-      event(1, { type: "contextCompactionFinished" }),
+      event(1, { type: "contextCompactionFinished", status: "succeeded" }),
     ]);
     expect(state.entries).toEqual([{
       kind: "marker", key: "evt-1", text: "context compacted", tone: "muted",
@@ -640,7 +641,7 @@ describe("session transcript run control", () => {
     expect(state.queuedRuns).toEqual([]);
     expect(state.entries).toEqual([
       { kind: "marker", key: "evt-5", text: "queued message cancelled", tone: "muted" },
-      { kind: "marker", key: "evt-6", text: "run completed in 4ms", tone: "muted" },
+      { kind: "run-summary", key: "evt-6", status: "completed", durationMs: 4, contextTokens: undefined, usage: undefined, usageComplete: true, toolCalls: 0 },
     ]);
 
     state = applyEvents(state, [event(8, { type: "runCompleted", runId: "run_3" })]);
@@ -672,11 +673,8 @@ describe("session transcript run control", () => {
 
     state = applyEvents(state, [event(6, { type: "runCancelled", runId: "run_1" })]);
     expect(state.activeRun).toBeNull();
-    expect(state.entries.at(-1)).toEqual({
-      kind: "marker",
-      key: "evt-6",
-      text: "run cancelled after 4ms",
-      tone: "muted",
+    expect(state.entries.at(-1)).toMatchObject({
+      kind: "run-summary", key: "evt-6", status: "cancelled", durationMs: 4,
     });
   });
 
@@ -784,77 +782,123 @@ describe("session transcript run control", () => {
   });
 });
 
-describe("run usage", () => {
-  it("summarizes prompt tokens and the cached share when the run finishes", () => {
+describe("run statistics", () => {
+  it("includes provider-native tools once while excluding compaction entries", () => {
+    const source = { type: "assistantOutput" as const, runId: "run-test", turnId: "turn-test" };
+    const entries = [
+      item("search", { type: "providerOpaque" }, {
+        source, display: { toolName: "web_search", status: "succeeded", summary: { group: "explore", verb: "Search" } },
+      }),
+      item("compaction", { type: "providerOpaque" }, {
+        source, content: { contentRef: "sha256:compact", mediaType: null, providerKind: "openai.responses.compaction" },
+      }),
+    ];
+    const state = applyEvents(emptyTranscript(), [
+      event(1, { type: "runStarted" }),
+      event(2, { type: "contextEntriesApplied", entries }),
+      event(3, { type: "contextStateReplaced", entries }),
+      event(4, { type: "runCompleted" }),
+    ]);
+    expect(state.entries.at(-1)).toMatchObject({ toolCalls: 1 });
+  });
+  it("counts unique tool calls across batches, outcomes, context copies, and older pages", () => {
+    const calls = ["a", "b"].map((callId) => ({ callId, toolName: "exec_command", toolId: "env.run_process", argumentsRef: `sha256:${callId}` }));
+    const events = [
+      event(1, { type: "runStarted" }),
+      event(2, { type: "toolBatchStarted", calls }),
+      event(3, { type: "toolCallStarted", callId: "a" }),
+      event(4, { type: "toolCallCompleted", callId: "a", status: "succeeded" }),
+      event(5, { type: "toolCallCompleted", callId: "b", status: "failed" }),
+      event(6, { type: "contextEntriesApplied", entries: [item("result-a", { type: "toolResult", callId: "a", isError: false }, {
+        text: "Done", source: { type: "tool", runId: "run-test", turnId: "turn-test", batchId: "batch-1" },
+      })] }),
+      event(7, { type: "toolBatchStarted", batchId: "batch-2", calls: [{ ...calls[0]!, callId: "c" }] }),
+      event(8, { type: "runCompleted" }),
+    ];
+    const window = new TranscriptWindow();
+    window.append(events.slice(4));
+    expect(window.state.entries.at(-1)).toMatchObject({ toolCalls: undefined, usageComplete: false });
+    window.prepend(events.slice(0, 4));
+    expect(window.state.entries.at(-1)).toMatchObject({ toolCalls: 3, usageComplete: true });
+    window.append(events);
+    expect(window.state.entries.at(-1)).toMatchObject({ toolCalls: 3 });
+    window.append([event(9, { type: "runStarted", runId: "other" }), event(10, { type: "runCompleted", runId: "other" })]);
+    expect(window.state.entries.at(-1)).toMatchObject({ toolCalls: 0 });
+  });
+
+  it("keeps the last call context separate from cumulative usage, including across event pages", () => {
     let state = applyEvents(emptyTranscript(), [
-      event(1, { type: "runAccepted", runId: "run_1" }),
-      event(2, { type: "runStarted", runId: "run_1" }, 1_000),
-      event(3, {
-        type: "turnGenerationCompleted",
-        runId: "run_1",
-        turnId: "turn_1",
-        status: "succeeded",
-        usage: { inputTokens: 9000, cachedInputTokens: 8000, outputTokens: 1000 },
-      }),
-      event(4, {
-        type: "turnGenerationCompleted",
-        runId: "run_1",
-        turnId: "turn_2",
-        status: "succeeded",
-        usage: { inputTokens: 11000, cachedInputTokens: 10000, outputTokens: 2000 },
-      }),
+      event(1, { type: "runStarted" }, 1_000),
+      event(2, { type: "turnGenerationCompleted", usage: { inputTokens: 9000, cachedInputTokens: 8000, outputTokens: 1000 } }),
     ]);
-    expect(state.entries.some((entry) => entry.kind === "marker")).toBe(false);
-
-    state = applyEvents(state, [event(5, { type: "runCompleted", runId: "run_1" }, 9_200)]);
-    const marker = state.entries.find((entry) => entry.kind === "marker");
-    expect(marker?.kind === "marker" && marker.text).toBe(
-      "8.2s · 20k tokens in (90% cached) · 3.0k tokens out",
-    );
-    expect(marker?.kind === "marker" && marker.tone).toBe("muted");
+    state = applyEvents(state, [
+      event(3, { type: "turnGenerationCompleted", usage: { inputTokens: 11000, cachedInputTokens: 10000, outputTokens: 2000 } }),
+    ]);
+    expect(state.entries).toEqual([]);
+    state = applyEvents(state, [event(4, { type: "runCompleted" }, 9_200)]);
+    expect(state.entries).toMatchObject([{
+      kind: "run-summary", status: "completed", contextTokens: 11000, durationMs: 8200,
+      usageComplete: true,
+      usage: { inputTokens: 20000, cachedInputTokens: 18000, outputTokens: 3000, modelCalls: 2 },
+    }]);
   });
 
-  it("shows duration when the provider reported no usage", () => {
+  it("retains duration when usage is unreported and never turns missing counts into zero", () => {
     const state = applyEvents(emptyTranscript(), [
-      event(1, { type: "runAccepted", runId: "run_1" }),
-      event(2, { type: "runStarted", runId: "run_1" }, 1_000),
-      event(3, { type: "runCompleted", runId: "run_1" }, 2_500),
+      event(1, { type: "runStarted" }, 1_000),
+      event(2, { type: "turnGenerationCompleted" }),
+      event(3, { type: "turnGenerationCompleted", usage: { inputTokens: 5000, cachedInputTokens: 4000, outputTokens: 200 } }),
+      event(4, { type: "runCompleted" }, 2_500),
     ]);
-    const marker = state.entries.find((entry) => entry.kind === "marker");
-    expect(marker?.kind === "marker" && marker.text).toBe("run completed in 1.5s");
+    expect(state.entries).toMatchObject([{
+      contextTokens: 5000, durationMs: 1500, usageComplete: true,
+      usage: { inputTokens: undefined, cachedInputTokens: undefined, outputTokens: undefined, modelCalls: 2 },
+    }]);
   });
 
-  it("omits the cache percentage when the run had no cache hits", () => {
+  it("clears last-call context if the newest call did not report it, without inventing a cache percentage", () => {
     const state = applyEvents(emptyTranscript(), [
-      event(1, { type: "runAccepted", runId: "run_1" }),
-      event(2, { type: "runStarted", runId: "run_1" }, 1_000),
-      event(3, {
-        type: "turnGenerationCompleted",
-        runId: "run_1",
-        turnId: "turn_1",
-        status: "succeeded",
-        usage: { inputTokens: 5000, cachedInputTokens: 0, outputTokens: 200 },
-      }),
-      event(4, { type: "runCompleted", runId: "run_1" }, 2_000),
+      event(1, { type: "runStarted" }),
+      event(2, { type: "turnGenerationCompleted", usage: { inputTokens: 5000, cachedInputTokens: 4000, outputTokens: 200 } }),
+      event(3, { type: "turnGenerationCompleted", usage: { outputTokens: 50 } }),
+      event(4, { type: "runCompleted" }),
     ]);
+    expect(state.entries).toMatchObject([{
+      contextTokens: undefined,
+      usage: { inputTokens: undefined, cachedInputTokens: undefined, outputTokens: 250, modelCalls: 2 },
+    }]);
+  });
 
-    const marker = state.entries.find((entry) => entry.kind === "marker");
-    expect(marker?.kind === "marker" && marker.text).toBe(
-      "1.0s · 5.0k tokens in · 200 tokens out",
-    );
+  it("preserves explicit zero usage and cache hits", () => {
+    const state = applyEvents(emptyTranscript(), [
+      event(1, { type: "runStarted" }),
+      event(2, { type: "turnGenerationCompleted", usage: { inputTokens: 5000, cachedInputTokens: 0, outputTokens: 0 } }),
+      event(3, { type: "runCompleted" }),
+    ]);
+    expect(state.entries).toMatchObject([{
+      usage: { inputTokens: 5000, cachedInputTokens: 0, outputTokens: 0, modelCalls: 1 },
+    }]);
   });
 
   it("uses the authoritative run start time when event catch-up missed it", () => {
-    let state = reconcileRuns(emptyTranscript(), [{
-      ...runView("run_1", "running"),
-      startedAtMs: 1_000,
-    }]);
-
-    state = applyEvents(state, [
-      event(3, { type: "runCompleted", runId: "run_1" }, 3_500),
-    ]);
-
-    const marker = state.entries.find((entry) => entry.kind === "marker");
-    expect(marker?.kind === "marker" && marker.text).toBe("run completed in 2.5s");
+    let state = reconcileRuns(emptyTranscript(), [{ ...runView("run-test", "running"), startedAtMs: 1_000 }]);
+    state = applyEvents(state, [event(3, { type: "runCompleted" }, 3_500)]);
+    expect(state.entries).toMatchObject([{ durationMs: 2500, usageComplete: false }]);
   });
+
+  it.each(["runFailed", "runCancelled"] as const)("retains statistics for %s", (type) => {
+    const state = applyEvents(emptyTranscript(), [
+      event(1, { type: "runStarted" }),
+      event(2, { type: "turnGenerationCompleted", usage: { inputTokens: 1200, outputTokens: 70 } }),
+      event(3, { type }),
+    ]);
+    expect(state.entries).toMatchObject([{
+      kind: "run-summary", status: type === "runFailed" ? "failed" : "cancelled", durationMs: 2,
+      contextTokens: 1200, usage: { inputTokens: 1200, outputTokens: 70, modelCalls: 1 },
+    }]);
+  });
+
+  it.each([[0, "0"], [750, "750"], [999, "999"], [1000, "1k"], [4200, "4.2k"], [78512, "78.5k"], [733000, "733k"]])(
+    "formats %s tokens as %s", (count, expected) => expect(formatTokens(count as number)).toBe(expected),
+  );
 });

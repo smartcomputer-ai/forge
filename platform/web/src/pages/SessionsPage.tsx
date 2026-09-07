@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import {
   type InfiniteData,
   useInfiniteQuery,
@@ -53,6 +53,8 @@ import {
 import { ProfileEnvironmentEditor } from "@/components/session/profile-environment-editor";
 import { MetadataMapEditor } from "@/components/session/metadata-editor";
 import { SessionMenuIdentity, SessionMenuMetadata } from "@/components/session/session-menu-details";
+import { SessionMenuPreferences } from "@/components/session/session-menu-preferences";
+import { useUserPreferences } from "@/lib/user-preferences";
 import { ProfileRetentionEditor } from "@/components/session/profile-retention-editor";
 import { SessionConfigEditor } from "@/components/session/session-config-editor";
 import { SessionSettingsDialog } from "@/components/session/session-settings-sheet";
@@ -1365,7 +1367,10 @@ export function SessionDetail({
     message: string;
   } | null>(null);
 
-  const entries = tail.transcript.entries;
+  const { showRunStatistics } = useUserPreferences();
+  const entries = useMemo(() => tail.transcript.entries.filter((entry) =>
+    showRunStatistics || entry.kind !== "run-summary" || entry.status !== "completed",
+  ), [tail.transcript.entries, showRunStatistics]);
   const loadFullText = useCallback(
     async (blobRef: string) => {
       const result = await api<{ bytesBase64: string }>(
@@ -1827,6 +1832,7 @@ export function SessionDetail({
                 className="max-h-[min(28rem,calc(100vh-1rem))] w-80 max-w-[calc(100vw-1rem)]"
               >
                 <SessionMenuIdentity sessionId={sessionId} />
+                <SessionMenuPreferences />
                 {owningBotHref && (
                   <>
                     <DropdownMenuSeparator />
@@ -2030,7 +2036,7 @@ export function SessionDetail({
                   key={entry.key}
                   messageId={entry.key}
                 >
-                  <TranscriptEntryView entry={entry} loadFullText={loadFullText} />
+                  <TranscriptEntryView entry={entry} loadFullText={loadFullText} showRunStatistics={showRunStatistics} />
                 </MessageScrollerItem>
               ))}
               {pendingInTranscript.map((message) => (

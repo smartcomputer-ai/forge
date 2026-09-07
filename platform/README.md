@@ -70,6 +70,17 @@ the content element so it cannot hide prepends from the scroller.
 Windows may split a run or tool batch. Results without a loaded call start
 render as continued tool activity and acquire their original metadata as older
 pages arrive. Partial generation totals are not presented as whole-run usage.
+Each finished run has a horizontal separator with a centered, hoverable button
+showing last-call context, cumulative input-plus-output usage, and duration. Counts below 1,000 stay exact;
+larger counts use `k`. Its popover breaks usage into input, output, model calls, tool calls,
+and the cache-hit share. Missing provider counts remain unavailable rather than
+becoming zero. Failed and cancelled runs retain their visible status.
+The context measurement describes the last request, not the next request's
+assembled context or the model's capacity. Statistics stay in the transcript;
+the composer has no context indicator. "Show run statistics" in the session-title
+and active bot-conversation menus toggles these rows, while failures remain
+visible. The preference defaults to on and is saved per user in local storage,
+shared across sessions, bots, universes, and tabs in this browser.
 History is reconstructed chronologically and deduplicated by event/entry ID;
 historical lifecycle transitions never overwrite live controls. History errors
 retry independently of live polling, and changing sessions aborts both paths.

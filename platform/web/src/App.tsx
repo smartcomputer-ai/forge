@@ -22,6 +22,7 @@ import { SecretsPage } from "@/pages/SecretsPage";
 import { SessionsPage } from "@/pages/SessionsPage";
 import { SetupsPage } from "@/pages/SetupsPage";
 import { WorkspacesPage } from "@/pages/WorkspacesPage";
+import { UserPreferencesProvider } from "@/lib/user-preferences";
 
 function UniverseIndexRedirect() {
   const { universe, slug } = useActiveUniverse();
@@ -79,7 +80,11 @@ export function App() {
 
   return (
     <Routes>
-      <Route element={<AppShell user={user} admin={admin} />}>
+      <Route element={
+        <UserPreferencesProvider userId={user.id}>
+          <AppShell user={user} admin={admin} />
+        </UserPreferencesProvider>
+      }>
         <Route index element={<HomeRedirect admin={admin} />} />
         <Route path="u/:slug" element={<UniverseIndexRedirect />} />
         <Route path="u/:slug/sessions" element={<SessionsPage admin={admin} />} />
