@@ -14,9 +14,8 @@ import {
 } from "@/lib/sessions/transcript";
 import { cn } from "@/lib/utils";
 
-/// Full-width transcript rows without avatars. Human inputs use the inverted
-/// primary palette; other user-role inputs use muted bands. Assistant output
-/// is plain rendered text, with compact tool and lifecycle markers.
+/// Full-width transcript rows without avatars. User inputs use muted bands;
+/// assistant output is plain rendered text, with compact tool and lifecycle markers.
 
 export function TranscriptEntryView({
   entry,
@@ -30,7 +29,6 @@ export function TranscriptEntryView({
       return entry.role === "user" ? (
         <UserBand
           text={entry.text}
-          human={Boolean(entry.origin?.startsWith("user:") && entry.origin.length > 5)}
           steering={entry.steering === true}
         />
       ) : (
@@ -105,12 +103,10 @@ const COLLAPSED_TEXT_HEIGHT = 160;
 
 export function UserBand({
   text,
-  human = false,
   pending = false,
   steering = false,
 }: {
   text: string;
-  human?: boolean;
   pending?: boolean;
   /// A message injected into a running run rather than its initial input.
   steering?: boolean;
@@ -138,10 +134,9 @@ export function UserBand({
     <Message>
       <MessageContent>
         <Bubble
-          variant={human ? "default" : "muted"}
+          variant="muted"
           className={cn(
             "w-full max-w-full",
-            human && "*:data-[slot=bubble-content]:bg-primary/85 dark:*:data-[slot=bubble-content]:bg-primary/90",
             pending && "opacity-60",
           )}
         >
@@ -178,7 +173,7 @@ export function UserBand({
                   onClick={() => setExpanded((value) => !value)}
                   className={cn(
                     "inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium opacity-80 transition-colors hover:opacity-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-current",
-                    human ? "hover:bg-primary-foreground/10" : "hover:bg-foreground/5",
+                    "hover:bg-foreground/5",
                   )}
                 >
                   {expanded ? "Show less" : "Show more"}

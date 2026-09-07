@@ -33,19 +33,19 @@ afterEach(async () => {
 });
 
 it.each([
-  ["user:operator", "default"], ["event", "muted"], ["integration:example", "muted"],
+  ["user:operator", "muted"], ["event", "muted"], ["integration:example", "muted"],
   [undefined, "muted"], ["user:", "muted"],
-])("uses the appropriate palette for origin %s without adding a label", async (origin, variant) => {
+])("uses the standard muted palette for origin %s without adding a label", async (origin, variant) => {
   await act(async () => root.render(<TranscriptEntryView entry={{ kind: "message", key: "message", role: "user", text: "Hello", origin }} />));
   expect(container.querySelector('[data-slot="bubble"]')?.getAttribute("data-variant")).toBe(variant);
   expect(container.textContent).toBe("Hello");
   expect(container.querySelector("button")).toBeNull();
 });
 
-it.each([true, false])("collapses and expands overflowing messages, human=%s", async (human) => {
+it.each(["user:operator", "event"])("collapses and expands overflowing messages from %s", async (origin) => {
   height = 700;
   const text = "Long input\n".repeat(50) + "Last line";
-  await act(async () => root.render(<UserBand text={text} human={human} steering />));
+  await act(async () => root.render(<TranscriptEntryView entry={{ kind: "message", key: "long", role: "user", text, origin, steering: true }} />));
   const button = container.querySelector("button")!;
   const content = document.getElementById(button.getAttribute("aria-controls")!)!;
   expect(button.textContent).toBe("Show more");
@@ -76,7 +76,7 @@ it("rechecks overflow on resize and text changes, and disconnects on unmount", a
   expect(disconnect).toHaveBeenCalledTimes(2);
 });
 
-it("uses the human palette immediately for an optimistic message", async () => {
-  await act(async () => root.render(<UserBand text="Sending" human pending />));
-  expect(container.querySelector('[data-slot="bubble"]')?.getAttribute("data-variant")).toBe("default");
+it("uses the standard muted palette for an optimistic message", async () => {
+  await act(async () => root.render(<UserBand text="Sending" pending />));
+  expect(container.querySelector('[data-slot="bubble"]')?.getAttribute("data-variant")).toBe("muted");
 });

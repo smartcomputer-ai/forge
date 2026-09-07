@@ -51,10 +51,10 @@ and batch framing use `event`, including steering and context-only delivery.
 Other API clients may supply other origin strings. Origin is display metadata,
 not an authorization claim, and absent origin means unknown. It is persisted on
 each input/context entry and returned by context, event, and detailed run reads.
-The transcript uses the theme’s inverted primary palette, with the background
-at 85% opacity in light mode and 90% in dark mode, for `user:<id>` inputs,
-including optimistic sends and steering. Event and unknown origins retain the
-muted palette; origin adds no visible label. All user-role messages collapse to
+All user-role inputs use the standard muted message palette, regardless of
+origin, including optimistic sends and steering. The composer uses the standard
+background, muted placeholder, and visible focus ring. Origin adds no visible
+label or color emphasis. All user-role messages collapse to
 about 206px when their rendered text exceeds 160px, with a bottom fade and
 keyboard-accessible Show more / Show less controls. Resizing rechecks wrapping,
 and expansion leaves bottom-following to keep the message in view.

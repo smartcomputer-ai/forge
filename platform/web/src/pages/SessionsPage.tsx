@@ -2035,12 +2035,12 @@ export function SessionDetail({
               ))}
               {pendingInTranscript.map((message) => (
                 <MessageScrollerItem key={message.id} messageId={message.id}>
-                  <UserBand text={message.text} human pending />
+                  <UserBand text={message.text} pending />
                 </MessageScrollerItem>
               ))}
               {visiblePendingSteers.map((steer) => (
                 <MessageScrollerItem key={steer.id} messageId={steer.id}>
-                  <UserBand text={steer.text} human pending steering />
+                  <UserBand text={steer.text} pending steering />
                 </MessageScrollerItem>
               ))}
               {notices.map((notice) => (

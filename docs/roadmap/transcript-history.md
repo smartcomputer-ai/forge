@@ -38,12 +38,11 @@ and authenticated origin stamping despite a conflicting request-body value.
 
 ## Message appearance
 
-Human-origin (`user:<id>`) inputs use the theme’s primary background at 85%
-opacity in light mode and 90% in dark mode, with primary foreground text,
-softly inverting their contrast. Optimistic messages
-and steering use the same palette before confirmation, and demo composer routes
-retain origin through acceptance and projection. Event/custom/unknown origins
-stay muted, with no additional origin labels.
+All user-role inputs use the standard muted message palette, including human,
+event, unknown, optimistic, and steering messages. Origin remains available in
+the transcript data and demo projections, but adds no visible label or color
+emphasis. The composer uses its standard background and muted placeholder with
+a visible focus ring.
 
 Every user-role message, regardless of origin, measures its rendered text and
 collapses overflow to 160px of text (about 206px including padding and controls).
