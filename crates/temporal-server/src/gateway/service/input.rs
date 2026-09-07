@@ -315,12 +315,12 @@ fn input_origin_from_api(item: &InputItem) -> Result<Option<String>, AgentApiErr
         | InputItem::Media { origin, .. } => origin,
         InputItem::Catalog { .. } => return Ok(None),
     };
-    if let Some(origin) = origin {
-        if origin.trim().is_empty() || origin.len() > 200 {
-            return Err(AgentApiError::invalid_request(
-                "origin must contain 1–200 bytes and cannot be blank",
-            ));
-        }
+    if let Some(origin) = origin
+        && (origin.trim().is_empty() || origin.len() > 200)
+    {
+        return Err(AgentApiError::invalid_request(
+            "origin must contain 1–200 bytes and cannot be blank",
+        ));
     }
     Ok(origin.clone())
 }
