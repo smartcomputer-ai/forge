@@ -66,17 +66,33 @@ function MessageScrollerContent({
 
 function MessageScrollerItem({
   className,
+  messageId,
+  onClickCapture,
   scrollAnchor = false,
   ...props
 }: React.ComponentProps<typeof MessageScrollerPrimitive.Item>) {
+  const { scrollToMessage } = useMessageScroller()
   return (
     <MessageScrollerPrimitive.Item
       data-slot="message-scroller-item"
+      messageId={messageId}
       scrollAnchor={scrollAnchor}
       className={cn(
         "w-full min-w-0 max-w-full shrink-0",
         className
       )}
+      onClickCapture={(event) => {
+        onClickCapture?.(event)
+        if (event.defaultPrevented || !messageId) return
+        const target = event.target
+        // Expansion is reading intent. Leave bottom-following before the
+        // content grows, preserving this row's current position when visible.
+        if (!(target instanceof Element) || !target.closest("[data-message-expansion]")) return
+        scrollToMessage(messageId, {
+          align: "nearest",
+          behavior: "instant",
+        })
+      }}
       {...props}
     />
   )

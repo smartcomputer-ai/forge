@@ -1550,6 +1550,7 @@ fn cancelled_tool_result(call: &ObservedToolCall) -> ToolCallResult {
                 provider_kind: call.provider_kind.clone(),
             },
             preview: None,
+            origin: None,
             provenance_ref: None,
             token_estimate: None,
         }],
@@ -1579,6 +1580,7 @@ fn unavailable_tool_result(call: &ObservedToolCall) -> ToolCallResult {
                 provider_kind: call.provider_kind.clone(),
             },
             preview: None,
+            origin: None,
             provenance_ref: None,
             token_estimate: None,
         }],
@@ -2177,6 +2179,7 @@ mod tests {
                     provider_kind: None
                 },
                 preview: None,
+                origin: None,
                 provenance_ref: None,
                 token_estimate: None,
             }]

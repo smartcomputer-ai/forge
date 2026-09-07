@@ -107,7 +107,7 @@ Permanently removes a closed retention-tree leaf, or its closed history-fork and
 
 **Read the session event stream**
 
-Reads events after a cursor and optionally long-polls when caught up. Continue from nextCursor/headCursor and inspect complete/gap rather than assuming an uninterrupted page.
+Returns chronological events. Forward (default) follows after and supports long-polling. Backward reads the latest window below before (or the head); pass nextCursor as before until complete. Follow live events after the initial backward headCursor. Windows may split runs/tool batches; keep historical reconstruction separate from live controls.
 
 - Params: `SessionEventsReadParams`
 - Result: `AgentApiOutcome<SessionEventsReadResponse>`

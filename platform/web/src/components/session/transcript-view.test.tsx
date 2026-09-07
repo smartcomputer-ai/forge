@@ -35,7 +35,7 @@ describe("TranscriptEntryView", () => {
     expect(loadFullText).not.toHaveBeenCalled();
   });
 
-  it.each(["user", "assistant"] as const)("renders a full %s message without expansion", (role) => {
+  it.each(["user", "assistant"] as const)("retains full %s message text without fetching it", (role) => {
     const text = "Complete message 🦀. ".repeat(700) + "The final sentence.";
     const loadFullText = vi.fn();
     const html = renderToString(createElement(TranscriptEntryView, {

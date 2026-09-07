@@ -1,6 +1,9 @@
 # Lightspeed Roadmap
 
 ## Work
+- [x] [Progressive transcript history](transcript-history.md) — recent-first
+  event windows, automatic upward pagination, and independent live updates;
+  verified with large histories and desktop/mobile scrolling checks.
 - [x] [P161](p161-postgres-schema-baseline.md) — consolidate the runtime
   PostgreSQL schema into nine domain migrations, preserve the final relational
   schema and ledger checks, and verify the reset local stack with store tests.

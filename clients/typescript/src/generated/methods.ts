@@ -196,7 +196,7 @@ export const METHOD_INFO = {
   "session/events/read": {
     scope: "universe",
     summary: "Read the session event stream",
-    description: "Reads events after a cursor and optionally long-polls when caught up. Continue from nextCursor/headCursor and inspect complete/gap rather than assuming an uninterrupted page.",
+    description: "Returns chronological events. Forward (default) follows after and supports long-polling. Backward reads the latest window below before (or the head); pass nextCursor as before until complete. Follow live events after the initial backward headCursor. Windows may split runs/tool batches; keep historical reconstruction separate from live controls.",
   },
   "session/context/append": {
     scope: "universe",
@@ -905,7 +905,7 @@ export interface MethodMap {
   /**
    * Read the session event stream
    *
-   * Reads events after a cursor and optionally long-polls when caught up. Continue from nextCursor/headCursor and inspect complete/gap rather than assuming an uninterrupted page.
+   * Returns chronological events. Forward (default) follows after and supports long-polling. Backward reads the latest window below before (or the head); pass nextCursor as before until complete. Follow live events after the initial backward headCursor. Windows may split runs/tool batches; keep historical reconstruction separate from live controls.
    */
   "session/events/read": {
     params: Api.SessionEventsReadParams;
@@ -2074,7 +2074,7 @@ export const rpc = {
   /**
    * Read the session event stream
    *
-   * Reads events after a cursor and optionally long-polls when caught up. Continue from nextCursor/headCursor and inspect complete/gap rather than assuming an uninterrupted page.
+   * Returns chronological events. Forward (default) follows after and supports long-polling. Backward reads the latest window below before (or the head); pass nextCursor as before until complete. Follow live events after the initial backward headCursor. Windows may split runs/tool batches; keep historical reconstruction separate from live controls.
    */
   sessionEventsRead(client: RpcCaller, params: Api.SessionEventsReadParams): Promise<Api.AgentApiOutcomeOfSessionEventsReadResponse> {
     return client.call("session/events/read", params);

@@ -211,16 +211,40 @@ export function sessionRoutes(store: DemoStore): Hono {
     return c.json(sessionSummary(session));
   });
 
-  /// The transcript tail: pages forward with `waitMs=0`, then parks here
-  /// until an event lands or the poll times out.
+  /// Both history and live following share the public event pagination contract.
   app.get("/:id/sessions/:sessionId/events", async (c) => {
     const found = lookup(c);
     if (!found) return notFound(c, "not found in engine");
+    const direction = c.req.query("direction") ?? "forward";
+    const beforeRaw = c.req.query("before");
+    const before = beforeRaw === undefined ? null : Number(beforeRaw);
     const afterRaw = c.req.query("after");
-    const after = afterRaw !== undefined && Number.isFinite(Number(afterRaw)) ? Number(afterRaw) : null;
-    const limit = Math.min(intQuery(c, "limit", 200), 500);
-    const waitMs = Math.min(intQuery(c, "waitMs", 0), 30_000);
-    return c.json(await waitForEvents(found.session, after, limit, waitMs, c.req.raw.signal));
+    const after = afterRaw === undefined ? null : Number(afterRaw);
+    const limit = Number(c.req.query("limit") ?? 200);
+    const waitMs = Number(c.req.query("waitMs") ?? 0);
+    if (!["forward", "backward"].includes(direction) ||
+        (before !== null && (!Number.isSafeInteger(before) || before <= 0)) ||
+        (after !== null && (!Number.isSafeInteger(after) || after < 0)) ||
+        !Number.isSafeInteger(limit) || limit <= 0 ||
+        !Number.isSafeInteger(waitMs) || waitMs < 0 ||
+        (direction === "backward" && (after !== null || waitMs > 0)) ||
+        (direction === "forward" && before !== null)) {
+      return badRequest(c, "Invalid event pagination parameters");
+    }
+    if (direction === "backward") {
+      const events = found.session.events;
+      const head = events.at(-1)?.cursor.seq ?? 0;
+      const through = Math.min(head, before === null ? head : before - 1);
+      const lower = Math.max(0, through - Math.min(limit, 500));
+      return c.json({
+        events: events.filter((event) => event.cursor.seq > lower && event.cursor.seq <= through),
+        nextCursor: lower > 0 ? { seq: lower + 1 } : null,
+        complete: lower === 0,
+        headCursor: { seq: head },
+        gap: null,
+      });
+    }
+    return c.json(await waitForEvents(found.session, after, Math.min(limit, 500), Math.min(waitMs, 30_000), c.req.raw.signal));
   });
 
   /// Whole-document replace with optimistic concurrency, applied at once:
@@ -331,6 +355,7 @@ export function sessionRoutes(store: DemoStore): Hono {
     if (session.view.status === "closed") return conflict(c, "engine conflict: session is closed");
     const run = startRun(store, universe, session, {
       text: body.text,
+      origin: `user:${store.currentUser.id}`,
       submissionId: typeof body.submissionId === "string" ? body.submissionId : null,
     });
     return c.json({ run: { id: run.id, status: run.status } });
@@ -355,7 +380,7 @@ export function sessionRoutes(store: DemoStore): Hono {
     if (typeof body.text !== "string" || !body.text.trim()) return badRequest(c, "text is required");
     const run = findRun(session, runId);
     if (!run) return notFound(c, "not found in engine");
-    const steered = steerRun(store, session, runId, body.text);
+    const steered = steerRun(store, session, runId, body.text, `user:${store.currentUser.id}`);
     if (!steered) {
       return conflict(c, `engine conflict: run ${runId} is ${run.status}; only a running run accepts steering`);
     }

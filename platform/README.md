@@ -44,6 +44,53 @@ after the message leaves active context. The transcript renders messages and
 reasoning directly. Tool previews stay bounded and expand their original bytes
 through `blobs/read`.
 
+Conversation input items accept an optional `origin` string (1–200 bytes, not
+blank). The message and steering routes derive `user:<id>` from the authenticated
+platform session; request bodies cannot override it. Bot deliveries, their media,
+and batch framing use `event`, including steering and context-only delivery.
+Other API clients may supply other origin strings. Origin is display metadata,
+not an authorization claim, and absent origin means unknown. It is persisted on
+each input/context entry and returned by context, event, and detailed run reads.
+All user-role inputs use the standard muted message palette, regardless of
+origin, including optimistic sends and steering. The composer uses the standard
+background, muted placeholder, and visible focus ring. Origin adds no visible
+label or color emphasis. All user-role messages collapse to
+about 206px when their rendered text exceeds 160px, with a bottom fade and
+keyboard-accessible Show more / Show less controls. Resizing rechecks wrapping,
+and expansion leaves bottom-following to keep the message in view.
+
+Session transcripts open with one recent event window from
+`session/events/read` with `direction: "backward"`, then follow `session/events/read` strictly after
+that initial window's head. Scrolling near the top automatically requests
+older windows through an independent exclusive `before` cursor. There is no
+history cutoff or load-more button. The message scroller preserves the visible
+message when older entries are prepended; its loading sentinel sits outside
+the content element so it cannot hide prepends from the scroller.
+
+Windows may split a run or tool batch. Results without a loaded call start
+render as continued tool activity and acquire their original metadata as older
+pages arrive. Partial generation totals are not presented as whole-run usage.
+Each finished run has a horizontal separator with a centered, hoverable button
+showing last-call context, cumulative input-plus-output usage, and duration. Counts below 1,000 stay exact;
+larger counts use `k`. Its popover breaks usage into input, output, model calls, tool calls,
+and the cache-hit share. Missing provider counts remain unavailable rather than
+becoming zero. Failed and cancelled runs retain their visible status.
+The context measurement describes the last request, not the next request's
+assembled context or the model's capacity. Statistics stay in the transcript;
+the composer has no context indicator. "Show run statistics" in the session-title
+and active bot-conversation menus toggles these rows, while failures remain
+visible. The preference defaults to on and is saved per user in local storage,
+shared across sessions, bots, universes, and tabs in this browser.
+History is reconstructed chronologically and deduplicated by event/entry ID;
+historical lifecycle transitions never overwrite live controls. History errors
+retry independently of live polling, and changing sessions aborts both paths.
+Live polling retries a transient connection failure immediately with `waitMs: 0`
+and at most one event from the unchanged cursor. Only a failed recovery probe shows a disconnect;
+an empty successful probe clears it immediately and resumes normal long-polling.
+Authorization and event-integrity errors remain visible immediately. Live reads
+have a deadline ten seconds beyond their requested wait so stalled connections
+cannot stop updates indefinitely.
+
 The authoritative configuration reference is
 [`docs/variables.md`](../docs/variables.md), with separate sections for the
 Platform server, connector host, Configurator MCP, and development-only

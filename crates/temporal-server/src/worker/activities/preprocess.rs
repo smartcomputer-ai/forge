@@ -398,6 +398,7 @@ async fn transcribe_entry(
             provider_kind: Some(AUDIO_TRANSCRIPT_PROVIDER_KIND.to_owned()),
         },
         preview: Some(transcript.header().chars().take(256).collect()),
+        origin: entry.origin.clone(),
         provenance_ref: Some(entry.content.content_ref.clone()),
         token_estimate: None,
     })
@@ -840,6 +841,7 @@ mod tests {
                     provider_kind: None,
                 },
                 preview: Some("[audio: voice.ogg]".to_owned()),
+                origin: Some("user:operator".into()),
                 provenance_ref: None,
                 token_estimate: None,
             },
@@ -857,6 +859,7 @@ mod tests {
         .expect("rewrite");
 
         assert_eq!(rewritten.len(), 2);
+        assert_eq!(rewritten[1].origin.as_deref(), Some("user:operator"));
         assert_eq!(
             rewritten[1].content.media_type.as_deref(),
             Some("application/json")
@@ -901,6 +904,7 @@ mod tests {
                     provider_kind: None,
                 },
                 preview: Some("[audio: voice.aac]".to_owned()),
+                origin: None,
                 provenance_ref: None,
                 token_estimate: None,
             },
@@ -940,6 +944,7 @@ mod tests {
                 provider_kind: None,
             },
             preview: Some("[audio: voice.aac]".to_owned()),
+            origin: None,
             provenance_ref: None,
             token_estimate: None,
         }];
@@ -1070,6 +1075,7 @@ mod tests {
                 provider_kind: None,
             },
             preview: Some("[audio: long.ogg]".to_owned()),
+            origin: None,
             provenance_ref: None,
             token_estimate: None,
         }];
@@ -1099,6 +1105,7 @@ mod tests {
             },
             content: engine::ContentRef::text(content_ref),
             preview: None,
+            origin: None,
             provenance_ref: None,
             token_estimate: None,
         }
@@ -1120,6 +1127,7 @@ mod tests {
                 provider_kind: None,
             },
             preview: Some("[audio: voice.aac]".to_owned()),
+            origin: None,
             provenance_ref: None,
             token_estimate: None,
         }];

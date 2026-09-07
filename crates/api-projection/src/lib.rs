@@ -449,6 +449,7 @@ impl<'a> CoreAgentProjector<'a> {
             key: entry.key.as_ref().map(|key| key.as_str().to_owned()),
             kind: context_entry_kind_to_api(&entry.kind),
             content: content_ref_to_api(&entry.content),
+            origin: entry.origin.clone(),
             provenance_ref: entry
                 .provenance_ref
                 .as_ref()
@@ -608,6 +609,7 @@ impl<'a> CoreAgentProjector<'a> {
                     // the blob as UTF-8 text would fail.
                     if is_text_message_media_type(entry.content.media_type.as_deref()) {
                         InputItem::Text {
+                            origin: entry.origin.clone(),
                             text: project_content_text(self.blobs, &entry.content)
                                 .await?
                                 .unwrap_or_default(),
@@ -615,6 +617,7 @@ impl<'a> CoreAgentProjector<'a> {
                     } else {
                         let mime = entry.content.media_type.clone().unwrap_or_default();
                         InputItem::Media {
+                            origin: entry.origin.clone(),
                             blob_ref: entry.content.content_ref.as_str().to_owned(),
                             kind: media_kind_for_mime(&mime),
                             mime,
@@ -623,6 +626,7 @@ impl<'a> CoreAgentProjector<'a> {
                     }
                 }
                 _ => InputItem::TextRef {
+                    origin: entry.origin.clone(),
                     blob_ref: entry.content.content_ref.as_str().to_owned(),
                 },
             })
@@ -1703,7 +1707,7 @@ pub fn input_text(input: &[InputItem]) -> Result<String, AgentApiError> {
     let mut parts = Vec::new();
     for item in input {
         match item {
-            InputItem::Text { text } => {
+            InputItem::Text { text, .. } => {
                 let text = text.trim();
                 if !text.is_empty() {
                     parts.push(text);
@@ -2321,6 +2325,7 @@ pub fn project_context_entry_inputs(input: &[ContextEntryInput]) -> Vec<ContextE
         .map(|entry| ContextEntryInputView {
             kind: context_entry_kind_to_api(&entry.kind),
             content: content_ref_to_api(&entry.content),
+            origin: entry.origin.clone(),
             provenance_ref: entry
                 .provenance_ref
                 .as_ref()
@@ -3246,6 +3251,7 @@ mod tests {
             },
             content: engine::ContentRef::text(blob_ref.clone()),
             preview: Some("hello".to_owned()),
+            origin: None,
             provenance_ref: None,
             token_estimate: None,
         }]);
@@ -3284,6 +3290,7 @@ mod tests {
                     provider_kind: None,
                 },
                 preview: Some("[image: photo.jpg]".to_owned()),
+                origin: None,
                 provenance_ref: None,
                 token_estimate: None,
             }])
@@ -3293,6 +3300,7 @@ mod tests {
         assert_eq!(
             projected,
             vec![InputItem::Media {
+                origin: None,
                 blob_ref: image_ref.as_str().to_owned(),
                 mime: "image/jpeg".to_owned(),
                 kind: MediaKind::Image,
@@ -3492,6 +3500,7 @@ mod tests {
                 provider_kind: Some("openai.responses.compaction".to_owned()),
             },
             preview: Some("OpenAI Responses compaction item".to_owned()),
+            origin: None,
             provenance_ref: None,
             token_estimate: Some(TokenEstimate {
                 tokens: 123,
@@ -3520,6 +3529,7 @@ mod tests {
                     media_type: Some("application/json".to_owned()),
                     provider_kind: Some("openai.responses.compaction".to_owned())
                 },
+                origin: None,
                 provenance_ref: None,
                 preview: Some("OpenAI Responses compaction item".to_owned()),
                 provider_item_id: Some("item_compaction_1".to_owned()),
@@ -3566,6 +3576,7 @@ mod tests {
                 provider_kind: Some(OPENAI_RESPONSES_MCP_CALL_PROVIDER_KIND.to_owned()),
             },
             preview: Some("OpenAI Responses MCP tool call: echo.echo".to_owned()),
+            origin: None,
             provenance_ref: None,
             token_estimate: None,
             supersedes: None,
@@ -3587,6 +3598,7 @@ mod tests {
                     media_type: Some("application/json".to_owned()),
                     provider_kind: Some(OPENAI_RESPONSES_MCP_CALL_PROVIDER_KIND.to_owned())
                 },
+                origin: None,
                 provenance_ref: None,
                 preview: Some("OpenAI Responses MCP tool call: echo.echo".to_owned()),
                 provider_item_id: Some("mcp_1".to_owned()),
@@ -3638,6 +3650,7 @@ mod tests {
                 provider_kind: Some(provider_kind.to_owned()),
             },
             preview: None,
+            origin: None,
             provenance_ref: None,
             token_estimate: None,
             supersedes: None,
@@ -4107,12 +4120,15 @@ mod tests {
     fn input_text_joins_non_empty_text_items() {
         let text = input_text(&[
             InputItem::Text {
+                origin: None,
                 text: " first ".to_owned(),
             },
             InputItem::Text {
+                origin: None,
                 text: "".to_owned(),
             },
             InputItem::Text {
+                origin: None,
                 text: "second".to_owned(),
             },
         ])
@@ -4124,6 +4140,7 @@ mod tests {
     #[test]
     fn input_text_rejects_unresolved_text_refs() {
         let error = input_text(&[InputItem::TextRef {
+            origin: None,
             blob_ref: BlobRef::from_bytes(b"hello").as_str().to_owned(),
         }])
         .expect_err("text refs require store resolution");
@@ -4159,6 +4176,7 @@ mod tests {
                 provider_kind: None,
             },
             preview: None,
+            origin: None,
             provenance_ref: None,
             token_estimate: None,
             supersedes: None,

@@ -329,7 +329,10 @@ impl SubagentService {
             .runtime
             .start_run(
                 &child_session_id,
-                vec![InputItem::Text { text: args.input }],
+                vec![InputItem::Text {
+                    origin: None,
+                    text: args.input,
+                }],
                 submission_id,
                 vec![RunTerminalNotifyIntent {
                     holder_workflow_id: start.execution_id.clone(),
@@ -865,6 +868,7 @@ mod tests {
         assert_eq!(
             runs[0].1,
             vec![InputItem::Text {
+                origin: None,
                 text: "review the change".to_owned()
             }]
         );

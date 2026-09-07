@@ -297,6 +297,8 @@ async fn run_cancel_mid_generation_live_client(
 
     let events = api
         .read_session_events(SessionEventsReadParams {
+            direction: Default::default(),
+            before: None,
             session_id: session_id.as_str().to_owned(),
             after: None,
             limit: Some(500),
@@ -439,6 +441,7 @@ async fn run_steering_live_client(
             session_id: session_id.as_str().to_owned(),
             run_id: run.id.clone(),
             items: vec![InputItem::Text {
+                origin: None,
                 text: "also mention the moon".to_owned(),
             }],
         })
@@ -471,6 +474,7 @@ async fn run_steering_live_client(
             session_id: session_id.as_str().to_owned(),
             run_id: run.id.clone(),
             items: vec![InputItem::Text {
+                origin: None,
                 text: "too late".to_owned(),
             }],
         })
@@ -502,6 +506,7 @@ async fn run_steering_final_turn_live_client(
             session_id: session_id.as_str().to_owned(),
             run_id: run.id.clone(),
             items: vec![InputItem::Text {
+                origin: None,
                 text: "one more thing".to_owned(),
             }],
         })
@@ -593,7 +598,7 @@ async fn run_queue_live_client(
     assert!(matches!(
         &queued_view.source,
         api::RunViewSource::Input { items }
-            if matches!(items.first(), Some(InputItem::Text { text }) if text == "second")
+            if matches!(items.first(), Some(InputItem::Text { text, .. }) if text == "second")
     ));
 
     // Steering a queued run is rejected; it has no turn yet.
@@ -602,6 +607,7 @@ async fn run_queue_live_client(
             session_id: session_id.as_str().to_owned(),
             run_id: second.id.clone(),
             items: vec![InputItem::Text {
+                origin: None,
                 text: "nope".to_owned(),
             }],
         })
@@ -743,6 +749,7 @@ async fn run_parallel_tool_batch_live_client(
             session_id: session_id.as_str().to_owned(),
             source: RunStartSource::Input {
                 items: vec![InputItem::Text {
+                    origin: None,
                     text: "run a parallel tool batch".to_owned(),
                 }],
             },
@@ -782,6 +789,8 @@ async fn run_parallel_tool_batch_live_client(
     // projection budget; the scripted failure has no output to account for.
     let events = api
         .read_session_events(SessionEventsReadParams {
+            direction: Default::default(),
+            before: None,
             session_id: session_id.as_str().to_owned(),
             after: None,
             limit: Some(500),
@@ -860,6 +869,7 @@ async fn run_transient_llm_retry_live_client(
             session_id: session_id.as_str().to_owned(),
             source: RunStartSource::Input {
                 items: vec![InputItem::Text {
+                    origin: None,
                     text: "retry through transient provider failures".to_owned(),
                 }],
             },
@@ -940,6 +950,7 @@ async fn run_llm_retry_exhaustion_live_client(
             session_id: session_id.as_str().to_owned(),
             source: RunStartSource::Input {
                 items: vec![InputItem::Text {
+                    origin: None,
                     text: "exhaust the provider retry budget".to_owned(),
                 }],
             },
@@ -955,6 +966,8 @@ async fn run_llm_retry_exhaustion_live_client(
     // The failure event carries the engine's classification, not only text.
     let events = api
         .read_session_events(SessionEventsReadParams {
+            direction: Default::default(),
+            before: None,
             session_id: session_id.as_str().to_owned(),
             after: None,
             limit: Some(500),
@@ -986,6 +999,7 @@ async fn run_llm_retry_exhaustion_live_client(
             session_id: session_id.as_str().to_owned(),
             source: RunStartSource::Input {
                 items: vec![InputItem::Text {
+                    origin: None,
                     text: "recover after the provider outage".to_owned(),
                 }],
             },
@@ -1062,6 +1076,7 @@ async fn run_unbounded_hosted_run_live_client(
             session_id: session_id.as_str().to_owned(),
             source: RunStartSource::Input {
                 items: vec![InputItem::Text {
+                    origin: None,
                     text: "complete thirty verification tool rounds".to_owned(),
                 }],
             },

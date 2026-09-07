@@ -205,6 +205,7 @@ async fn auto_reject_pending_approvals(
                         provider_kind: Some("openai.responses.mcp_approval_response".to_owned()),
                     },
                     preview: Some("MCP tool call auto-rejected in unattended session".to_owned()),
+                    origin: None,
                     provenance_ref: None,
                     token_estimate: None,
                 })
@@ -481,6 +482,7 @@ fn workflow_user_message_input(content_ref: BlobRef, preview: Option<String>) ->
             provider_kind: None,
         },
         preview,
+        origin: None,
         provenance_ref: None,
         token_estimate: None,
     }

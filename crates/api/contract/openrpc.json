@@ -7256,6 +7256,13 @@
           "kind": {
             "$ref": "#/components/schemas/ContextEntryKindView"
           },
+          "origin": {
+            "description": "Application-supplied display origin, independent of role and insertion source.\n`user:<id>` identifies platform composer input; `event` marks bot deliveries.\nOther values are allowed; omission means unknown. Not an authorization identity.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "preview": {
             "type": [
               "string",
@@ -7671,6 +7678,13 @@
           },
           "kind": {
             "$ref": "#/components/schemas/ContextEntryKindView"
+          },
+          "origin": {
+            "description": "Application-supplied display origin, independent of role and insertion source.\n`user:<id>` identifies platform composer input; `event` marks bot deliveries.\nOther values are allowed; omission means unknown. Not an authorization identity.",
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "preview": {
             "type": [
@@ -9675,6 +9689,13 @@
         "oneOf": [
           {
             "properties": {
+              "origin": {
+                "description": "Application-supplied display provenance (1–200 nonblank bytes).\nThe platform uses `user:<id>` for direct human input and `event` for\nbot deliveries; other values are allowed. Omitted means unknown.\nThis metadata is not an authorization identity or model input text.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
               "text": {
                 "type": "string"
               },
@@ -9693,6 +9714,13 @@
             "properties": {
               "blobRef": {
                 "type": "string"
+              },
+              "origin": {
+                "description": "Application-supplied display provenance (1–200 nonblank bytes).\nThe platform uses `user:<id>` for direct human input and `event` for\nbot deliveries; other values are allowed. Omitted means unknown.\nThis metadata is not an authorization identity or model input text.",
+                "type": [
+                  "string",
+                  "null"
+                ]
               },
               "type": {
                 "const": "textRef",
@@ -9717,6 +9745,13 @@
                 "type": "string"
               },
               "name": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "origin": {
+                "description": "Application-supplied display provenance (1–200 nonblank bytes).\nThe platform uses `user:<id>` for direct human input and `event` for\nbot deliveries; other values are allowed. Omitted means unknown.\nThis metadata is not an authorization identity or model input text.",
                 "type": [
                   "string",
                   "null"
@@ -13334,6 +13369,13 @@
           }
         ]
       },
+      "SessionEventDirection": {
+        "enum": [
+          "forward",
+          "backward"
+        ],
+        "type": "string"
+      },
       "SessionEventKindView": {
         "oneOf": [
           {
@@ -14671,6 +14713,25 @@
               }
             ]
           },
+          "before": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EventCursor"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Exclusive upper sequence bound for backward reads only. Must be positive."
+          },
+          "direction": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/SessionEventDirection"
+              }
+            ],
+            "description": "Forward reads follow `after`; backward reads select the latest window\nbelow `before` (or the current head when absent). Both return events\nchronologically. Backward reads do not replay reducer state."
+          },
           "limit": {
             "format": "uint32",
             "minimum": 0,
@@ -14683,7 +14744,7 @@
             "type": "string"
           },
           "waitMs": {
-            "description": "Long-poll: when no events exist past `after`, hold the request until\none lands or this many milliseconds elapse, then return a normal\n(possibly empty) page. Zero or absent preserves immediate return.\nValues above the server cap are clamped, not rejected.",
+            "description": "Forward reads only. Long-poll: when no events exist past `after`, hold the request until\none lands or this many milliseconds elapse, then return a normal\n(possibly empty) page. Zero or absent preserves immediate return.\nValues above the server cap are clamped, not rejected.",
             "format": "uint64",
             "minimum": 0,
             "type": [
@@ -14700,10 +14761,12 @@
       "SessionEventsReadResponse": {
         "properties": {
           "complete": {
+            "description": "No more events in the requested direction at the time of this read.\nThis does not imply that the session is closed.",
             "type": "boolean"
           },
           "events": {
             "default": [],
+            "description": "Events are always chronological, including backward pages. A page may\nbegin inside a run or tool batch; clients must retain continuation state.",
             "items": {
               "$ref": "#/components/schemas/SessionEventView"
             },
@@ -14727,7 +14790,8 @@
               {
                 "type": "null"
               }
-            ]
+            ],
+            "description": "Backward reads fence the head before reading. The initial backward\npage's head is the starting `after` cursor for live forward reads.\nAn empty backward read returns sequence zero."
           },
           "nextCursor": {
             "anyOf": [
@@ -14737,7 +14801,8 @@
               {
                 "type": "null"
               }
-            ]
+            ],
+            "description": "Forward: pass as `after`. Backward: pass as `before` to fetch older\nhistory; absent when the beginning is reached. Never use a backward\ncontinuation to advance a forward live cursor."
           }
         },
         "required": [
@@ -17759,7 +17824,7 @@
       "summary": "Delete closed sessions"
     },
     {
-      "description": "Reads events after a cursor and optionally long-polls when caught up. Continue from nextCursor/headCursor and inspect complete/gap rather than assuming an uninterrupted page.",
+      "description": "Returns chronological events. Forward (default) follows after and supports long-polling. Backward reads the latest window below before (or the head); pass nextCursor as before until complete. Follow live events after the initial backward headCursor. Windows may split runs/tool batches; keep historical reconstruction separate from live controls.",
       "name": "session/events/read",
       "paramStructure": "by-name",
       "params": [

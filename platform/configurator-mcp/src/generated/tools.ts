@@ -2302,7 +2302,7 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
     "name": "lightspeed_session_events_read",
     "method": "session/events/read",
     "summary": "Read the session event stream",
-    "description": "Reads events after a cursor and optionally long-polls when caught up. Continue from nextCursor/headCursor and inspect complete/gap rather than assuming an uninterrupted page.",
+    "description": "Returns chronological events. Forward (default) follows after and supports long-polling. Backward reads the latest window below before (or the head); pass nextCursor as before until complete. Follow live events after the initial backward headCursor. Windows may split runs/tool batches; keep historical reconstruction separate from live controls.",
     "paramsType": "SessionEventsReadParams",
     "resultType": "AgentApiOutcome<SessionEventsReadResponse>",
     "inputSchema": {
@@ -2318,6 +2318,25 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
             }
           ]
         },
+        "before": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/EventCursor"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Exclusive upper sequence bound for backward reads only. Must be positive."
+        },
+        "direction": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/SessionEventDirection"
+            }
+          ],
+          "description": "Forward reads follow `after`; backward reads select the latest window\nbelow `before` (or the current head when absent). Both return events\nchronologically. Backward reads do not replay reducer state."
+        },
         "limit": {
           "format": "uint32",
           "minimum": 0,
@@ -2330,7 +2349,7 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
           "type": "string"
         },
         "waitMs": {
-          "description": "Long-poll: when no events exist past `after`, hold the request until\none lands or this many milliseconds elapse, then return a normal\n(possibly empty) page. Zero or absent preserves immediate return.\nValues above the server cap are clamped, not rejected.",
+          "description": "Forward reads only. Long-poll: when no events exist past `after`, hold the request until\none lands or this many milliseconds elapse, then return a normal\n(possibly empty) page. Zero or absent preserves immediate return.\nValues above the server cap are clamped, not rejected.",
           "format": "uint64",
           "minimum": 0,
           "type": [
@@ -2356,6 +2375,13 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
             "seq"
           ],
           "type": "object"
+        },
+        "SessionEventDirection": {
+          "enum": [
+            "forward",
+            "backward"
+          ],
+          "type": "string"
         }
       }
     }
@@ -2406,6 +2432,13 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
           "oneOf": [
             {
               "properties": {
+                "origin": {
+                  "description": "Application-supplied display provenance (1–200 nonblank bytes).\nThe platform uses `user:<id>` for direct human input and `event` for\nbot deliveries; other values are allowed. Omitted means unknown.\nThis metadata is not an authorization identity or model input text.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
                 "text": {
                   "type": "string"
                 },
@@ -2424,6 +2457,13 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
               "properties": {
                 "blobRef": {
                   "type": "string"
+                },
+                "origin": {
+                  "description": "Application-supplied display provenance (1–200 nonblank bytes).\nThe platform uses `user:<id>` for direct human input and `event` for\nbot deliveries; other values are allowed. Omitted means unknown.\nThis metadata is not an authorization identity or model input text.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
                 },
                 "type": {
                   "const": "textRef",
@@ -2448,6 +2488,13 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                   "type": "string"
                 },
                 "name": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "origin": {
+                  "description": "Application-supplied display provenance (1–200 nonblank bytes).\nThe platform uses `user:<id>` for direct human input and `event` for\nbot deliveries; other values are allowed. Omitted means unknown.\nThis metadata is not an authorization identity or model input text.",
                   "type": [
                     "string",
                     "null"
@@ -2657,6 +2704,13 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
           "oneOf": [
             {
               "properties": {
+                "origin": {
+                  "description": "Application-supplied display provenance (1–200 nonblank bytes).\nThe platform uses `user:<id>` for direct human input and `event` for\nbot deliveries; other values are allowed. Omitted means unknown.\nThis metadata is not an authorization identity or model input text.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
                 "text": {
                   "type": "string"
                 },
@@ -2675,6 +2729,13 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
               "properties": {
                 "blobRef": {
                   "type": "string"
+                },
+                "origin": {
+                  "description": "Application-supplied display provenance (1–200 nonblank bytes).\nThe platform uses `user:<id>` for direct human input and `event` for\nbot deliveries; other values are allowed. Omitted means unknown.\nThis metadata is not an authorization identity or model input text.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
                 },
                 "type": {
                   "const": "textRef",
@@ -2699,6 +2760,13 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                   "type": "string"
                 },
                 "name": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "origin": {
+                  "description": "Application-supplied display provenance (1–200 nonblank bytes).\nThe platform uses `user:<id>` for direct human input and `event` for\nbot deliveries; other values are allowed. Omitted means unknown.\nThis metadata is not an authorization identity or model input text.",
                   "type": [
                     "string",
                     "null"
@@ -3110,6 +3178,13 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
           "oneOf": [
             {
               "properties": {
+                "origin": {
+                  "description": "Application-supplied display provenance (1–200 nonblank bytes).\nThe platform uses `user:<id>` for direct human input and `event` for\nbot deliveries; other values are allowed. Omitted means unknown.\nThis metadata is not an authorization identity or model input text.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
                 "text": {
                   "type": "string"
                 },
@@ -3128,6 +3203,13 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
               "properties": {
                 "blobRef": {
                   "type": "string"
+                },
+                "origin": {
+                  "description": "Application-supplied display provenance (1–200 nonblank bytes).\nThe platform uses `user:<id>` for direct human input and `event` for\nbot deliveries; other values are allowed. Omitted means unknown.\nThis metadata is not an authorization identity or model input text.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
                 },
                 "type": {
                   "const": "textRef",
@@ -3152,6 +3234,13 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                   "type": "string"
                 },
                 "name": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "origin": {
+                  "description": "Application-supplied display provenance (1–200 nonblank bytes).\nThe platform uses `user:<id>` for direct human input and `event` for\nbot deliveries; other values are allowed. Omitted means unknown.\nThis metadata is not an authorization identity or model input text.",
                   "type": [
                     "string",
                     "null"

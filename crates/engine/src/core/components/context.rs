@@ -161,6 +161,9 @@ pub enum ContextCompactionStatus {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContextEntry {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Application-supplied display provenance; independent of role and insertion source.
+    pub origin: Option<String>,
     /// Immutable, session-local identity assigned by the reducer.
     pub entry_id: ContextEntryId,
     /// Optional live slot this entry replaces. The key is not identity; model
@@ -189,6 +192,9 @@ pub struct ContextEntry {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ContextEntryInput {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Application-supplied display provenance; independent of role and insertion source.
+    pub origin: Option<String>,
     pub kind: ContextEntryKind,
     pub content: crate::ContentRef,
     pub preview: Option<String>,
@@ -212,6 +218,7 @@ impl ContextEntryInput {
             source,
             content: self.content,
             preview: self.preview,
+            origin: self.origin,
             provenance_ref: self.provenance_ref,
             token_estimate: self.token_estimate,
             supersedes,
@@ -1498,6 +1505,7 @@ fn validate_entry_matches_input(
     if entry.kind != input.kind
         || entry.content != input.content
         || entry.preview != input.preview
+        || entry.origin != input.origin
         || entry.provenance_ref != input.provenance_ref
         || entry.token_estimate != input.token_estimate
     {
@@ -1659,6 +1667,7 @@ fn context_entry_input_from_active(entry: &ContextEntry) -> ContextEntryInput {
         kind: entry.kind.clone(),
         content: entry.content.clone(),
         preview: entry.preview.clone(),
+        origin: entry.origin.clone(),
         provenance_ref: entry.provenance_ref.clone(),
         token_estimate: entry.token_estimate.clone(),
     }

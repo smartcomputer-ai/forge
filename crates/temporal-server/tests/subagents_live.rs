@@ -175,6 +175,7 @@ impl SubagentScriptedLlm {
                     provider_kind: Some("subagent-script".to_owned()),
                 },
                 preview: None,
+                origin: None,
                 provenance_ref: None,
                 token_estimate: None,
             });
@@ -235,6 +236,7 @@ impl SubagentScriptedLlm {
                     ),
                 },
                 preview: Some("subagent scripted final".to_owned()),
+                origin: None,
                 provenance_ref: None,
                 token_estimate: None,
             }],
@@ -572,6 +574,7 @@ async fn start_subagent_parent_with_features(
             session_id: session_id.as_str().to_owned(),
             source: RunStartSource::Input {
                 items: vec![InputItem::Text {
+                    origin: None,
                     text: script.to_owned(),
                 }],
             },
@@ -667,6 +670,8 @@ async fn run_agent_run_inline_live_client(
     );
     let events = api
         .read_session_events(SessionEventsReadParams {
+            direction: Default::default(),
+            before: None,
             session_id: session_id.as_str().to_owned(),
             after: None,
             limit: Some(500),
@@ -1064,6 +1069,7 @@ async fn run_agent_run_inherit_environment_live_client(
             session_id: session_id.as_str().to_owned(),
             source: RunStartSource::Input {
                 items: vec![InputItem::Text {
+                    origin: None,
                     text: format!("AGENT_RUN {child_profile_id}"),
                 }],
             },
@@ -1083,6 +1089,8 @@ async fn run_agent_run_inherit_environment_live_client(
     // records the activation of exactly the parent's environment.
     let child_events = api
         .read_session_events(SessionEventsReadParams {
+            direction: Default::default(),
+            before: None,
             session_id: children[0].session_id.as_str().to_owned(),
             after: None,
             limit: Some(500),

@@ -82,6 +82,7 @@ mod tests {
             source: ContextEntrySource::ContextEdit,
             content: input.content,
             preview: input.preview,
+            origin: input.origin,
             provenance_ref: input.provenance_ref,
             token_estimate: input.token_estimate,
             supersedes: None,
@@ -122,6 +123,7 @@ mod tests {
                         provider_kind: Some(AUDIO_TRANSCRIPT_PROVIDER_KIND.into()),
                     },
                     preview: Some("short preprocessing preview".into()),
+                    origin: None,
                     provenance_ref: None,
                     token_estimate: None,
                 }],
@@ -166,6 +168,7 @@ mod tests {
                 kind: ContextEntryKind::Message { role: engine::ContextMessageRole::User },
                 content: content.clone(),
                 preview: Some("short preview".into()),
+                origin: None,
                 provenance_ref: None,
                 token_estimate: None,
             };
@@ -175,7 +178,7 @@ mod tests {
             assert_eq!(view.text.as_deref(), Some(full.as_str()));
             assert!(!view.text_truncated);
             assert_eq!(projector.project_input_entries(&[input]).await.unwrap(),
-                vec![api::InputItem::Text { text: full.clone() }]);
+                vec![api::InputItem::Text { origin: None,  text: full.clone() }]);
 
             // The retained terminal output still resolves after its context is gone.
             let source = engine::RunSource::Input { input: Vec::new() };
@@ -231,6 +234,7 @@ mod tests {
             },
             content: ContentRef::text(blobs.insert_text(&full).await),
             preview: None,
+            origin: None,
             provenance_ref: None,
             token_estimate: None,
         };
@@ -278,6 +282,7 @@ mod tests {
                     provider_kind: Some(kind.into()),
                 },
                 preview: Some(text.chars().take(256).collect()),
+                origin: None,
                 provenance_ref: None,
                 token_estimate: None,
                 supersedes: None,

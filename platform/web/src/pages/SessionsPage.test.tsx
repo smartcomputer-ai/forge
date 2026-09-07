@@ -25,7 +25,7 @@ vi.mock("@/lib/sessions/tail", () => ({ useSessionTail: mocks.tail }));
 vi.mock("@tanstack/react-query", () => ({
   useQueryClient: () => ({}),
   useQuery: () => ({ data: undefined, refetch: vi.fn() }),
-  useInfiniteQuery: () => ({ data: undefined }),
+  useInfiniteQuery: () => ({ data: undefined, refetch: vi.fn() }),
   useMutation: () => ({ isPending: false }),
 }));
 vi.mock("@/components/session/session-settings-sheet", () => ({ SessionSettingsDialog: () => null }));
@@ -59,7 +59,8 @@ beforeEach(() => {
   window.localStorage.clear();
   transcript = emptyTranscript();
   mocks.tail.mockReturnValue({
-    transcript, phase: "live", error: null, truncated: false, reconcileRuns: vi.fn(),
+    transcript, phase: "live", error: null, reconcileRuns: vi.fn(),
+    hasOlder: false, loadingOlder: false, historyError: null, historyRevision: 0, loadOlder: vi.fn(),
   });
   mocks.api.mockReset();
   mocks.scrollable.end = true;
@@ -196,6 +197,15 @@ describe.each<Pathway>(["session", "bot-main", "bot-other"])("%s composer", (pat
     await enter();
     expect(mocks.scrollToEnd).not.toHaveBeenCalled();
     expect(container.textContent).toContain("Message rejected");
+  });
+
+  it("lets the scroller preserve a history prepend without requesting the end", async () => {
+    await show(pathway);
+    mocks.scrollToEnd.mockClear();
+    mocks.tail.mock.results.at(-1)!.value.historyRevision = 1;
+    transcript.entries = [{ kind: "message", key: "older", role: "user", text: "Older input" }];
+    await show(pathway);
+    expect(mocks.scrollToEnd).not.toHaveBeenCalled();
   });
 
   it("retains an unavailable steering draft and does not resume following", async () => {

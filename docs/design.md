@@ -80,7 +80,12 @@ Lightspeed solves this by offloading all data that is not directly needed by the
 Context inputs, committed entries, and terminal outputs share one `ContentRef`:
 `content_ref`, `media_type`, and `provider_kind` describe the immutable payload
 and its decoding format. Context adds semantic kind, insertion source, preview,
-and accounting. Its optional `provenance_ref` names an immutable origin or
+and accounting. An optional `origin` string follows each input through admission,
+preprocessing, context materialization, replay, and API projection. It describes
+application-supplied display provenance, independently of model role and insertion
+source; it is not provider message text or an authorization identity. The platform
+uses `user:<id>` for authenticated composer input and `event` for bot delivery.
+Other strings are allowed, and missing origin means unknown. Its optional `provenance_ref` names an immutable origin or
 construction artifact: source audio, a prompt assembly report, or a skill
 catalog snapshot. Native provider IDs stay in the native payload and can be
 projected for clients; they are not duplicated in reducer state.
@@ -146,6 +151,20 @@ Because sessions can run for weeks to months and Temporal caps workflow history,
 
 ## The Client API Boundary
 Clients — the CLI, workflow integrations, editors, and future frontends — consume the typed `api` crate surface through the JSON-RPC gateway, never the reducer internals. `session/runs/start` is an acceptance boundary, not a final-output boundary: it returns once the run is admitted, and clients follow `session/events/read` or refresh `session/read` for progress and completion. This keeps the public contract stable while the core evolves underneath it.
+
+The web transcript starts with `session/events/read` using
+`direction: "backward"`: a bounded event range ending at a captured session head,
+returned chronologically. Its
+exclusive `before` cursor walks backward to the beginning, including inherited
+fork history. This path reads the event store directly and projects only the
+selected range; it never reconstructs execution state or requires a reducer
+checkpoint. An incomplete range fails explicitly rather than skipping history.
+Forward updates start strictly after the initial captured head; subsequent
+history reads cannot advance that live cursor. Windows may split even very
+large runs, so the browser retains tool continuations, rebuilds the loaded
+history chronologically, and keeps historical reconstruction separate from
+live lifecycle state. Current execution state still uses checkpoint-backed
+`session/read` and its dedicated active-run summary.
 
 Collection reads do not fan out to Temporal workflows. `session/list` reads a
 materialized `new` / `open` / `closed` lifecycle projection maintained in the

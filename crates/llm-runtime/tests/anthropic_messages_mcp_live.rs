@@ -176,6 +176,7 @@ async fn anthropic_messages_live_core_session_uses_public_remote_mcp() {
                             provider_kind: None,
                         },
                         preview: None,
+                        origin: None,
                         provenance_ref: None,
                         token_estimate: None,
                     }],

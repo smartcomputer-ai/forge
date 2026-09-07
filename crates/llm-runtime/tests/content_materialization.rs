@@ -40,6 +40,7 @@ async fn structured_transcripts_and_authored_json_lower_across_all_provider_apis
                     provider_kind: structured.then(|| AUDIO_TRANSCRIPT_PROVIDER_KIND.to_owned()),
                 },
                 preview: structured.then(|| transcript.header()),
+                origin: None,
                 provenance_ref: Some(source.clone()),
                 token_estimate: None,
                 supersedes: None,

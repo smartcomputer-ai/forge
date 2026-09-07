@@ -944,6 +944,7 @@ fn user_input(content_ref: engine::BlobRef) -> Vec<ContextEntryInput> {
             provider_kind: None,
         },
         preview: None,
+        origin: None,
         provenance_ref: None,
         token_estimate: None,
     }]
@@ -954,6 +955,7 @@ fn instruction_context_input(content_ref: engine::BlobRef) -> ContextEntryInput 
         kind: ContextEntryKind::Instructions,
         content: engine::ContentRef::text(content_ref),
         preview: None,
+        origin: None,
         provenance_ref: None,
         token_estimate: None,
     }
@@ -1344,6 +1346,7 @@ mod tests {
                 media_type: None,
                 provider_kind: None,
             },
+            origin: None,
             provenance_ref: None,
             preview: None,
             provider_item_id: None,

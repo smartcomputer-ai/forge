@@ -484,6 +484,7 @@ export interface SessionView {
   /// Bounded newest-first run summary page. Authoritative for recent run
   /// state; the event tail is the live, incremental transcript view.
   runs?: SessionRunView[];
+  activeRun?: SessionRunView | null;
 }
 
 export type SessionRunView = RunSummaryView;

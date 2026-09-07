@@ -254,6 +254,7 @@ pub fn prompt_source_instructions_context_input(
             provider_kind: Some(PROMPT_INSTRUCTIONS_PROVIDER_KIND.to_owned()),
         },
         preview: Some(preview.into()),
+        origin: None,
         provenance_ref: Some(report_ref),
         token_estimate: None,
     }
@@ -727,6 +728,7 @@ fn context_entry_input_from_active(entry: &ContextEntry) -> ContextEntryInput {
         kind: entry.kind.clone(),
         content: entry.content.clone(),
         preview: entry.preview.clone(),
+        origin: entry.origin.clone(),
         provenance_ref: entry.provenance_ref.clone(),
         token_estimate: entry.token_estimate.clone(),
     }

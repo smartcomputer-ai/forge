@@ -71,6 +71,7 @@ fn request_run_with_audio_input_needs_preprocessing() {
                     provider_kind: None,
                 },
                 preview: Some("[audio]".to_owned()),
+                origin: None,
                 provenance_ref: None,
                 token_estimate: None,
             }],
@@ -404,6 +405,7 @@ fn user_input(content_ref: engine::BlobRef) -> Vec<ContextEntryInput> {
             provider_kind: None,
         },
         preview: None,
+        origin: None,
         provenance_ref: None,
         token_estimate: None,
     }]

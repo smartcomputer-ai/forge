@@ -388,6 +388,7 @@ fn active_instruction_inputs(
                             kind: entry.kind.clone(),
                             content: entry.content.clone(),
                             preview: entry.preview.clone(),
+                            origin: entry.origin.clone(),
                             provenance_ref: entry.provenance_ref.clone(),
                             token_estimate: entry.token_estimate.clone(),
                         },
@@ -433,6 +434,7 @@ mod tests {
                 provider_kind: None,
             },
             preview: None,
+            origin: None,
             provenance_ref: None,
             token_estimate: None,
         };

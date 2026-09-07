@@ -783,11 +783,25 @@ export type RunViewSource = {
  */
 export type InputItem =
   | {
+      /**
+       * Application-supplied display provenance (1–200 nonblank bytes).
+       * The platform uses `user:<id>` for direct human input and `event` for
+       * bot deliveries; other values are allowed. Omitted means unknown.
+       * This metadata is not an authorization identity or model input text.
+       */
+      origin?: string | null;
       text: string;
       type: "text";
     }
   | {
       blobRef: string;
+      /**
+       * Application-supplied display provenance (1–200 nonblank bytes).
+       * The platform uses `user:<id>` for direct human input and `event` for
+       * bot deliveries; other values are allowed. Omitted means unknown.
+       * This metadata is not an authorization identity or model input text.
+       */
+      origin?: string | null;
       type: "textRef";
     }
   | {
@@ -795,6 +809,13 @@ export type InputItem =
       kind: MediaKind;
       mime: string;
       name?: string | null;
+      /**
+       * Application-supplied display provenance (1–200 nonblank bytes).
+       * The platform uses `user:<id>` for direct human input and `event` for
+       * bot deliveries; other values are allowed. Omitted means unknown.
+       * This metadata is not an authorization identity or model input text.
+       */
+      origin?: string | null;
       type: "media";
     }
   | {
@@ -1724,6 +1745,11 @@ export type RunStartSource = {
   items: InputItem[];
   type: "input";
 };
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "SessionEventDirection".
+ */
+export type SessionEventDirection = "forward" | "backward";
 
 /**
  * All JSON-RPC wire types of the Lightspeed agent API.
@@ -1847,6 +1873,12 @@ export interface ContextEntryView {
   id: string;
   key?: string | null;
   kind: ContextEntryKindView;
+  /**
+   * Application-supplied display origin, independent of role and insertion source.
+   * `user:<id>` identifies platform composer input; `event` marks bot deliveries.
+   * Other values are allowed; omission means unknown. Not an authorization identity.
+   */
+  origin?: string | null;
   preview?: string | null;
   /**
    * Immutable artifact recording this entry's origin or construction.
@@ -2433,6 +2465,12 @@ export interface EventJoinsView {
 export interface ContextEntryInputView {
   content: ContentRefView;
   kind: ContextEntryKindView;
+  /**
+   * Application-supplied display origin, independent of role and insertion source.
+   * `user:<id>` identifies platform composer input; `event` marks bot deliveries.
+   * Other values are allowed; omission means unknown. Not an authorization identity.
+   */
+  origin?: string | null;
   preview?: string | null;
   /**
    * Immutable artifact recording this entry's origin or construction.
@@ -5677,10 +5715,28 @@ export interface AgentApiOutcomeOfSessionEventsReadResponse {
  * via the `definition` "SessionEventsReadResponse".
  */
 export interface SessionEventsReadResponse {
+  /**
+   * No more events in the requested direction at the time of this read.
+   * This does not imply that the session is closed.
+   */
   complete: boolean;
+  /**
+   * Events are always chronological, including backward pages. A page may
+   * begin inside a run or tool batch; clients must retain continuation state.
+   */
   events?: SessionEventView[];
   gap?: EventLogGap | null;
+  /**
+   * Backward reads fence the head before reading. The initial backward
+   * page's head is the starting `after` cursor for live forward reads.
+   * An empty backward read returns sequence zero.
+   */
   headCursor?: EventCursor | null;
+  /**
+   * Forward: pass as `after`. Backward: pass as `before` to fetch older
+   * history; absent when the beginning is reached. Never use a backward
+   * continuation to advance a forward live cursor.
+   */
   nextCursor?: EventCursor | null;
 }
 /**
@@ -7494,10 +7550,20 @@ export interface SessionEnvironmentDeactivateParams {
  */
 export interface SessionEventsReadParams {
   after?: EventCursor | null;
+  /**
+   * Exclusive upper sequence bound for backward reads only. Must be positive.
+   */
+  before?: EventCursor | null;
+  /**
+   * Forward reads follow `after`; backward reads select the latest window
+   * below `before` (or the current head when absent). Both return events
+   * chronologically. Backward reads do not replay reducer state.
+   */
+  direction?: SessionEventDirection;
   limit?: number | null;
   sessionId: string;
   /**
-   * Long-poll: when no events exist past `after`, hold the request until
+   * Forward reads only. Long-poll: when no events exist past `after`, hold the request until
    * one lands or this many milliseconds elapse, then return a normal
    * (possibly empty) page. Zero or absent preserves immediate return.
    * Values above the server cap are clamped, not rejected.

@@ -1,202 +1,236 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { SessionEventsPage, SessionRunView } from "@/api";
-import {
-  applyEvents,
-  emptyTranscript,
-  reconcileRuns,
-  type TranscriptState,
-} from "./transcript";
-
-/// Live transcript tail: paged catch-up through the event log, then a
-/// long-poll follow loop (`waitMs` parks at the engine). One loop per
-/// mounted session detail; unmount aborts the in-flight request.
+import { emptyTranscript, type TranscriptState } from "./transcript";
+import { TranscriptWindow } from "./transcript-window";
 
 export interface SessionTail {
   transcript: TranscriptState;
   phase: "loading" | "live";
   error: string | null;
-  /// Catch-up hit the page cap: a stretch of events between the loaded
-  /// prefix and the live head was skipped so the chat can go live instead
-  /// of paging forever.
-  truncated: boolean;
-  /// Fold the authoritative `session/read` run list into the live state
-  /// (forward moves only). Call it whenever a fresh session view arrives;
-  /// it heals a truncated catch-up and never regresses the tail.
+  hasOlder: boolean;
+  loadingOlder: boolean;
+  historyError: string | null;
+  historyRevision: number;
+  loadOlder: () => void;
   reconcileRuns: (runs: SessionRunView[]) => void;
 }
 
 const PAGE_LIMIT = 500;
-const MAX_CATCHUP_PAGES = 20;
 const WAIT_MS = 25_000;
-/// A follow response that comes back empty *fast* means the backend does
-/// not actually long-poll (e.g. a minimal stub) — pace client-side rather
-/// than spinning.
+const REQUEST_GRACE_MS = 10_000;
 const FAST_EMPTY_MS = 1_500;
 const PACING_SLEEP_MS = 2_000;
 const RETRY_SLEEP_MS = 3_000;
 
-interface TailState {
-  transcript: TranscriptState;
-  phase: "loading" | "live";
-  error: string | null;
-  truncated: boolean;
-}
+type TailState = Omit<SessionTail, "loadOlder" | "reconcileRuns"> & { scope?: string };
+const initialState = (): TailState => ({
+  transcript: emptyTranscript(), phase: "loading", error: null,
+  hasOlder: false, loadingOlder: false, historyError: null, historyRevision: 0,
+});
 
+/** The first history page fences the live cursor. Older-page requests and
+ * forward long-polls then run independently, sharing only a synchronous merge.
+ * No event cap or jump-to-head can discard retained history.
+ */
 export function useSessionTail(universeId: string, sessionId: string): SessionTail {
-  const [tail, setTail] = useState<TailState>(() => ({
-    transcript: emptyTranscript(),
-    phase: "loading",
-    error: null,
-    truncated: false,
-  }));
-  // The live loop owns `transcript`; reconciliation from a snapshot has to
-  // go through it so the next event page folds onto the healed state.
+  const scope = JSON.stringify([universeId, sessionId]);
+  const [tail, setTail] = useState<TailState>(initialState);
   const reconcileRef = useRef<(runs: SessionRunView[]) => void>(() => undefined);
-  const reconcile = useCallback((runs: SessionRunView[]) => {
-    reconcileRef.current(runs);
-  }, []);
+  const olderRef = useRef<() => void>(() => undefined);
+  const reconcile = useCallback((runs: SessionRunView[]) => reconcileRef.current(runs), []);
+  const loadOlder = useCallback(() => olderRef.current(), []);
 
   useEffect(() => {
     const abort = new AbortController();
     const signal = abort.signal;
-    let transcript = emptyTranscript();
-    let cursor: number | null = null;
-    let truncated = false;
+    const window = new TranscriptWindow();
+    let cursor = 0;
+    let before: number | null = null;
     let live = false;
-    setTail({ transcript, phase: "loading", error: null, truncated: false });
-
+    let loadingOlder = false;
+    let historyRevision = 0;
+    setTail({ ...initialState(), scope });
     const push = (patch: Partial<TailState>) => {
-      if (!signal.aborted) {
-        setTail((prev) => ({ ...prev, ...patch }));
-      }
+      if (!signal.aborted) setTail((prev) => ({ ...prev, ...patch }));
     };
     reconcileRef.current = (runs) => {
-      if (signal.aborted || !live) {
-        return;
-      }
-      const next = reconcileRuns(transcript, runs);
-      if (next !== transcript) {
-        transcript = next;
-        push({ transcript });
-      }
+      if (signal.aborted || !live) return;
+      const previous = window.state;
+      window.reconcile(runs);
+      if (window.state !== previous) push({ transcript: window.state });
+    };
+
+    olderRef.current = () => {
+      if (!live || loadingOlder || before === null || signal.aborted) return;
+      loadingOlder = true;
+      const requestedBefore = before;
+      push({ loadingOlder: true, historyError: null });
+      void (async () => {
+        let retry = RETRY_SLEEP_MS;
+        while (!signal.aborted) {
+          try {
+            const response = await fetchHistory(universeId, sessionId, requestedBefore, signal);
+            if (signal.aborted) return;
+            if (!response.complete && (!response.nextCursor || response.nextCursor.seq >= requestedBefore)) {
+              throw new Error("History cursor did not advance");
+            }
+            window.prepend(response.events ?? []);
+            before = !response.complete ? response.nextCursor!.seq : null;
+            loadingOlder = false;
+            push({ transcript: window.state, hasOlder: before !== null,
+              loadingOlder: false, historyError: null, historyRevision: ++historyRevision });
+            return;
+          } catch (error) {
+            if (signal.aborted) return;
+            push({ historyError: errorText(error) });
+            await sleep(retry, signal);
+            retry = Math.min(retry * 2, 30_000);
+          }
+        }
+      })();
     };
 
     void (async () => {
-      // Catch-up: page forward without waiting until the log is drained.
-      try {
-        for (let page = 0; ; page++) {
-          const response = await fetchEvents(universeId, sessionId, cursor, 0, signal);
-          if (response.events?.length) {
-            transcript = applyEvents(transcript, response.events);
-          }
-          cursor = response.nextCursor?.seq ?? cursor;
-          if (response.complete || !response.nextCursor) {
-            break;
-          }
-          if (page + 1 >= MAX_CATCHUP_PAGES) {
-            // Jump to the live head — following matters more than the
-            // middle of a pathological backlog.
-            truncated = true;
-            const head = response.headCursor?.seq;
-            if (head !== undefined && head !== null && head > (cursor ?? 0)) {
-              cursor = head;
-            }
-            break;
-          }
-        }
-      } catch (error) {
-        if (!signal.aborted) {
-          push({ error: errorText(error) });
-        }
-        return;
-      }
-      live = true;
-      push({ transcript, phase: "live", truncated });
-      if (transcript.closed) {
-        return;
-      }
-
-      // Follow: long-poll; errors retry with backoff instead of killing
-      // the chat (network blips are normal for a tab left open).
-      let hadError = false;
-      while (!signal.aborted) {
-        const startedAt = Date.now();
+      while (!signal.aborted && !live) {
         try {
-          const response = await fetchEvents(universeId, sessionId, cursor, WAIT_MS, signal);
-          // Always advance: an empty page can still carry a newer cursor.
-          cursor = response.nextCursor?.seq ?? cursor;
-          if (response.events?.length) {
-            transcript = applyEvents(transcript, response.events);
-            push({ transcript, ...(hadError ? { error: null } : {}) });
-            hadError = false;
-            if (transcript.closed) {
-              return;
-            }
-          } else {
-            if (hadError) {
-              push({ error: null });
-              hadError = false;
-            }
-            if (Date.now() - startedAt < FAST_EMPTY_MS) {
-              await sleep(PACING_SLEEP_MS, signal);
-            }
-          }
+          const response = await fetchHistory(universeId, sessionId, null, signal);
+          if (signal.aborted) return;
+          if (!response.complete && !response.nextCursor) throw new Error("Missing history cursor");
+          window.append(response.events ?? []);
+          // Only the INITIAL history fence can initialize live consumption.
+          // Older requests must never move the independently advancing cursor.
+          if (!response.headCursor) throw new Error("Missing history head cursor");
+          cursor = response.headCursor.seq;
+          before = !response.complete ? response.nextCursor!.seq : null;
+          live = true;
+          push({ transcript: window.state, phase: "live", error: null, hasOlder: before !== null });
         } catch (error) {
-          if (signal.aborted) {
-            return;
-          }
-          hadError = true;
+          if (signal.aborted) return;
           push({ error: errorText(error) });
           await sleep(RETRY_SLEEP_MS, signal);
         }
       }
+      let recovering = false;
+      while (!signal.aborted && !window.state.closed) {
+        const startedAt = Date.now();
+        try {
+          // A reconnect probes immediately. Waiting for another long-poll to
+          // finish would leave a recovered, idle session looking disconnected.
+          const waitMs = recovering ? 0 : WAIT_MS;
+          const response = await fetchEvents(universeId, sessionId, cursor, waitMs, signal);
+          if (signal.aborted) return;
+          if (response.gap) throw new Error("The session event stream contains an unavailable interval");
+          const events = (response.events ?? []).filter((event) => event.cursor.seq > cursor);
+          if (events.length) {
+            if (events.some((event, index) => event.cursor.seq !== cursor + index + 1)) {
+              throw new Error("The session event stream is not contiguous");
+            }
+            window.append(events);
+            cursor = events.at(-1)!.cursor.seq;
+            push({ transcript: window.state, error: null });
+          } else {
+            push({ error: null });
+            if (waitMs > 0 && Date.now() - startedAt < FAST_EMPTY_MS) await sleep(PACING_SLEEP_MS, signal);
+          }
+          recovering = false;
+        } catch (error) {
+          if (signal.aborted) return;
+          const retryImmediately = !recovering && isTransientReadError(error);
+          recovering = true;
+          // One dropped connection is recoverable without interrupting the
+          // transcript. Failed probes still report an outage and are paced.
+          if (!retryImmediately) {
+            push({ error: errorText(error) });
+            await sleep(RETRY_SLEEP_MS, signal);
+          }
+        }
+      }
     })();
-
     return () => {
       abort.abort();
       reconcileRef.current = () => undefined;
+      olderRef.current = () => undefined;
     };
-  }, [universeId, sessionId]);
+  }, [universeId, sessionId, scope]);
 
-  return { ...tail, reconcileRuns: reconcile };
+  return { ...(tail.scope === scope ? tail : initialState()), reconcileRuns: reconcile, loadOlder };
 }
 
-async function fetchEvents(
-  universeId: string,
-  sessionId: string,
-  after: number | null,
-  waitMs: number,
-  signal: AbortSignal,
-): Promise<SessionEventsPage> {
-  const params = new URLSearchParams({ limit: String(PAGE_LIMIT) });
-  if (after !== null) {
-    params.set("after", String(after));
-  }
-  if (waitMs > 0) {
-    params.set("waitMs", String(waitMs));
-  }
-  const res = await fetch(
-    `/api/v1/universes/${universeId}/sessions/${sessionId}/events?${params}`,
-    { credentials: "same-origin", signal },
-  );
-  if (!res.ok) {
-    throw new Error(`reading session events failed (${res.status})`);
-  }
-  return (await res.json()) as SessionEventsPage;
+function baseUrl(universeId: string, sessionId: string) {
+  return `/api/v1/universes/${encodeURIComponent(universeId)}/sessions/${encodeURIComponent(sessionId)}`;
 }
 
-function errorText(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+async function fetchHistory(universeId: string, sessionId: string, before: number | null, signal: AbortSignal): Promise<SessionEventsPage> {
+  const params = new URLSearchParams({ direction: "backward", limit: String(PAGE_LIMIT) });
+  if (before !== null) params.set("before", String(before));
+  const page = await readPage<SessionEventsPage>(`${baseUrl(universeId, sessionId)}/events?${params}`, signal);
+  const head = page.headCursor?.seq;
+  const events = page.events ?? [];
+  const first = events[0]?.cursor.seq;
+  const through = before === null ? head : Math.min(head ?? 0, before - 1);
+  // A server that ignores backward pagination must not make us accept an old
+  // prefix and then jump over all recent messages. Check every history boundary
+  // before mutating the cache or either continuation cursor.
+  if (page.gap || head === undefined || !Number.isSafeInteger(head) || head < 0 ||
+      (through === 0 ? events.length !== 0 : events.at(-1)?.cursor.seq !== through) ||
+      events.some((event, index) => event.cursor.seq !== (first ?? 0) + index) ||
+      (page.complete
+        ? (events.length > 0 && first !== 1) || page.nextCursor != null
+        : first === undefined || first <= 1 || page.nextCursor?.seq !== first)) {
+    throw new Error("Server did not return the requested recent history window");
+  }
+  return page;
 }
+
+async function fetchEvents(universeId: string, sessionId: string, after: number, waitMs: number, signal: AbortSignal): Promise<SessionEventsPage> {
+  // A probe needs at most one event to establish progress; do not make its
+  // shorter deadline depend on projecting a full catch-up page.
+  const params = new URLSearchParams({ limit: String(waitMs === 0 ? 1 : PAGE_LIMIT), after: String(after), waitMs: String(waitMs) });
+  const request = new AbortController();
+  const cancel = () => request.abort(signal.reason);
+  signal.addEventListener("abort", cancel, { once: true });
+  if (signal.aborted) cancel();
+  // Bound stalled connections too, including a reconnect probe whose socket
+  // never returns a response. Leave room for auth, projection, and transport.
+  const timeout = setTimeout(() => request.abort(
+    new DOMException("Session event request timed out", "TimeoutError"),
+  ), waitMs + REQUEST_GRACE_MS);
+  try {
+    return await readPage(`${baseUrl(universeId, sessionId)}/events?${params}`, request.signal);
+  } catch (error) {
+    throw request.signal.aborted ? request.signal.reason : error;
+  } finally {
+    clearTimeout(timeout);
+    signal.removeEventListener("abort", cancel);
+  }
+}
+
+async function readPage<T>(url: string, signal: AbortSignal): Promise<T> {
+  const res = await fetch(url, { credentials: "same-origin", signal });
+  if (!res.ok) throw new SessionReadHttpError(res.status);
+  return res.json() as Promise<T>;
+}
+
+class SessionReadHttpError extends Error {
+  constructor(readonly status: number) {
+    super(`Reading session history failed (${status})`);
+  }
+}
+
+function isTransientReadError(error: unknown): boolean {
+  return error instanceof TypeError ||
+    (error instanceof DOMException && error.name === "TimeoutError") ||
+    (error instanceof SessionReadHttpError &&
+      (error.status >= 500 || error.status === 408 || error.status === 429));
+}
+
+function errorText(error: unknown): string { return error instanceof Error ? error.message : String(error); }
 
 function sleep(ms: number, signal: AbortSignal): Promise<void> {
+  if (signal.aborted) return Promise.resolve();
   return new Promise((resolve) => {
-    const done = () => {
-      signal.removeEventListener("abort", done);
-      clearTimeout(timer);
-      resolve();
-    };
+    const done = () => { signal.removeEventListener("abort", done); clearTimeout(timer); resolve(); };
     const timer = setTimeout(done, ms);
-    signal.addEventListener("abort", done);
+    signal.addEventListener("abort", done, { once: true });
   });
 }

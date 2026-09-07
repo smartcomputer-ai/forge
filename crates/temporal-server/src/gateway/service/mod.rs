@@ -14,6 +14,7 @@ pub(crate) mod environment_providers;
 mod environment_registration;
 mod environments;
 mod errors;
+mod event_history;
 mod github_api;
 mod input;
 mod instructions;
@@ -469,6 +470,7 @@ fn active_entry_input(entry: &ContextEntry) -> ContextEntryInput {
         kind: entry.kind.clone(),
         content: entry.content.clone(),
         preview: entry.preview.clone(),
+        origin: entry.origin.clone(),
         provenance_ref: entry.provenance_ref.clone(),
         token_estimate: entry.token_estimate.clone(),
     }
@@ -2999,6 +3001,16 @@ impl AgentApiService for GatewayAgentApi {
         &self,
         params: SessionEventsReadParams,
     ) -> Result<AgentApiOutcome<SessionEventsReadResponse>, AgentApiError> {
+        if params.direction == SessionEventDirection::Backward {
+            return event_history::read(self.store.as_ref(), self.store.as_ref(), params)
+                .await
+                .map(AgentApiOutcome::new);
+        }
+        if params.before.is_some() {
+            return Err(AgentApiError::invalid_request(
+                "before requires backward direction",
+            ));
+        }
         let session_id = SessionId::try_new(params.session_id).map_err(|error| {
             AgentApiError::invalid_request(format!("invalid session id: {error}"))
         })?;
@@ -3217,7 +3229,7 @@ impl AgentApiService for GatewayAgentApi {
             match context_entry_input_from_api(self.store.as_ref(), &entry.item).await {
                 Ok(input) => {
                     let text = match &entry.item {
-                        InputItem::Text { text } => Some(text.trim().to_owned()),
+                        InputItem::Text { text, .. } => Some(text.trim().to_owned()),
                         _ => None,
                     };
                     prepared.push(PreparedAppend::Ready { key, input, text });
@@ -3696,6 +3708,7 @@ impl AgentApiService for GatewayAgentApi {
                             }
                             .to_owned(),
                         ),
+                        origin: None,
                         provenance_ref: None,
                         token_estimate: None,
                     })

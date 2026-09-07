@@ -518,6 +518,7 @@ async fn run_fake_live_client(
             session_id: session_id.as_str().to_owned(),
             source: RunStartSource::Input {
                 items: vec![InputItem::Text {
+                    origin: None,
                     text: "hello temporal agent".to_owned(),
                 }],
             },
@@ -535,6 +536,7 @@ async fn run_fake_live_client(
             session_id: session_id.as_str().to_owned(),
             source: RunStartSource::Input {
                 items: vec![InputItem::Text {
+                    origin: None,
                     text: "second session-start input".to_owned(),
                 }],
             },
@@ -554,6 +556,7 @@ async fn run_fake_live_client(
             session_id: session_id.as_str().to_owned(),
             source: RunStartSource::Input {
                 items: vec![InputItem::Text {
+                    origin: None,
                     text: "second session-start input".to_owned(),
                 }],
             },
@@ -570,6 +573,7 @@ async fn run_fake_live_client(
             session_id: session_id.as_str().to_owned(),
             source: RunStartSource::Input {
                 items: vec![InputItem::Text {
+                    origin: None,
                     text: "different input".to_owned(),
                 }],
             },
@@ -603,6 +607,8 @@ async fn run_fake_live_client(
 
     let events = api
         .read_session_events(SessionEventsReadParams {
+            direction: Default::default(),
+            before: None,
             wait_ms: Some(2_000),
             session_id: session_id.as_str().to_owned(),
             after: None,
@@ -617,6 +623,8 @@ async fn run_fake_live_client(
     let parked_started = std::time::Instant::now();
     let parked = api
         .read_session_events(SessionEventsReadParams {
+            direction: Default::default(),
+            before: None,
             wait_ms: Some(1_000),
             session_id: session_id.as_str().to_owned(),
             after: head_cursor,
@@ -767,6 +775,7 @@ async fn run_continue_as_new_live_client(
             session_id: session_id.as_str().to_owned(),
             source: RunStartSource::Input {
                 items: vec![InputItem::Text {
+                    origin: None,
                     text: "first run before continue as new".to_owned(),
                 }],
             },
@@ -793,6 +802,7 @@ async fn run_continue_as_new_live_client(
             session_id: session_id.as_str().to_owned(),
             source: RunStartSource::Input {
                 items: vec![InputItem::Text {
+                    origin: None,
                     text: "second run after continue as new".to_owned(),
                 }],
             },
@@ -844,6 +854,7 @@ async fn run_missing_session_live_client(
             session_id: session_id.as_str().to_owned(),
             source: RunStartSource::Input {
                 items: vec![InputItem::Text {
+                    origin: None,
                     text: "this should not create a session".to_owned(),
                 }],
             },
@@ -896,12 +907,14 @@ async fn run_context_append_live_client(
                 ContextAppendEntry {
                     key: "channel.room.msg-1".to_owned(),
                     item: InputItem::TextRef {
+                        origin: None,
                         blob_ref: borrowed.to_string(),
                     },
                 },
                 ContextAppendEntry {
                     key: "channel.room.msg-2".to_owned(),
                     item: InputItem::Text {
+                        origin: None,
                         text: second_text.to_owned(),
                     },
                 },
@@ -962,12 +975,14 @@ async fn run_context_append_live_client(
                 ContextAppendEntry {
                     key: "channel.room.msg-1".to_owned(),
                     item: InputItem::Text {
+                        origin: None,
                         text: first_text.to_owned(),
                     },
                 },
                 ContextAppendEntry {
                     key: "channel.room.msg-2".to_owned(),
                     item: InputItem::Text {
+                        origin: None,
                         text: second_text.to_owned(),
                     },
                 },
@@ -995,6 +1010,7 @@ async fn run_context_append_live_client(
             entries: vec![ContextAppendEntry {
                 key: "channel.room.msg-2".to_owned(),
                 item: InputItem::Text {
+                    origin: None,
                     text: "[telegram:group Engineering] Bob (12:02): edited message".to_owned(),
                 },
             }],
@@ -1028,6 +1044,7 @@ async fn run_context_append_live_client(
             entries: vec![ContextAppendEntry {
                 key: "channel.room.msg-3".to_owned(),
                 item: InputItem::Text {
+                    origin: None,
                     text: "   ".to_owned(),
                 },
             }],
@@ -1047,6 +1064,7 @@ async fn run_context_append_live_client(
             session_id: session_id.as_str().to_owned(),
             source: RunStartSource::Input {
                 items: vec![InputItem::Text {
+                    origin: None,
                     text: "summarize the room".to_owned(),
                 }],
             },
@@ -1113,6 +1131,7 @@ async fn run_admission_failure_live_client(
             session_id: session_id.as_str().to_owned(),
             source: RunStartSource::Input {
                 items: vec![InputItem::Text {
+                    origin: None,
                     text: "valid run after malformed command".to_owned(),
                 }],
             },
@@ -1142,6 +1161,7 @@ async fn run_admission_failure_live_client(
             session_id: session_id.as_str().to_owned(),
             source: RunStartSource::Input {
                 items: vec![InputItem::Text {
+                    origin: None,
                     text: "run after close should be rejected".to_owned(),
                 }],
             },
@@ -1213,6 +1233,7 @@ async fn run_openai_live_client(
             session_id: session_id.as_str().to_owned(),
             source: RunStartSource::Input {
                 items: vec![InputItem::Text {
+                    origin: None,
                     text: "Reply with exactly: real llm agent ok".to_owned(),
                 }],
             },
@@ -1291,7 +1312,7 @@ async fn run_builtin_tool_live_client(
             submission_id: None,
             session_id: session_id.as_str().to_owned(),
             source: RunStartSource::Input {
-                items: vec![InputItem::Text {
+                items: vec![InputItem::Text { origin: None,
                     text: "Call sleep with delay_ms=1, await the returned promise, then reply exactly: temporal tool ok".to_owned(),
                 }],
             },
@@ -1306,6 +1327,8 @@ async fn run_builtin_tool_live_client(
     );
     let events = api
         .read_session_events(SessionEventsReadParams {
+            direction: Default::default(),
+            before: None,
             session_id: session_id.as_str().to_owned(),
             after: None,
             limit: Some(500),

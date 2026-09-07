@@ -152,6 +152,7 @@ fn default_instruction_input(content_ref: BlobRef) -> ContextEntryInput {
         kind: ContextEntryKind::Instructions,
         content: engine::ContentRef::text(content_ref),
         preview: None,
+        origin: None,
         provenance_ref: None,
         token_estimate: None,
     }
@@ -166,6 +167,7 @@ mod tests {
             kind: ContextEntryKind::Instructions,
             content: engine::ContentRef::text(BlobRef::from_bytes(bytes)),
             preview: None,
+            origin: None,
             provenance_ref: None,
             token_estimate: None,
         }

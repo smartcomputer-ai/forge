@@ -661,6 +661,7 @@ pub async fn append_context(
         .map(|event| ContextAppendEntry {
             key: appended_event_context_key(&event.id),
             item: InputItem::TextRef {
+                origin: Some("event".to_owned()),
                 blob_ref: event
                     .prompt_ref
                     .clone()
@@ -778,6 +779,8 @@ pub async fn read_tool_invocations(
     loop {
         let page = api
             .read_session_events(SessionEventsReadParams {
+                direction: Default::default(),
+                before: None,
                 session_id: request.session_id.clone(),
                 after: Some(EventCursor { seq: cursor }),
                 limit: Some(EVENT_PAGE_LIMIT),

@@ -358,6 +358,7 @@ impl GatewayAgentApi {
                     kind: ContextEntryKind::Instructions,
                     content: engine::ContentRef::text(content_ref),
                     preview: Some("Profile instructions".to_owned()),
+                    origin: None,
                     provenance_ref: None,
                     token_estimate: None,
                 },

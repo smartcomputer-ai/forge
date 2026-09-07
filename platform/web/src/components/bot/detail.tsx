@@ -25,6 +25,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
 import { SessionMenuIdentity, SessionMenuMetadata } from "@/components/session/session-menu-details";
+import { SessionMenuPreferences } from "@/components/session/session-menu-preferences";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -461,6 +462,7 @@ function ConversationMenu({
           className="max-h-[min(28rem,calc(100vh-1rem))] w-80 max-w-[calc(100vw-1rem)]"
         >
           <SessionMenuIdentity sessionId={sessionId} />
+          <SessionMenuPreferences />
           <DropdownMenuSeparator />
           <DropdownMenuGroup>
             <DropdownMenuItem onClick={() => navigate(`/u/${slug}/sessions/${encodeURIComponent(sessionId)}`)}>

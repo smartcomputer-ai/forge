@@ -117,11 +117,34 @@ describe("demo router", () => {
       const sessions = (await call("GET", `/api/v1/universes/${universe.id}/sessions`)).json as SessionListPage;
       expect(sessions.sessions.length, `${universe.slug}: sessions`).toBeGreaterThan(0);
       for (const session of sessions.sessions) {
-        for (const path of ["", "/events?limit=200", "/instructions"]) {
+        for (const path of ["", "/events?limit=200", "/events?direction=backward&limit=200", "/instructions"]) {
           const result = await call("GET", `/api/v1/universes/${universe.id}/sessions/${session.id}${path}`);
           expect(result.status, `${universe.slug}: sessions/${session.id}${path}`).toBe(200);
         }
       }
+    }
+  });
+
+  it("pages transcript history backward with stable bounds while newer runs arrive", async () => {
+    const { store, call } = await boot();
+    const universe = store.universe(SOFTWARE_FACTORY_UNIVERSE_ID)!;
+    const session = universe.sessions.get("session-flaky-scheduler")!;
+    const path = `/api/v1/universes/${SOFTWARE_FACTORY_UNIVERSE_ID}/sessions/${session.view.id}/events?direction=backward`;
+    const expected = session.events.map((event) => event.cursor.seq);
+    const first = (await call("GET", `${path}&limit=7`)).json as SessionEventsPage;
+    expect(first.events?.map((event) => event.cursor.seq)).toEqual(expected.slice(-7));
+    appendScriptedRun(store, session, { at: Date.now(), user: "New input", steps: [{ text: "New output" }] });
+    const loaded = [...(first.events ?? [])];
+    let page = first;
+    while (!page.complete) {
+      const before = page.nextCursor!.seq;
+      page = (await call("GET", `${path}&limit=7&before=${before}`)).json as SessionEventsPage;
+      expect(page.events?.every((event) => event.cursor.seq < before)).toBe(true);
+      loaded.unshift(...(page.events ?? []));
+    }
+    expect(loaded.map((event) => event.cursor.seq)).toEqual(expected);
+    for (const query of ["before=0", "before=-1", "before=1.5", "before=9007199254740992", "limit=0", "limit=bad"]) {
+      expect((await call("GET", `${path}&${query}`)).status).toBe(400);
     }
   });
 
@@ -252,6 +275,7 @@ describe("demo router", () => {
     let completed = false;
     let acceptedSubmission: string | null | undefined;
     let userEntrySource: unknown = null;
+    let userEntryOrigin: string | null | undefined;
     for (let i = 0; i < 20 && !completed; i++) {
       const page = (
         await call("GET", `/api/v1/universes/${universe!.id}/sessions/${sessionId}/events?after=${after}&limit=100&waitMs=3000`)
@@ -265,6 +289,7 @@ describe("demo router", () => {
           for (const entry of event.kind.entries) {
             if (entry.kind.type === "message" && entry.kind.role === "user") {
               userEntrySource = entry.source ?? null;
+              userEntryOrigin = entry.origin;
             }
           }
         }
@@ -278,6 +303,7 @@ describe("demo router", () => {
     // double bubble in the demo.
     expect(acceptedSubmission).toBe("sub-1");
     expect(userEntrySource).toMatchObject({ type: "runInput", runId });
+    expect(userEntryOrigin).toMatch(/^user:.+/);
     const view = (await call("GET", `/api/v1/universes/${universe!.id}/sessions/${sessionId}`)).json as {
       status: string;
       runs: Array<{ id: string; status: string }>;

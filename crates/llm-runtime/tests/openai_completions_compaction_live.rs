@@ -39,6 +39,7 @@ fn entry(
         source,
         content: engine::ContentRef::text(content_ref),
         preview: None,
+        origin: None,
         provenance_ref: None,
         token_estimate: None,
         supersedes: None,
