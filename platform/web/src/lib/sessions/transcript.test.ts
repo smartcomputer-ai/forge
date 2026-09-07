@@ -732,6 +732,7 @@ describe("session transcript run control", () => {
           }),
           item("steer", { type: "message", role: "user" }, {
             text: "also mention the moon",
+            origin: "user:operator",
             source: { type: "steering", runId: "run_1", steeringId: "steering_1", inputIndex: 0 },
           }),
         ],
@@ -752,6 +753,7 @@ describe("session transcript run control", () => {
         text: "also mention the moon",
         runId: "run_1",
         steering: true,
+        origin: "user:operator",
       },
     ]);
   });

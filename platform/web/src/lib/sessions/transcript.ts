@@ -14,6 +14,7 @@ export type TranscriptEntry =
       kind: "message";
       key: string;
       role: "user" | "assistant";
+      origin?: string;
       text: string;
       citations?: Array<{ url: string; title?: string | null; citedText?: string | null }>;
       /// The run this entry belongs to, when the engine recorded one.
@@ -568,6 +569,7 @@ function applyNonToolCallItem(
           key: item.id,
           role: kind.role,
           text: item.text,
+          ...(item.origin ? { origin: item.origin } : {}),
           ...(kind.role === "assistant" && item.citations?.length
             ? { citations: item.citations }
             : {}),

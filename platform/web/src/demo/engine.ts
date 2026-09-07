@@ -63,6 +63,7 @@ export function contextMessage(
   role: ContextMessageRoleView,
   text: string,
   source?: ContextEntrySourceView,
+  origin?: string,
 ): ContextEntryView {
   return {
     id,
@@ -70,6 +71,7 @@ export function contextMessage(
     kind: { type: "message", role },
     text,
     ...(source ? { source } : {}),
+    ...(origin ? { origin } : {}),
   } as ContextEntryView;
 }
 
@@ -263,10 +265,10 @@ export function setInstructions(store: DemoStore, session: SessionRecord, text: 
 }
 
 /// What `runAccepted` carries for a text submission.
-export function inputSource(store: DemoStore, text: string): RunAcceptedSourceView {
+export function inputSource(store: DemoStore, text: string, origin?: string): RunAcceptedSourceView {
   return {
     type: "input",
-    entries: [{ content: { contentRef: store.putText(text), mediaType: "text/plain", providerKind: null }, kind: { type: "message", role: "user" }, preview: text }],
+    entries: [{ origin, content: { contentRef: store.putText(text), mediaType: "text/plain", providerKind: null }, kind: { type: "message", role: "user" }, preview: text }],
   };
 }
 
@@ -286,6 +288,7 @@ export function activeRun(session: SessionRecord): RunView | null {
 
 export interface RunInput {
   text: string;
+  origin?: string;
   submissionId?: string | null;
   /// Scripted turn; defaults to the session's or universe's responder.
   turn?: DemoTurn;
@@ -310,7 +313,7 @@ export function startRun(
   }
   const source = {
     type: "input" as const,
-    items: input.source?.items ?? [{ type: "text" as const, text: input.text }],
+    items: input.source?.items ?? [{ type: "text" as const, text: input.text, origin: input.origin }],
     preview: input.text,
     previewTruncated: false,
   };
@@ -330,7 +333,7 @@ export function startRun(
       type: "runAccepted",
       runId: run.id,
       submissionId: input.submissionId ?? null,
-      source: inputSource(store, input.text),
+      source: inputSource(store, input.text, input.origin),
     },
     joins,
   );
@@ -348,7 +351,7 @@ export function startRun(
           type: "runInput",
           inputIndex: 0,
           runId: run.id,
-        }),
+        }, input.origin),
       ],
       joins,
     );
@@ -390,7 +393,7 @@ function afterTurns(
         inputIndex: 0,
         runId: run.id,
         steeringId: steer.steeringId,
-      }),
+      }, steer.origin),
     ],
     { runId: run.id },
   );
@@ -469,18 +472,19 @@ export function steerRun(
   session: SessionRecord,
   runId: string,
   text: string,
+  origin?: string,
 ): { steeringId: string; run: RunView } | null {
   const run = findRun(session, runId);
   if (!run || run.status !== "running") return null;
   const steeringId = store.nextId("steer");
-  session.steering.push({ text, steeringId });
+  session.steering.push({ text, steeringId, origin });
   pushEvent(
     session,
     {
       type: "runSteeringAccepted",
       runId,
       steeringId,
-      input: [{ content: { contentRef: store.putText(text), mediaType: "text/plain", providerKind: null }, kind: { type: "message", role: "user" }, preview: text }],
+      input: [{ origin, content: { contentRef: store.putText(text), mediaType: "text/plain", providerKind: null }, kind: { type: "message", role: "user" }, preview: text }],
     },
     { runId },
   );

@@ -355,6 +355,7 @@ export function sessionRoutes(store: DemoStore): Hono {
     if (session.view.status === "closed") return conflict(c, "engine conflict: session is closed");
     const run = startRun(store, universe, session, {
       text: body.text,
+      origin: `user:${store.currentUser.id}`,
       submissionId: typeof body.submissionId === "string" ? body.submissionId : null,
     });
     return c.json({ run: { id: run.id, status: run.status } });
@@ -379,7 +380,7 @@ export function sessionRoutes(store: DemoStore): Hono {
     if (typeof body.text !== "string" || !body.text.trim()) return badRequest(c, "text is required");
     const run = findRun(session, runId);
     if (!run) return notFound(c, "not found in engine");
-    const steered = steerRun(store, session, runId, body.text);
+    const steered = steerRun(store, session, runId, body.text, `user:${store.currentUser.id}`);
     if (!steered) {
       return conflict(c, `engine conflict: run ${runId} is ${run.status}; only a running run accepts steering`);
     }

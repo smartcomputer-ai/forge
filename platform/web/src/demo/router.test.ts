@@ -275,6 +275,7 @@ describe("demo router", () => {
     let completed = false;
     let acceptedSubmission: string | null | undefined;
     let userEntrySource: unknown = null;
+    let userEntryOrigin: string | null | undefined;
     for (let i = 0; i < 20 && !completed; i++) {
       const page = (
         await call("GET", `/api/v1/universes/${universe!.id}/sessions/${sessionId}/events?after=${after}&limit=100&waitMs=3000`)
@@ -288,6 +289,7 @@ describe("demo router", () => {
           for (const entry of event.kind.entries) {
             if (entry.kind.type === "message" && entry.kind.role === "user") {
               userEntrySource = entry.source ?? null;
+              userEntryOrigin = entry.origin;
             }
           }
         }
@@ -301,6 +303,7 @@ describe("demo router", () => {
     // double bubble in the demo.
     expect(acceptedSubmission).toBe("sub-1");
     expect(userEntrySource).toMatchObject({ type: "runInput", runId });
+    expect(userEntryOrigin).toMatch(/^user:.+/);
     const view = (await call("GET", `/api/v1/universes/${universe!.id}/sessions/${sessionId}`)).json as {
       status: string;
       runs: Array<{ id: string; status: string }>;

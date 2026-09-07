@@ -1,4 +1,5 @@
-import { Check, Loader2, ShieldQuestion, TriangleAlert, X } from "lucide-react";
+import { useId, useLayoutEffect, useRef, useState } from "react";
+import { ChevronDown, ChevronUp, Check, Loader2, ShieldQuestion, TriangleAlert, X } from "lucide-react";
 import type { PendingApprovalView } from "@lightspeed-ai/agent-client";
 import { Bubble, BubbleContent } from "@/components/ui/bubble";
 import { Button } from "@/components/ui/button";
@@ -13,9 +14,9 @@ import {
 } from "@/lib/sessions/transcript";
 import { cn } from "@/lib/utils";
 
-/// Coding-bot transcript idiom: no avatars, full-width rows. User input
-/// is a tinted band, assistant output plain rendered text, tool activity
-/// and lifecycle notes are compact marker rows.
+/// Full-width transcript rows without avatars. Human inputs use the inverted
+/// primary palette; other user-role inputs use muted bands. Assistant output
+/// is plain rendered text, with compact tool and lifecycle markers.
 
 export function TranscriptEntryView({
   entry,
@@ -27,7 +28,11 @@ export function TranscriptEntryView({
   switch (entry.kind) {
     case "message":
       return entry.role === "user" ? (
-        <UserBand text={entry.text} steering={entry.steering === true} />
+        <UserBand
+          text={entry.text}
+          human={Boolean(entry.origin?.startsWith("user:") && entry.origin.length > 5)}
+          steering={entry.steering === true}
+        />
       ) : (
         <Message>
           <MessageContent>
@@ -94,32 +99,93 @@ function citationHost(url: string): string {
   }
 }
 
+// 160px of text plus padding and the expansion control keeps a collapsed band
+// around 200px tall. Measure natural content so wrapping and font changes count.
+const COLLAPSED_TEXT_HEIGHT = 160;
+
 export function UserBand({
   text,
+  human = false,
   pending = false,
   steering = false,
 }: {
   text: string;
+  human?: boolean;
   pending?: boolean;
-  /// A message injected into a running run rather than the input that
-  /// started it; rendered with a small tag so the reader can tell them
-  /// apart.
+  /// A message injected into a running run rather than its initial input.
   steering?: boolean;
 }) {
+  const contentId = useId();
+  const contentRef = useRef<HTMLDivElement>(null);
+  const [overflowing, setOverflowing] = useState(false);
+  const [expanded, setExpanded] = useState(false);
+
+  useLayoutEffect(() => {
+    const content = contentRef.current;
+    if (!content) return;
+    const measure = () => setOverflowing(content.scrollHeight > COLLAPSED_TEXT_HEIGHT);
+    measure();
+    if (typeof ResizeObserver === "undefined") {
+      window.addEventListener("resize", measure);
+      return () => window.removeEventListener("resize", measure);
+    }
+    const observer = new ResizeObserver(measure);
+    observer.observe(content);
+    return () => observer.disconnect();
+  }, [text, steering]);
+
   return (
     <Message>
       <MessageContent>
-        <Bubble variant="muted" className={cn("w-full max-w-full", pending && "opacity-60")}>
-          <BubbleContent className="w-full whitespace-pre-wrap">
-            {steering && (
-              <span
-                className="mr-2 rounded-sm border px-1 py-px align-middle text-[10px] uppercase tracking-wide text-muted-foreground"
-                title="Sent into the running run; the agent saw it at its next turn"
-              >
-                steer
-              </span>
+        <Bubble
+          variant={human ? "default" : "muted"}
+          className={cn(
+            "w-full max-w-full",
+            human && "*:data-[slot=bubble-content]:bg-primary/85 dark:*:data-[slot=bubble-content]:bg-primary/90",
+            pending && "opacity-60",
+          )}
+        >
+          <BubbleContent className="w-full">
+            <div
+              id={contentId}
+              className="overflow-hidden"
+              style={{
+                maxHeight: expanded ? undefined : COLLAPSED_TEXT_HEIGHT,
+                maskImage: overflowing && !expanded
+                  ? "linear-gradient(to bottom, black calc(100% - 48px), transparent)"
+                  : undefined,
+              }}
+            >
+              <div ref={contentRef} className="whitespace-pre-wrap [overflow-wrap:anywhere]">
+                {steering && (
+                  <span
+                    className="mr-2 rounded-sm border border-current/25 px-1 py-px align-middle text-[10px] uppercase tracking-wide opacity-70"
+                    title="Sent into the running run; the agent saw it at its next turn"
+                  >
+                    steer
+                  </span>
+                )}
+                {text}
+              </div>
+            </div>
+            {overflowing && (
+              <div className="mt-1 flex justify-center">
+                <button
+                  type="button"
+                  data-message-expansion
+                  aria-expanded={expanded}
+                  aria-controls={contentId}
+                  onClick={() => setExpanded((value) => !value)}
+                  className={cn(
+                    "inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium opacity-80 transition-colors hover:opacity-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-current",
+                    human ? "hover:bg-primary-foreground/10" : "hover:bg-foreground/5",
+                  )}
+                >
+                  {expanded ? "Show less" : "Show more"}
+                  {expanded ? <ChevronUp className="size-3.5" /> : <ChevronDown className="size-3.5" />}
+                </button>
+              </div>
             )}
-            {text}
           </BubbleContent>
         </Bubble>
       </MessageContent>

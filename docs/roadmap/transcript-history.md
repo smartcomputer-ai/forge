@@ -29,12 +29,32 @@ separate from insertion `source` and model role. Platform composer and steering
 requests stamp `user:<authenticated-user-id>`; bot event bodies, media, framing,
 steering, and context append stamp `event`. Arbitrary application values are
 accepted within 1–200 nonblank bytes; old history stays unknown. Audio
-preprocessing and context copies retain origin. No schema migration, history
-backfill, labels, or styling changes are required.
+preprocessing and context copies retain origin. No schema migration or history
+backfill is required.
 
 Verification covers mixed input origins, custom values, projection, context
 append, audio transcription, run/steering replay, checkpoints, legacy events,
 and authenticated origin stamping despite a conflicting request-body value.
+
+## Message appearance
+
+Human-origin (`user:<id>`) inputs use the theme’s primary background at 85%
+opacity in light mode and 90% in dark mode, with primary foreground text,
+softly inverting their contrast. Optimistic messages
+and steering use the same palette before confirmation, and demo composer routes
+retain origin through acceptance and projection. Event/custom/unknown origins
+stay muted, with no additional origin labels.
+
+Every user-role message, regardless of origin, measures its rendered text and
+collapses overflow to 160px of text (about 206px including padding and controls).
+A mask fades the last 48px; Show more / Show less is keyboard accessible and
+exposes its expanded state. A resize observer rechecks line wrapping. Expansion
+controls opt into the scroller’s existing message navigation before resizing,
+leaving bottom-following while keeping a visible message in place.
+
+Verified origin folding, palettes, optimistic sends, measured overflow,
+expansion/collapse, observer cleanup, demo echo provenance, and browser behavior
+at desktop/mobile widths in both themes, including expansion at the live end.
 
 ## Implementation
 
