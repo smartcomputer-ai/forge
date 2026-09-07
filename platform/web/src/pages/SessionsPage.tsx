@@ -2223,7 +2223,7 @@ function SessionScrollFollower({
 /// Sub-agent lineage strip: where this session came from and the
 /// children it delegated to. Children are re-read whenever the run revision
 /// moves, since delegations appear and close mid-run.
-function SessionLineage({
+export function SessionLineage({
   universeId,
   slug,
   sessionId,
@@ -2250,7 +2250,7 @@ function SessionLineage({
     enabled: Boolean(parentId),
   });
   const children = useInfiniteQuery({
-    queryKey: ["session-children", universeId, sessionId, runRevision],
+    queryKey: ["session-children", universeId, sessionId],
     queryFn: ({ pageParam }) => {
       const params = new URLSearchParams({ limit: "50", parentSessionId: sessionId });
       if (pageParam) params.set("cursor", pageParam);
@@ -2262,6 +2262,14 @@ function SessionLineage({
     initialPageParam: "",
     getNextPageParam: (last) => last.nextCursor ?? undefined,
   });
+  const refetchChildren = children.refetch;
+  useEffect(() => {
+    // Run activity refreshes the same lineage. Keep its data mounted while
+    // fetching so the header does not collapse and resize the transcript.
+    if (runRevision > 0) {
+      void refetchChildren();
+    }
+  }, [runRevision, refetchChildren]);
   const list = children.data?.pages.flatMap((page) => page.sessions) ?? [];
   const inlineChildren = list.slice(0, INLINE_SUBAGENT_LIMIT);
   const overflowChildren = list.slice(INLINE_SUBAGENT_LIMIT);

@@ -12,6 +12,9 @@ Status: implemented and verified.
   while the reader is there; sending and the existing end button resume following.
 - Retry older-page failures without stopping live updates. Abort both directions
   and clear the projection on session changes.
+- Keep the parent/sub-agent header mounted while run activity refreshes its
+  children. Background requests and errors retain the current lineage so the
+  transcript viewport does not briefly expand and contract on message submission.
 
 ## Implementation
 
@@ -50,6 +53,9 @@ the history the reader chooses to load.
   cursor gaps, rejection of an old server's forward prefix, empty sessions,
   session switches, and cancellation.
 - Demo: backward cursor parity and concurrent run creation.
+- Lineage: delayed run-status refreshes preserve the existing header and links,
+  including alongside a parent link; failed refreshes retain the header, and
+  switching sessions or universes never shows the previous scope's children.
 - Chromium: desktop and mobile tests with 1,200 runs / 12,001 initial events;
   open at the bottom without fetching older pages, preserve the visible offset
   on prepend and concurrent live arrival, reach the first message, and return

@@ -25,7 +25,7 @@ vi.mock("@/lib/sessions/tail", () => ({ useSessionTail: mocks.tail }));
 vi.mock("@tanstack/react-query", () => ({
   useQueryClient: () => ({}),
   useQuery: () => ({ data: undefined, refetch: vi.fn() }),
-  useInfiniteQuery: () => ({ data: undefined }),
+  useInfiniteQuery: () => ({ data: undefined, refetch: vi.fn() }),
   useMutation: () => ({ isPending: false }),
 }));
 vi.mock("@/components/session/session-settings-sheet", () => ({ SessionSettingsDialog: () => null }));
