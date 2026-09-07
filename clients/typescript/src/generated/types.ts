@@ -1724,6 +1724,11 @@ export type RunStartSource = {
   items: InputItem[];
   type: "input";
 };
+/**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "SessionEventDirection".
+ */
+export type SessionEventDirection = "forward" | "backward";
 
 /**
  * All JSON-RPC wire types of the Lightspeed agent API.
@@ -5677,10 +5682,28 @@ export interface AgentApiOutcomeOfSessionEventsReadResponse {
  * via the `definition` "SessionEventsReadResponse".
  */
 export interface SessionEventsReadResponse {
+  /**
+   * No more events in the requested direction at the time of this read.
+   * This does not imply that the session is closed.
+   */
   complete: boolean;
+  /**
+   * Events are always chronological, including backward pages. A page may
+   * begin inside a run or tool batch; clients must retain continuation state.
+   */
   events?: SessionEventView[];
   gap?: EventLogGap | null;
+  /**
+   * Backward reads fence the head before reading. The initial backward
+   * page's head is the starting `after` cursor for live forward reads.
+   * An empty backward read returns sequence zero.
+   */
   headCursor?: EventCursor | null;
+  /**
+   * Forward: pass as `after`. Backward: pass as `before` to fetch older
+   * history; absent when the beginning is reached. Never use a backward
+   * continuation to advance a forward live cursor.
+   */
   nextCursor?: EventCursor | null;
 }
 /**
@@ -7494,10 +7517,20 @@ export interface SessionEnvironmentDeactivateParams {
  */
 export interface SessionEventsReadParams {
   after?: EventCursor | null;
+  /**
+   * Exclusive upper sequence bound for backward reads only. Must be positive.
+   */
+  before?: EventCursor | null;
+  /**
+   * Forward reads follow `after`; backward reads select the latest window
+   * below `before` (or the current head when absent). Both return events
+   * chronologically. Backward reads do not replay reducer state.
+   */
+  direction?: SessionEventDirection;
   limit?: number | null;
   sessionId: string;
   /**
-   * Long-poll: when no events exist past `after`, hold the request until
+   * Forward reads only. Long-poll: when no events exist past `after`, hold the request until
    * one lands or this many milliseconds elapse, then return a normal
    * (possibly empty) page. Zero or absent preserves immediate return.
    * Values above the server cap are clamped, not rejected.

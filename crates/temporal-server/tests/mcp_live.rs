@@ -1338,6 +1338,8 @@ async fn run_approval_live_client(
 
     let events = api
         .read_session_events(SessionEventsReadParams {
+            direction: Default::default(),
+            before: None,
             session_id: session_id.as_str().to_owned(),
             after: None,
             limit: Some(500),

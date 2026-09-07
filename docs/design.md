@@ -147,6 +147,20 @@ Because sessions can run for weeks to months and Temporal caps workflow history,
 ## The Client API Boundary
 Clients — the CLI, workflow integrations, editors, and future frontends — consume the typed `api` crate surface through the JSON-RPC gateway, never the reducer internals. `session/runs/start` is an acceptance boundary, not a final-output boundary: it returns once the run is admitted, and clients follow `session/events/read` or refresh `session/read` for progress and completion. This keeps the public contract stable while the core evolves underneath it.
 
+The web transcript starts with `session/events/read` using
+`direction: "backward"`: a bounded event range ending at a captured session head,
+returned chronologically. Its
+exclusive `before` cursor walks backward to the beginning, including inherited
+fork history. This path reads the event store directly and projects only the
+selected range; it never reconstructs execution state or requires a reducer
+checkpoint. An incomplete range fails explicitly rather than skipping history.
+Forward updates start strictly after the initial captured head; subsequent
+history reads cannot advance that live cursor. Windows may split even very
+large runs, so the browser retains tool continuations, rebuilds the loaded
+history chronologically, and keeps historical reconstruction separate from
+live lifecycle state. Current execution state still uses checkpoint-backed
+`session/read` and its dedicated active-run summary.
+
 Collection reads do not fan out to Temporal workflows. `session/list` reads a
 materialized `new` / `open` / `closed` lifecycle projection maintained in the
 session-store transaction that appends lifecycle events; the event log remains

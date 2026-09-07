@@ -44,6 +44,21 @@ after the message leaves active context. The transcript renders messages and
 reasoning directly. Tool previews stay bounded and expand their original bytes
 through `blobs/read`.
 
+Session transcripts open with one recent event window from
+`session/events/read` with `direction: "backward"`, then follow `session/events/read` strictly after
+that initial window's head. Scrolling near the top automatically requests
+older windows through an independent exclusive `before` cursor. There is no
+history cutoff or load-more button. The message scroller preserves the visible
+message when older entries are prepended; its loading sentinel sits outside
+the content element so it cannot hide prepends from the scroller.
+
+Windows may split a run or tool batch. Results without a loaded call start
+render as continued tool activity and acquire their original metadata as older
+pages arrive. Partial generation totals are not presented as whole-run usage.
+History is reconstructed chronologically and deduplicated by event/entry ID;
+historical lifecycle transitions never overwrite live controls. History errors
+retry independently of live polling, and changing sessions aborts both paths.
+
 The authoritative configuration reference is
 [`docs/variables.md`](../docs/variables.md), with separate sections for the
 Platform server, connector host, Configurator MCP, and development-only

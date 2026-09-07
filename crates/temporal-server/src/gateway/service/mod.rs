@@ -14,6 +14,7 @@ pub(crate) mod environment_providers;
 mod environment_registration;
 mod environments;
 mod errors;
+mod event_history;
 mod github_api;
 mod input;
 mod instructions;
@@ -2999,6 +3000,16 @@ impl AgentApiService for GatewayAgentApi {
         &self,
         params: SessionEventsReadParams,
     ) -> Result<AgentApiOutcome<SessionEventsReadResponse>, AgentApiError> {
+        if params.direction == SessionEventDirection::Backward {
+            return event_history::read(self.store.as_ref(), self.store.as_ref(), params)
+                .await
+                .map(AgentApiOutcome::new);
+        }
+        if params.before.is_some() {
+            return Err(AgentApiError::invalid_request(
+                "before requires backward direction",
+            ));
+        }
         let session_id = SessionId::try_new(params.session_id).map_err(|error| {
             AgentApiError::invalid_request(format!("invalid session id: {error}"))
         })?;

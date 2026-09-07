@@ -603,6 +603,8 @@ async fn run_fake_live_client(
 
     let events = api
         .read_session_events(SessionEventsReadParams {
+            direction: Default::default(),
+            before: None,
             wait_ms: Some(2_000),
             session_id: session_id.as_str().to_owned(),
             after: None,
@@ -617,6 +619,8 @@ async fn run_fake_live_client(
     let parked_started = std::time::Instant::now();
     let parked = api
         .read_session_events(SessionEventsReadParams {
+            direction: Default::default(),
+            before: None,
             wait_ms: Some(1_000),
             session_id: session_id.as_str().to_owned(),
             after: head_cursor,
@@ -1306,6 +1310,8 @@ async fn run_builtin_tool_live_client(
     );
     let events = api
         .read_session_events(SessionEventsReadParams {
+            direction: Default::default(),
+            before: None,
             session_id: session_id.as_str().to_owned(),
             after: None,
             limit: Some(500),

@@ -154,6 +154,8 @@ Lightspeed covers the table stakes of a modern agent harness. Everything below w
 
 - [x] **Web app**: manage universes, sessions, profiles, bots, and channels
   from the browser
+- [x] **Progressive transcripts**: open at recent activity and automatically
+  load earlier history as you scroll, while live updates continue
 - [x] **Typed JSON-RPC API**: committed schema contract, generated TypeScript client
 - [x] **Configurator MCP**: control Lightspeed from any MCP client
 - [x] **CLI**: connect to running sessions through a TUI or perform admin tasks

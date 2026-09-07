@@ -13334,6 +13334,13 @@
         }
       ]
     },
+    "SessionEventDirection": {
+      "enum": [
+        "forward",
+        "backward"
+      ],
+      "type": "string"
+    },
     "SessionEventKindView": {
       "oneOf": [
         {
@@ -14671,6 +14678,25 @@
             }
           ]
         },
+        "before": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/EventCursor"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "Exclusive upper sequence bound for backward reads only. Must be positive."
+        },
+        "direction": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/SessionEventDirection"
+            }
+          ],
+          "description": "Forward reads follow `after`; backward reads select the latest window\nbelow `before` (or the current head when absent). Both return events\nchronologically. Backward reads do not replay reducer state."
+        },
         "limit": {
           "format": "uint32",
           "minimum": 0,
@@ -14683,7 +14709,7 @@
           "type": "string"
         },
         "waitMs": {
-          "description": "Long-poll: when no events exist past `after`, hold the request until\none lands or this many milliseconds elapse, then return a normal\n(possibly empty) page. Zero or absent preserves immediate return.\nValues above the server cap are clamped, not rejected.",
+          "description": "Forward reads only. Long-poll: when no events exist past `after`, hold the request until\none lands or this many milliseconds elapse, then return a normal\n(possibly empty) page. Zero or absent preserves immediate return.\nValues above the server cap are clamped, not rejected.",
           "format": "uint64",
           "minimum": 0,
           "type": [
@@ -14700,10 +14726,12 @@
     "SessionEventsReadResponse": {
       "properties": {
         "complete": {
+          "description": "No more events in the requested direction at the time of this read.\nThis does not imply that the session is closed.",
           "type": "boolean"
         },
         "events": {
           "default": [],
+          "description": "Events are always chronological, including backward pages. A page may\nbegin inside a run or tool batch; clients must retain continuation state.",
           "items": {
             "$ref": "#/definitions/SessionEventView"
           },
@@ -14727,7 +14755,8 @@
             {
               "type": "null"
             }
-          ]
+          ],
+          "description": "Backward reads fence the head before reading. The initial backward\npage's head is the starting `after` cursor for live forward reads.\nAn empty backward read returns sequence zero."
         },
         "nextCursor": {
           "anyOf": [
@@ -14737,7 +14766,8 @@
             {
               "type": "null"
             }
-          ]
+          ],
+          "description": "Forward: pass as `after`. Backward: pass as `before` to fetch older\nhistory; absent when the beginning is reached. Never use a backward\ncontinuation to advance a forward live cursor."
         }
       },
       "required": [

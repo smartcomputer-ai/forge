@@ -1078,15 +1078,37 @@ pub struct SessionReadResponse {
     pub has_older_runs: bool,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum SessionEventDirection {
+    #[default]
+    Forward,
+    Backward,
+}
+
+impl SessionEventDirection {
+    pub fn is_forward(&self) -> bool {
+        *self == Self::Forward
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionEventsReadParams {
     pub session_id: SessionId,
+    /// Forward reads follow `after`; backward reads select the latest window
+    /// below `before` (or the current head when absent). Both return events
+    /// chronologically. Backward reads do not replay reducer state.
+    #[serde(default, skip_serializing_if = "SessionEventDirection::is_forward")]
+    pub direction: SessionEventDirection,
+    /// Exclusive upper sequence bound for backward reads only. Must be positive.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub before: Option<EventCursor>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub after: Option<EventCursor>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub limit: Option<u32>,
-    /// Long-poll: when no events exist past `after`, hold the request until
+    /// Forward reads only. Long-poll: when no events exist past `after`, hold the request until
     /// one lands or this many milliseconds elapse, then return a normal
     /// (possibly empty) page. Zero or absent preserves immediate return.
     /// Values above the server cap are clamped, not rejected.
@@ -1097,12 +1119,22 @@ pub struct SessionEventsReadParams {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionEventsReadResponse {
+    /// Events are always chronological, including backward pages. A page may
+    /// begin inside a run or tool batch; clients must retain continuation state.
     #[serde(default)]
     pub events: Vec<SessionEventView>,
+    /// Forward: pass as `after`. Backward: pass as `before` to fetch older
+    /// history; absent when the beginning is reached. Never use a backward
+    /// continuation to advance a forward live cursor.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_cursor: Option<EventCursor>,
+    /// Backward reads fence the head before reading. The initial backward
+    /// page's head is the starting `after` cursor for live forward reads.
+    /// An empty backward read returns sequence zero.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub head_cursor: Option<EventCursor>,
+    /// No more events in the requested direction at the time of this read.
+    /// This does not imply that the session is closed.
     pub complete: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub gap: Option<EventLogGap>,

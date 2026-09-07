@@ -1559,6 +1559,8 @@ async fn workflow_tool_reply_requires_exact_stored_producer() -> anyhow::Result<
         // completion promise.
         let events = api
             .read_session_events(api::SessionEventsReadParams {
+                direction: Default::default(),
+                before: None,
                 session_id: session_id.as_str().to_owned(),
                 after: None,
                 limit: Some(200),
@@ -1785,6 +1787,8 @@ async fn workflow_tool_start_on_call_resolves_via_plugin_worker() -> anyhow::Res
         );
         let events = api
             .read_session_events(api::SessionEventsReadParams {
+                direction: Default::default(),
+                before: None,
                 session_id: session_id.as_str().to_owned(),
                 after: None,
                 limit: Some(500),
@@ -1941,6 +1945,8 @@ async fn workflow_tool_dead_receiver_fails_promise_terminally() -> anyhow::Resul
 
             let events = api
                 .read_session_events(api::SessionEventsReadParams {
+                    direction: Default::default(),
+                    before: None,
                     session_id: session_id.as_str().to_owned(),
                     after: None,
                     limit: Some(200),
@@ -1969,6 +1975,8 @@ async fn started_execution_ids(
 ) -> anyhow::Result<Vec<String>> {
     let events = api
         .read_session_events(api::SessionEventsReadParams {
+            direction: Default::default(),
+            before: None,
             session_id: session_id.as_str().to_owned(),
             after: None,
             limit: Some(500),
@@ -1996,6 +2004,8 @@ async fn emitted_promises(
 ) -> anyhow::Result<Vec<String>> {
     let events = api
         .read_session_events(api::SessionEventsReadParams {
+            direction: Default::default(),
+            before: None,
             session_id: session_id.as_str().to_owned(),
             after: None,
             limit: Some(500),
@@ -2324,6 +2334,8 @@ async fn workflow_tool_start_survives_continue_as_new() -> anyhow::Result<()> {
 
             let events = api
                 .read_session_events(api::SessionEventsReadParams {
+                    direction: Default::default(),
+                    before: None,
                     session_id: session_id.as_str().to_owned(),
                     after: None,
                     limit: Some(500),

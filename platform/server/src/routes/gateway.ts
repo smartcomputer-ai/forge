@@ -551,22 +551,31 @@ export function gatewayRoutes(ctx: AppContext) {
     if (!access) {
       return c.json({ error: "not found" }, 404);
     }
+    const direction = c.req.query("direction") ?? "forward";
+    const beforeRaw = c.req.query("before");
+    const before = beforeRaw === undefined ? null : Number(beforeRaw);
     const afterRaw = c.req.query("after");
-    const after = afterRaw !== undefined ? Number(afterRaw) : null;
-    const limitRaw = Number(c.req.query("limit") ?? 200);
-    const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(1, limitRaw), 500) : 200;
-    const waitRaw = c.req.query("waitMs");
-    const waitMs = waitRaw !== undefined ? Number(waitRaw) : null;
+    const after = afterRaw === undefined ? null : Number(afterRaw);
+    const limit = Number(c.req.query("limit") ?? 200);
+    const waitMs = Number(c.req.query("waitMs") ?? 0);
+    if (!["forward", "backward"].includes(direction) ||
+        (before !== null && (!Number.isSafeInteger(before) || before <= 0)) ||
+        (after !== null && (!Number.isSafeInteger(after) || after < 0)) ||
+        !Number.isSafeInteger(limit) || limit <= 0 ||
+        !Number.isSafeInteger(waitMs) || waitMs < 0 ||
+        (direction === "backward" && (after !== null || waitMs > 0)) ||
+        (direction === "forward" && before !== null)) {
+      return c.json({ error: "Invalid event pagination parameters" }, 400);
+    }
     return withGateway(c, async () => {
       const client = engineClientFor(ctx, access.universe);
       const response = await client.call("session/events/read", {
         sessionId: c.req.param("sessionId"),
-        after: after !== null && Number.isFinite(after) ? { seq: after } : null,
-        limit,
-        waitMs:
-          waitMs !== null && Number.isFinite(waitMs)
-            ? Math.min(Math.max(0, waitMs), 30_000)
-            : null,
+        direction: direction as "forward" | "backward",
+        before: before === null ? null : { seq: before },
+        after: after === null ? null : { seq: after },
+        limit: Math.min(limit, 500),
+        waitMs: Math.min(waitMs, 30_000),
       });
       return c.json(response.result);
     });

@@ -297,6 +297,8 @@ async fn run_cancel_mid_generation_live_client(
 
     let events = api
         .read_session_events(SessionEventsReadParams {
+            direction: Default::default(),
+            before: None,
             session_id: session_id.as_str().to_owned(),
             after: None,
             limit: Some(500),
@@ -782,6 +784,8 @@ async fn run_parallel_tool_batch_live_client(
     // projection budget; the scripted failure has no output to account for.
     let events = api
         .read_session_events(SessionEventsReadParams {
+            direction: Default::default(),
+            before: None,
             session_id: session_id.as_str().to_owned(),
             after: None,
             limit: Some(500),
@@ -955,6 +959,8 @@ async fn run_llm_retry_exhaustion_live_client(
     // The failure event carries the engine's classification, not only text.
     let events = api
         .read_session_events(SessionEventsReadParams {
+            direction: Default::default(),
+            before: None,
             session_id: session_id.as_str().to_owned(),
             after: None,
             limit: Some(500),

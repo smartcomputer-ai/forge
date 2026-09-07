@@ -8,6 +8,7 @@ import {
   runInProgress,
 } from "./transcript";
 import type { SessionRunView } from "@/api";
+import { TranscriptWindow } from "./transcript-window";
 
 type EventKind = SessionEvent["kind"];
 type EventInput<T extends EventKind["type"]> =
@@ -49,6 +50,69 @@ const runView = (
   status,
   acceptedAtMs: 0,
   source: { type: "input", preview: text || null, previewTruncated: false },
+});
+
+describe("transcript history windows", () => {
+  it("retains the completion entry when a newer session snapshot arrives before its event", () => {
+    const window = new TranscriptWindow();
+    window.append([event(1, { type: "runStarted" })]);
+    window.reconcile([runView("run-test", "completed")]);
+    window.append([event(2, { type: "runCompleted" })]);
+    window.append([event(2, { type: "runCompleted" })]);
+    expect(window.state.entries).toEqual([{ kind: "marker", key: "evt-2", text: "run completed in 1ms", tone: "muted" }]);
+  });
+  it("renders a result whose call began before the window, then hydrates it without regressing live controls", () => {
+    const events = [
+      event(1, { type: "runStarted" }),
+      event(2, { type: "contextEntriesApplied", entries: [item("input", { type: "message", role: "user" }, { text: "Do work" })] }),
+      event(3, { type: "toolBatchStarted", calls: [{ callId: "call", toolName: "exec_command", toolId: "env.run_process", argumentsRef: "sha256:args", arguments: '{"command":"pwd"}' }] }),
+      event(4, { type: "toolCallCompleted", callId: "call", status: "succeeded" }),
+      event(5, { type: "contextEntriesApplied", entries: [item("result", { type: "toolResult", callId: "call", isError: false }, {
+        text: "/workspace", source: { type: "tool", runId: "run-test", turnId: "turn-test", batchId: "batch-1" },
+      })] }),
+      event(6, { type: "runCompleted" }),
+    ];
+    const window = new TranscriptWindow();
+    window.append(events.slice(4));
+    const initial = window.state.entries[0]!;
+    expect(initial).toMatchObject({ kind: "tool-group", calls: [{ output: "/workspace", continuation: true }] });
+    const revision = window.state.runRevision;
+    window.prepend(events.slice(2, 4));
+    expect(window.state.entries[0]).toMatchObject({ key: initial.key, calls: [{ toolName: "exec_command", output: "/workspace", status: "succeeded" }] });
+    window.prepend(events.slice(0, 2));
+    expect(window.state.activeRun).toBeNull();
+    expect(window.state.runRevision).toBe(revision);
+    expect(window.state.runPhases.get("run-test")).toBe("terminal");
+    expect(window.state.entries).toEqual(applyEvents(emptyTranscript(), events).entries);
+    window.prepend(events); // Overlapping retries neither duplicate nor count usage twice.
+    expect(window.state.entries).toHaveLength(3);
+  });
+
+  it("does not report partial token totals as a complete run summary", () => {
+    const window = new TranscriptWindow();
+    window.append([event(5, { type: "turnGenerationCompleted", usage: { inputTokens: 200, outputTokens: 20 } })]);
+    window.reconcile([{ ...runView("run-test", "running"), startedAtMs: 1 }]);
+    window.append([event(6, { type: "runCompleted" })]);
+    expect(window.state.entries.at(-1)).toMatchObject({ kind: "marker", text: "run completed in 5ms" });
+    window.prepend([event(4, { type: "turnPlanned" })]);
+    expect(window.state.entries.at(-1)).toMatchObject({ text: "run completed in 5ms" });
+    window.prepend([
+      event(1, { type: "runStarted" }),
+      event(2, { type: "turnGenerationCompleted", usage: { inputTokens: 100, outputTokens: 10 } }),
+    ]);
+    expect(window.state.entries.at(-1)).toMatchObject({ text: "5ms · 300 tokens in · 30 tokens out" });
+  });
+
+  it("can reconstruct a single run spanning more than the old catch-up cap", () => {
+    const events = [event(1, { type: "runStarted" }), ...Array.from({ length: 10_500 }, (_, index) =>
+      event(index + 2, { type: "contextEntriesApplied", entries: [item(`message-${index}`, { type: "message", role: "assistant" }, { text: `Reply ${index}` })] })),
+      event(10_502, { type: "runCompleted" })];
+    const window = new TranscriptWindow();
+    window.append(events.slice(-500));
+    expect(window.state.entries.some((entry) => entry.key === "message-10499")).toBe(true);
+    for (let end = events.length - 500; end > 0; end -= 500) window.prepend(events.slice(Math.max(0, end - 500), end));
+    expect(window.state.entries).toEqual(applyEvents(emptyTranscript(), events).entries);
+  });
 });
 
 describe("session transcript traces", () => {

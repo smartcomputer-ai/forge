@@ -99,6 +99,8 @@ fn serialized_fixtures_validate_against_exported_schemas() {
     assert_validates(&bundle, "AgentApiOutcomeOfRunStartResponse", &value);
 
     let params = SessionEventsReadParams {
+        direction: Default::default(),
+        before: None,
         session_id: "session_1".to_owned(),
         after: Some(EventCursor { seq: 42 }),
         limit: Some(100),
@@ -106,6 +108,25 @@ fn serialized_fixtures_validate_against_exported_schemas() {
     };
     let value = serde_json::to_value(&params).expect("serialize");
     assert_validates(&bundle, "SessionEventsReadParams", &value);
+    assert!(
+        value.get("direction").is_none(),
+        "forward wire shape stays compatible"
+    );
+    assert!(value.get("before").is_none());
+    let old_client: SessionEventsReadParams =
+        serde_json::from_value(value).expect("old forward client");
+    assert!(old_client.direction.is_forward());
+    let backward = SessionEventsReadParams {
+        session_id: "session_1".to_owned(),
+        direction: api::SessionEventDirection::Backward,
+        before: Some(EventCursor { seq: 42 }),
+        after: None,
+        limit: Some(100),
+        wait_ms: None,
+    };
+    let value = serde_json::to_value(&backward).expect("backward request");
+    assert_validates(&bundle, "SessionEventsReadParams", &value);
+    assert_eq!(value["direction"], "backward");
 }
 
 #[test]

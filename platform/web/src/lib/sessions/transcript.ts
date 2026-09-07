@@ -46,6 +46,8 @@ export interface TranscriptToolCall {
   outputTruncated?: boolean;
   error?: string | null;
   isError: boolean;
+  /// The call began before the loaded history window. Older pages hydrate it.
+  continuation?: boolean;
   display?: ToolCallDisplay | null;
   effects?: Array<{ kind?: string; data?: Record<string, string> }>;
 }
@@ -103,6 +105,7 @@ export interface TranscriptState {
   closed: boolean;
   /// Entry ids already folded (context events repeat entries on replace).
   seenItems: Set<string>;
+  seenEvents: Set<number>;
   runPhases: Map<string, RunPhase>;
   /// Client submission id → engine run id, from `runAccepted`. Lets an
   /// optimistic send resolve its run before its own POST returns (the tail
@@ -117,6 +120,8 @@ export interface TranscriptState {
   runUsage: Map<string, RunUsage>;
   /// Committed wall-clock start times used to calculate terminal duration.
   runStartedAtMs: Map<string, number>;
+  /// Only a loaded runStarted event proves that accumulated usage is complete.
+  completeUsageRuns: Set<string>;
 }
 
 export interface RunUsage {
@@ -133,12 +138,14 @@ export function emptyTranscript(): TranscriptState {
     runRevision: 0,
     closed: false,
     seenItems: new Set(),
+    seenEvents: new Set(),
     runPhases: new Map(),
     runBySubmission: new Map(),
     toolCallByCallId: new Map(),
     toolGroupByBatchId: new Map(),
     runUsage: new Map(),
     runStartedAtMs: new Map(),
+    completeUsageRuns: new Set(),
   };
 }
 
@@ -208,14 +215,18 @@ export function applyEvents(
     runRevision: state.runRevision,
     closed: state.closed,
     seenItems: state.seenItems,
+    seenEvents: state.seenEvents,
     runPhases: state.runPhases,
     runBySubmission: state.runBySubmission,
     toolCallByCallId: state.toolCallByCallId,
     toolGroupByBatchId: state.toolGroupByBatchId,
     runUsage: state.runUsage,
     runStartedAtMs: state.runStartedAtMs,
+    completeUsageRuns: state.completeUsageRuns,
   };
   for (const event of events) {
+    if (next.seenEvents.has(event.cursor.seq)) continue;
+    next.seenEvents.add(event.cursor.seq);
     const kind = event.kind;
     switch (kind.type) {
       case "contextEntriesApplied":
@@ -230,6 +241,7 @@ export function applyEvents(
         enqueueRun(next, String(kind.runId));
         break;
       case "runStarted":
+        next.completeUsageRuns.add(String(kind.runId));
         startRun(next, String(kind.runId), event.observedAtMs);
         break;
       case "runCancellationRequested":
@@ -286,6 +298,7 @@ export function applyEvents(
         setRunLabel(next, "running tools");
         break;
       case "toolCallStarted":
+        ensureToolCall(next, kind.callId, kind.batchId);
         updateToolCall(next, String(kind.callId), (call) => ({
           ...call,
           status: "running",
@@ -293,6 +306,7 @@ export function applyEvents(
         setRunLabel(next, "running tools");
         break;
       case "toolCallCompleted": {
+        ensureToolCall(next, kind.callId, kind.batchId);
         updateToolCall(next, String(kind.callId), (call) => ({
           ...call,
           status: kind.status,
@@ -315,20 +329,17 @@ export function applyEvents(
         break;
       case "runCompleted": {
         const runId = String(kind.runId);
-        const alreadyFinished = next.runPhases.get(runId) === "terminal";
         finishRun(next, runId);
         const summary = describeRunSummary(
-          next.runUsage.get(runId),
+          next.completeUsageRuns.has(runId) ? next.runUsage.get(runId) : undefined,
           runDurationMs(next, runId, event.observedAtMs),
         );
-        if (summary && !alreadyFinished) {
-          next.entries.push({
-            kind: "marker",
-            key: `evt-${event.cursor.seq}`,
-            text: summary,
-            tone: "muted",
-          });
-        }
+        next.entries.push({
+          kind: "marker",
+          key: `evt-${event.cursor.seq}`,
+          text: summary ?? "run completed",
+          tone: "muted",
+        });
         break;
       }
       case "runFailed": {
@@ -516,7 +527,8 @@ function applyItems(state: TranscriptState, items: SessionItem[]) {
       if (existing) {
         updateToolCall(state, kind.callId, (call) => ({
           ...call,
-          toolName: item.display?.toolName ?? call.toolName,
+          toolName: item.display?.toolName ?? kind.name,
+          continuation: false,
           argumentsJson: item.display?.arguments ?? call.argumentsJson,
           display: item.display?.summary ?? call.display,
         }));
@@ -627,8 +639,10 @@ function applyNonToolCallItem(
       break;
     case "toolResult": {
       const isError = kind.isError;
+      ensureToolCall(state, kind.callId, item.source?.type === "tool" ? item.source.batchId : undefined);
       updateToolCall(state, kind.callId, (call) => ({
         ...call,
+        toolName: item.display?.toolName ?? call.toolName,
         status: item.display?.status ?? (isError ? "failed" : "succeeded"),
         output: item.display?.output ?? item.text,
         outputContentRef: item.content.contentRef,
@@ -642,6 +656,23 @@ function applyNonToolCallItem(
     default:
       break;
   }
+}
+
+function ensureToolCall(state: TranscriptState, callId: string, batchId?: string | null) {
+  if (state.toolCallByCallId.has(callId)) return;
+  let group = batchId ? state.toolGroupByBatchId.get(batchId) : undefined;
+  if (group === undefined) {
+    group = createToolGroup(state, batchId ? `tool-${batchId}` : `tool-call-${callId}`, "running");
+    if (batchId) {
+      state.toolGroupByBatchId.set(batchId, group);
+      const entry = state.entries[group] as TranscriptToolGroup;
+      state.entries[group] = { ...entry, batchId };
+    }
+  }
+  appendToolCall(state, group, {
+    callId, toolName: "Tool activity (continued)", status: "running",
+    isError: false, continuation: true,
+  });
 }
 
 function createToolGroup(
@@ -711,6 +742,7 @@ function applyToolBatchStarted(
         ...call,
         toolId: raw.toolId,
         toolName: raw.toolName,
+        continuation: false,
         status: isTerminalToolStatus(call.status) ? call.status : "requested",
         argumentsJson: raw.arguments ?? call.argumentsJson,
         display: display ?? call.display,

@@ -845,6 +845,8 @@ impl ChatSessionDriver {
             let page = self
                 .api
                 .read_session_events(SessionEventsReadParams {
+                    direction: Default::default(),
+                    before: None,
                     session_id: self.session_id.clone(),
                     after: self.event_cursor,
                     limit: Some(128),
@@ -1066,6 +1068,8 @@ impl ChatSessionDriver {
             let page = self
                 .api
                 .read_session_events(SessionEventsReadParams {
+                    direction: Default::default(),
+                    before: None,
                     session_id: self.session_id.clone(),
                     after: self.event_cursor,
                     limit: Some(512),

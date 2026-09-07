@@ -56,6 +56,7 @@ import { SessionMenuIdentity, SessionMenuMetadata } from "@/components/session/s
 import { ProfileRetentionEditor } from "@/components/session/profile-retention-editor";
 import { SessionConfigEditor } from "@/components/session/session-config-editor";
 import { SessionSettingsDialog } from "@/components/session/session-settings-sheet";
+import { SessionHistoryLoader } from "@/components/session/history-loader";
 import { SetupEditorSection } from "@/components/session/setup-editor-section";
 import {
   Dialog,
@@ -1387,12 +1388,14 @@ export function SessionDetail({
   // statuses stay current.
   const reconcileRuns = tail.reconcileRuns;
   const sessionRuns = session.data?.runs;
-  const approvalRun = sessionRuns?.find((run) => (run.pendingApprovals?.length ?? 0) > 0);
+  const sessionActiveRun = session.data?.activeRun;
+  const approvalRun = sessionActiveRun?.pendingApprovals?.length
+    ? sessionActiveRun : sessionRuns?.find((run) => (run.pendingApprovals?.length ?? 0) > 0);
   useEffect(() => {
-    if (sessionRuns && tail.phase === "live") {
-      reconcileRuns(sessionRuns);
+    if (tail.phase === "live") {
+      reconcileRuns([...(sessionRuns ?? []), ...(sessionActiveRun ? [sessionActiveRun] : [])]);
     }
-  }, [sessionRuns, tail.phase, reconcileRuns]);
+  }, [sessionRuns, sessionActiveRun, tail.phase, reconcileRuns]);
   const refetchSession = session.refetch;
   useEffect(() => {
     if (runRevision > 0) {
@@ -2006,20 +2009,16 @@ export function SessionDetail({
         runRevision={runRevision}
         sessionHref={sessionHref}
       />
-      <MessageScrollerProvider autoScroll defaultScrollPosition="end">
+      <MessageScrollerProvider key={`${universeId}/${sessionId}`} autoScroll defaultScrollPosition="end">
         <MessageScroller className="min-h-0 flex-1">
-          <MessageScrollerViewport>
+          <MessageScrollerViewport preserveScrollOnPrepend>
+            <SessionHistoryLoader tail={tail} />
             <MessageScrollerContent className="mx-auto w-full max-w-5xl gap-3 px-4 py-6 md:px-8">
               {tail.phase === "loading" && entries.length === 0 && !tail.error && (
                 <LoadingNote />
               )}
               {tail.error && entries.length === 0 && (
                 <p className="text-sm text-destructive">{tail.error}</p>
-              )}
-              {tail.truncated && (
-                <p className="text-center text-xs text-muted-foreground">
-                  Very long session — a stretch of older events was skipped.
-                </p>
               )}
               {tail.phase === "live" &&
                 entries.length === 0 &&
@@ -2079,6 +2078,7 @@ export function SessionDetail({
         <SessionScrollFollower
           followRequest={followRequest}
           ready={tail.phase === "live"}
+          historyRevision={tail.historyRevision}
           entries={entries}
           pending={pendingInTranscript}
           activeRun={activeRun}
@@ -2178,17 +2178,20 @@ function SessionScrollFollower({
   entries,
   pending,
   activeRun,
+  historyRevision,
 }: {
   followRequest: number;
   ready: boolean;
   entries: TranscriptEntry[];
   pending: { id: string; text: string }[];
   activeRun: ActiveRun | null;
+  historyRevision: number;
 }) {
   const { scrollToEnd } = useMessageScroller();
   const scrollable = useMessageScrollerScrollable();
   const initialized = useRef(false);
   const followedRequest = useRef(0);
+  const followedHistory = useRef(historyRevision);
 
   useLayoutEffect(() => {
     if (followRequest !== followedRequest.current) {
@@ -2200,6 +2203,10 @@ function SessionScrollFollower({
     if (!ready) {
       return;
     }
+    if (followedHistory.current !== historyRevision) {
+      followedHistory.current = historyRevision;
+      return;
+    }
 
     // On open, always start at the latest message. After that, append only
     // follows when the viewport was already at its end before this render;
@@ -2208,7 +2215,7 @@ function SessionScrollFollower({
       initialized.current = true;
       scrollToEnd({ behavior: "auto" });
     }
-  }, [followRequest, ready, entries, pending, activeRun, scrollable.end, scrollToEnd]);
+  }, [followRequest, ready, entries, pending, activeRun, historyRevision, scrollable.end, scrollToEnd]);
 
   return null;
 }
