@@ -17,6 +17,7 @@ export interface SessionTail {
 
 const PAGE_LIMIT = 500;
 const WAIT_MS = 25_000;
+const REQUEST_GRACE_MS = 10_000;
 const FAST_EMPTY_MS = 1_500;
 const PACING_SLEEP_MS = 2_000;
 const RETRY_SLEEP_MS = 3_000;
@@ -109,10 +110,14 @@ export function useSessionTail(universeId: string, sessionId: string): SessionTa
           await sleep(RETRY_SLEEP_MS, signal);
         }
       }
+      let recovering = false;
       while (!signal.aborted && !window.state.closed) {
         const startedAt = Date.now();
         try {
-          const response = await fetchEvents(universeId, sessionId, cursor, signal);
+          // A reconnect probes immediately. Waiting for another long-poll to
+          // finish would leave a recovered, idle session looking disconnected.
+          const waitMs = recovering ? 0 : WAIT_MS;
+          const response = await fetchEvents(universeId, sessionId, cursor, waitMs, signal);
           if (signal.aborted) return;
           if (response.gap) throw new Error("The session event stream contains an unavailable interval");
           const events = (response.events ?? []).filter((event) => event.cursor.seq > cursor);
@@ -125,12 +130,19 @@ export function useSessionTail(universeId: string, sessionId: string): SessionTa
             push({ transcript: window.state, error: null });
           } else {
             push({ error: null });
-            if (Date.now() - startedAt < FAST_EMPTY_MS) await sleep(PACING_SLEEP_MS, signal);
+            if (waitMs > 0 && Date.now() - startedAt < FAST_EMPTY_MS) await sleep(PACING_SLEEP_MS, signal);
           }
+          recovering = false;
         } catch (error) {
           if (signal.aborted) return;
-          push({ error: errorText(error) });
-          await sleep(RETRY_SLEEP_MS, signal);
+          const retryImmediately = !recovering && isTransientReadError(error);
+          recovering = true;
+          // One dropped connection is recoverable without interrupting the
+          // transcript. Failed probes still report an outage and are paced.
+          if (!retryImmediately) {
+            push({ error: errorText(error) });
+            await sleep(RETRY_SLEEP_MS, signal);
+          }
         }
       }
     })();
@@ -170,15 +182,46 @@ async function fetchHistory(universeId: string, sessionId: string, before: numbe
   return page;
 }
 
-async function fetchEvents(universeId: string, sessionId: string, after: number, signal: AbortSignal): Promise<SessionEventsPage> {
-  const params = new URLSearchParams({ limit: String(PAGE_LIMIT), after: String(after), waitMs: String(WAIT_MS) });
-  return readPage(`${baseUrl(universeId, sessionId)}/events?${params}`, signal);
+async function fetchEvents(universeId: string, sessionId: string, after: number, waitMs: number, signal: AbortSignal): Promise<SessionEventsPage> {
+  // A probe needs at most one event to establish progress; do not make its
+  // shorter deadline depend on projecting a full catch-up page.
+  const params = new URLSearchParams({ limit: String(waitMs === 0 ? 1 : PAGE_LIMIT), after: String(after), waitMs: String(waitMs) });
+  const request = new AbortController();
+  const cancel = () => request.abort(signal.reason);
+  signal.addEventListener("abort", cancel, { once: true });
+  if (signal.aborted) cancel();
+  // Bound stalled connections too, including a reconnect probe whose socket
+  // never returns a response. Leave room for auth, projection, and transport.
+  const timeout = setTimeout(() => request.abort(
+    new DOMException("Session event request timed out", "TimeoutError"),
+  ), waitMs + REQUEST_GRACE_MS);
+  try {
+    return await readPage(`${baseUrl(universeId, sessionId)}/events?${params}`, request.signal);
+  } catch (error) {
+    throw request.signal.aborted ? request.signal.reason : error;
+  } finally {
+    clearTimeout(timeout);
+    signal.removeEventListener("abort", cancel);
+  }
 }
 
 async function readPage<T>(url: string, signal: AbortSignal): Promise<T> {
   const res = await fetch(url, { credentials: "same-origin", signal });
-  if (!res.ok) throw new Error(`Reading session history failed (${res.status})`);
+  if (!res.ok) throw new SessionReadHttpError(res.status);
   return res.json() as Promise<T>;
+}
+
+class SessionReadHttpError extends Error {
+  constructor(readonly status: number) {
+    super(`Reading session history failed (${status})`);
+  }
+}
+
+function isTransientReadError(error: unknown): boolean {
+  return error instanceof TypeError ||
+    (error instanceof DOMException && error.name === "TimeoutError") ||
+    (error instanceof SessionReadHttpError &&
+      (error.status >= 500 || error.status === 408 || error.status === 429));
 }
 
 function errorText(error: unknown): string { return error instanceof Error ? error.message : String(error); }

@@ -58,6 +58,12 @@ pages arrive. Partial generation totals are not presented as whole-run usage.
 History is reconstructed chronologically and deduplicated by event/entry ID;
 historical lifecycle transitions never overwrite live controls. History errors
 retry independently of live polling, and changing sessions aborts both paths.
+Live polling retries a transient connection failure immediately with `waitMs: 0`
+and at most one event from the unchanged cursor. Only a failed recovery probe shows a disconnect;
+an empty successful probe clears it immediately and resumes normal long-polling.
+Authorization and event-integrity errors remain visible immediately. Live reads
+have a deadline ten seconds beyond their requested wait so stalled connections
+cannot stop updates indefinitely.
 
 The authoritative configuration reference is
 [`docs/variables.md`](../docs/variables.md), with separate sections for the

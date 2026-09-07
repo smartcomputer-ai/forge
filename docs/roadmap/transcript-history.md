@@ -12,6 +12,11 @@ Status: implemented and verified.
   while the reader is there; sending and the existing end button resume following.
 - Retry older-page failures without stopping live updates. Abort both directions
   and clear the projection on session changes.
+- Recover a transient live-read failure with an immediate non-waiting probe
+  from the same cursor. Show a disconnect if that probe also fails, pace further
+  retries, and clear it on any successful probe, including an empty response.
+  Authorization and event-integrity errors stay immediately visible. Bound live
+  requests to their requested wait plus ten seconds of transport/projection time.
 - Keep the parent/sub-agent header mounted while run activity refreshes its
   children. Background requests and errors retain the current lineage so the
   transcript viewport does not briefly expand and contract on message submission.
@@ -52,6 +57,9 @@ the history the reader chooses to load.
 - Hook: recent-first loading, concurrent live/history responses, automatic retry,
   cursor gaps, rejection of an old server's forward prefix, empty sessions,
   session switches, and cancellation.
+- Reconnection: dropped fetches and gateway errors recover without flashing a
+  warning; repeated failures report an outage, idle probes clear it promptly,
+  request deadlines recover stalled sockets, and navigation cancels probes/timers.
 - Demo: backward cursor parity and concurrent run creation.
 - Lineage: delayed run-status refreshes preserve the existing header and links,
   including alongside a parent link; failed refreshes retain the header, and

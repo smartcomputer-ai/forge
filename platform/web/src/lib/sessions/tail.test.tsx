@@ -9,6 +9,7 @@ interface Request {
   url: URL;
   signal: AbortSignal;
   reply: (body: unknown, status?: number) => void;
+  reject: (error: Error) => void;
 }
 let requests: Request[];
 let root: Root;
@@ -40,7 +41,7 @@ beforeEach(() => {
   vi.stubGlobal("fetch", vi.fn((url: string, options: RequestInit) => new Promise<Response>((resolve, reject) => {
     const signal = options.signal as AbortSignal;
     signal.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true });
-    requests.push({ url: new URL(url, "http://localhost"), signal,
+    requests.push({ url: new URL(url, "http://localhost"), signal, reject,
       reply: (body, status = 200) => resolve(new Response(JSON.stringify(body), { status })) });
   })));
   container = document.createElement("div");
@@ -86,6 +87,94 @@ describe("recent transcript and live history", () => {
     expect(requests[1]!.url.searchParams.get("after")).toBe("0");
     await reply(1, { events: [message(1)], nextCursor: { seq: 1 }, complete: true });
     expect(tail.transcript.entries[0]!.key).toBe("message-1");
+  });
+
+  it.each(["network", "gateway"])("recovers one %s failure immediately without flashing a disconnect", async (failure) => {
+    vi.useFakeTimers();
+    await act(async () => root.render(<Harness />));
+    await reply(0, history([10], 10, 10));
+    expect(requests[1]!.url.searchParams.get("waitMs")).toBe("25000");
+    if (failure === "network") {
+      await act(async () => requests[1]!.reject(new TypeError("Failed to fetch")));
+    } else {
+      await reply(1, { error: "upstream unavailable" }, 502);
+    }
+    expect(tail.error).toBeNull();
+    expect(requests).toHaveLength(3);
+    expect(requests[2]!.url.searchParams.get("after")).toBe("10");
+    expect(requests[2]!.url.searchParams.get("waitMs")).toBe("0");
+    expect(requests[2]!.url.searchParams.get("limit")).toBe("1");
+
+    // Even an idle session proves it has reconnected without waiting 25s.
+    await reply(2, { events: [], complete: true });
+    expect(tail.error).toBeNull();
+    expect(requests).toHaveLength(4);
+    expect(requests[3]!.url.searchParams.get("waitMs")).toBe("25000");
+    expect(requests[3]!.url.searchParams.get("limit")).toBe("500");
+    await reply(3, { events: [message(11)], complete: true });
+    expect(requests[4]!.url.searchParams.get("after")).toBe("11");
+    expect(tail.transcript.entries.map((entry) => entry.key)).toEqual(["message-10", "message-11"]);
+  });
+
+  it("reports a failed reconnect, paces retries, and clears the warning on an empty probe", async () => {
+    vi.useFakeTimers();
+    await act(async () => root.render(<Harness />));
+    await reply(0, history([10], 10, 10));
+    await act(async () => requests[1]!.reject(new TypeError("Failed to fetch")));
+    await act(async () => requests[2]!.reject(new TypeError("Failed to fetch")));
+    expect(tail.error).toBe("Failed to fetch");
+    expect(requests).toHaveLength(3);
+    await act(async () => vi.advanceTimersByTime(2999));
+    expect(requests).toHaveLength(3);
+    await act(async () => vi.advanceTimersByTime(1));
+    expect(requests[3]!.url.searchParams.get("after")).toBe("10");
+    expect(requests[3]!.url.searchParams.get("waitMs")).toBe("0");
+    await reply(3, { events: [], complete: true });
+    expect(tail.error).toBeNull();
+    expect(requests[4]!.url.searchParams.get("waitMs")).toBe("25000");
+  });
+
+  it("bounds stalled polls and reconnect probes instead of hanging indefinitely", async () => {
+    vi.useFakeTimers();
+    await act(async () => root.render(<Harness />));
+    await reply(0, history([10], 10, 10));
+    await act(async () => vi.advanceTimersByTime(34_999));
+    expect(requests).toHaveLength(2);
+    await act(async () => vi.advanceTimersByTime(1));
+    expect(requests[1]!.signal.aborted).toBe(true);
+    expect(requests[2]!.url.searchParams.get("waitMs")).toBe("0");
+    expect(tail.error).toBeNull();
+    await act(async () => vi.advanceTimersByTime(10_000));
+    expect(requests[2]!.signal.aborted).toBe(true);
+    expect(tail.error).toContain("timed out");
+    await act(async () => vi.advanceTimersByTime(3000));
+    expect(requests[3]!.url.searchParams.get("after")).toBe("10");
+    await reply(3, { events: [message(11)], complete: true });
+    expect(tail.error).toBeNull();
+    expect(tail.transcript.entries).toHaveLength(2);
+  });
+
+  it("reports authorization errors immediately instead of treating them as connection churn", async () => {
+    vi.useFakeTimers();
+    await act(async () => root.render(<Harness />));
+    await reply(0, history([10], 10, 10));
+    await reply(1, { error: "unauthorized" }, 401);
+    expect(tail.error).toContain("401");
+    expect(requests).toHaveLength(2);
+  });
+
+  it("aborts a reconnect and clears its deadline when navigating away", async () => {
+    vi.useFakeTimers();
+    await act(async () => root.render(<Harness />));
+    await reply(0, history([10], 10, 10));
+    await act(async () => requests[1]!.reject(new TypeError("Failed to fetch")));
+    await act(async () => root.render(<Harness id="other" />));
+    expect(requests[2]!.signal.aborted).toBe(true);
+    expect(vi.getTimerCount()).toBe(0);
+    expect(tail.error).toBeNull();
+    expect(tail.phase).toBe("loading");
+    await reply(3, history([1], 1));
+    expect(tail.transcript.entries.map((entry) => entry.key)).toEqual(["message-1"]);
   });
 
   it("retries older history automatically while live events keep arriving and stops at the beginning", async () => {
