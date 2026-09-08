@@ -2,14 +2,15 @@
 
 Status: twenty-two product pages are drafted under `docs/documentation/`,
 including the initial `using-lightspeed/` and `environments/` sections.
-The remaining navigation and page scopes are planned; the documentation renderer
-has not been selected.
+The remaining page scopes are planned. Astro Starlight is set up in `docs/site/`
+and renders the authored manual plus three authoritative reference pages for
+hosting at `https://ls.bot/docs/`. Public deployment remains to be connected in
+the infrastructure repository.
 
-Use `docs/documentation/` as the product documentation root. The existing
-`docs/roadmap/` and `docs/spec/` can continue to hold implementation plans and
-design history. A dedicated publishing root makes the reader-facing manual easy
-to navigate and gives a future Markdown documentation tool a clear input
-directory.
+Use `docs/documentation/` as the product documentation root. `docs/roadmap/`
+holds implementation plans and design history. A dedicated publishing root
+makes the reader-facing manual easy to navigate and gives the documentation
+renderer a clear input directory.
 
 Organize the manual around reader tasks: get a first agent running, use the
 product, provide compute, operate a deployment, integrate or extend it, understand
@@ -263,6 +264,54 @@ supports them. Continue reconciling older guidance against executable behavior
 as each new page is authored.
 
 ## Existing docs and publishing
+
+### Site implementation
+
+- `docs/site/` is an npm workspace with independent development, build, preview,
+  and validation commands. It emits a static directory for the `/docs/` route.
+- The build reads the existing Markdown, derives page metadata from its leading
+  title, and rewrites relative manual links into website routes. Other source
+  links lead to GitHub; local images are included in the output. Missing source
+  paths and broken published links or heading anchors fail validation.
+- Environment variables, the generated API reference, and the generated workflow
+  contract are staged from their authoritative sources. No reference copy is
+  maintained by hand. Only authored pages and these references are published.
+- Navigation follows the planned section order and the home provides four
+  reading paths. Search uses Starlight's static Pagefind index; Mermaid diagrams
+  render with automatic theme switching.
+- Styling and copied assets follow `ls-site`: self-hosted Merriweather,
+  Merriweather Sans, League Gothic, the Lightspeed mark, and the cyan/cobalt
+  palette. Both light and dark modes retain Starlight's navigation and controls.
+  The header uses the landing page's transparent white mark in dark mode and
+  its black inverse in light mode; the favicon matches the landing page.
+  The logo links to the documentation home; a separate Website link beside
+  GitHub leads to the main site in the header and mobile menu.
+  Dark-mode body text uses the landing-page hero's light sans-serif weight,
+  with restrained emphasis and regular serif headings. Near-white body text,
+  white headings, and brighter secondary text provide the hero's high contrast.
+  Sidebar hover and keyboard focus use background and accent highlights so
+  they remain distinct with bright text, including on collapsible groups.
+  Font preloads and blocking font display prevent the immediate fallback-font
+  swap during navigation; the styles themselves are present at initial render.
+- A separate documentation CI workflow runs adapter tests, Astro diagnostics,
+  and a production build with output checks. The site is labeled current
+  development; release-specific manuals can follow when supported releases
+  require them.
+
+Validation passes for the 25 published pages, four Mermaid transforms, theme
+controls, search coverage, links, anchors, and bundled assets. The six adapter
+tests, Astro diagnostics, root npm checks, and release-packaging checks pass.
+HTTP checks cover every page and the missing-page response; live-preview checks
+cover source additions, edits, deletions, and image staging. Browser visual
+review remains outstanding because the browser connection was unavailable.
+
+The [site guide](../site/README.md) documents the commands and publishing
+boundary. The next deployment step is an immutable documentation bundle built
+in Lightspeed, installed by the deployment repository, and served through Caddy. It should have
+an independent deployment cadence so documentation corrections do not rebuild
+the product runtime.
+
+### Source ownership
 
 Keep the root README as the short product overview with a documentation entry
 link. As product pages are written, consolidate user-facing prose from

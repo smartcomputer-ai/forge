@@ -4,6 +4,7 @@
   "type": "module",
   "workspaces": [
     "clients/typescript",
+    "docs/site",
     "platform/cli",
     "platform/configurator-mcp",
     "platform/connectors",
@@ -13,6 +14,10 @@
     "platform/web"
   ],
   "scripts": {
+    "dev:docs": "npm run dev --workspace @lightspeed/docs --",
+    "build:docs": "npm run build --workspace @lightspeed/docs",
+    "preview:docs": "npm run preview --workspace @lightspeed/docs --",
+    "check:docs": "npm run check --workspace @lightspeed/docs",
     "build": "npm run build --workspace @lightspeed-ai/agent-client && npm run build --workspace @lightspeed/configurator-mcp && npm run build --workspace @lightspeed/platform-web && npm run build:demo --workspace @lightspeed/platform-web",
     "build:web": "npm run build --workspace @lightspeed/platform-web",
     "check": "npm run check:dev && npm run check:identity && npm run check:generated && npm run typecheck && npm run test && npm run build",

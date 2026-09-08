@@ -147,6 +147,6 @@ Then continue through the task guides:
 - [Networking and ingress](networking-and-ingress.md): connect daemons and
   publish applications through the supported provider edge.
 
-The [environment specification](../../spec/04-environments.md) and
+The [environment protocol](../../../crates/environment-protocol/src/lib.rs) and
 [environment-variable reference](../../variables.md#environment-services)
-describe the detailed policies and settings.
+define the interfaces and settings.

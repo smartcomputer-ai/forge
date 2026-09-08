@@ -222,6 +222,10 @@ npm run check
 - [Build and release](docs/releasing.md)
 - [Roadmap and design decisions](docs/roadmap/)
 
+Preview the Starlight manual with `npm run dev:docs`, or build and validate it
+with `npm run check:docs`. See the [documentation site guide](docs/site/README.md)
+for authoring, styling, and static hosting at `/docs/`.
+
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md)
