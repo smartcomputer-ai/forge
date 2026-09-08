@@ -65,9 +65,9 @@ for (const [name, artifact] of Object.entries(value.binaries)) {
     fail(`published binary ${name} has no immutable OCI URL`);
   }
 }
-const expectedArtifacts = ["demo"];
+const expectedArtifacts = ["demo", "docs"];
 if (JSON.stringify(Object.keys(value.artifacts ?? {}).sort()) !== JSON.stringify(expectedArtifacts)) {
-  fail("artifacts must contain the demo static site");
+  fail("artifacts must contain the demo and documentation static sites");
 }
 for (const [name, artifact] of Object.entries(value.artifacts)) {
   if (!/^[0-9a-f]{64}$/.test(artifact.sha256)) fail(`artifact ${name} has an invalid checksum`);
@@ -80,6 +80,7 @@ for (const [name, artifact] of Object.entries(value.artifacts)) {
   }
 }
 if (value.artifacts.demo.basePath !== "/demo/") fail("demo artifact must be served under /demo/");
+if (value.artifacts.docs.basePath !== "/docs/") fail("docs artifact must be served under /docs/");
 if (!value.binaries.envd.file.endsWith(`-${value.envdTarget}.tar.gz`)) {
   fail("envd archive is not built for the static target");
 }

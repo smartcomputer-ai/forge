@@ -67,9 +67,18 @@
     "artifacts": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["demo"],
+      "required": ["demo", "docs"],
       "properties": {
-        "demo": { "$ref": "#/$defs/staticArtifact" }
+        "demo": {
+          "type": "object",
+          "$ref": "#/$defs/staticArtifact",
+          "properties": { "basePath": { "const": "/demo/" } }
+        },
+        "docs": {
+          "type": "object",
+          "$ref": "#/$defs/staticArtifact",
+          "properties": { "basePath": { "const": "/docs/" } }
+        }
       }
     },
     "typescriptClient": {
@@ -106,7 +115,7 @@
         "file": { "type": "string", "minLength": 1 },
         "url": { "type": ["string", "null"] },
         "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
-        "basePath": { "const": "/demo/" }
+        "basePath": { "enum": ["/demo/", "/docs/"] }
       }
     }
   }

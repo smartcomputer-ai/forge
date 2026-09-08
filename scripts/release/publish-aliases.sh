@@ -105,10 +105,12 @@ envd	envd
 cli	cli
 EOF
 
-demo_source_url="$(jq -er '.artifacts.demo.url' "$manifest")"
-demo_source_ref="${demo_source_url#oci://}"
-[[ "$demo_source_ref" != "$demo_source_url" ]]
-copy_oras_alias "$demo_source_ref" "$root/demo-bundle:$alias_name"
+for site in demo docs; do
+  source_url="$(jq -er --arg site "$site" '.artifacts[$site].url' "$manifest")"
+  source_ref="${source_url#oci://}"
+  [[ "$source_ref" != "$source_url" ]]
+  copy_oras_alias "$source_ref" "$root/$site-bundle:$alias_name"
+done
 
 # This is also the completion marker for the official OCI artifact set.
 copy_oras_alias "$root/release-bundle@$bundle_digest" \

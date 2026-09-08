@@ -93,6 +93,7 @@ jobs:
             -- --ignored --test-threads=1
           npm ci
           npm run check:ci
+          npm run check:docs
           scripts/release/verify-metadata.sh
       - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
@@ -186,8 +187,9 @@ jobs:
             [envd]="$(find dist/archives -name '*-envd-*' -print -quit)"
             [cli]="$(find dist/archives -name '*-cli-*' -print -quit)"
             [demo]="$(find dist/archives -name '*-demo-*' -print -quit)"
+            [docs]="$(find dist/archives -name '*-docs-*' -print -quit)"
           )
-          for name in server provider-incus envd cli demo; do
+          for name in server provider-incus envd cli demo docs; do
             test -n "${files[$name]}"
             ref="$GHCR_ROOT/${name}-bundle:$STAGING_TAG"
             oras push "$ref" "${files[$name]}:application/gzip"
@@ -210,6 +212,7 @@ jobs:
           LIGHTSPEED_BINARY_URL_ENVD: ${{ steps.archives.outputs.ENVD_URL }}
           LIGHTSPEED_BINARY_URL_CLI: ${{ steps.archives.outputs.CLI_URL }}
           LIGHTSPEED_ARTIFACT_URL_DEMO: ${{ steps.archives.outputs.DEMO_URL }}
+          LIGHTSPEED_ARTIFACT_URL_DOCS: ${{ steps.archives.outputs.DOCS_URL }}
           LIGHTSPEED_RELEASE_CHANNEL: release
           LIGHTSPEED_ENVD_PUBLIC_URL_BASE: https://github.com/${{ github.repository }}/releases/download/${{ steps.identity.outputs.tag }}
           STAGING_TAG: ${{ steps.identity.outputs.staging_tag }}

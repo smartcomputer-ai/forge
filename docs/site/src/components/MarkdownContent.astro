@@ -1,0 +1,14 @@
+---
+import MarkdownContent from '@astrojs/starlight/components/MarkdownContent.astro';
+import { LinkCard, CardGrid } from '@astrojs/starlight/components';
+const isHome = Astro.locals.starlightRoute.entry.id === 'index';
+---
+{isHome && <div class="start-here" aria-label="Choose a reading path">
+  <CardGrid>
+    <LinkCard title="Try Lightspeed" description="Run the local stack and build your first agent." href="/docs/getting-started/quickstart/" />
+    <LinkCard title="Use an installation" description="Work with sessions, models, tools, and bots." href="/docs/using-lightspeed/sessions-and-runs/" />
+    <LinkCard title="Deploy Lightspeed" description="Set up the product and connect compute." href="/docs/deployment/overview/" />
+    <LinkCard title="Build with Lightspeed" description="Explore the API and integration contracts." href="/docs/reference/api/" />
+  </CardGrid>
+</div>}
+<MarkdownContent><slot /></MarkdownContent>

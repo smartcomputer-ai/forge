@@ -19,6 +19,7 @@ copy_workspace_manifests() {
   cp package.json package-lock.json tsconfig.json "$root/"
   for workspace in \
     clients/typescript \
+    docs/site \
     platform/cli \
     platform/configurator-mcp \
     platform/connectors \
@@ -47,6 +48,8 @@ stage_runtime() {
   done
   (cd "$root" && npm "${install_args[@]}")
   rm -f "$root/package-lock.json"
+  # The documentation workspace participates in dependency resolution only.
+  rm -rf "$root/docs"
   if [[ "$name" = platform ]]; then
     rm -rf "$root/platform/cli" "$root/platform/configurator-mcp" \
       "$root/platform/connectors"

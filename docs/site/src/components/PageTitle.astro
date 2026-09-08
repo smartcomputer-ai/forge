@@ -1,0 +1,13 @@
+---
+import PageTitle from '@astrojs/starlight/components/PageTitle.astro';
+const section = Astro.locals.starlightRoute.entry.id.split('/')[0];
+const labels: Record<string, string> = {
+  'getting-started': 'Getting started',
+  'using-lightspeed': 'Using Lightspeed',
+  environments: 'Environments',
+  deployment: 'Deployment',
+  reference: 'Reference',
+};
+---
+<p class="page-eyebrow">{labels[section] ?? 'The Lightspeed manual'}</p>
+<PageTitle><slot /></PageTitle>

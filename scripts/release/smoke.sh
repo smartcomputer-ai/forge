@@ -24,7 +24,7 @@ node -e '
   "$LIGHTSPEED_ENVD_TARGET" "$LIGHTSPEED_ENVIRONMENT_PROTOCOL_VERSION"
 
 for archive in dist/archives/*.tar.gz; do
-  if [[ "$archive" != *-demo-* ]]; then
+  if [[ "$archive" != *-demo-* && "$archive" != *-docs-* ]]; then
     [[ "$(tar -tzf "$archive" | wc -l)" -eq 1 ]]
   fi
 done
@@ -37,6 +37,18 @@ demo_files="$(mktemp)"
 trap 'rm -f "$demo_files"' EXIT
 tar -tzf "$demo_tgz" > "$demo_files"
 grep -Eq '^\./assets/.+\.(css|js)$' "$demo_files"
+
+docs_tgz="$(find dist/archives -maxdepth 1 -name '*-docs-*' -print -quit)"
+test -n "$docs_tgz"
+for entry in ./index.html ./index.md ./llms.txt ./reference/api.md \
+  ./404.html ./pagefind/pagefind.js ./sitemap-index.xml \
+  ./assets/ls-logo-2026-v1-ls.svg ./licenses/merriweather-OFL.txt; do
+  tar -tzf "$docs_tgz" "$entry" >/dev/null
+done
+docs_files="$(tar -tzf "$docs_tgz")"
+grep -Eq '^\./_astro/.+\.css$' <<<"$docs_files"
+grep -Eq '^\./_astro/.+\.woff2$' <<<"$docs_files"
+grep -Eq '^\./reference/api/index.html$' <<<"$docs_files"
 
 client_tgz="$(find dist/npm -maxdepth 1 -name '*.tgz' -print -quit)"
 for entry in package/package.json package/release.json package/dist/index.js \

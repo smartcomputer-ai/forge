@@ -11,10 +11,12 @@ linked documentation, not in an ever-growing list of historical decisions.
 Read only the material relevant to the change:
 
 - `README.md` — product overview, current capabilities, and basic setup.
-- `docs/design.md` — deterministic core, context management, CAS, and Temporal
-  runtime design.
-- `scripts/dev/README.md` — local stack, development profiles, and live tests.
-- `docs/variables.md` — authoritative environment-variable reference.
+- `docs/documentation/how-it-works/architecture.md` — architecture overview and
+  links to the agent loop, context/storage, and controller workflow design.
+- `docs/documentation/development/local-development.md` — local edit loops;
+  neighboring guides cover tests, contracts, and releases. `scripts/dev/README.md`
+  retains launcher and service details.
+- `docs/documentation/reference/environment-variables.md` — authoritative environment-variable reference.
 - `platform/README.md` — TypeScript management server, web UI, demo backend,
   connectors, and Configurator MCP.
 - `crates/api/contract/api-reference.md` — generated public API reference.

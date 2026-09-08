@@ -1,11 +1,18 @@
 # Lightspeed Development Environment
 
+Start with the manual's
+[Local development](../../docs/documentation/development/local-development.md)
+guide for setup and edit loops, and
+[Testing and evaluation](../../docs/documentation/development/testing-and-evaluation.md)
+for choosing checks and running live suites. This file retains launcher,
+service, and manual-startup details.
+
 The root `dev.sh` launcher and its implementation under `scripts/dev/` own the
 complete local development environment for Lightspeed: first-run checks,
 dependency bootstrap, Docker Compose topology, environment exports, lifecycle
 commands, and reset helpers for Postgres, pgAdmin, MinIO, and Temporal.
 
-See [`docs/variables.md`](../../docs/variables.md#local-development) for the full
+See [environment-variable reference](../../docs/documentation/reference/environment-variables.md#local-development) for the full
 development override table and the separate production component variables.
 
 ## Services
@@ -35,17 +42,20 @@ From a fresh checkout, start the complete editable product with one command:
 The launcher checks Node, Cargo, Docker, and Docker Compose. For profiles that
 run TypeScript, it installs the root npm workspace when dependencies are
 missing or `package-lock.json` changed. A root `.env` is loaded automatically.
-The `full` and `runtime` profiles require `OPENAI_API_KEY` or
-`ANTHROPIC_API_KEY`; copy `.env.example` to `.env` to configure one. To work on
-infrastructure or non-provider behavior deliberately without either key:
+The `full` and `runtime` profiles can start without `OPENAI_API_KEY` or
+`ANTHROPIC_API_KEY`. The launcher warns when neither deployment key is set;
+in the full product, add a universe-scoped key under **Settings → Integrations**.
+Provider-backed runs still need a valid credential for the selected model.
+
+To require a deployment key before startup, for example in CI:
 
 ```bash
-./dev.sh --allow-missing-api-keys
-./dev.sh runtime --allow-missing-api-keys
+./dev.sh --require-api-keys
+./dev.sh runtime --require-api-keys
 ```
 
-The flag permits missing credentials; it does not unset credentials that are
-already configured. Provider-backed runs still require a valid key.
+The older `--allow-missing-api-keys` flag is accepted for compatibility and has
+no effect. Deployment-wide keys can still be configured in the root `.env`.
 
 `npm run dev` delegates to the same root launcher, so these are equivalent:
 
@@ -64,6 +74,15 @@ and TypeScript processes on the host. It supports five profiles:
 ./dev.sh demo       # web UI only, over the in-browser demo backend (no Docker)
 ./dev.sh infra      # Postgres, pgAdmin, MinIO, and Temporal only
 ```
+
+The `full` and `runtime` profiles also start a local `lightspeed-envd` by
+default, listening on `127.0.0.1:19091` with its working directory under
+`.lightspeed-dev/envd/workspace`. Pass `--no-envd` or set
+`LIGHTSPEED_DEV_ENVD=off` to disable it. The launcher does not automatically
+register or select this environment for sessions. The
+[compute walkthrough](../../docs/documentation/environments/bring-your-own-compute.md#direct-attachment-for-local-development)
+shows how to attach it. Commands run as the daemon's OS user; its working
+directory is not a process sandbox.
 
 The local UI is available at `http://localhost:5173/app/`. The supervisor
 trusts both `http://127.0.0.1:5173` and `http://localhost:5173` for Better Auth;
@@ -93,8 +112,9 @@ URL it started, and the setup does not create a bearer credential. Supplying an
 external Configurator URL disables that path unless both development variables
 are explicitly enabled; the Runtime rejects non-loopback trusted-header URLs.
 
-Use `./dev.sh --plan full` to inspect a profile without starting
-anything. Pressing Ctrl-C or running `stop` from another terminal stops the
+Use `./dev.sh --plan full` to inspect a profile without starting services.
+Planning an enabled local daemon can create its working directory.
+Pressing Ctrl-C or running `stop` from another terminal stops the
 tracked host supervisor and its children while leaving Docker infrastructure
 available. `down` performs a complete teardown in the safe order: host
 processes first, then infrastructure.

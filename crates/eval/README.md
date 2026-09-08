@@ -2,6 +2,11 @@
 
 Prompt-level eval harness for Lightspeed agent workflows.
 
+The manual's
+[Testing and evaluation](../../docs/documentation/development/testing-and-evaluation.md#evaluate-model-and-tool-behavior)
+guide explains case authoring, model selection, assertions, and interpreting
+results alongside deterministic and live integration tests.
+
 ## Commands
 
 - `cargo run -p eval -- list`

@@ -133,6 +133,10 @@ const manifest = {
       ...artifact("DEMO", "-demo-"),
       basePath: "/demo/",
     },
+    docs: {
+      ...artifact("DOCS", "-docs-"),
+      basePath: "/docs/",
+    },
   },
   typescriptClient: {
     name: "@lightspeed-ai/agent-client",

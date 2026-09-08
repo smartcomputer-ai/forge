@@ -4,10 +4,6 @@ on:
   pull_request: {}
   push:
     branches: [main]
-    paths-ignore:
-      - '**/*.md'
-      - 'docs/**'
-      - 'LICENSE*'
   workflow_dispatch: {}
 
 permissions:
@@ -23,67 +19,22 @@ jobs:
     outputs:
       rust: ${{ steps.classify.outputs.rust }}
       consumers: ${{ steps.classify.outputs.consumers }}
+      docs: ${{ steps.classify.outputs.docs }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.13.0
+      - run: node --test scripts/ci/*.test.mjs
       - name: Classify changed paths
         id: classify
         env:
           EVENT_NAME: ${{ github.event_name }}
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-        run: |
-          set -euo pipefail
-
-          if test "$EVENT_NAME" = workflow_dispatch; then
-            echo "rust=true" >> "$GITHUB_OUTPUT"
-            echo "consumers=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          if [[ "$BASE_SHA" =~ ^0{40}$ ]]; then
-            echo "rust=true" >> "$GITHUB_OUTPUT"
-            echo "consumers=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]]
-          [[ "$HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]
-          git cat-file -e "$BASE_SHA^{commit}"
-          git cat-file -e "$HEAD_SHA^{commit}"
-
-          rust=false
-          consumers=false
-          while IFS= read -r -d '' path; do
-            case "$path" in
-              crates/api/*)
-                rust=true
-                consumers=true
-                ;;
-              crates/*|Cargo.toml|Cargo.lock|rust-toolchain.toml)
-                rust=true
-                ;;
-              clients/*|platform/*|package.json|package-lock.json|tsconfig.json)
-                consumers=true
-                ;;
-              .github/workflows/*|release/*|scripts/*)
-                rust=true
-                consumers=true
-                ;;
-              docs/*|README.md|AGENTS.md|CLAUDE.md|LICENSE*|*.md)
-                ;;
-              *)
-                # Unknown paths are checked conservatively so a new source or
-                # build input cannot accidentally bypass CI.
-                rust=true
-                consumers=true
-                ;;
-            esac
-          done < <(git diff --name-only -z "$BASE_SHA" "$HEAD_SHA")
-
-          echo "rust=$rust" >> "$GITHUB_OUTPUT"
-          echo "consumers=$consumers" >> "$GITHUB_OUTPUT"
+        run: node scripts/ci/classify-changes.mjs
 
   rust:
     needs: changes
@@ -160,9 +111,23 @@ jobs:
           LIGHTSPEED_PLATFORM_MIGRATION_TEST_URL: postgres://lightspeed:lightspeed@127.0.0.1:55432/lightspeed
         run: npm run check:ci
 
+  docs:
+    needs: changes
+    if: needs.changes.outputs.docs == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24.13.0
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - run: npm ci --workspace @lightspeed/docs --include-workspace-root
+      - run: npm run check:docs
+
   required:
     if: always()
-    needs: [changes, rust, consumers]
+    needs: [changes, rust, consumers, docs]
     runs-on: ubuntu-latest
     steps:
       - name: Require every selected check to pass
@@ -172,6 +137,8 @@ jobs:
           RUST_RESULT: ${{ needs.rust.result }}
           CONSUMERS_NEEDED: ${{ needs.changes.outputs.consumers }}
           CONSUMERS_RESULT: ${{ needs.consumers.result }}
+          DOCS_NEEDED: ${{ needs.changes.outputs.docs }}
+          DOCS_RESULT: ${{ needs.docs.result }}
         run: |
           set -euo pipefail
           test "$CHANGES_RESULT" = success
@@ -180,4 +147,7 @@ jobs:
           fi
           if test "$CONSUMERS_NEEDED" = true; then
             test "$CONSUMERS_RESULT" = success
+          fi
+          if test "$DOCS_NEEDED" = true; then
+            test "$DOCS_RESULT" = success
           fi

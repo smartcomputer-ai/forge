@@ -92,7 +92,7 @@ have a deadline ten seconds beyond their requested wait so stalled connections
 cannot stop updates indefinitely.
 
 The authoritative configuration reference is
-[`docs/variables.md`](../docs/variables.md), with separate sections for the
+[environment-variable reference](../docs/documentation/reference/environment-variables.md), with separate sections for the
 Platform server, connector host, Configurator MCP, and development-only
 settings.
 
@@ -104,6 +104,11 @@ changes stay disabled until the deployment provides an email-verification
 sender.
 
 ## Development
+
+The manual's [Local development](../docs/documentation/development/local-development.md)
+guide covers edit loops across Rust and TypeScript.
+[Changing contracts](../docs/documentation/development/changing-contracts.md)
+explains API generation and the separately owned Platform migrations.
 
 Install all Node workspace dependencies and run the complete check:
 
