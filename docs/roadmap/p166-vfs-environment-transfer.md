@@ -524,6 +524,41 @@ run a converter, and capture its outputs. The conversion and provider lowering
 belong above this layer. OCR, document rendering, transcription, and provider
 media capability negotiation are not implemented by VFS–environment transfer.
 
+### Tool output representation and performance
+
+Whole-file transfer reuse does not require changing ordinary tool-result
+storage. Current file tools return structured read metadata and line-numbered
+model text; process tools return structured output and a presentation containing
+status, handles, and other execution information. The runtime persists both
+the structured result and the bounded model-facing projection. These formats
+serve model behavior, API inspection, and durable replay. A formatted result
+containing file text is not the same CAS object as the raw file bytes.
+
+Preserve those model-facing formats and exact historical observations. The
+model does not depend on the storage layout behind the rendered result, but
+moving formatting from result creation to request assembly would add projection
+work and potentially extra blob reads. Such a change must preserve historical
+rendering even after files or renderer implementations change.
+
+Do not require an additional raw file or stdout/stderr blob for every ordinary
+tool call as part of this proposal. Adding it alongside both existing payloads
+can increase hashing, storage operations, retained bytes, and containment-edge
+work; deduplication only avoids storing byte-identical objects again. It does
+not itself reduce model input tokens or provider request size. Partial reads
+and streamed command output must retain their existing bounds, without reading
+extra file bytes or aggregating an entire process output merely to obtain a
+whole-file hash.
+
+Raw content already held in VFS or by a capture can be referenced without
+creating another byte payload, with the usual retention rules. Broader reuse
+for complete environment reads is a separate optimization to evaluate against
+the current result layout, rather than simply adding a third representation.
+Measure tool and prompt-assembly latency, CAS operations, retained bytes, and
+actual later-transfer savings before adopting it. Generic shell output remains
+an observed stream; do not infer source files by recognizing commands such as
+`cat`. Transfer correctness and efficiency must work independently of whether
+the model previously read or printed the source.
+
 ## Skill use as an example
 
 A skill saved in a library workspace can be read directly through VFS. An
