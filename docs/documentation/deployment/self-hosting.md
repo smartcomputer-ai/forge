@@ -45,12 +45,12 @@ installation.
 ## Download one release
 
 Choose a tag from [GitHub Releases](https://github.com/smartcomputer-ai/lightspeed/releases).
-The example below uses `v0.1.0`; replace it with the release you intend to
+The example below uses `v0.2.0`; replace it with the release you intend to
 install. Download its manifest into a directory you will keep with the
 deployment record:
 
 ```bash
-LIGHTSPEED_RELEASE_TAG=v0.1.0
+LIGHTSPEED_RELEASE_TAG=v0.2.0
 mkdir -p "$HOME/lightspeed-releases/$LIGHTSPEED_RELEASE_TAG"
 cd "$HOME/lightspeed-releases/$LIGHTSPEED_RELEASE_TAG"
 curl --fail --location --output release-manifest.json \
