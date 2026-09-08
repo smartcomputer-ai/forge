@@ -92,7 +92,7 @@ have a deadline ten seconds beyond their requested wait so stalled connections
 cannot stop updates indefinitely.
 
 The authoritative configuration reference is
-[`docs/variables.md`](../docs/variables.md), with separate sections for the
+[environment-variable reference](../docs/documentation/reference/environment-variables.md), with separate sections for the
 Platform server, connector host, Configurator MCP, and development-only
 settings.
 

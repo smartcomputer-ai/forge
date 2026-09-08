@@ -109,11 +109,12 @@ using the deployment's credential. Removing the built-in provider record
 allows fallback again. Consider that difference when rotating or disabling
 keys.
 
-The runtime's default model route uses provider `openai` and API kind
-`openai:responses`. `LIGHTSPEED_CHAT_MODEL` changes the default model name;
-it does not switch the provider or API kind. Select the full route in a
-profile when using Anthropic or a compatible service. Exact deployment
-settings are in the [environment-variable reference](../../variables.md).
+The runtime defaults to provider `openai` and API kind `openai:responses`.
+`LIGHTSPEED_CHAT_PROVIDER` and `LIGHTSPEED_CHAT_MODEL` change the default
+provider ID and model name. The runtime's default API kind remains Responses,
+so setting an Anthropic provider ID alone does not create an Anthropic route.
+Select the full route in a profile when using Anthropic or a compatible service. Exact deployment
+settings are in the [environment-variable reference](../reference/environment-variables.md).
 
 The API also supports model OAuth records that refer to a suitable stored
 grant and audience. The broker refreshes access tokens for those records.

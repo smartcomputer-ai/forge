@@ -133,7 +133,7 @@ the destination in `LIGHTSPEED_MCP_PRIVATE_NETWORKS`. Both controls must
 permit the connection.
 Private-network permission for an OAuth sign-in is separate and does not
 authorize tool-call egress. See the
-[environment-variable reference](../../variables.md) for operator settings.
+[environment-variable reference](../reference/environment-variables.md) for operator settings.
 
 ## Require approval for tool calls
 

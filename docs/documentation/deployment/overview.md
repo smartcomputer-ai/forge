@@ -18,7 +18,7 @@ roles when you need to scale or operate them independently.
 | Runtime PostgreSQL database | Session events, blobs, workspaces, credentials, profiles, bots, channels, and environment records | The hosted runtime |
 | Platform server and web app | Sign-in, users, memberships, universe management, and browser access to the runtime | The full web product |
 | Platform PostgreSQL database | Authentication and Platform-owned records | The Platform |
-| S3-compatible object storage | Storage for larger blobs when configured | Optional; blobs can remain in PostgreSQL |
+| S3-compatible object storage | Stores blobs larger than the 64 KiB inline limit | Required for larger payloads; small blobs remain in PostgreSQL |
 | Configurator MCP | Exposes Lightspeed management operations to an MCP client | Managing Lightspeed through MCP |
 | Connector host | Telegram and WhatsApp transport connections | Those chat channels |
 | Environment daemon and providers | Filesystem/process access and, with a provider, machine lifecycle | Agent tasks requiring compute |
@@ -48,8 +48,8 @@ proxy must preserve that distinction.
 ## Choose the client and authentication boundary
 
 For the full web product, run the runtime in `trusted-header` mode. The
-Platform authenticates the user, checks access, and supplies the universe and
-principal headers. Those headers are trusted because the caller is the
+Platform authenticates the user, checks access, and supplies the universe
+header. That header is trusted because the caller is the
 Platform. Exposing that runtime's `/rpc` endpoint directly would let untrusted
 callers choose tenant headers and invoke deployment-level operator methods.
 Operator calls are available without a universe header on this listener.
@@ -60,14 +60,14 @@ without the Platform. The available gateway modes are:
 
 | Mode | How requests are scoped | Deployment use |
 | --- | --- | --- |
-| `trusted-header` | An authenticating upstream supplies universe and principal headers | Platform or a custom trusted management plane |
+| `trusted-header` | An authenticating upstream supplies a universe header and optional principal | Platform or a custom trusted management plane |
 | `api-key` | A Lightspeed bearer key identifies a universe and principal | Direct API clients; operator methods are unavailable on this listener |
 | `single` | One configured universe serves all requests | Local development or a separately protected dedicated deployment |
 
 Each universe isolates its resources from other universes. Runtime API keys
 and tenant scoping do not add per-user resource policy inside a universe. The
-[authentication guide](../../multi-tenancy.md) describes this boundary in
-detail.
+[access guide](authentication-and-tenancy.md) explains setup and permissions;
+[Multitenancy](multi-tenancy.md) describes isolation and shared infrastructure.
 
 ## Runtime roles and scaling
 
@@ -109,10 +109,15 @@ processes have a separate lifecycle from these stores.
 The [self-hosting guide](self-hosting.md) installs the full web product on one
 Linux x86_64 application host, using release images built from a pinned source
 revision and existing PostgreSQL and Temporal services. It uses PostgreSQL
-for blobs initially and leaves external integrations and compute as optional
-additions.
+for blobs up to 64 KiB initially. Configure object storage before using larger
+payloads. External integrations and compute can be added as needed.
 
 That is a single application-host topology. High availability also requires
 planning the infrastructure, public edge, and the current singleton
 environment gateway. The local `dev.sh` stack has different defaults and is
 intended for development.
+
+Continue with [Configuration](configuration.md) for service settings,
+[Operations](operations.md) for monitoring and scaling, and
+[Upgrades and recovery](upgrades-and-recovery.md) for maintenance. Use
+[Troubleshooting](troubleshooting.md) to follow failures across components.

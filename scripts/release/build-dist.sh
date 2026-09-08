@@ -42,6 +42,7 @@ cp crates/api/contract/api.schema.json crates/api/contract/methods.json \
 
 npm ci
 npm run build
+npm run build:docs
 
 # The publishable client and Configurator retain standalone lockfiles. Prime
 # npm's cache from those exact locks before their staged installs go offline;
@@ -81,9 +82,7 @@ for spec in \
     -C "$dist_dir/bin" -czf "$dist_dir/archives/$archive" "$binary"
 done
 
-demo_archive="lightspeed-demo-${version}.tar.gz"
-tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner \
-  -C platform/web/dist-demo -czf "$dist_dir/archives/$demo_archive" .
+scripts/release/stage-static-sites.sh "$dist_dir"
 
 scripts/release/create-sbom.mjs "$version" "$git_sha"
 scripts/release/create-manifest.mjs "$version" "$git_sha"

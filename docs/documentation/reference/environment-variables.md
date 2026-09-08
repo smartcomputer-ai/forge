@@ -6,6 +6,9 @@ release automation. Variables are grouped by the component that owns them so
 deployment configuration does not accidentally mix the Rust runtime with the
 TypeScript Platform plane.
 
+For configuration choices and examples, read
+[Configure a deployment](../deployment/configuration.md).
+
 Unless stated otherwise, an unset variable uses the listed default. A variable
 marked **required** must be non-empty for the relevant component or role.
 Secrets should be supplied by the deployment secret manager and must not be
@@ -95,9 +98,10 @@ provider credential.
 
 ### Object storage
 
-Object storage is optional. If any `LIGHTSPEED_OBJECT_STORE_*` variable is set,
-`LIGHTSPEED_OBJECT_STORE_BUCKET` becomes required. Without this group, blobs
-remain in PostgreSQL-backed storage.
+If any `LIGHTSPEED_OBJECT_STORE_*` variable is set,
+`LIGHTSPEED_OBJECT_STORE_BUCKET` becomes required. Blobs up to 64 KiB remain
+inline in PostgreSQL; larger blobs require object storage. Without this group,
+writes above that inline limit fail.
 
 | Variable | Requirement/default | Purpose |
 | --- | --- | --- |
@@ -185,7 +189,7 @@ from the environment of each process and job the daemon starts.
 | `LIGHTSPEED_ENVD_CA_FILE` | Unset | PEM bundle of additional TLS trust anchors for a gateway behind a private CA. |
 | `LIGHTSPEED_ENVD_CWD` | Current directory | Default working directory exposed to jobs. |
 | `LIGHTSPEED_ENVD_FS_ROOT` | Native filesystem root containing the working directory | Filesystem boundary exposed by the daemon. |
-| `LIGHTSPEED_ENVD_STATE_DIR` | `<cwd>/.lightspeed-envd` | Durable daemon state directory; relative paths resolve under the working directory. Holds the daemon key (`daemon-key`, mode `0600`): keep it on storage that survives the restarts the environment should survive, delete it to register as a new environment. |
+| `LIGHTSPEED_ENVD_STATE_DIR` | `<cwd>/.lightspeed-envd` | Durable daemon state directory; relative paths resolve under the working directory. Holds the daemon key (`daemon-key`, mode `0600`) and persisted job records/output. Keep it on storage that survives the intended restarts. Deleting identity state causes a new registration and does not clean up the old environment; deleting the directory also removes its job history. |
 
 Identity mode (persistent or ephemeral) is not daemon configuration: it is
 the registration key's policy, minted with
@@ -281,7 +285,7 @@ must run in `trusted-header` (or `single`) auth mode.
 | `LIGHTSPEED_CONNECTOR_WHATSAPP_AUTH_DIR` | **Required when WhatsApp is served** | Root directory of the Baileys session state; each account uses `<dir>/<universeId>/<accountId>`. |
 | `LIGHTSPEED_CONNECTOR_WHATSAPP_MEDIA_LOCATOR_KEY` | **Required when WhatsApp is served** | Base64-encoded 32-byte key sealing WhatsApp media locators in inbound envelopes. Keep stable across restarts. |
 | `LIGHTSPEED_CONNECTOR_HEALTH_HOST` | `0.0.0.0` | Bind host of the host's `/healthz`, `/readyz`, and `/metrics` listener. |
-| `LIGHTSPEED_CONNECTOR_HEALTH_PORT` | `8090` | Port of that listener; `/readyz` is 200 only when discovery succeeded and every served account is ready. |
+| `LIGHTSPEED_CONNECTOR_HEALTH_PORT` | `8090` | Port of that listener; `/readyz` is 200 after at least one successful discovery and while every currently served account is ready. Zero accounts qualifies; there is no discovery-freshness deadline. |
 | `LIGHTSPEED_CONNECTOR_METRICS_HOST` | `0.0.0.0` | Temporal Prometheus exporter host. |
 | `LIGHTSPEED_CONNECTOR_METRICS_PORT` | `9090` | Temporal Prometheus exporter port, shared by every per-account worker in the process. |
 
@@ -420,6 +424,7 @@ them on services.
 | `LIGHTSPEED_BINARY_URL_ENVD` | Published environment-daemon archive URL. |
 | `LIGHTSPEED_BINARY_URL_CLI` | Published CLI archive URL. |
 | `LIGHTSPEED_ARTIFACT_URL_DEMO` | Published static demo archive URL recorded in the manifest. |
+| `LIGHTSPEED_ARTIFACT_URL_DOCS` | Published static documentation archive URL recorded in the manifest. |
 | `LIGHTSPEED_RELEASE_CHANNEL` | `release` for a tagged build, `main` (default) for a snapshot; recorded in the envd discovery document (`envd.json`). |
 | `LIGHTSPEED_ENVD_PUBLIC_URL_BASE` | HTTPS base under which the envd archives are downloadable without credentials (a tag's GitHub release assets); unset for snapshots, whose discovery document then carries `null` URLs for the serving deployment to fill in. |
 | `LIGHTSPEED_ENVD_TARGETS` | Comma-separated envd targets this release publishes, baked into the server so `initialize` can report them; a local build reports its own target. |

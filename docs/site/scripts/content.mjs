@@ -16,7 +16,6 @@ export const repositoryUrl = 'https://github.com/smartcomputer-ai/lightspeed';
 
 // These pages are published from their existing authoritative sources.
 export const references = [
-  { source: 'docs/variables.md', slug: 'reference/environment-variables' },
   { source: 'crates/api/contract/api-reference.md', slug: 'reference/api' },
   { source: 'crates/temporal-workflow/contract/workflow-contract.md', slug: 'reference/workflow-contract' },
 ];

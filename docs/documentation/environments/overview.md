@@ -148,5 +148,5 @@ Then continue through the task guides:
   publish applications through the supported provider edge.
 
 The [environment protocol](../../../crates/environment-protocol/src/lib.rs) and
-[environment-variable reference](../../variables.md#environment-services)
+[environment-variable reference](../reference/environment-variables.md#environment-services)
 define the interfaces and settings.

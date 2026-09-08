@@ -32,11 +32,12 @@ Add completed pages to the sidebar in `astro.config.mjs`. Keep implementation
 roadmaps and unfinished placeholders outside the published manual. The home
 page's four reading-path cards are in `src/components/MarkdownContent.astro`.
 
-Three references are included directly from their authoritative sources:
+The environment-variable reference lives in the manual. Two generated
+references are included directly from their authoritative sources:
 
 | Published route | Source |
 | --- | --- |
-| `/docs/reference/environment-variables/` | `docs/variables.md` |
+| `/docs/reference/environment-variables/` | `docs/documentation/reference/environment-variables.md` |
 | `/docs/reference/api/` | `crates/api/contract/api-reference.md` |
 | `/docs/reference/workflow-contract/` | `crates/temporal-workflow/contract/workflow-contract.md` |
 
@@ -79,9 +80,27 @@ cookie versions used by Express and React Router.
 
 ## CI and hosting
 
-`.github/workflows/docs.yml` checks the site independently of Rust builds and
-product deployment. `check:docs` is intentionally separate from the root
-product `check` command; the adapter unit tests also run with the workspace tests.
+The `docs` job in `.github/workflows/ci.yml` runs when the published manual,
+site, images, included references, or shared build inputs change. The shared
+`required` gate waits for every selected suite. `check:docs` is separate from
+the root product `check` command; `npm test` still runs all workspace tests,
+while the consumer CI job uses `test:consumers` to exclude docs tests.
+
+Every main snapshot and tagged release builds the site alongside the product
+and packages `docs/site/dist/` as `lightspeed-docs-<version>.tar.gz`. The archive
+has `index.html` at its root and includes pages, CSS, JavaScript, fonts, images,
+licenses, Pagefind search, the sitemap, and `404.html`. It contains no source
+workspace or server runtime. The release manifest's `artifacts.docs` entry
+records its filename, SHA-256 checksum, `/docs/` base path, and immutable
+`oci://.../docs-bundle@sha256:...` location. It is also included in the overall
+release bundle, checksums, and build provenance. Tagged releases publish the
+archive on GitHub and assign `docs-bundle:<version>` in the registry.
+
+The existing main-build notification sends the release-bundle digest. A
+deployment can read `artifacts.docs` from that manifest and install the bundled
+archive or fetch its exact OCI reference. No separate docs notification is
+required. Docs-only main pushes run the selected docs checks and then publish
+a complete snapshot, so documentation corrections reach the same build stream.
 
 The output directory is the document root for `https://ls.bot/docs/`:
 `dist/index.html` serves `/docs/`, not `/docs/docs/`. Configure Caddy to strip the
@@ -91,5 +110,5 @@ Assets and search URLs already include `/docs/`. Add the docs sitemap to the
 origin's existing `robots.txt` when publishing.
 
 The manual is labeled **Current development** and records its source Git SHA
-in page metadata. Bundle publication, the deployment installer, and the public
-Caddy route are the next deployment step. The build here does not deploy it.
+in page metadata. The deployment installer and public Caddy route remain work
+for the infrastructure repository. Publishing these resources does not deploy them.

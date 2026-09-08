@@ -6,8 +6,11 @@ coherent set of release images from one source revision, keeps the runtime API
 private, and exposes the web app through your HTTPS reverse proxy.
 
 The [deployment overview](overview.md) explains the component boundaries.
-This recipe initially stores blobs in PostgreSQL. Object storage, chat
-connectors, Configurator MCP, and execution environments can be added afterward.
+This recipe initially stores small blobs in PostgreSQL. The current inline
+limit is 64 KiB per blob; larger writes require S3-compatible object storage.
+Use the small-text verification below, then configure object storage before
+using larger files, attachments, or payloads. Chat connectors, Configurator
+MCP, and execution environments can be added afterward.
 
 ## Prepare the infrastructure
 
@@ -132,10 +135,12 @@ URL keeps worker-to-environment traffic on the Docker network. Both values
 are needed here because the public proxy will expose only selected runtime
 routes.
 
-Leave all `LIGHTSPEED_OBJECT_STORE_*` settings absent to keep blobs in
-PostgreSQL. Even setting part of that configuration to an empty value can
-activate object-store configuration and require a bucket. Add the complete
-group later if you choose S3-compatible storage.
+Leave all `LIGHTSPEED_OBJECT_STORE_*` settings absent for the initial small-blob
+PostgreSQL setup. Writes above 64 KiB fail without object storage. Even setting
+part of that configuration to an empty value can activate object-store
+configuration and require a bucket. Follow
+[Choose the blob backend](configuration.md#choose-the-blob-backend) to add the
+complete S3-compatible configuration.
 
 Edit `platform.env`:
 
@@ -304,16 +309,14 @@ docker logs --tail 100 lightspeed-platform
 | Model calls fail | The universe's provider credential and the session's selected model |
 | A daemon connects but process calls cannot route | The two public WebSocket paths, internal environment gateway URL/token, and the single environment-gateway process |
 
-Before an upgrade, read the target release's compatibility notes and back up
-the runtime database, Platform database, Temporal persistence, secrets, and any
-configured object storage. Build or obtain both application images from that
-same release. Stop the old application containers during this single-host
-upgrade, apply the new runtime migrations, and recreate the containers with
-the new images and retained configuration. Platform migrations run when its
-new container starts.
+Use [Operations](operations.md) for monitoring, role scaling, and retention,
+and [Troubleshooting](troubleshooting.md) for a failing request path.
+[Upgrades and recovery](upgrades-and-recovery.md) gives the maintenance
+procedure and the complete recovery inventory, including optional connector
+and machine state.
 
-Do not assume an older image can use a newly migrated database. Schema
-compatibility and any recovery procedure belong to the specific release.
-The [release guide](../../releasing.md) explains migration handling; the
-[configuration reference](../../variables.md) lists settings for adding
-storage, connectors, Configurator MCP, and separate worker roles.
+[Authentication and access](authentication-and-tenancy.md) covers accounts and
+client keys; [Multitenancy](multi-tenancy.md) explains universe isolation and
+retirement. [Configuration](configuration.md) explains deployment choices,
+with exact settings in the
+[environment-variable reference](../reference/environment-variables.md).

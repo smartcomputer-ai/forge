@@ -136,4 +136,4 @@ guide erase local state; they are for deliberately starting over.
 Continue with [Build your first agent](first-agent.md) to give the agent a
 reusable profile and a workspace it can edit. For local profiles, ports, and
 configuration options, see the [development guide](../../../scripts/dev/README.md)
-and [environment-variable reference](../../variables.md).
+and [environment-variable reference](../reference/environment-variables.md).

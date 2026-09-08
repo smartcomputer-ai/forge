@@ -11,14 +11,14 @@ function fixture(t) {
   const root = mkdtempSync(join(tmpdir(), 'lightspeed-docs-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   for (const file of ['docs/documentation/index.md', 'docs/documentation/guide/start.md',
-    'docs/variables.md', 'crates/protocol/src/lib.rs', 'docs/images/agent.png']) {
+    'docs/documentation/reference/environment-variables.md', 'crates/protocol/src/lib.rs', 'docs/images/agent.png']) {
     mkdirSync(dirname(join(root, file)), { recursive: true });
     writeFileSync(join(root, file), 'fixture');
   }
   const pages = [
     { source: 'docs/documentation/index.md', slug: '' },
     { source: 'docs/documentation/guide/start.md', slug: 'guide/start' },
-    { source: 'docs/variables.md', slug: 'reference/environment-variables' },
+    { source: 'docs/documentation/reference/environment-variables.md', slug: 'reference/environment-variables' },
   ];
   return { root, pages, page: pages[0] };
 }
@@ -26,7 +26,7 @@ function fixture(t) {
 test('manual and authoritative reference links resolve to published routes and preserve fragments', (t) => {
   const { root, pages, page } = fixture(t);
   assert.equal(resolveLink('guide/start.md#configure', page.source, pages, root), '/docs/guide/start/#configure');
-  assert.equal(resolveLink('../variables.md?view=all#runtime', page.source, pages, root), '/docs/reference/environment-variables/?view=all#runtime');
+  assert.equal(resolveLink('reference/environment-variables.md?view=all#runtime', page.source, pages, root), '/docs/reference/environment-variables/?view=all#runtime');
   assert.equal(resolveLink('../index.md', pages[1].source, pages, root), '/docs/');
 });
 

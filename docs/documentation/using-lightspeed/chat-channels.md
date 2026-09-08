@@ -38,7 +38,7 @@ The connector host currently supports the core's `trusted-header` and
 `single` authentication modes. Discovery with a static set of per-universe
 API keys is not implemented. See the
 [connector host guide](../../../platform/connectors/README.md) and
-[connector variables](../../variables.md#connector-host) for deployment setup.
+[connector variables](../reference/environment-variables.md#connector-host) for deployment setup.
 
 ## Connect a Telegram account
 

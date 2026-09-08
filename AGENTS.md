@@ -14,7 +14,7 @@ Read only the material relevant to the change:
 - `docs/design.md` — deterministic core, context management, CAS, and Temporal
   runtime design.
 - `scripts/dev/README.md` — local stack, development profiles, and live tests.
-- `docs/variables.md` — authoritative environment-variable reference.
+- `docs/documentation/reference/environment-variables.md` — authoritative environment-variable reference.
 - `platform/README.md` — TypeScript management server, web UI, demo backend,
   connectors, and Configurator MCP.
 - `crates/api/contract/api-reference.md` — generated public API reference.

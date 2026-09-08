@@ -68,6 +68,12 @@ export default defineConfig({
         { label: 'Deployment', items: [
           { slug: 'deployment/overview' },
           { slug: 'deployment/self-hosting' },
+          { slug: 'deployment/authentication-and-tenancy' },
+          { slug: 'deployment/multi-tenancy' },
+          { slug: 'deployment/configuration' },
+          { slug: 'deployment/operations' },
+          { slug: 'deployment/upgrades-and-recovery' },
+          { slug: 'deployment/troubleshooting' },
         ] },
         { label: 'Reference', collapsed: true, items: [
           { label: 'JSON-RPC API', slug: 'reference/api' },

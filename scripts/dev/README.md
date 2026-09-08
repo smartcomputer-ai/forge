@@ -5,7 +5,7 @@ complete local development environment for Lightspeed: first-run checks,
 dependency bootstrap, Docker Compose topology, environment exports, lifecycle
 commands, and reset helpers for Postgres, pgAdmin, MinIO, and Temporal.
 
-See [`docs/variables.md`](../../docs/variables.md#local-development) for the full
+See [environment-variable reference](../../docs/documentation/reference/environment-variables.md#local-development) for the full
 development override table and the separate production component variables.
 
 ## Services

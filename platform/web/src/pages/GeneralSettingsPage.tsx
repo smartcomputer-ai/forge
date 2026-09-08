@@ -151,8 +151,8 @@ function DangerZone({ universe }: { universe: Universe }) {
       <CardHeader>
         <CardTitle className="text-destructive">Danger zone</CardTitle>
         <CardDescription>
-          Archiving detaches every chat immediately — Channels stops routing to
-          this universe. Data is kept and the universe can be restored.
+          Archiving hides this universe from the switcher and keeps its data.
+          Bots, chats, and API access remain active until you stop them separately.
         </CardDescription>
       </CardHeader>
       <CardFooter>
@@ -169,8 +169,8 @@ function DangerZone({ universe }: { universe: Universe }) {
               <AlertDialogHeader>
                 <AlertDialogTitle>Archive {universe.name}?</AlertDialogTitle>
                 <AlertDialogDescription>
-                  All bots stop firing and paired chats go silent until the
-                  universe is restored.
+                  The universe will be hidden from the switcher. This does not
+                  stop bots or chats, revoke API keys, or block existing access.
                 </AlertDialogDescription>
               </AlertDialogHeader>
               <AlertDialogFooter>

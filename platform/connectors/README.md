@@ -51,7 +51,7 @@ implemented yet.
 
 ## Configuration
 
-See the "Connector host" section of [`docs/variables.md`](../../docs/variables.md).
+See the "Connector host" section of [environment-variable reference](../../docs/documentation/reference/environment-variables.md).
 The minimum is `LIGHTSPEED_API_URL`; WhatsApp additionally needs
 `LIGHTSPEED_CONNECTOR_WHATSAPP_AUTH_DIR` and
 `LIGHTSPEED_CONNECTOR_WHATSAPP_MEDIA_LOCATOR_KEY`.

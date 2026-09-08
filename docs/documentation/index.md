@@ -68,9 +68,23 @@ Platform, databases, Temporal, and the public/private network boundary.
 product using release images built from a pinned source revision and existing
 durable infrastructure.
 
-The [environment-variable reference](../variables.md) provides exact settings,
-and the [authentication guide](../multi-tenancy.md) explains universe isolation
-and gateway modes.
+Continue with these deployment guides:
+
+- [Authentication and access](deployment/authentication-and-tenancy.md):
+  configure gateway modes, create accounts, assign roles, and issue client keys.
+- [Multitenancy](deployment/multi-tenancy.md): understand universe isolation,
+  shared infrastructure, and tenant retirement.
+- [Configuration](deployment/configuration.md): connect service settings,
+  storage, secrets, and public/private URLs.
+- [Operations](deployment/operations.md): observe useful work, scale roles,
+  and manage retention.
+- [Upgrades and recovery](deployment/upgrades-and-recovery.md): prepare a
+  complete recovery set and update a coherent release.
+- [Troubleshooting](deployment/troubleshooting.md): trace a failure across
+  authentication, workers, models, compute, and chat delivery.
+
+The [environment-variable reference](reference/environment-variables.md)
+provides the exact names, defaults, and requirements for each component.
 
 ## Build with Lightspeed
 

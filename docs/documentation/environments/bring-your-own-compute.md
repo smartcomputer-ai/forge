@@ -215,4 +215,4 @@ the runtime and daemon run on the same host; in a container deployment,
 Continue with [Using environments](using-environments.md) for profiles and
 sharing, then [Processes and jobs](processes-and-jobs.md) for a complete
 execution example. Detailed daemon settings are in the
-[configuration reference](../../variables.md#environment-daemon).
+[configuration reference](../reference/environment-variables.md#environment-daemon).

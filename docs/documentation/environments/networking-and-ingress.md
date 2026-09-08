@@ -231,6 +231,6 @@ response and the environment's endpoint fields.
 | The public endpoint returns 502 | Check the edge's Incus lookup and connectivity to the application on the approved guest port. |
 | HTTP works but WebSockets or long responses fail | Check upgrades, streaming, and timeouts at the deployment TLS proxy. |
 
-The [environment-variable reference](../../variables.md#environment-services)
+The [environment-variable reference](../reference/environment-variables.md#environment-services)
 and [Incus provider guide](../../../crates/environment-provider-incus/README.md)
 hold the exact deployment configuration surfaces.

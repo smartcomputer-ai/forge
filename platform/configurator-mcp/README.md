@@ -32,7 +32,7 @@ The default endpoints are:
 Configuration:
 
 The central reference is
-[`docs/variables.md`](../../docs/variables.md#configurator-mcp); the table below
+[environment-variable reference](../../docs/documentation/reference/environment-variables.md#configurator-mcp); the table below
 is kept here for service-local convenience.
 
 | Variable | Default | Purpose |

@@ -3,9 +3,9 @@
 Lightspeed owns and publishes a coherent release containing the hosted runtime,
 the Incus provider, envd, the CLI, Configurator MCP, the platform server/web
 image, the connector-host image (published as `platform-workers`), the generated
-TypeScript client, the static in-browser demo, API contracts, checksums, an
-SPDX SBOM, and a release manifest. A consumer should pin one manifest rather
-than selecting components separately.
+TypeScript client, the static in-browser demo and documentation site, API
+contracts, checksums, an SPDX SBOM, and a release manifest. A consumer should
+pin one manifest rather than selecting components separately.
 
 ## Database migrations
 
@@ -27,9 +27,10 @@ diagnostic when migration is required.
 An existing Lightspeed schema without ledger entries is never baselined
 automatically. By default, both startup verification and `migrate` fail and
 list the recognized tables. Upgrading such a pre-ledger database requires an
-explicit, validated adoption procedure; until one exists, reset the full
-Lightspeed schema or database before applying the embedded migrations.
-Resetting only the environment tables is insufficient.
+explicit, validated adoption procedure. Preserve databases with valuable data
+until that path has been established. For disposable development installations,
+reset the full Lightspeed schema or database before applying the embedded
+migrations; resetting only the environment tables is insufficient.
 
 Deployments that deliberately provision the Lightspeed tables through an
 external schema-management system can set:
@@ -66,12 +67,14 @@ triggers, events, channel accounts, and pairings moved into the Rust core
 schema, so the platform database holds people and the universe mapping
 and nothing else. Keep that shape: a new area gets its own migration, and its
 tables live in their own `platform/db/src/schema/<area>.ts`. A rebase
-invalidates the Drizzle ledger of every existing database: either reset the
-database (`./dev.sh reset` for development) or replace the rows in
-`drizzle.__drizzle_migrations` with one row per journal entry (any hash,
-`created_at` = the entry's `when`) so only later migrations apply. A journal
-with a single entry passes the gate on the empty-install check alone; the
-upgrade check resumes with the next migration.
+invalidates the previous Drizzle ledger. A valuable existing database needs a
+validated migration/adoption procedure; replacing ledger rows by hand does not
+establish that its schema or data matches the baseline. Disposable development
+databases can be reset with `./dev.sh reset`. A journal with a single entry
+passes the gate on the empty-install check alone; the upgrade check resumes
+with the next migration. See
+[Upgrades and recovery](documentation/deployment/upgrades-and-recovery.md) for
+deployment maintenance and recovery requirements.
 
 ## Local release build
 
@@ -82,10 +85,19 @@ make release
 ```
 
 `make release-dist` compiles all Rust executables in one Cargo invocation,
-builds the generated client, Configurator, and web UI, and produces `dist/`.
+builds the generated client, Configurator, web UI, and documentation site, and
+produces `dist/`.
 The demo build is packaged as a target-independent static archive whose files
 are served under `/demo/` with an `index.html` fallback; it is not included in
 the Platform image.
+
+The documentation build is packaged as `lightspeed-docs-<version>.tar.gz` with
+the contents of `docs/site/dist/` at its root. It contains the HTML pages,
+styles, scripts, fonts, images, licenses, Pagefind search index, sitemap, and
+static 404 page. Serve it under `/docs/`, stripping that prefix when looking
+up files, with directory indexes and a real 404 response for unknown paths.
+It requires no application runtime and is not included in the Platform image.
+
 The same root lockfile deterministically stages the platform and connector-host
 runtime payloads. `make release-images` copies those prebuilt files into the
 `runtime`, Configurator, platform, and `platform-workers` images; it does not
@@ -124,8 +136,12 @@ version, full source commit, target, and Rust version through `--version`.
   the live migration-ledger acceptance test. TypeScript/contract inputs run
   every generated consumer, all platform unit tests, the Channels Temporal
   integration suite, and the platform empty-install/upgrade migration gate.
-  Build, release, and workflow changes run both suites; documentation-only
-  changes run only the lightweight required gate. CI publishes nothing.
+  Published manual, site, asset, and included reference changes run the docs
+  adapter tests, Astro diagnostics, and a static build with link and asset
+  validation. Shared dependency changes also select docs; build, release,
+  workflow, and unclassified inputs select all suites. Internal prose selects
+  only the lightweight required gate. The root consumer checks exclude docs
+  tests so unrelated platform changes do not run them. CI publishes nothing.
 - `.github/workflows/macos.yml` provides a manual native Apple Silicon
   compile/`--version` smoke test. Published standalone archives remain
   Linux-only in the first cut; macOS development uses `cargo run`.
@@ -134,7 +150,8 @@ version, full source commit, target, and Rust version through `--version`.
   `.github/workflows/snapshot-main.yml`, which checks out that exact tested SHA,
   confirms that it is still the head of `origin/main`, and builds one coherent
   Linux artifact set on hz01 without repeating the CI test suite.
-  Documentation-only pushes do not start the `main` CI/snapshot chain.
+  Documentation-only pushes also start this chain: they skip unrelated CI
+  suites, then produce a complete snapshot including the updated manual.
 - Snapshot components are first published under a run-specific staging tag and
   recorded by digest in the manifest. After package, archive, manifest, image,
   checksum, and binary/image identity checks pass, the workflow rechecks the
@@ -142,6 +159,13 @@ version, full source commit, target, and Rust version through `--version`.
   public snapshot identity. Consumers resolve that tag once and follow only the
   digest-pinned component references in its manifest. A superseded or canceled
   run may leave staging objects but cannot expose a complete snapshot.
+- Every snapshot and tagged release includes `artifacts.docs` in the release
+  manifest, with `file`, archive `sha256`, `basePath: "/docs/"`, and a
+  digest-pinned `oci://.../docs-bundle@sha256:...` URL. The docs archive also
+  ships inside the release bundle and is covered by checksums and build
+  provenance. Tagged releases publish it as a GitHub Release asset and assign
+  the `docs-bundle:<version>` alias. Documentation is built from the same
+  commit as the other release components even when its CI suite was skipped.
 - After every completed current-main snapshot, the workflow sends the private
   deployment repository a `lightspeed-main` repository dispatch containing the
   full Git SHA and exact release-bundle digest. Configure
@@ -150,6 +174,8 @@ version, full source commit, target, and Rust version through `--version`.
   repository named by the `LIGHTSPEED_DEPLOYMENT_REPOSITORY` GitHub variable.
   Until both values exist, snapshot publication succeeds with an explicit
   warning and an operator can dispatch the digest manually.
+  That same notification identifies the documentation through the bundle's
+  manifest; no separate docs notification or publication channel is needed.
 - A `v<product-version>` annotated tag on `main` triggers
   `.github/workflows/release-tag.yml`. It independently tests and builds the
   exact tagged commit, applies SemVer aliases from the manifest's exact

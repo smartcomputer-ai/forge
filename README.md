@@ -81,7 +81,7 @@ processes, applies migrations, and waits until the product is ready.
 
 For other development profiles, service addresses, resets, and live tests, see
 the [development environment guide](scripts/dev/README.md). See
-[docs/variables.md](docs/variables.md) for environment variables.
+[Environment variables](docs/documentation/reference/environment-variables.md) for environment variables.
 
 ## Features
 
@@ -187,7 +187,7 @@ retain session and bot content, while scans of up to 100,000 rows per universe,
 in small pages within a time budget, reclaim abandoned and released blobs.
 Profiles borrow CAS refs; use inline text or content retained by another durable
 resource. See [storage design](docs/design.md) and
-[configuration](docs/variables.md) for retention behavior.
+[configuration](docs/documentation/reference/environment-variables.md) for retention behavior.
 
 Context entries and run outputs share a content descriptor: the CAS reference
 and its encoding. Display text and citations are derived from the original
@@ -216,8 +216,8 @@ npm run check
   compute, and self-hosting
 - [Design](docs/design.md)
 - [Development environment](scripts/dev/README.md)
-- [Environment variables](docs/variables.md)
-- [Universes, tenant isolation, and gateway authentication](docs/multi-tenancy.md)
+- [Environment variables](docs/documentation/reference/environment-variables.md)
+- [Universes, tenant isolation, and gateway authentication](docs/documentation/deployment/multi-tenancy.md)
 - [JSON-RPC API reference](crates/api/contract/api-reference.md)
 - [Build and release](docs/releasing.md)
 - [Roadmap and design decisions](docs/roadmap/)
@@ -225,6 +225,9 @@ npm run check
 Preview the Starlight manual with `npm run dev:docs`, or build and validate it
 with `npm run check:docs`. See the [documentation site guide](docs/site/README.md)
 for authoring, styling, and static hosting at `/docs/`.
+Main snapshots and tagged releases include a static documentation archive,
+identified by `artifacts.docs` in the release manifest. Docs CI runs when the
+site's content, assets, references, or shared build inputs change.
 
 ## Contributing
 
