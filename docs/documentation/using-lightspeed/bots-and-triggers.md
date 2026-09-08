@@ -165,6 +165,11 @@ Activity shows the per-bot event number, kind, summary, routed session, and
 outcome. Expand an event for its ID and stored detail. The number identifies
 the event within this bot; it is not a model turn number.
 
+![PR Reviewer Activity view with a deferred event expanded to show its event ID, run, summary, and Replay this event button, above failed and handled events.](../images/bot-event-outcome.png)
+
+*The demo's PR Reviewer distinguishes a deferred decision from a failed run.
+Expanding an event reveals its stored outcome and replay action.*
+
 The agent can resolve an event as `handled`, `deferred`, `ignored`, or
 `blocked`, with a summary. Those are the agent's reported decisions. A
 `deferred` outcome does not schedule a retry automatically. An unresolved

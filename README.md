@@ -80,7 +80,7 @@ The launcher installs dependencies, starts local infrastructure and application
 processes, applies migrations, and waits until the product is ready.
 
 For other development profiles, service addresses, resets, and live tests, see
-the [development environment guide](scripts/dev/README.md). See
+the [local development guide](docs/documentation/development/local-development.md). See
 [Environment variables](docs/documentation/reference/environment-variables.md) for environment variables.
 
 ## Features
@@ -89,7 +89,7 @@ Lightspeed covers the table stakes of a modern agent harness. Everything below w
 
 **Models & providers**
 
-- [x] **OpenAI and Anthropic**: native support for reasoning, compaction, tools,
+- [x] **OpenAI and Anthropic**: support for reasoning, compaction, tools,
   files, images, OAuth, and multiple credentials
 - [x] **OpenAI-compatible providers**: OpenRouter, DeepSeek, vLLM, Ollama, and
   similar servers, each configured with its own endpoint and credential
@@ -186,7 +186,7 @@ CAS collection runs hourly with a seven-day default grace. Transactional roots
 retain session and bot content, while scans of up to 100,000 rows per universe,
 in small pages within a time budget, reclaim abandoned and released blobs.
 Profiles borrow CAS refs; use inline text or content retained by another durable
-resource. See [storage design](docs/design.md) and
+resource. See [context and storage](docs/documentation/how-it-works/context-and-storage.md) and
 [configuration](docs/documentation/reference/environment-variables.md) for retention behavior.
 
 Context entries and run outputs share a content descriptor: the CAS reference
@@ -197,7 +197,12 @@ output independently of active context. Tool payloads retain bounded previews
 and can be expanded through raw blob reads. Optional provenance links
 an entry to its source audio, prompt assembly report, or skill catalog.
 
-The full design walk-through is in [docs/design.md](docs/design.md).
+The [architecture walkthrough](docs/documentation/how-it-works/architecture.md)
+introduces the system. Continue with the
+[agent loop and durability](docs/documentation/how-it-works/agent-loop-and-durability.md),
+[context and storage](docs/documentation/how-it-works/context-and-storage.md), and
+[tools and controller workflows](docs/documentation/how-it-works/tools-and-controller-workflows.md)
+for the mechanisms and their limits.
 
 <p align="center">
   <img src="docs/images/readme-design-overview.svg" alt="Lightspeed architecture: clients reach a session workflow holding the deterministic core inside Temporal; thin effect intents and result refs cross to activities that talk to LLM providers and borrowed compute; both sides share a session log and CAS" width="750">
@@ -210,16 +215,20 @@ cargo test
 npm run check
 ```
 
+See [Testing and evaluation](docs/documentation/development/testing-and-evaluation.md)
+for focused checks, replay coverage, live-test prerequisites, and model evaluations.
+
 ## Documentation
 
 - [Product documentation](docs/documentation/index.md) — concepts, first agent,
   compute, and self-hosting
-- [Design](docs/design.md)
-- [Development environment](scripts/dev/README.md)
+- [Architecture and design](docs/documentation/how-it-works/architecture.md)
+- [Local development](docs/documentation/development/local-development.md)
+- [Changing contracts](docs/documentation/development/changing-contracts.md)
 - [Environment variables](docs/documentation/reference/environment-variables.md)
 - [Universes, tenant isolation, and gateway authentication](docs/documentation/deployment/multi-tenancy.md)
 - [JSON-RPC API reference](crates/api/contract/api-reference.md)
-- [Build and release](docs/releasing.md)
+- [Contributing and releasing](docs/documentation/development/contributing-and-releasing.md)
 - [Roadmap and design decisions](docs/roadmap/)
 
 Preview the Starlight manual with `npm run dev:docs`, or build and validate it
@@ -228,6 +237,8 @@ for authoring, styling, and static hosting at `/docs/`.
 Main snapshots and tagged releases include a static documentation archive,
 identified by `artifacts.docs` in the release manifest. Docs CI runs when the
 site's content, assets, references, or shared build inputs change.
+The site also exports per-page `.md` files and `/docs/llms.txt` for agents;
+these ship in the same documentation archive.
 
 ## Contributing
 

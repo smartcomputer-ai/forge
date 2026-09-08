@@ -103,6 +103,11 @@ Finish with a short assessment and the changes that need human review.
 Ask before editing either file.
 ```
 
+![Release notes workspace with .lightspeed/skills/release-review/SKILL.md selected in the file tree and its saved Markdown open in the editor.](../images/workspace-skill.png)
+
+*The walkthrough's skill file, entered in demo mode. The file tree shows its
+workspace-relative path; the instructions use session paths under `/workspace`.*
+
 Set **Skill roots** in the profile to `/workspace/.lightspeed/skills`, keeping
 readable file tools and the workspace link enabled. Save the profile and
 start a session from it. The resulting workspace layout is:

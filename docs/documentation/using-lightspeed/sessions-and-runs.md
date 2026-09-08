@@ -82,6 +82,11 @@ its **Arguments**, **Result**, **Error**, and any reported **Effects**. A final
 answer saying that a file was saved is useful, but the tool result and the file
 itself let you verify the operation.
 
+![Expanded tool activity showing a completed search command, Arguments and Result tabs, and the matching file and line in its result.](../images/session-tool-result.png)
+
+*Demo mode: an expanded tool call in “Fix flaky scheduler test.” The result
+shows what the command found; **Arguments** shows the submitted request.*
+
 Open the session title menu and choose **Show run statistics** to display
 usage and timing beneath completed runs. The context figure describes the
 last model request; cumulative token figures cover the run. These answer
@@ -120,13 +125,19 @@ session from the same profile.
 
 ## Continue from the CLI
 
-The CLI can open the same session as the web app. Build it from the repository:
+The CLI can open the same session as the web app. On Linux x86_64,
+[download the prebuilt CLI](../deployment/self-hosting.md#download-standalone-binaries)
+from the release matching your server. You can also build it from the repository:
 
 ```bash
 cargo build --locked -p cli
 ```
 
-For the full local stack from the quickstart, use its private runtime gateway
+The example below uses the source build's `target/debug/lightspeed`; replace
+that path with `./lightspeed` if you extracted the release binary into your
+current directory.
+
+For the development launcher stack from the quickstart, use its private runtime gateway
 and the universe UUID from **Settings → General → Identifiers → Lightspeed
 universe**:
 

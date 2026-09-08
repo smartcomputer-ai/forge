@@ -10,12 +10,17 @@ The distinction between the durable session and its compute runs through the
 product. You can start with a model and a conversation, add a workspace and a
 reusable profile, then connect machines or build bots as the work requires.
 
+![Lightspeed in dark mode, with universe navigation, a session list, and a conversation showing tool activity and a linked sub-agent.](images/welcome-session.png)
+
+*The Software Factory demo: a session investigates a flaky test, uses tools,
+and delegates an audit. The conversation and its work stay together in one place.*
+
 ## Try Lightspeed
 
 Begin with [Core concepts](getting-started/concepts.md) to understand sessions,
 runs, profiles, bots, workspaces, and environments. Then follow
-[Run Lightspeed locally](getting-started/quickstart.md) to start the product
-and configure a model.
+[Get started with Lightspeed](getting-started/quickstart.md) to choose a
+prebuilt Linux release or a local source checkout and configure a model.
 
 [Build your first agent](getting-started/first-agent.md) is a worked example:
 create a release-editor profile, give it source material, and inspect the
@@ -88,14 +93,49 @@ provides the exact names, defaults, and requirements for each component.
 
 ## Build with Lightspeed
 
-The [design walkthrough](../design.md) explains the deterministic core,
-provider-native context, storage, and workflow integration. Applications can
-use the [JSON-RPC API](../../crates/api/contract/api-reference.md) and
-[TypeScript client](../../clients/typescript/README.md). MCP clients can manage
-Lightspeed through [Configurator MCP](../../platform/configurator-mcp/README.md).
+Start with an integration path:
 
-For repository development, start with the
-[development guide](../../scripts/dev/README.md) and
-[contribution guide](../../CONTRIBUTING.md). The
-[build and release guide](../releasing.md) covers artifact construction and
-migration compatibility.
+- [API and TypeScript](integrating-and-extending/api-and-typescript.md): submit
+  a task, retry safely, follow events, and retrieve its result.
+- [Configurator MCP](integrating-and-extending/configurator-mcp.md): connect
+  an MCP client and manage resources in its authorized universe.
+- [Workflow tools](integrating-and-extending/workflow-tools.md): connect an
+  agent to durable receivers, started workflows, and lifecycle controllers.
+- [Custom tools and model providers](integrating-and-extending/custom-tools-and-model-providers.md):
+  choose an extension boundary and implement compiled capabilities when needed.
+- [Environment providers](integrating-and-extending/environment-providers.md):
+  supply managed compute through the public controller and data protocol.
+- [Channel connectors](integrating-and-extending/channel-connectors.md): add a
+  chat transport through account discovery, ingress, and connector activities.
+
+The [JSON-RPC reference](../../crates/api/contract/api-reference.md) and
+[workflow contract](../../crates/temporal-workflow/contract/workflow-contract.md)
+provide exact operation and payload details.
+
+## Understand how it works
+
+The design walkthrough develops the system from a deterministic agent loop
+into durable sessions, shared storage, and independent controllers:
+
+- [Architecture](how-it-works/architecture.md): the layers, their ownership,
+  and why the session harness is separate from compute.
+- [Agent loop and durability](how-it-works/agent-loop-and-durability.md):
+  admission, committed events, effects, the two histories, replay, and rollover.
+- [Context and storage](how-it-works/context-and-storage.md): provider-native
+  content, prompt assembly and caching, compaction, VFS, and blob retention.
+- [Tools and controller workflows](how-it-works/tools-and-controller-workflows.md):
+  tool identity, durable results, lifecycle ownership, bots, channels, and delegation.
+
+## Develop Lightspeed
+
+The development guides take a repository change from the local edit loop
+through validation, contract generation, and release construction:
+
+- [Local development](development/local-development.md): choose launcher
+  profiles, find the owning code, edit and restart processes, and preview docs.
+- [Testing and evaluation](development/testing-and-evaluation.md): choose
+  focused tests, establish replay behavior, run live suites, and evaluate models.
+- [Changing contracts](development/changing-contracts.md): update API and
+  workflow consumers, preserve compatibility, and author database migrations.
+- [Contributing and releasing](development/contributing-and-releasing.md):
+  prepare a contribution and understand CI, packaging, snapshots, and publication.

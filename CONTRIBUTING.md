@@ -2,6 +2,12 @@
 
 Thank you for your interest in contributing!
 
+Start with [Local development](docs/documentation/development/local-development.md)
+for setup and edit loops. The
+[contributor guide](docs/documentation/development/contributing-and-releasing.md)
+connects testing, contract changes, CI, and releases; the contribution and DCO
+policy below applies to each pull request.
+
 ## How to Contribute
 1. Fork the repository and create a topic branch.
 2. Make changes in line with the coding style and determinism rules
@@ -23,4 +29,3 @@ By contributing, you certify that:
 
 Include a `Signed-off-by:` line in each commit message using  
 `git commit -s`.
-

@@ -1,8 +1,9 @@
 # Product documentation structure
 
-Status: twenty-eight product pages and the authoritative environment-variable
-reference are present under `docs/documentation/`, including the initial usage,
-environment, and deployment sections. The remaining page scopes are planned.
+Status: the initial getting-started, usage, environment, deployment,
+integration/extension, internals, and development guides are drafted under
+`docs/documentation/`, alongside the authoritative environment-variable
+reference. The remaining reference page scopes are planned.
 Astro Starlight is set up in `docs/site/` and renders the authored manual plus
 two generated reference pages for hosting at `https://ls.bot/docs/`. Public deployment remains to be connected in
 the infrastructure repository.
@@ -31,7 +32,7 @@ docs/documentation/
 │
 ├── getting-started/
 │   ├── concepts.md                       # Universes, sessions, runs, profiles, bots, workspaces, environments
-│   ├── quickstart.md                     # Prerequisites → local stack → sign in → configure a model
+│   ├── quickstart.md                     # Release or source setup → sign in → configure a model
 │   └── first-agent.md                    # Complete one task; inspect its tools, output, and persisted session
 │
 ├── using-lightspeed/
@@ -116,9 +117,10 @@ The most important Lightspeed-specific boundaries to preserve in the writing:
 - **MCP in both directions:** using an MCP server as an agent tool belongs in
   the usage guide. Controlling Lightspeed through Configurator MCP belongs in
   the integration guide.
-- **Local setup and deployment:** the quickstart uses `dev.sh`; self-hosting
-  explains release artifacts, services, credentials, migrations, and network
-  exposure. Release construction belongs in development.
+- **Local setup and deployment:** the quickstart leads with prebuilt Linux
+  releases and offers `dev.sh` for local development. Self-hosting explains
+  downloading matching images and binaries, services, credentials, migrations,
+  and network exposure. Release construction belongs in development.
 - **Configuration guidance and exact fields:** task pages explain choices and
   use small examples. Reference owns exhaustive settings and schemas.
 
@@ -138,13 +140,13 @@ supported behavior.
 | Proposed area | Existing material to use |
 | --- | --- |
 | Introduction and getting started | [Product overview and capabilities](../../README.md), [development launcher guide](../../scripts/dev/README.md), [Platform and web app](../../platform/README.md), and [launcher implementation](../../scripts/dev/stack.mjs). |
-| Sessions, models, profiles, workspaces, skills | [Client boundary and capability model](../design.md), [public API reference](../../crates/api/contract/api-reference.md), [profile DTOs](../../crates/api/src/profiles.rs), [session UI](../../platform/web/src/pages/SessionsPage.tsx), [CLI commands](../../crates/cli/src/main.rs), and [skill implementation](../../crates/tools/src/skills/mod.rs). |
+| Sessions, models, profiles, workspaces, skills | [Context and client views](../documentation/how-it-works/context-and-storage.md), [public API reference](../../crates/api/contract/api-reference.md), [profile DTOs](../../crates/api/src/profiles.rs), [session UI](../../platform/web/src/pages/SessionsPage.tsx), [CLI commands](../../crates/cli/src/main.rs), and [skill implementation](../../crates/tools/src/skills/mod.rs). |
 | MCP and provider credentials | [Auth guide](../../crates/auth/README.md), [MCP approvals](archive/p144-mcp-approvals.md), [native MCP execution](archive/p145-native-mcp-execution.md), and [MCP discovery and tool search](archive/p150-scalable-mcp-discovery-and-tool-search.md). |
 | Bots, delegation, federation, and channels | [Bots design and implementation history](archive/p130-bots.md), [sub-agent design](archive/p134-subagents.md), [bot federation](archive/p135-bot-federation.md), [channels as bot triggers](archive/p139-channels-as-bot-triggers.md), [bot lifecycle and environments](archive/p140-bot-environments-and-bot-lifecycle.md), [Bots domain](../../crates/bots/src/lib.rs), and [connector host guide](../../platform/connectors/README.md). |
 | Environments | [Environment guide](../documentation/environments/overview.md), [Incus provider guide](../../crates/environment-provider-incus/README.md), [outbound daemon registration](archive/p148-key-based-outbound-environment-registration.md), [profile provisioning](archive/p125-profile-provisioned-environments.md), and [environment API types](../../crates/api/src/environments.rs). |
 | Deployment and operation | [Build and release](../releasing.md), [release manifest schema](../../release/release-manifest.schema.json), [environment variables](../documentation/reference/environment-variables.md), [tenant isolation](../documentation/deployment/multi-tenancy.md), [Platform guide](../../platform/README.md), and [runtime role instructions](../../scripts/dev/README.md#manual-runtime-roles). |
 | Integration and extension | [TypeScript client guide](../../clients/typescript/README.md), [Configurator MCP guide](../../platform/configurator-mcp/README.md), [workflow contract](../../crates/temporal-workflow/contract/workflow-contract.md), [environment protocol](../../crates/environment-protocol/src/lib.rs), [tool packages](../../crates/tools/src/lib.rs), and [LLM clients](../../crates/llm-clients/README.md). |
-| How it works | [Design walkthrough](../design.md), [engine guide](../../crates/engine/README.md), [environment guide](../documentation/environments/overview.md), and the bot/channel/delegation designs above. |
+| How it works | [Architecture walkthrough](../documentation/how-it-works/architecture.md), [engine guide](../../crates/engine/README.md), [environment guide](../documentation/environments/overview.md), and the bot/channel/delegation designs above. |
 | Development and reference | [Repository contribution guidance](../../AGENTS.md), [contribution policy](../../CONTRIBUTING.md), [development guide](../../scripts/dev/README.md), [evaluation harness](../../crates/eval/README.md), [API exporter](../../crates/api/src/bin/export-schema.rs), [workflow exporter](../../crates/temporal-workflow/src/bin/export-workflow-contract.rs), and [profile configuration reference generator](../../platform/scripts/generate-config-reference.mjs). |
 
 ## Implementation progress
@@ -268,6 +270,112 @@ verification. Sub-agents researched and reviewed the six guides against current
 code. No live deployment, migration, backup/restore, model call, or external
 integration was executed as part of this writing batch.
 
+The fifth writing batch adds the integration and extension guides:
+
+- [API and TypeScript](../documentation/integrating-and-extending/api-and-typescript.md)
+- [Configurator MCP](../documentation/integrating-and-extending/configurator-mcp.md)
+- [Workflow tools](../documentation/integrating-and-extending/workflow-tools.md)
+- [Custom tools and model providers](../documentation/integrating-and-extending/custom-tools-and-model-providers.md)
+- [Environment providers](../documentation/integrating-and-extending/environment-providers.md)
+- [Channel connectors](../documentation/integrating-and-extending/channel-connectors.md)
+
+The API example continues Acorn release work with explicit retry identity,
+event observation, and terminal output. The workflow example stores real
+schema/recipe bytes, declares a started review tool, and demonstrates the
+custom workflow's reply and recovery query. The guides distinguish ordinary
+MCP calls, durable workflow tools, and compiled tool/native-model changes;
+provider and connector chapters use their actual protocol boundaries.
+
+Sub-agent source reviews cover immutable workflow declarations, completion
+modes, cancellation and recovery limits, provider ownership, capabilities,
+channel activity contracts, and credential boundaries. The index/sidebar and
+component entry links include the new guides. Old client examples no longer
+send the removed session `cwd` field, and connector authentication guidance
+now correctly requires the shipped host's trusted-header gateway path.
+
+Fifth-batch verification passed: the docs workspace's nine adapter tests,
+Astro diagnostics, and production HTML/Markdown export checks validate the
+current published set, including links, anchors, assets, search, diagrams, and
+`llms.txt`. All 62 Bash blocks pass syntax checks and all seventeen JSON blocks
+parse. The five TypeScript fences and the corrected Temporal activity example
+typecheck against current client/Temporal declarations. Five mocked API scenarios
+exercise completion, retry identity, failure, cancellation, and event gaps.
+Provider/config examples and workflow/MCP parameters validate against generated
+schemas; controller parameters match the protocol fixture with an example UUID.
+
+The 146 focused existing tests pass: five client transport tests, nineteen
+Configurator tests, twenty-six workflow/engine/helper tests, four tool/provider
+unit tests, twenty-one environment protocol tests, eight environment client
+tests, and sixty-three connector tests. These are local or fixture-based checks.
+No model calls, deployed custom workers, chat accounts, or infrastructure-backed
+provider operations were executed for this documentation batch.
+
+The sixth writing batch adds the four how-it-works pages:
+
+- [Architecture](../documentation/how-it-works/architecture.md)
+- [Agent loop and durability](../documentation/how-it-works/agent-loop-and-durability.md)
+- [Context and storage](../documentation/how-it-works/context-and-storage.md)
+- [Tools and controller workflows](../documentation/how-it-works/tools-and-controller-workflows.md)
+
+Each page was researched independently against the implementation. The writing
+retains the old design walkthrough's progression from a small deterministic
+loop to a complete product, while following the Acorn release editor through
+specific decisions and their consequences. Four diagrams show ownership,
+commit/effect ordering, CAS offloading, and a joined workflow call.
+
+The former design material is covered by these pages:
+
+| Former topic | Current home |
+| --- | --- |
+| Deterministic core and durable workflow hosting | Agent loop and durability; architecture establishes the surrounding process boundaries. |
+| Provider APIs, context, compaction, CAS, and client projections | Context and storage, including prompt assembly/caching, VFS, and retained output. |
+| Tool registry, borrowed compute, sub-agents, and external controllers | Tools and controller workflows, with compute ownership introduced in architecture. |
+| Crate map | Architecture's source entry points and the current workspace manifest. |
+
+Source review corrected idle-only rollover, provider-native-only compaction,
+unconditional pre-run catalog refresh, and blanket controller-at-creation
+claims. The pages distinguish recorded facts from effect execution, session
+history from Temporal history, active context from retained bytes, and lifecycle
+ownership from tool receivers. The old `docs/design.md` is removed; active
+repository guidance and links now point to the relevant manual pages.
+
+Sixth-batch verification passed: 57 focused tests cover rollover, checkpoint
+replay/fallback, append retries, tool catalogs, workflow-tool bindings and
+scheduling, compaction, prompt caching, and catalog prefix preservation.
+The nine site adapter tests and Astro diagnostics pass. The production build
+validates all 41 published HTML/Markdown pages, their discovery index, nine
+diagram transforms, links/anchors, assets, search, and sitemap. All four new
+diagrams also parse with Mermaid, and 162 link targets across the new pages
+and updated entry documents resolve. No live services, model calls, or
+credentialed tests were used for this batch.
+
+The seventh writing batch adds the four development pages:
+
+- [Local development](../documentation/development/local-development.md)
+- [Testing and evaluation](../documentation/development/testing-and-evaluation.md)
+- [Changing contracts](../documentation/development/changing-contracts.md)
+- [Contributing and releasing](../documentation/development/contributing-and-releasing.md)
+
+Each page was checked against its current implementation, with independent
+sub-agent research and review for tests/evaluations, contract generation, and
+release construction. The guides explain the actual watch/restart behavior,
+what replay and live tests establish, evaluator assertions and output limits,
+generation order and Git diff checks, compatibility across retained histories
+and both databases, and the distinction between packaging, publication, and
+deployment. Existing component guides retain implementation detail and link
+to the manual; the index and sidebar include the development reading path.
+
+Seventh-batch verification passed: two named replay examples, 24 API/workflow,
+environment-wire, and migration-registry tests, and eleven CI/release-script
+tests. The nine docs adapter tests and Astro diagnostics pass; the build
+validates all 45 published HTML/Markdown pages, discovery, search, assets,
+links, anchors, sitemap, and the existing nine diagrams. All 24 new Bash
+blocks pass syntax checks, all three JSON examples parse, and the two API
+examples validate against the generated schema. The 147 link targets across
+the new pages and updated entry documents resolve. Release metadata and
+`git diff --check` also pass. No live services, model calls, migrations against
+a database, or release publication were executed for this batch.
+
 The root README links to the manual. Existing development guidance now reflects
 optional deployment API keys and the local daemon, the environment specification
 includes registration-key filtering, and the design guide points to the workspace
@@ -275,10 +383,50 @@ manifest for its crate inventory. The README now describes fork/clone support
 as core/storage primitives, matching the absence of a creation action in the
 current public clients. The environment specification and overview now explain
 the current idle-policy staging limit, and the borrowed-compute walkthrough
-uses the supported CLI/API close path. Remaining topic guides and deeper
-integration, internals, and development instructions follow the writing plan below.
+uses the supported CLI/API close path. Remaining reference work follows the
+target index above.
 
 ## First writing pass
+
+### UI screenshot pass
+
+The welcome page now also includes a full-app dark-mode demo capture after
+its introduction, showing navigation, a session transcript, tool activity,
+and the linked sub-agent. Its refresh recipe is recorded with the other
+screenshots in `docs/site/README.md`.
+
+Core concepts gained three Mermaid diagrams beside the relevant explanations:
+successive runs within one retained session, explicit transfer between VFS and
+machine files, and event routing into a bot's Main and incident conversations.
+The existing overview remains as the closing map. The docs build passed with
+12 diagrams overall; browser review confirmed all four Core concepts diagrams
+render, the welcome image loads, and the concepts page fits a 390px viewport.
+
+Added six focused dark-mode screenshots from the local in-browser demo:
+
+| Page and section | Capture |
+| --- | --- |
+| Quickstart — Start a conversation | New session dialog, before customizing the model. |
+| Profiles and instructions — Create a profile for a job | Release scribe instructions and model settings in Form view. |
+| Sessions and runs — Inspect what happened | Expanded tool group with the first command's Result. |
+| Workspaces and skills — Add a skill | The walkthrough's saved release-review skill in the workspace tree and editor. |
+| Bots and triggers — Read outcomes and replay work | PR Reviewer Activity with event #11 expanded, showing deferred, failed, and handled outcomes. |
+| Using environments — Select a machine for a task | CI runner with Details expanded. |
+
+Images live in `docs/documentation/images/`, with one relative Markdown image
+per selected page, descriptive alt text, and captions identifying demo examples.
+The skill was entered through the demo UI; the other populated views use seeded
+Software Factory data. Captures use a 1440 × 1000 viewport, CSS-pixel PNGs, and
+dialog/panel crops to keep labels readable. Refresh instructions are in
+`docs/site/README.md`. No live services, credentials, model calls, or provider
+operations were used.
+
+Validation: visually reviewed all six assets and representative desktop/mobile
+article layouts. All six published images loaded successfully; the 390px mobile
+layout had no horizontal overflow. The docs build passed its HTML, Markdown,
+link, anchor, asset, diagram, search, and sitemap checks; `git diff --check`
+passed. Technical chapters retain their code examples and diagrams without
+additional decorative screenshots.
 
 Write in this order while retaining the target navigation above:
 
@@ -295,8 +443,9 @@ Write in this order while retaining the target navigation above:
 The first batch establishes the introductory tutorials and self-hosting path;
 the second adds the initial usage guides; the third completes the initial
 environment section; the fourth completes the deployment guides and migrates
-the variable reference. Integration, internals, and development procedures
-remain to be written and exercised.
+the variable reference; the fifth adds integration and extension guides;
+the sixth completes internals; the seventh adds development. The remaining
+reference pages are still planned.
 Add orchestrator-specific recipes when the repository
 supports them. Continue reconciling older guidance against executable behavior
 as each new page is authored.
@@ -311,6 +460,14 @@ as each new page is authored.
   title, and rewrites relative manual links into website routes. Other source
   links lead to GitHub; local images are included in the output. Missing source
   paths and broken published links or heading anchors fail validation.
+- The static output includes a `.md` version of every published page and an
+  `llms.txt` index. Markdown keeps the page title, formatting, code examples,
+  and Mermaid source, with links to the other Markdown pages and absolute
+  asset URLs. HTML pages advertise their Markdown alternate. Stale exports
+  are removed with deleted or renamed sources, and release checks require the
+  index and Markdown files in the documentation archive. The site guide
+  records the future Caddy `Accept` negotiation and cache-header contract;
+  deployment configuration remains in the infrastructure repository.
 - Environment variables, the generated API reference, and the generated workflow
   contract are staged from their authoritative sources. No reference copy is
   maintained by hand. Only authored pages and these references are published.
@@ -362,14 +519,20 @@ The built documentation archive was extracted and compared byte-for-byte with
 the site output. Registry publication and infrastructure deployment were not
 run locally.
 
+Markdown export checks validate every published page and index entry, retained
+code and diagram source, working links and assets, removal of stale exports,
+and HTML discovery links. HTTP checks passed for all 31 Markdown pages and the
+index, and all 230 files in the documentation archive matched the static build.
+
 ### Source ownership
 
 Keep the root README as the short product overview with a documentation entry
-link. As product pages are written, consolidate user-facing prose from
-`docs/design.md`, `docs/multi-tenancy.md`, and the relevant parts of the component
-guides into the manual. Retain useful repository-local pointers at their old
-locations. Component READMEs can continue to explain local implementation and
-maintenance details.
+link. The four `how-it-works/` pages now own the architecture explanation;
+`docs/design.md` has been removed after its useful material was incorporated
+and checked against current code. Links to the former design document now
+select the relevant architecture, agent-loop, storage, or controller page.
+Other component guides can retain local implementation and maintenance detail
+while linking to the manual for product explanations.
 
 Preserve one authoritative source for each reference. In particular,
 `docs/documentation/reference/environment-variables.md` now owns the variable
@@ -490,7 +653,7 @@ page. The technical subject matter belongs to the historical document.
 | "there is no magic" | Expose what the abstraction does underneath. [Low-level API section](https://github.com/smartcomputer-ai/agent-os/blob/pre-next/docs/design/design.md#low-level-api). |
 
 The following paragraphs are newly written Lightspeed examples, based on the
-[current design](../design.md) and [environment model](../documentation/environments/overview.md).
+[current architecture](../documentation/how-it-works/architecture.md) and [environment model](../documentation/environments/overview.md).
 They demonstrate how to apply the guide rather than quote the older document.
 
 An explanation that starts with a task and follows it to a boundary:

@@ -355,7 +355,7 @@ not a promise that stochastic scores will be numerically identical.
 - Regenerate API and workflow contracts and TypeScript consumers after their
   source contracts change. Remove obsolete helpers and tests that enforce
   built-in schema storage; retain external-definition storage coverage.
-- Update `README.md`, `docs/design.md`, and the relevant feature documentation
+- Update `README.md`, `docs/documentation/how-it-works/tools-and-controller-workflows.md`, and the relevant feature documentation
   when the implementation changes the architecture. Record implementation and
   verification progress here.
 

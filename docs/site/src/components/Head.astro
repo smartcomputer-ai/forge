@@ -3,6 +3,7 @@ import Head from '@astrojs/starlight/components/Head.astro';
 import headingFont from '../assets/fonts/merriweather-latin.woff2?url';
 import bodyFont from '../assets/fonts/merriweather-sans-latin.woff2?url';
 import labelFont from '../assets/fonts/league-gothic-latin.woff2?url';
+import { markdownPath } from '../../scripts/content.mjs';
 const route = Astro.locals.starlightRoute;
 if (route.entry.id === '404') {
   // The error document is served at arbitrary missing URLs, not /404/.
@@ -16,3 +17,6 @@ if (route.entry.id === '404') {
   <link rel="preload" href={href} as="font" type="font/woff2" crossorigin="anonymous" />
 ))}
 <Head />
+{route.entry.id !== '404' && (
+  <link rel="alternate" type="text/markdown" href={markdownPath(route.entry.id)} title="Markdown" />
+)}

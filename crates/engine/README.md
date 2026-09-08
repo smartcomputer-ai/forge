@@ -11,8 +11,9 @@ runtimes, workflow activities, adapter crates, and storage packages.
 
 Current architecture:
 
-- `../../docs/spec/01-agent-idea.md`
-- `../../docs/design.md`
+- [Agent loop and durability](../../docs/documentation/how-it-works/agent-loop-and-durability.md)
+- [Context and storage](../../docs/documentation/how-it-works/context-and-storage.md)
+- [Architecture overview](../../docs/documentation/how-it-works/architecture.md)
 
 Local verification:
 

@@ -2,13 +2,13 @@ import { execFileSync } from 'node:child_process';
 import { defineConfig } from 'astro/config';
 import starlight from '@astrojs/starlight';
 import mermaid from 'astro-mermaid';
-import { stageDocumentation, watchDocumentation, repositoryRoot } from './scripts/content.mjs';
+import { stageDocumentation, watchDocumentation, repositoryRoot, siteUrl } from './scripts/content.mjs';
 
 stageDocumentation();
 const gitSha = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: repositoryRoot, encoding: 'utf8' }).trim();
 
 export default defineConfig({
-  site: 'https://ls.bot',
+  site: siteUrl,
   base: '/docs',
   trailingSlash: 'always',
   output: 'static',
@@ -74,6 +74,26 @@ export default defineConfig({
           { slug: 'deployment/operations' },
           { slug: 'deployment/upgrades-and-recovery' },
           { slug: 'deployment/troubleshooting' },
+        ] },
+        { label: 'Integrating and extending', collapsed: true, items: [
+          { slug: 'integrating-and-extending/api-and-typescript' },
+          { slug: 'integrating-and-extending/configurator-mcp' },
+          { slug: 'integrating-and-extending/workflow-tools' },
+          { slug: 'integrating-and-extending/custom-tools-and-model-providers' },
+          { slug: 'integrating-and-extending/environment-providers' },
+          { slug: 'integrating-and-extending/channel-connectors' },
+        ] },
+        { label: 'How it works', collapsed: true, items: [
+          { slug: 'how-it-works/architecture' },
+          { slug: 'how-it-works/agent-loop-and-durability' },
+          { slug: 'how-it-works/context-and-storage' },
+          { slug: 'how-it-works/tools-and-controller-workflows' },
+        ] },
+        { label: 'Development', collapsed: true, items: [
+          { slug: 'development/local-development' },
+          { slug: 'development/testing-and-evaluation' },
+          { slug: 'development/changing-contracts' },
+          { slug: 'development/contributing-and-releasing' },
         ] },
         { label: 'Reference', collapsed: true, items: [
           { label: 'JSON-RPC API', slug: 'reference/api' },

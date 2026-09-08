@@ -34,9 +34,9 @@ defaults the authentication directory to `.lightspeed-dev/whatsapp-auth`.
 Keep the key and account state across restarts so the host can keep using the
 linked account and stored media references.
 
-The connector host currently supports the core's `trusted-header` and
-`single` authentication modes. Discovery with a static set of per-universe
-API keys is not implemented. See the
+The connector host requires the core's `trusted-header` authentication mode;
+single mode rejects the tenant headers it sends. Discovery with a static set
+of per-universe API keys is not implemented. See the
 [connector host guide](../../../platform/connectors/README.md) and
 [connector variables](../reference/environment-variables.md#connector-host) for deployment setup.
 

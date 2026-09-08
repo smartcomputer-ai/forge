@@ -5,9 +5,12 @@ universe-scoped Lightspeed JSON-RPC contract. Tools are generated from
 `crates/api/contract`; deployment-level `operator/*` methods can never be
 exposed.
 
+The product guide, [Configurator MCP](../../docs/documentation/integrating-and-extending/configurator-mcp.md),
+covers client setup, deployment authentication, and the management workflow.
+
 `tool-filter.json` contains the exact universe methods omitted from generation.
-The default surface excludes provider presence writes, environment jobs,
-environment-provider internals, and the redundant Lightspeed handshake.
+The default surface excludes managed-session creation, environment jobs,
+environment registration keys, and the redundant Lightspeed handshake.
 Edit that file and run `npm run generate` to tune the advertised surface.
 Tool descriptions come from the canonical Rust method manifest and focus on
 operational semantics such as revision guards, lifecycle prerequisites,

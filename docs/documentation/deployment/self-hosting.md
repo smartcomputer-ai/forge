@@ -1,8 +1,8 @@
 # Self-host Lightspeed
 
 This guide installs the Lightspeed runtime and Platform web app on one Linux
-x86_64 host, using existing PostgreSQL and Temporal services. It builds a
-coherent set of release images from one source revision, keeps the runtime API
+x86_64 host, using existing PostgreSQL and Temporal services. It installs the
+published images from one release, keeps the runtime API
 private, and exposes the web app through your HTTPS reverse proxy.
 
 The [deployment overview](overview.md) explains the component boundaries.
@@ -16,10 +16,9 @@ MCP, and execution environments can be added afterward.
 
 Before starting the application, provide:
 
-- A Linux x86_64 application/build host with Docker, GNU Make, Git, Bash,
-  standard command-line utilities, Node.js 24 or newer, curl, and OpenSSL.
-  The release build container supplies the Rust compiler and package-build
-  dependencies; a final image check also uses Node on the host.
+- A Linux x86_64 application host with Docker, Bash, standard command-line
+  utilities, curl, jq, and OpenSSL. Installing published images requires no
+  Rust or Node.js toolchain on the host.
 - Two empty PostgreSQL databases, called `lightspeed` and
   `lightspeed_platform` in this example. Each application's database user
   needs permission to create and migrate its schema. The databases can share
@@ -30,7 +29,7 @@ Before starting the application, provide:
   service.
 - A DNS name and an HTTPS reverse proxy on the application host, with a valid
   certificate. This guide uses `lightspeed.example.com` as a placeholder.
-- Outbound access for building the release and for reaching the model
+- Outbound access to GitHub Releases, GitHub Container Registry, and the model
   providers you plan to use.
 
 Use infrastructure addresses that resolve and are reachable inside Docker.
@@ -43,7 +42,47 @@ The development launcher's Temporal service uses a development-server
 configuration. Provision the durable infrastructure above separately for this
 installation.
 
-## Build one release
+## Download one release
+
+Choose a tag from [GitHub Releases](https://github.com/smartcomputer-ai/lightspeed/releases).
+The example below uses `v0.1.0`; replace it with the release you intend to
+install. Download its manifest into a directory you will keep with the
+deployment record:
+
+```bash
+LIGHTSPEED_RELEASE_TAG=v0.1.0
+mkdir -p "$HOME/lightspeed-releases/$LIGHTSPEED_RELEASE_TAG"
+cd "$HOME/lightspeed-releases/$LIGHTSPEED_RELEASE_TAG"
+curl --fail --location --output release-manifest.json \
+  "https://github.com/smartcomputer-ai/lightspeed/releases/download/$LIGHTSPEED_RELEASE_TAG/release-manifest.json"
+```
+
+Pull the runtime and Platform images by the digests recorded in that manifest.
+The Platform image includes the web app. Give them local names for the
+remaining commands in this guide:
+
+```bash
+LIGHTSPEED_RELEASE_ID="$LIGHTSPEED_RELEASE_TAG"
+LIGHTSPEED_RUNTIME_IMAGE="$(jq -er '.images.runtime' release-manifest.json)"
+LIGHTSPEED_PLATFORM_IMAGE="$(jq -er '.images.platform' release-manifest.json)"
+docker pull "$LIGHTSPEED_RUNTIME_IMAGE"
+docker pull "$LIGHTSPEED_PLATFORM_IMAGE"
+docker tag "$LIGHTSPEED_RUNTIME_IMAGE" "lightspeed-runtime:$LIGHTSPEED_RELEASE_ID"
+docker tag "$LIGHTSPEED_PLATFORM_IMAGE" "lightspeed-platform:$LIGHTSPEED_RELEASE_ID"
+```
+
+Keep using this shell, or set `LIGHTSPEED_RELEASE_ID` to the same value in a
+new shell. Continue at [Configure the two applications](#configure-the-two-applications).
+Keep all components on the same release, and use
+[Upgrades and recovery](upgrades-and-recovery.md) when updating an existing
+installation.
+
+### Build one release instead
+
+If you need an unreleased change or your own build, use the source path below.
+In addition to Docker and the utilities above, it needs GNU Make, Git, and
+Node.js 24 or newer. The release build container supplies the Rust compiler
+and package-build dependencies.
 
 Use a fresh release checkout. Replace `RELEASE_REF` below with the exact tag
 or commit you intend to deploy:
@@ -71,9 +110,8 @@ docker tag lightspeed-local-platform "lightspeed-platform:$LIGHTSPEED_RELEASE_ID
 ```
 
 Keep using this shell for the remaining commands, or set `LIGHTSPEED_RELEASE_ID`
-to the same value in a new shell. Published releases also contain a coherent
-manifest; if you distribute images through a registry, pin the component
-digests from the same release. The [release guide](../../releasing.md)
+to the same value in a new shell. If you distribute your own images through a
+registry, pin the component digests from the same release. The [release guide](../../releasing.md)
 describes that artifact and publication contract.
 
 ## Configure the two applications
@@ -320,3 +358,43 @@ client keys; [Multitenancy](multi-tenancy.md) explains universe isolation and
 retirement. [Configuration](configuration.md) explains deployment choices,
 with exact settings in the
 [environment-variable reference](../reference/environment-variables.md).
+
+## Download standalone binaries
+
+Use the standalone archives when you want to manage the runtime process
+directly, or need the CLI for an existing installation. The published server
+and CLI target Linux x86_64 with glibc; they are not macOS, ARM64, or Alpine
+binaries. The runtime image above supplies the Linux userspace for the
+container installation.
+
+In the directory containing the release manifest downloaded earlier, obtain
+and verify the server and CLI archives:
+
+```bash
+for LIGHTSPEED_COMPONENT in server cli; do
+  LIGHTSPEED_ARCHIVE="$(jq -er --arg component "$LIGHTSPEED_COMPONENT" \
+    '.binaries[$component].file' release-manifest.json)" || break
+  LIGHTSPEED_ARCHIVE_SHA="$(jq -er --arg component "$LIGHTSPEED_COMPONENT" \
+    '.binaries[$component].sha256' release-manifest.json)" || break
+  curl --fail --location --output "$LIGHTSPEED_ARCHIVE" \
+    "https://github.com/smartcomputer-ai/lightspeed/releases/download/$LIGHTSPEED_RELEASE_TAG/$LIGHTSPEED_ARCHIVE" || break
+  printf '%s  %s\n' "$LIGHTSPEED_ARCHIVE_SHA" "$LIGHTSPEED_ARCHIVE" \
+    | sha256sum --check - || break
+  tar -xzf "$LIGHTSPEED_ARCHIVE" || break
+done
+```
+
+This extracts `lightspeed-server` and `lightspeed` into the current directory.
+Their `--help` output lists the commands. The release page also provides
+archives for the Incus provider and environment daemon; choose those from the
+release matching your runtime when you need them.
+
+A native server needs the same runtime configuration, PostgreSQL migrations,
+and Temporal service as the container. Supply its environment through your
+process supervisor, run `lightspeed-server migrate`, and then start
+`lightspeed-server` with the configured roles. The `runtime.env` example above
+uses container addresses; adapt those to the native process's network.
+Platform remains a separate application for the web app and authentication.
+Use [Configuration](configuration.md) for the runtime settings and
+[Continue from the CLI](../using-lightspeed/sessions-and-runs.md#continue-from-the-cli)
+for client setup.

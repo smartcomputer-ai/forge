@@ -271,7 +271,8 @@ are the core JSON-RPC endpoint and Temporal. Accounts are discovered through
 `auth/grants/lease` (never configured in the environment), and every
 universe-scoped call carries `x-lightspeed-universe` plus
 `x-lightspeed-principal: service_account:lightspeed-connectors`, so the core
-must run in `trusted-header` (or `single`) auth mode.
+must run in `trusted-header` auth mode. Single and API-key modes reject the
+tenant headers this host sends.
 
 | Variable | Requirement/default | Purpose |
 | --- | --- | --- |

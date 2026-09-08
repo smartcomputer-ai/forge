@@ -7,6 +7,12 @@ TypeScript client, the static in-browser demo and documentation site, API
 contracts, checksums, an SPDX SBOM, and a release manifest. A consumer should
 pin one manifest rather than selecting components separately.
 
+For the contributor walkthrough, start with
+[Contributing and releasing](documentation/development/contributing-and-releasing.md).
+[Changing contracts](documentation/development/changing-contracts.md) covers
+API generation, protocol compatibility, and migration authoring. This file
+retains the detailed packaging and publication procedures.
+
 ## Database migrations
 
 PostgreSQL migrations are embedded in `lightspeed-server`. Apply them before
@@ -84,19 +90,23 @@ The authoritative build runs inside the digest-pinned Debian 12/Rust image:
 make release
 ```
 
-`make release-dist` compiles all Rust executables in one Cargo invocation,
-builds the generated client, Configurator, web UI, and documentation site, and
-produces `dist/`.
+`make release-dist` compiles the runtime, Incus provider, and CLI for the GNU
+target, then builds envd separately for the static musl target. It builds the
+generated client, Configurator, web UI, and documentation site, and produces
+`dist/`.
 The demo build is packaged as a target-independent static archive whose files
 are served under `/demo/` with an `index.html` fallback; it is not included in
 the Platform image.
 
 The documentation build is packaged as `lightspeed-docs-<version>.tar.gz` with
 the contents of `docs/site/dist/` at its root. It contains the HTML pages,
-styles, scripts, fonts, images, licenses, Pagefind search index, sitemap, and
-static 404 page. Serve it under `/docs/`, stripping that prefix when looking
-up files, with directory indexes and a real 404 response for unknown paths.
+styles, scripts, fonts, images, licenses, Pagefind search index, sitemap,
+static 404 page, per-page Markdown exports, and `llms.txt`. Serve it under
+`/docs/`, stripping that prefix when looking up files, with directory indexes
+and a real 404 response for unknown paths.
 It requires no application runtime and is not included in the Platform image.
+The [documentation serving contract](site/README.md#content-negotiation-at-deployment)
+describes how the deployment can select Markdown using the `Accept` header.
 
 The same root lockfile deterministically stages the platform and connector-host
 runtime payloads. `make release-images` copies those prebuilt files into the

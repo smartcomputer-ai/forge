@@ -114,7 +114,7 @@ test('static packaging preserves complete site roots without source files or an 
   mkdirSync(join(f.cwd, 'scripts/release'), { recursive: true });
   copyFileSync(join(repository, 'scripts/release/stage-static-sites.sh'),
     join(f.cwd, 'scripts/release/stage-static-sites.sh'));
-  const files = ['index.html', '404.html', '_astro/site.css', '_astro/font.woff2',
+  const files = ['index.html', 'index.md', 'llms.txt', 'getting-started.md', '404.html', '_astro/site.css', '_astro/font.woff2',
     'pagefind/pagefind.js', 'pagefind/fragment/data.pf_fragment', 'sitemap-index.xml',
     'getting-started/index.html', 'assets/mark.svg', 'licenses/font.txt'];
   for (const file of files) f.write(`docs/site/dist/${file}`, `built ${file}`);

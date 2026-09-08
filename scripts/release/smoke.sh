@@ -40,7 +40,8 @@ grep -Eq '^\./assets/.+\.(css|js)$' "$demo_files"
 
 docs_tgz="$(find dist/archives -maxdepth 1 -name '*-docs-*' -print -quit)"
 test -n "$docs_tgz"
-for entry in ./index.html ./404.html ./pagefind/pagefind.js ./sitemap-index.xml \
+for entry in ./index.html ./index.md ./llms.txt ./reference/api.md \
+  ./404.html ./pagefind/pagefind.js ./sitemap-index.xml \
   ./assets/ls-logo-2026-v1-ls.svg ./licenses/merriweather-OFL.txt; do
   tar -tzf "$docs_tgz" "$entry" >/dev/null
 done

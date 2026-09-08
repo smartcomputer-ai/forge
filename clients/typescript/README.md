@@ -6,6 +6,12 @@ The public API types and typed method map are generated from the committed
 contract artifacts in `crates/api/contract/`. The hand-written code is limited to the
 JSON-RPC transport and small workflow helpers.
 
+For a complete application walkthrough with authentication, retry identity,
+events, and results, read
+[API and TypeScript](../../docs/documentation/integrating-and-extending/api-and-typescript.md).
+Durable receivers and custom workers are covered in
+[Workflow tools](../../docs/documentation/integrating-and-extending/workflow-tools.md).
+
 ## Install
 
 Tagged Lightspeed releases publish `@lightspeed-ai/agent-client` to npm. In-tree
@@ -24,7 +30,6 @@ const lightspeed = new LightspeedClient("http://127.0.0.1:18080/rpc");
 
 const session = await lightspeed.call("session/start", {
   sessionId: "session_123",
-  cwd: null,
   config: null,
 });
 

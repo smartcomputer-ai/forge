@@ -1,10 +1,46 @@
-# Run Lightspeed locally
+# Get started with Lightspeed
 
-The local launcher starts the complete Lightspeed product: the web app,
-runtime, databases, storage, and Temporal. This walkthrough takes you from a
-source checkout to a model response in a persistent session.
+This walkthrough takes you from an installation to a model response in a
+persistent session. On Linux, start with a prebuilt release. You only need
+Rust and a source checkout if you choose the development launcher.
 
 ## Before you start
+
+You need an OpenAI or Anthropic API key with access to a suitable model, and
+an account with permission to manage integrations and sessions: a universe
+owner or admin, or a platform administrator.
+
+If someone has already deployed Lightspeed for you, open that installation
+with your assigned account and continue at
+[Sign in and create a universe](#sign-in-and-create-a-universe).
+
+## Install a prebuilt release on Linux
+
+[GitHub Releases](https://github.com/smartcomputer-ai/lightspeed/releases)
+provides Linux x86_64 binaries and a release manifest identifying the matching
+container images. You can install these without Rust, Cargo, or a source
+checkout.
+
+For the complete product, including the web app used in this walkthrough,
+follow [Self-host Lightspeed](../deployment/self-hosting.md). That guide pulls
+the published runtime and Platform images, connects them to PostgreSQL and
+Temporal, and sets up your administrator account and public URL. It assumes
+you provide those services and an HTTPS reverse proxy.
+
+You can also [download the standalone binaries](../deployment/self-hosting.md#download-standalone-binaries)
+directly from the release assets. The server archive contains
+`lightspeed-server`; the CLI archive contains `lightspeed`. The server still
+needs PostgreSQL and Temporal, and the web app runs in the separate Platform
+application. Downloading the server alone does not start the complete product.
+
+Once your installation is running, continue at
+[Sign in and create a universe](#sign-in-and-create-a-universe).
+
+## Run from source for local development
+
+The development launcher starts the web app, runtime, databases, storage, and
+Temporal together. Use this path to work on Lightspeed itself, or to try the
+complete local stack on macOS or Linux with the build tools installed.
 
 You need:
 
@@ -15,14 +51,8 @@ You need:
 - Docker running, with Docker Compose v2.
 - A native build toolchain and the Protocol Buffers compiler (`protoc`),
   including its standard `.proto` include files, for the Rust dependencies.
-- An OpenAI or Anthropic API key with access to a suitable model.
 
-If someone has already deployed Lightspeed for you, open that installation and
-continue at [Configure a model](#configure-a-model). Use your assigned account
-and a universe where you are an owner or admin, or use a platform administrator
-account. Those permissions are needed to manage integrations and sessions.
-
-## Start the local product
+### Start the local product
 
 From the repository root:
 
@@ -48,8 +78,12 @@ the web app below.
 
 ## Sign in and create a universe
 
-Open [http://localhost:5173/app/](http://localhost:5173/app/). The launcher
-prints the development account. Unless you have overridden it, use:
+Open your installation's web app and sign in with the account configured
+during deployment or supplied by your operator.
+
+If you used the development launcher, open
+[http://localhost:5173/app/](http://localhost:5173/app/). The launcher prints
+the development account. Unless you have overridden it, use:
 
 | Field | Development value |
 | --- | --- |
@@ -87,6 +121,11 @@ session. A saved key needs access to the model you will select.
    a conversational model from the provider you just connected.
 4. Choose **Create session**.
 
+![New session dialog with First conversation entered as the name, no profile selected, and the Customize setup button.](../images/new-session.png)
+
+*Demo mode: choose **Customize setup…** to select a model before creating
+the conversation.*
+
 Select the model explicitly. Adding a credential does not change the
 deployment's default model, so leaving **Deployment default** selected can
 send the request to a different provider.
@@ -104,7 +143,11 @@ message will start a new run in this session.
 
 ## Stop and return later
 
-In another terminal at the repository root, inspect the local stack:
+For a self-hosted release, follow [Operations](../deployment/operations.md)
+to manage the services. Your sessions remain available when you sign in again.
+
+For the development launcher, inspect the local stack in another terminal at
+the repository root:
 
 ```bash
 ./dev.sh status
@@ -123,6 +166,11 @@ you want to continue. The reset and volume-removal commands in the development
 guide erase local state; they are for deliberately starting over.
 
 ## If something fails
+
+For a release installation, start with the
+[self-hosting checks](../deployment/self-hosting.md#operate-and-update-the-installation)
+and [deployment troubleshooting](../deployment/troubleshooting.md). The build
+and launcher checks below apply to the source path.
 
 | Symptom | What to check |
 | --- | --- |

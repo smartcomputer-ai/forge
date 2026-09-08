@@ -105,6 +105,11 @@ sender.
 
 ## Development
 
+The manual's [Local development](../docs/documentation/development/local-development.md)
+guide covers edit loops across Rust and TypeScript.
+[Changing contracts](../docs/documentation/development/changing-contracts.md)
+explains API generation and the separately owned Platform migrations.
+
 Install all Node workspace dependencies and run the complete check:
 
 ```bash

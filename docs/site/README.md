@@ -48,6 +48,99 @@ Broken repository paths fail the build. The output check validates site links,
 heading anchors, local assets, canonical URLs, diagram transforms, and the
 presence of the search index and sitemap.
 
+## Documentation screenshots
+
+UI screenshots live in `docs/documentation/images/` and use relative Markdown
+image links from the pages they illustrate. Keep one image at the relevant
+procedure, with descriptive alt text and a short caption identifying demo data.
+Crop to the dialog or working panel so labels remain readable at article width.
+
+To refresh them, run `npm run demo`, open `http://localhost:5175/demo/`, and use
+the **Software Factory** universe. Select **Dark** under the account menu's
+**Theme** submenu, hide the demo notice, and use a 1440 × 1000 viewport at
+normal zoom. Capture PNGs at CSS-pixel scale through the browser; do not replace
+UI text or fabricate results. These captures need no live backend or credentials.
+
+| Image | Demo view and state |
+| --- | --- |
+| `welcome-session.png` | Sessions → Fix flaky scheduler test; scroll the conversation to the top with tool groups collapsed. Capture the full UI at 1440 × 960, including navigation and the sub-agent link. |
+| `new-session.png` | Sessions → New session; name `First conversation`, no profile, before customizing. Capture the dialog. |
+| `profile-editor.png` | Profiles → Release scribe → Form; capture the header, instructions, and model configuration. |
+| `session-tool-result.png` | Sessions → Fix flaky scheduler test; expand the first tool group and capture its header and first command's Result. |
+| `workspace-skill.png` | Create the `release-notes` workspace and save the skill from the Workspaces and skills guide at `.lightspeed/skills/release-review/SKILL.md`. Capture the tree and editor. |
+| `bot-event-outcome.png` | Bots → PR Reviewer → Activity; expand event #11. Capture the bot header, activity controls, expanded event, and neighboring outcomes. |
+| `environment-details.png` | Environments → CI runner → Details; capture the expanded machine card. |
+
+The release-notes workspace is created through the demo UI for this capture;
+it is not a seeded fixture. Refreshing the demo discards that work. Other
+captures use the existing fixtures. Captions distinguish these examples from
+the reader's installation. Run the docs build after replacing images to check
+their published paths and Markdown exports.
+
+## Markdown access for agents
+
+The same build exports one Markdown file per published page, plus an index:
+
+| Resource | URL |
+| --- | --- |
+| Documentation home | `/docs/index.md` |
+| Individual page | `/docs/getting-started/quickstart.md` |
+| Page index with descriptions | `/docs/llms.txt` |
+
+The exports preserve the original H1, Markdown formatting, code examples, and
+Mermaid source. Links to published pages point to their Markdown URLs; image
+URLs are absolute and point to bundled assets. Repository source links still
+lead to GitHub. Starlight frontmatter and navigation markup are excluded.
+Only pages in the published manual and its included references are exported.
+
+Every HTML documentation page advertises its Markdown URL with
+`<link rel="alternate" type="text/markdown">`. The 404 page has no Markdown
+alternate. Source edits, renames, and removals update the exports and index
+alongside the HTML build. These files are generated into the public assets,
+so both local preview commands serve the direct `.md` and `llms.txt` URLs.
+
+### Content negotiation at deployment
+
+The static bundle supplies both representations. The infrastructure's Caddy
+configuration must choose the representation at request time; Astro middleware
+does not run when Caddy serves this static output. Header negotiation is not
+enabled by the build or the local Astro preview.
+
+For existing documentation pages, the serving contract is:
+
+| Request | Representation |
+| --- | --- |
+| `/docs/` with `Accept: text/markdown` | `index.md` |
+| `/docs/getting-started/quickstart/` with `Accept: text/markdown` | `getting-started/quickstart.md` |
+| A page with `Accept: text/html`, an absent header, or `*/*` | Its HTML directory index |
+| A direct `.md` URL | The Markdown file |
+| `/docs/llms.txt` | The Markdown discovery index |
+| Unknown page or Markdown URL | A 404 response |
+
+Apply negotiation to page routes, using the existing route's matching `.md`
+file. Parse media ranges and quality values: `text/markdown;q=0` must not
+select Markdown, and `text/html;q=1, text/markdown;q=0.5` must select HTML.
+An explicit Markdown preference selects Markdown; unqualified wildcards
+default to HTML. Serve the selected file at the requested page URL with a
+200 response, rather than redirecting to another representation.
+
+Markdown responses, including direct `.md` requests, use
+`Content-Type: text/markdown; charset=utf-8`; `llms.txt` uses
+`text/plain; charset=utf-8`. Both HTML and Markdown responses on negotiated
+page URLs include `Vary: Accept`. Any cache in front of Caddy must distinguish
+the variants. Normal canonical-path redirects, including `/docs` to `/docs/`,
+continue to apply. The origin can also point `/llms.txt` to `/docs/llms.txt`
+to expose the documentation index from the site root.
+
+After wiring the deployment, verify the same page with both representations:
+
+```bash
+curl -i -H 'Accept: text/markdown' https://ls.bot/docs/getting-started/quickstart/
+curl -i -H 'Accept: text/html' https://ls.bot/docs/getting-started/quickstart/
+curl -i https://ls.bot/docs/getting-started/quickstart.md
+curl -i https://ls.bot/docs/llms.txt
+```
+
 ## Appearance and assets
 
 `src/styles/theme.css` adapts the landing page's Merriweather headings,
@@ -89,8 +182,9 @@ while the consumer CI job uses `test:consumers` to exclude docs tests.
 Every main snapshot and tagged release builds the site alongside the product
 and packages `docs/site/dist/` as `lightspeed-docs-<version>.tar.gz`. The archive
 has `index.html` at its root and includes pages, CSS, JavaScript, fonts, images,
-licenses, Pagefind search, the sitemap, and `404.html`. It contains no source
-workspace or server runtime. The release manifest's `artifacts.docs` entry
+licenses, Pagefind search, the sitemap, `404.html`, per-page Markdown, and
+`llms.txt`. It contains no source workspace or server runtime. The release
+manifest's `artifacts.docs` entry
 records its filename, SHA-256 checksum, `/docs/` base path, and immutable
 `oci://.../docs-bundle@sha256:...` location. It is also included in the overall
 release bundle, checksums, and build provenance. Tagged releases publish the

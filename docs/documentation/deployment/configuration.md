@@ -182,8 +182,9 @@ or [Incus VMs](../environments/incus-vms.md) for complete procedures.
 
 ### Chat connectors
 
-The connector host calls a private `trusted-header` or `single` runtime
-endpoint and the deployment's Temporal namespace. It discovers channel
+The connector host calls a private `trusted-header` runtime endpoint and the
+deployment's Temporal namespace. Its account requests include tenant headers,
+which single and API-key modes reject. It discovers channel
 accounts through the operator API and leases their credentials; provider bot
 tokens do not go into connector environment variables.
 

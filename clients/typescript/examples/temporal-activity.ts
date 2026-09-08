@@ -15,7 +15,6 @@ export async function runLightspeedStep(input: RunLightspeedStepInput) {
 
   const session = await lightspeed.call("session/start", {
     sessionId: input.sessionId,
-    cwd: null,
     config: null,
   });
 

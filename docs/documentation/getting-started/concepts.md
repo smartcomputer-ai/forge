@@ -37,6 +37,20 @@ You can return later, add another observation, and start another run using the
 same session. While a run is active, you can steer it, queue another message,
 or cancel it. Canceling a run does not delete the session.
 
+```mermaid
+flowchart TB
+  Report["You send an incident report"] --> First
+  subgraph Session["One continuing session"]
+    First["Run 1: investigate the report<br/>Model requests and tool calls"]
+    First --> Between["Run finishes<br/>Conversation and setup remain"]
+    Between --> Second["Run 2: follow up<br/>Use the earlier conversation"]
+  end
+  Observation["You send another observation"] --> Second
+```
+
+Each task starts a run. The session connects those runs through the conversation
+and setup it retains between them.
+
 Lightspeed records the events that make up the session in persistent storage.
 The runtime can reconstruct its state after a worker restart, and Temporal
 coordinates the outstanding work. The browser is a client of that process:
@@ -88,6 +102,23 @@ path. Transfer the file explicitly if the script needs it. See
 [Environments](../environments/overview.md) for how selection, sharing, and
 machine lifecycle work.
 
+```mermaid
+flowchart TB
+  Session["Incident reviewer session"] -->|Workspace link and VFS tools| Notes
+  Session -->|Active environment and environment tools| Copy
+  subgraph VFS["VFS workspace"]
+    Notes["Incident report and notes"]
+  end
+  subgraph Machine["Execution environment"]
+    Copy["Machine's own files"] --> Script["Diagnostic script"]
+  end
+  Notes -.->|Explicit file transfer when needed| Copy
+```
+
+The two paths give the session different operations. A workspace is enough
+to read and write notes; running a script also needs a machine. The dotted
+arrow is a deliberate copy, not a shared mount or automatic synchronization.
+
 ## Bots react to events
 
 A bot adds ongoing behavior around managed sessions. Instead of waiting for a
@@ -102,6 +133,24 @@ holds a particular conversation and executes its runs.
 Chat channels connect Telegram or WhatsApp conversations to bots. A channel
 account supplies the connection to the messaging service, and a chat trigger
 routes incoming messages to the bot.
+
+```mermaid
+flowchart TB
+  Schedule["Schedule"] --> Triggers
+  Webhook["Alert webhook"] --> Triggers
+  Chat["Chat message"] --> Triggers
+  Triggers["Configured triggers<br/>Admit and route events"] --> Routing
+  subgraph Bot["Incident response bot"]
+    Routing["Choose the conversation"]
+    Routing --> Main["Main session<br/>Routine summaries"]
+    Routing --> IncidentA["Session for incident A"]
+    Routing --> IncidentB["Session for incident B"]
+  end
+```
+
+This bot is configured to keep incident conversations separate and routine
+summaries in Main. Later events for the same incident can return to its
+existing session; routing is a choice in the trigger configuration.
 
 ## Sub-agents delegate a task
 

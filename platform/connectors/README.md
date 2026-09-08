@@ -42,12 +42,16 @@ dependencies are the core JSON-RPC API and Temporal; it reads no database.
 ## Authentication
 
 The host is a first-party deployment process. It talks to a core running in
-`trusted-header` (or `single`) auth mode, stamping every universe-scoped call
+`trusted-header` auth mode, stamping every universe-scoped call
 with `x-lightspeed-universe: <universeId>` and
 `x-lightspeed-principal: service_account:lightspeed-connectors`; `operator/*`
 calls carry only the principal. An `api-key` mode — a static account list with
 one universe key each, for deployments without the Platform — is not
 implemented yet.
+
+For implementing another provider, read
+[Channel connectors](../../docs/documentation/integrating-and-extending/channel-connectors.md)
+in the product manual.
 
 ## Configuration
 

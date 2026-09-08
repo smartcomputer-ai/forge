@@ -24,6 +24,11 @@ form; use JSON when you need to inspect or transfer the underlying document.
 The [API reference](../../../crates/api/contract/api-reference.md) defines
 the full `ProfileDocument` and `SessionConfig` shapes.
 
+![Release scribe profile in Form view, showing its instructions, model selection, reasoning effort, and model run controls.](../images/profile-editor.png)
+
+*The demo's Release scribe profile shows where instructions and model
+settings live. Use the reviewer instructions below for this walkthrough.*
+
 Set **Description** to a short account of when this agent is useful. For a
 reviewer, use something like:
 

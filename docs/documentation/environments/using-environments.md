@@ -20,6 +20,11 @@ Open **Environments**, find the machine, and expand **Details**. Check its
 source, status, and **Environment ID**. A display name helps you find it;
 the ID is the stable value profiles and API calls reference.
 
+![CI runner environment with Details expanded, showing its ready status, environment ID, provisioned source, running power state, idle policy, and controls.](../images/environment-details.png)
+
+*The demo's CI runner is a provisioned machine. Its **Environment ID** is the
+value to select; its status and power state describe the machine's current state.*
+
 Open the session you want to use. With no active or queued runs, choose
 **Session settings**, enable **Environments**, and select the machine under
 **Active environment**. Choose **Apply setup**.

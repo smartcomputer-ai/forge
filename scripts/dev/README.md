@@ -1,5 +1,12 @@
 # Lightspeed Development Environment
 
+Start with the manual's
+[Local development](../../docs/documentation/development/local-development.md)
+guide for setup and edit loops, and
+[Testing and evaluation](../../docs/documentation/development/testing-and-evaluation.md)
+for choosing checks and running live suites. This file retains launcher,
+service, and manual-startup details.
+
 The root `dev.sh` launcher and its implementation under `scripts/dev/` own the
 complete local development environment for Lightspeed: first-run checks,
 dependency bootstrap, Docker Compose topology, environment exports, lifecycle
