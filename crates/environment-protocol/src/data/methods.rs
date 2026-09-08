@@ -28,3 +28,6 @@ pub const JOB_READ_METHOD: &str = "job/read";
 pub const JOB_CANCEL_METHOD: &str = "job/cancel";
 
 pub const ENV_IDLE_METHOD: &str = "env/idle";
+
+pub const FS_MATERIALIZE_METHOD: &str = "fs/materialize";
+pub const FS_CAPTURE_METHOD: &str = "fs/capture";

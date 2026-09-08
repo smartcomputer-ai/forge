@@ -374,6 +374,8 @@ fn remote_environment_capabilities() -> EnvironmentCapabilities {
         filesystem_search: true,
         filesystem_glob: true,
         filesystem_ranged_read: true,
+        filesystem_capture: false,
+        filesystem_materialize: false,
         process_start: true,
         process_stdin: true,
         process_terminate: true,

@@ -1,6 +1,7 @@
 # P166 — VFS–Environment Transfer: Materialize and Capture
 
-Status: proposed, 2026-09-08. Design only; not implemented.
+Status: initial bounded environment endpoint slice implemented, 2026-09-08.
+VFS/storage and runtime integration remain proposed.
 
 Provide explicit transfer between Lightspeed's VFS and an
 execution environment. The same operations should handle source trees, scripts,
@@ -618,7 +619,84 @@ system packages, external tools, or credentials.
 9. Regenerate API and workflow contracts when their wire surfaces change.
    Update the workspace/environment guides and README when the feature ships.
 
+### Delivered first endpoint slice
+
+`environment-protocol::data::transfer` defines `fs/materialize` and `fs/capture`,
+with typed daemon dispatch and `EnvironmentDataClient` methods. These are
+standalone environment-side file/tree primitives, not yet VFS operations.
+Inputs/results contain raw `ByteChunk` bytes and executable flags, with explicit
+root and directory entries (including empty directories). No VFS IDs, storage
+access, model tools, API schemas, or workflow history changes are involved.
+
+The initial transport is a **single bounded inline payload**, not streaming or
+missing-content negotiation. Mandatory caller limits cannot exceed 1,024 entries
+(including the root), depth 32 (root depth zero), 8 MiB per file and in total,
+and 30 seconds. Relative inventory paths are at most 4,096 UTF-8 bytes. Zero byte
+limits allow empty content; zero entries or duration are invalid. Limit failures
+return errors, never partial capture results. Bounds apply to accepted decoded
+content; JSON/base64 framing and transport decoding are additional memory costs.
+The cooperative deadline is checked during traversal, validation, byte chunks,
+and immediately before publication; it cannot interrupt a blocking kernel syscall
+or guarantee hard wall-clock completion of failure cleanup.
+
+The implementation requires Linux `openat2`, `renameat2`, and mounted `/proc`.
+Other platforms return `Unsupported` and do not advertise transfer capabilities.
+Unsupported Linux kernels/filesystems fail explicitly without an unsafe fallback.
+Separate capability flags default false for older endpoints; read-only daemons
+advertise capture only and reject materialization. Clients must consult the
+handshake capability flags before relying on the new operations.
+
+Selected environment paths retain ordinary absolute-host-path / relative-to-cwd
+semantics and must fall within the configured filesystem root. Root establishment
+rejects symlinks; subsequent traversal uses descriptor-relative no-follow,
+beneath-root opens and rejects mount crossings. Open descriptors pin directories
+and objects against pathname substitution; external directory renames can change
+the pathname of a pinned directory during an operation. This does not isolate
+against privileged processes or other processes with access to daemon-private
+staging directories. Symlinks at the selected root, ancestors, or inside a capture
+are conservatively rejected, including dangling links. Device nodes, sockets,
+FIFOs, and non-UTF8 filenames are explicitly unsupported. Symlink expansion as
+specified above remains deferred. Regular-file bytes can be arbitrary binary data;
+only the executable boolean is preserved (materialized files use 0644 or 0755).
+
+Materialization requires existing destination parents and cannot replace the
+configured filesystem root. Inventory parents must precede children; duplicate,
+absolute, traversal, and malformed relative entry paths fail validation. Content
+is built in a private sibling staging directory before publication. Atomic
+`RENAME_NOREPLACE` implements `error`; `RENAME_EXCHANGE` implements replacement
+of existing files or nonempty directories, including file/directory transitions.
+There is no deletion gap or overlay. Destination-only entries disappear from the
+selected target; siblings remain untouched. Pre-publication failures preserve the
+old target and clean up staging. Publication is atomic visibility, not crash-durable
+storage: this slice does not fsync content or provide crash recovery/receipts.
+
+**Replacement retains the previous complete target** as `tree` in a private
+sibling directory returned in `retiredDirectory`. The caller owns its cleanup;
+this avoids deleting an arbitrarily large old tree within the transfer deadline.
+Repeated replacements without cleanup consume disk. This is an explicit endpoint
+resource obligation, not a durable transfer receipt or VFS storage owner. A lost
+response can leave an undiscovered retirement directory; automatic reclamation
+and retry-safe operation identities remain deferred. No post-publication cleanup
+error is misreported as a failed transfer.
+
+Capture reads pinned regular files and directories, checks metadata before/after
+reading, and reopens all observed entries from the root for a final metadata
+comparison. Observable changes, missing entries, unsupported objects, and exceeded
+limits fail the whole response. It remains a live observation, not an atomic
+snapshot; callers requiring consistency must stabilize the source.
+
+Focused tests cover binary file/tree round trips, empty directories, executable
+flags, read-only capability/dispatch behavior, selected-target collision and full
+replacement, sibling preservation, destination-only removal, unsafe paths/links,
+special entries, limits, deadline checks, metadata change detection, and a staging
+I/O failure that leaves the old tree intact. CAS ownership/retention, VFS subtree
+publication, actual concurrent mutation stress, transport interruption/retry
+receipts, reuse, streaming, runtime grants, mappings, propagation, profiles, and UI
+are not delivered by this slice. Larger progress items below remain unchecked.
+
 Progress:
+
+- [x] Bounded inline environment endpoint primitive and typed client, with focused file/tree tests.
 
 - [ ] Transfer contracts and storage ownership settled.
 - [ ] Environment helpers and runtime operations implemented.

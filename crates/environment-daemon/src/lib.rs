@@ -175,6 +175,8 @@ fn environment_capabilities(config: &DaemonConfig) -> EnvironmentCapabilities {
         filesystem_search: true,
         filesystem_glob: true,
         filesystem_ranged_read: true,
+        filesystem_capture: cfg!(target_os = "linux"),
+        filesystem_materialize: cfg!(target_os = "linux") && !config.read_only_fs,
         process_start: true,
         process_stdin: true,
         process_terminate: true,

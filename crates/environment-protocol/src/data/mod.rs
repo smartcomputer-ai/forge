@@ -7,3 +7,4 @@ pub mod idle;
 pub mod jobs;
 pub mod methods;
 pub mod process;
+pub mod transfer;

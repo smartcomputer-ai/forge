@@ -1,3 +1,6 @@
+use environment_protocol::data::transfer::*;
+#[path = "transfer.rs"]
+mod transfer;
 use std::{
     io,
     path::{Component, Path, PathBuf},
@@ -32,6 +35,33 @@ impl LocalFileSystem {
             cwd: normalize_path(cwd),
             writable,
         }
+    }
+
+    pub async fn capture(
+        &self,
+        params: CaptureParams,
+    ) -> Result<CaptureResponse, EnvironmentProtocolError> {
+        let path = self.resolve(&params.source)?;
+        let root = self.root.clone();
+        tokio::task::spawn_blocking(move || transfer::capture(&root, &path, params))
+            .await
+            .map_err(|e| {
+                EnvironmentProtocolError::new(EnvironmentProtocolErrorCode::Internal, e.to_string())
+            })?
+    }
+
+    pub async fn materialize(
+        &self,
+        params: MaterializeParams,
+    ) -> Result<MaterializeResponse, EnvironmentProtocolError> {
+        self.ensure_writable()?;
+        let path = self.resolve(&params.destination)?;
+        let root = self.root.clone();
+        tokio::task::spawn_blocking(move || transfer::materialize(&root, &path, params))
+            .await
+            .map_err(|e| {
+                EnvironmentProtocolError::new(EnvironmentProtocolErrorCode::Internal, e.to_string())
+            })?
     }
 
     pub async fn read_file(

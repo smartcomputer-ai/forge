@@ -1,5 +1,7 @@
 //! Typed data-plane client methods.
 
+use environment_protocol::data::methods::{FS_CAPTURE_METHOD, FS_MATERIALIZE_METHOD};
+use environment_protocol::data::transfer::*;
 use environment_protocol::data::{
     fs::{
         CopyParams, CopyResponse, CreateDirectoryParams, CreateDirectoryResponse,
@@ -70,6 +72,20 @@ where
 
     pub async fn initialized(&mut self, params: &InitializedParams) -> EnvironmentClientResult<()> {
         self.rpc.notify(INITIALIZED_METHOD, params).await
+    }
+
+    pub async fn capture(
+        &mut self,
+        params: &CaptureParams,
+    ) -> EnvironmentClientResult<CaptureResponse> {
+        self.rpc.request(FS_CAPTURE_METHOD, params).await
+    }
+
+    pub async fn materialize(
+        &mut self,
+        params: &MaterializeParams,
+    ) -> EnvironmentClientResult<MaterializeResponse> {
+        self.rpc.request(FS_MATERIALIZE_METHOD, params).await
     }
 
     pub async fn read_file(
