@@ -41,34 +41,88 @@ environment-only edits still use ordinary filesystem discovery.
 Ordinary re-reads use the latest file contents. Discovery does not pin a skill
 body, install dependencies, execute scripts, or create an activation state.
 
-## Catalog sources and locations
+## Source catalogs and the model-facing catalog
 
-Keep VFS and environment discovery independent and present both catalogs to
-the model. The VFS catalog continues to describe linked workspace/snapshot
-paths and use `vfs_*` readers. An environment catalog describes environment
-paths and uses ordinary environment file/process tools.
+Keep two independently discovered source catalogs in runtime code: VFS skills
+and skills from the selected environment. Publish **one effective skill catalog**
+to the model after filtering and combining those observations. The source
+catalogs are inputs to that projection, not two duplicate menus in context.
 
-Extend the source-neutral skill envelope and API list views with environment
-source identity and readable locations. A skill needs a stable source-local
-identity, name, description, skill directory, and `SKILL.md` path. Environment
-locations include the environment ID; a display name alone is not identity.
+VFS locations describe linked workspace/snapshot paths and use `vfs_*` readers.
+Environment locations describe environment paths and use ordinary environment
+file/process tools. An effective entry includes its identity, name, description,
+filesystem domain, skill directory, and readable `SKILL.md` path. Environment
+locations also include the environment ID. The selected location's metadata
+supplies the description; do not combine one copy's instructions or description
+with another copy's directory.
 
-Use a stable context slot for the currently selected environment's skill
-catalog, for example `skills.catalog.environment`, with the environment ID in
-the catalog source. Keep `skills.catalog.vfs` independent. The API can present
-one combined list while retaining each entry's catalog/source identity; do not
-pretend its present single VFS catalog reference describes multiple sources.
+### Which copy is listed
 
-On an environment switch, supersede the selected-environment slot before the
-next model call. The successor names the new environment and invalidates the
-earlier environment menu. On deselection, publish a successor stating that no
-environment skills are available, or clear the slot according to existing
-feature-removal rules. Previously advertised paths must not be treated as
-belonging to the newly selected machine.
+| Available sources | Effective entry |
+| --- | --- |
+| VFS skill only | List its VFS path. |
+| Environment-installed skill only | List its path in the selected environment. |
+| VFS skill plus its usable copy under an active environment materialization | List once, preferring the environment path. |
+| Environment copy unavailable, missing, or not successfully prepared | Use the accessible VFS entry; expose relevant environment availability separately. |
+| Unrelated skills sharing a name | Keep both with distinct source/location labels. |
 
-If the entire feature is removed, clear all versions of its catalog. Preserve
-existing bounded retention of superseded catalogs; do not create a permanent
-context entry for every environment a session has visited.
+Prefer an available materialized environment copy for text-only and script-using
+skills alike. The model reads instructions and supporting files from one
+directory, and can run bundled scripts there. No inspection of the skill body
+or heuristic classification of its execution needs is necessary.
+
+Recognize a managed duplicate from the active environment materialization:
+source workspace identity and path map to a destination directory and relative
+skill path. Require a successfully applied mapping and a discovered, readable
+environment `SKILL.md`; the existence of a configured mapping alone is not
+enough. Pending source updates use the preparation ordering described above.
+Snapshot sources match by snapshot identity and path: a fixed old snapshot
+copy must not hide an unrelated live workspace version.
+
+Do not deduplicate by name, description, or matching `SKILL.md` bytes. Supporting
+scripts may differ even when the instructions match. Unmanaged copies,
+independent CLI installations, and one-off captures/materializations stay
+independently discoverable unless they participate in an active registered
+mapping. No content comparison or new package-identity registry is needed.
+
+An active mapping establishes the preferred copy, not a promise that its bytes
+have never been edited locally. Prefer the current environment file while
+that mapping remains valid and usable; ordinary reads return its latest bytes.
+Do not add drift detection, body pinning, or activation state for deduplication.
+Removing the mapping removes that preference even if its old files remain.
+
+Filter each source by the session's access and discovery configuration before
+combining entries. A materialization does not itself grant VFS access or make
+an undiscovered environment directory a skill root. Keep alternate authorized
+locations and mapping provenance available to API/UI inspection without
+advertising duplicate skill entries to the model. A VFS fallback supplies
+readable instructions; it does not claim that those scripts can execute in VFS.
+
+### Publication and environment changes
+
+Use one stable context key for the effective menu, for example `skills.catalog`,
+and keep source observations/fingerprints in the runtime's discovery records.
+Extend the skill catalog envelope and public views to describe mixed locations.
+The API's main list should agree with what the model sees, with source details
+available for inspection. Its catalog reference names the effective snapshot.
+
+Replace the current VFS-only publication key when implementing this change;
+remove its old context entries so both old and new keys do not stay current.
+Continue using the existing `SkillCatalog` kind and catalog supersession rules.
+Combining sources does not require another engine event or lifecycle.
+
+On an environment switch or deselection, recompute and supersede the effective
+catalog before the next model call. A materialized entry can fall back to its
+VFS path, and independent environment-only entries leave the current menu.
+Previously advertised paths must not be treated as belonging to the newly
+selected machine. Historical catalog versions retain their original rendering.
+
+Publish only when the effective menu changes. Scan timestamps, raw source
+fingerprints, and transfer receipts belong outside the model-facing payload.
+Changes to a preferred path, its environment identity, or useful metadata do
+change that payload. If both sources are disabled, clear all versions of the
+effective catalog. Preserve existing bounded retention of superseded versions;
+do not create a permanent context entry for every environment a session visits.
 
 ## Discovery roots and interoperability
 
@@ -92,8 +146,10 @@ name is not necessarily the same skill.
 
 Keep distinct skills with colliding names addressable by source/location.
 Use deterministic ordering and make ambiguity visible to clients and the model
-rather than silently merging their contents. A VFS source and an environment
-copy remain distinct unless an explicit transfer record establishes provenance.
+rather than silently merging their contents. Combine managed VFS/environment
+copies only through the active-mapping rule above. Multiple usable destinations
+for one source use a stable configured mapping-ID/path ordering to select the
+preferred location, with the other locations available in inspection views.
 
 Replace the current line-oriented frontmatter parser with YAML parsing that
 handles multiline descriptions and nested optional metadata. Share parsing
@@ -104,30 +160,145 @@ hooks or permission semantics merely because its metadata is present.
 
 ## Efficient envd helpers
 
-Add a capability-advertised, bounded filesystem scan/read helper to the
-environment data protocol and implement it in envd. The request describes
-roots, match/depth rules, symlink policy, byte/file/time limits, and optionally
-the fingerprint of a previous scan. The response supplies matching paths,
-canonical identities, bounded file contents, a fingerprint, and explicit
-completion/diagnostics. Exact RPC names and DTOs are implementation work.
+Use a **bounded filesystem scan** as the reusable environment abstraction.
+There is no skill-specific method, frontmatter schema, or catalog type in the
+environment protocol. Its current `fs/globFiles`, `fs/searchText`, and
+`fs/readFile` operations establish the existing filesystem boundary. Add a
+capability-advertised operation that combines matching-file enumeration and
+optional content reads in one endpoint-local pass.
 
-Enumerate and read on the machine, returning results in batches rather than
-one network round trip per directory and file. A repeated scan may return
-unchanged when its observed content fingerprint matches. Root directory mtime
-alone is insufficient: editing an existing `SKILL.md` need not change it.
+Illustrative shape, not final RPC names or DTOs:
 
-Keep this helper concerned with filesystem observations. Runtime code parses
-skill metadata, writes CAS catalog snapshots, and publishes context updates.
-Envd does not need to build Lightspeed context entries, query stores, or know
-session activation semantics. Factor any shared pure filesystem contracts
-without importing hosted runtime implementations into the endpoint.
+```text
+fs/scan(
+  roots,
+  include_patterns,
+  read_content,
+  digest_algorithm?,
+  symlink_policy,
+  limits,
+  if_none_match?
+)
+  -> unchanged { fingerprint }
+   | result { entries, fingerprint?, complete, diagnostics }
+
+entry:
+  root, relative_path, canonical_path, kind
+  file: size_bytes, executable, content?, content_digest?
+```
+
+For skills the caller supplies patterns matching `SKILL.md` and requests its
+bytes. That filename is query data, not a special envd rule. Preserve byte
+content with the protocol's ordinary byte representation; UTF-8 decoding and
+YAML parsing are caller concerns. The same operation can discover instruction
+files, project manifests, configuration files, or template directories with
+small metadata files.
+
+Optional per-file digests support reuse planning for other callers without
+returning file contents. Start with SHA-256 over complete file bytes, matching
+the transfer layer's content identity. Hashing is opt-in; skill discovery only
+needs the small matching documents. Include requested digests in the query's
+result fingerprint, and bound bytes inspected for hashing separately from
+response size. Transfer inventories also include directory entries so empty
+directories can be represented.
+
+Reuse the current glob matching conventions. Bound visited entries, depth,
+matched files, bytes per file, total bytes, and elapsed time. Return canonical
+paths for symlink-alias detection while retaining the requested/root-relative
+paths needed to explain locations. Enforce the endpoint's filesystem access
+scope and handle loops, missing roots, unreadable files, and symlink target
+changes explicitly. Generic environment information such as the execution
+user's home directory and default working directory belongs in endpoint
+metadata when needed for root resolution, not in a list of skill directories.
+
+Enumerate and read on the machine, returning the bounded result in one response
+rather than one network round trip per directory and file. Do not force the
+first implementation to maintain a subscription, watch handle, or per-session
+scan object. Large transfers remain the separate file/tree transfer facility;
+this operation supplies observations, not durable filesystem snapshots.
+
+### Reuse for transfer planning
+
+The [VFS transfer layer](p166-vfs-environment-transfer.md#reuse-and-incremental-transfer)
+shares these traversal, metadata, and hashing primitives. An aggregate result
+fingerprint answers whether the observed result changed; per-file digests
+identify which bytes a receiver can reuse. Materialization already has its
+desired inventory in VFS and inspects environment files as reuse candidates.
+Capture inventories environment files and uploads only content missing from
+the authorized CAS scope.
+
+Keep byte transfer, missing-content negotiation, staging, and publication in
+the transfer operations. They require complete selected-tree inventories and
+verification that transferred or reused bytes match the advertised digests.
+A scan result alone does not pin files for a later read. Large inventories may
+use the transfer facility's bounded streaming instead of expanding the small
+scan response into a mandatory transfer transport. File reuse preserves full
+replacement semantics, including removals; it does not introduce merging.
+
+### Conditional scans and cache correctness
+
+A fingerprint identifies a complete observed result for the same query and
+access scope: matching paths, resolved identities, requested metadata, and
+requested file bytes or digests. Include additions, deletions, renames, and
+symlink retargeting. Content changes invalidate queries requesting bytes or
+digests; metadata-only results do not establish byte equality. Exclude volatile
+accounting such as scan duration.
+An unrecognized fingerprint or a changed query can simply return a full result.
+
+`if_none_match` allows a small unchanged response when the current observation
+matches. It saves transport, parsing, and catalog work; it does not imply that
+discovering filesystem changes costs nothing. Initially, a bounded local scan
+of small matching files is sufficient. Root directory mtime alone is not a
+correct change detector, and size/mtime alone can miss in-place file edits.
+
+Later, envd may cache query results and invalidate them with filesystem watches.
+Missed/overflowed events, reconnects, or uncertain watcher coverage require a
+rescan. A stat or watcher optimization must not turn an unverified stale result
+into an unchanged response. These are generic filesystem optimizations, not
+skill state, and are not prerequisites for the first implementation.
+
+Only a complete observation may authorize reuse of a previous complete result.
+A limit, read error, or detected concurrent mutation must not produce
+`unchanged`. Return diagnostics/completeness explicitly and let the runtime
+retain its last good observation as stale. Do not silently replace a complete
+catalog with a partial listing or treat unavailable roots as confirmed deletions.
+Distinguish a successfully observed absent root from failure to inspect it.
+
+Even a complete scan is a live observation, not an atomic multi-file snapshot.
+The runtime uses it to build a menu, and subsequent file reads return current
+contents. It does not promise that files cannot change between scan and use.
+
+### Runtime composition and reuse
+
+The per-turn path is:
+
+```text
+environment preparation for observed workspace revisions
+  -> conditional fs scan of configured discovery roots
+  -> parse changed SKILL.md metadata in runtime code
+  -> combine with VFS discovery and environment materialization records
+  -> publish only if the effective menu changed
+```
+
+The environment mapping used for deduplication is already stored by Lightspeed:
+workspace/source path, environment destination, and application status. Join
+those records with observed filesystem locations in the runtime. Envd does
+not need a skill identity, a workspace ID, a deduplication rule, or access to
+Lightspeed stores. Share traversal/entry primitives with capture where useful
+without coupling observation to transfer, storage, or model interpretation.
+
+An unchanged environment scan can reuse its parsed source catalog, but does
+not by itself prove that the effective catalog is unchanged. VFS observations,
+mapping configuration/application status, selected environment, and source
+access can change independently. Recompute that inexpensive composition from
+its current inputs and compare the effective result before publishing.
 
 Support a bounded fallback using existing environment filesystem operations
 when the helper is unavailable. Missing filesystem capabilities produce an
 explicit unavailable source. Partial scans must report their limits and cannot
-be passed off as complete catalogs. Filesystem watches and incremental caches
-can optimize later; correctness must not depend on observing writes through a
-Lightspeed-specific installer.
+be passed off as complete catalogs. Keep parsing and composition shared between
+the helper and fallback paths. Correctness must not depend on observing writes
+through a Lightspeed-specific installer.
 
 Separate scan fingerprints from published catalog content. Body-only changes
 can invalidate a scan without changing the model's menu. File mtimes, last-check
@@ -191,12 +362,21 @@ compaction as it does today; skill file contents receive no special retention.
 ## Implementation and verification
 
 1. Add source/location and configuration support, fix shared YAML parsing,
-   and expose source-aware list results without activation fields.
-2. Implement envd scan/read helpers and the capability-negotiated fallback.
+   and build one effective model/API catalog without activation fields.
+2. Implement generic conditional filesystem scans and the capability-negotiated
+   fallback. Verify unchanged results, additions/deletions, same-size edits,
+   symlink retargeting, changed queries/access scope, and explicit incomplete
+   results. Verify optional file digests against content bytes, hashing limits,
+   and directory entries used by transfer inventories. No skill types or YAML
+   parsing belong in the protocol or envd helper.
 3. Consolidate catalog publication and add refresh before model continuations,
    with selected-environment identity and bounded availability handling.
 4. Verify direct-install directory layouts, symlink aliases, multiline metadata,
-   name collisions, edits/deletions, and filesystem access/scan limits.
+   name collisions, edits/deletions, and filesystem access/scan limits. Verify
+   mapped copies appear once at the environment path, unrelated same-name
+   skills remain distinct, and unavailable copies fall back to authorized VFS
+   paths. Cover mapping removal, partial-subtree mappings, fixed snapshot versus
+   live workspace sources, and deterministic preference among multiple copies.
 5. Verify an installation completed during a run appears before the next model
    request, an external edit is detected, and an environment switch cannot
    misdirect a refresh or keep the previous menu current.
@@ -213,6 +393,7 @@ running npm against public registries is not a prerequisite for discovery tests.
 Progress:
 
 - [ ] Source-aware catalogs, configuration, and shared parser implemented.
-- [ ] Envd helpers and fallback implemented.
+- [ ] Effective catalog composition and managed-copy preference implemented.
+- [ ] Generic envd conditional filesystem scans and fallback implemented.
 - [ ] Shared publication and within-run refresh implemented.
 - [ ] Installer-layout, availability, cache, and replay checks pass.

@@ -85,6 +85,99 @@ through model arguments or expand the deterministic workflow history. Longer
 transfers can use existing workflow-backed execution facilities; this proposal
 does not require a new job or orchestration system.
 
+### Model tools and capability placement
+
+Give the model a pair of explicit transfer tools. Use `capture` consistently
+for collecting environment files into VFS; do not add a second synonymous
+`collect` tool. Proposed model-facing names and arguments are:
+
+```text
+vfs_materialize(source_vfs_path, destination_environment_path,
+                on_existing = replace)
+
+vfs_capture(source_environment_path, destination_vfs_path,
+            on_existing = replace)
+```
+
+The first copies a VFS file or directory into the selected environment. The
+second captures an environment file or directory and publishes it at the
+selected VFS workspace path. Internally, capture produces immutable stored
+content before the revision-checked workspace update; the model does not need
+to orchestrate those two storage steps. The low-level API can still return a
+standalone capture reference without publishing it into a workspace.
+
+Place these in the VFS tool family and derive availability from the intersection
+of existing VFS and environment grants. No new transfer feature toggle is
+needed for the initial version:
+
+| Tool | Session grants | Per-call access |
+| --- | --- | --- |
+| `vfs_materialize` | VFS tools `readOnly` or `edit`, plus environments | Read the VFS source and write the environment destination. |
+| `vfs_capture` | VFS tools `edit`, plus environments | Read the environment source and write the VFS workspace destination. |
+
+Environment access alone does not grant VFS access; VFS access alone does not
+grant environment I/O. Check linked-route permissions and live environment
+capabilities during execution. A snapshot link remains read-only, and a VFS
+edit tool grant cannot make it a capture destination. Keep tool definitions
+stable when the selected environment changes; ordinary selection/readiness
+errors handle a call with no usable environment.
+
+Use the session's existing VFS paths to identify the model's sources and
+destinations. Resolve them through its authorized workspace/snapshot links.
+Do not expose an arbitrary universe workspace ID or raw blob reference as a
+way for a model call to bypass those links. Each selected VFS transfer path
+must resolve within one linked workspace or snapshot; copying a synthetic
+directory that spans independent links is outside the initial scope.
+
+Unlike ordinary VFS readers/editors, these two operations explicitly depend
+on an environment. Classify them as such in dispatch/readiness and tool-batch
+validation even though their model-facing names start with `vfs_`. Capture
+the selected environment identity when scheduling, prohibit selection changes
+in the same dependent batch, and prevent overlapping transfer destinations
+from being published concurrently. Ordinary VFS operations remain independent
+of environment availability.
+
+Session grants govern these ad hoc model actions. Environment-owned mappings
+continue to apply under their own configured source access without requiring
+an attached session or enabling its VFS tools. Calling a transfer tool does
+not register a mapping or grant the model permission to edit environment setup.
+
+### Partial transfers and replacement scope
+
+Support a single file, a selected directory subtree, or the whole workspace
+from the first version. Both directions take an exact source path and an exact
+destination path. A directory source's children become the destination's
+children; do not silently append the source directory's basename.
+
+| Example | Scope |
+| --- | --- |
+| Materialize VFS `/library/skills/review` to environment `/opt/skills/review` | Copy only that skill directory and its contents. |
+| Materialize VFS `/project/config.json` to environment `/work/config.json` | Copy one file. |
+| Capture environment `/work/results/run-42` to VFS `/project/results/run-42` | Replace only that destination subtree; preserve other runs and project files. |
+| Materialize a linked workspace root to environment `/work/project` | Copy the whole linked workspace. |
+
+`replace` applies at the selected destination boundary in either direction.
+Replacing `/project/results/run-42` in VFS removes destination-only entries
+inside `run-42`, while leaving `/project/src`, `/project/results/run-41`, and
+other siblings intact. The same rule applies to environment destinations.
+Create missing parent directories where permitted; a conflicting non-directory
+ancestor is an error. `error` instead rejects an existing selected target.
+
+Publishing a partial capture creates a new workspace head that references the
+new subtree and retains all unaffected entries from the observed head. It does
+not transfer the entire workspace's file bytes. Reuse existing CAS references
+for untouched files and update the head with the normal revision check. A
+concurrent commit conflicts, including one outside the replaced subtree;
+automatic rebasing or merging is not part of this feature. Keep the captured
+content available if workspace publication fails so it can be inspected or
+published again without unnecessarily recapturing mutable source files.
+
+The operation is complete or failed for the selected file/tree, not for the
+entire workspace. Do not publish half a selected tree on transfer failure.
+No include/exclude globs, arbitrary file selection sets, or multi-destination
+transactions are needed initially; callers can select a smaller directory or
+make separate transfers.
+
 ### Materialize
 
 - Preserve relative paths, bytes, and executable flags for the entire selected
@@ -282,8 +375,8 @@ configuration. Its registered workspace sources continue propagating changes
 independently of profile application. Profile modes that select an existing
 environment or inherit a parent's environment only select it; they do not
 apply session-specific workspace overlays. Keep Lightspeed workspace references
-in the Lightspeed environment configuration,
-not in provider-owned machine templates or Incus-specific configuration.
+in the Lightspeed environment configuration, not in provider-owned machine
+templates or Incus-specific configuration.
 
 One-off session/tool transfers remain useful and use the same primitives.
 They do not register or mutate persistent environment mappings. This preserves
@@ -305,6 +398,89 @@ to a selected workspace. Capture does not reverse or change a mapping by itself.
 Publishing captured contents to a mapped workspace is an ordinary workspace
 commit and automatically propagates to its mapped environments. Materialization
 does not itself write VFS, so this creates no automatic round-trip loop.
+
+## Reuse and incremental transfer
+
+Replacement describes the final selected tree; it does not require sending
+every file's bytes on every operation. Include reuse at whole-file granularity
+in the initial transfer design. Build a complete inventory, reuse content the
+receiver already has, transfer missing content, and publish the complete result.
+Deletion and executable-flag changes can change the tree without transferring
+any new file bytes. Deduplicating storage after uploading everything would not
+provide this transport saving.
+
+Share bounded traversal, path handling, metadata, and optional content hashing
+with the [filesystem scan helper](p168-environment-skill-catalogs.md#efficient-envd-helpers).
+A transfer inventory describes every selected file and directory, including
+empty directories: relative path, entry kind, and, for files, size, executable
+flag, and a digest of the complete file bytes. Use SHA-256 over the exact raw
+bytes, identical to the existing CAS file-blob digest. Do not include paths,
+executable flags, framing, or text normalization in that hash. A protocol
+digest represented as `sha256:<lowercase hex>` directly names the corresponding
+CAS blob; no rehashing or content-identity translation is needed. Envd does not
+need VFS manifests, workspace identities, or storage
+access. A scan's aggregate fingerprint identifies its query result and is
+separate from a file's content digest or a persisted VFS snapshot reference.
+
+### Materialization reuse
+
+The resolved VFS snapshot already supplies the desired tree and file content
+identities; no environment scan is needed to discover the source. The endpoint
+uses those identities to find reusable destination files, verifies their bytes,
+and reports the missing content. Send only those missing blobs. A persistent
+endpoint content cache is optional; verified files in the existing destination
+are sufficient to provide reuse for ordinary updates.
+
+The last applied source manifest can identify reuse candidates, but cannot
+prove their current bytes: a process may have edited the environment copy.
+Verify reusable bytes while constructing the staged result. Use independent
+copies or filesystem-supported copy-on-write clones; hard links to writable
+destination files would let concurrent edits corrupt staging. Apply executable
+metadata separately and omit destination-only entries from the new tree. The
+existing replacement and completion guarantees still apply. This can require
+local reads and copies of unchanged files even when no network bytes are needed.
+
+Skipping a registered update whose selected VFS subtree has not changed remains
+the cheapest path, with the existing rule that ordinary preparation does not
+repair local drift. A new transfer or explicit Reapply must verify the content
+it reuses; a completed operation retry still returns its receipt.
+
+### Capture reuse
+
+Envd inventories and hashes the selected source locally. The runtime checks
+which content is already available in the authorized CAS scope and requests
+only missing bytes, deduplicating repeated content within the transfer too.
+Build the new snapshot using both reused and newly stored blobs. Retain reused
+content through publication so collection cannot invalidate a successful
+presence check. A renamed file can reuse its bytes at a new path, and removed
+files disappear from the new selected tree. Workspace publication retains its
+existing revision and replacement rules even when every blob was reused.
+
+An inventory observation does not pin mutable environment files. Capture must
+bind subsequent reads to the advertised digests and verify the received bytes,
+or retain verified immutable staging content for the operation. Detected changes
+make the selected capture incomplete; do not silently substitute new bytes for
+the inventory's content identities. Reuse does not strengthen capture into an
+atomic operating-system snapshot.
+
+### Protocol and cost boundary
+
+Use scans for observation and reuse planning. Transfer operations additionally
+own missing-content negotiation, bounded byte streaming, verification, staging,
+and completion. Share inventory entry types and implementation where useful;
+large transfer inventories need not fit in one small `fs/scan` response. A
+partial or metadata-only scan cannot establish that the full selected tree's
+content is unchanged or authorize deletion of unobserved entries.
+
+Initially, discovering reusable environment content may require reading and
+hashing all selected files locally. The savings are in network transfer and
+duplicate storage, not a promise of zero filesystem I/O. Hashing limits must
+count inspected bytes even when the response returns only digests. A correct
+future change-tracking cache can reduce that work. Whole-file reuse does not
+require block-level deltas, chunk deduplication, filesystem watches, or a
+bidirectional synchronization protocol; a changed large file transfers in full.
+Report observed, reused, and transferred totals separately so savings can be
+verified without claiming that a reused file was never read.
 
 ## Environment support
 
@@ -354,8 +530,7 @@ A skill saved in a library workspace can be read directly through VFS. An
 environment can register that workspace or its skill subtree as a materialization
 for initial setup and automatic propagation of later workspace edits. A one-off
 transfer can also materialize the selected skill directory when its scripts are
-needed. Preserve
-the whole directory so relative links to scripts, references, and assets work
+needed. Preserve the whole directory so relative links to scripts, references, and assets work
 together. Environment skill discovery reads the resulting directory through
 its configured roots; transfer does not infer or register skill roots.
 
@@ -369,19 +544,28 @@ system packages, external tools, or credentials.
 1. Define file/tree inputs, results, limits, collision behavior, and the envd
    capability contract. Reuse existing CAS/VFS representations where possible.
 2. Implement bounded capture and materialization, including executable metadata,
+   file inventories/digests, missing-content negotiation, whole-file reuse,
    staging, operation receipts, and cleanup after failure.
 3. Add environment-owned materialization settings/results, automatic workspace
    change propagation, explicit Capture, and creation-time profile defaults.
    Reuse the transfer primitives and existing environment runtime coordination.
 4. Connect runtime tools and API operations, workspace source resolution, and
-   result retention. Keep all I/O outside the engine. Expose workspace-first
+   result retention. Derive the transfer tool pair from VFS/environment grants
+   and validate both filesystem domains during execution. Keep all I/O outside
+   the engine. Expose workspace-first
    configuration with replacement as the UI default and update status in
    environment details; keep `error | replace` distinct in the API.
 5. Verify binary and text round trips, relative paths, executable scripts,
    symlink handling, target conflicts and full replacement, staging/recovery,
    retries, environment switches, capture changes, workspace conflicts, and CAS
    reachability. Verify replacement removes destination-only entries and leaves
-   siblings alone.
+   siblings alone for both partial workspace capture and environment
+   materialization, and snapshot links reject capture publication.
+   Verify repeated transfers reuse existing content, a one-file edit transfers
+   only missing file bytes, and deletions, renames, empty directories, and
+   executable-only changes produce the correct tree. Cover environment edits
+   invalidating reuse candidates, mutation between inventory and byte reads,
+   missing/collected blobs, incomplete inventories, and staging isolation.
 6. Verify all workspace commit paths trigger updates, rapid edits coalesce,
    unrelated subtree edits are skipped, missed notifications/restarts converge,
    and offline environments catch up on use without being woken by every save.
@@ -391,14 +575,21 @@ system packages, external tools, or credentials.
    transfer, source access, capture coordination, and profile creation defaults.
    Reattachment, profile reapply, and reboot must not replay a completed
    replacement when source contents and configuration are unchanged.
-8. Regenerate API and workflow contracts when their wire surfaces change.
+8. Verify tool availability for VFS read/edit with and without environment
+   grants, both domains' path access, immutable destinations, environment
+   selection races, and partial-capture publication conflicts. A model must
+   be able to transfer files through the pair without moving their bytes
+   through its own context or constructing storage operations manually.
+9. Regenerate API and workflow contracts when their wire surfaces change.
    Update the workspace/environment guides and README when the feature ships.
 
 Progress:
 
 - [ ] Transfer contracts and storage ownership settled.
 - [ ] Environment helpers and runtime operations implemented.
+- [ ] Whole-file reuse and missing-content transfer verified in both directions.
 - [ ] Environment materializations, automatic updates, and edit-then-use ordering implemented.
 - [ ] Profile provisioning defaults and environment settings UI implemented.
 - [ ] API/tool surfaces and workspace integration implemented.
+- [ ] Capability derivation and file/subtree transfer behavior verified.
 - [ ] Focused integration, retry, and retention checks pass.
