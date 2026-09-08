@@ -1,7 +1,9 @@
 # Product documentation structure
 
-Status: proposed navigation and page scope. This is the index plan; page content
-and the documentation renderer are subsequent work.
+Status: twenty-two product pages are drafted under `docs/documentation/`,
+including the initial `using-lightspeed/` and `environments/` sections.
+The remaining navigation and page scopes are planned; the documentation renderer
+has not been selected.
 
 Use `docs/documentation/` as the product documentation root. The existing
 `docs/roadmap/` and `docs/spec/` can continue to hold implementation plans and
@@ -19,8 +21,8 @@ not require reading the architecture or an exhaustive configuration table.
 
 The comments below describe page scope, not additional pages. This is a compact
 target structure for the first manual: keep related topics together initially
-and split pages only when their content warrants it. The tree is proposed; these
-files have not been scaffolded.
+and split pages only when their content warrants it. The tree is the target
+structure; the implementation progress below lists the pages written so far.
 
 ```text
 docs/documentation/
@@ -32,7 +34,7 @@ docs/documentation/
 │   └── first-agent.md                    # Complete one task; inspect its tools, output, and persisted session
 │
 ├── using-lightspeed/
-│   ├── sessions-and-runs.md              # Web app and CLI/TUI; history, steering, queueing, cancellation, fork/clone
+│   ├── sessions-and-runs.md              # Web app and CLI/TUI; history, steering, queueing, cancellation, branching limits
 │   ├── models-and-credentials.md         # Model selection; provider connections, API keys, OAuth, compatible endpoints
 │   ├── profiles-and-instructions.md      # Reusable setups, capability grants, instructions, limits, applying profiles
 │   ├── workspaces-and-skills.md          # Persistent VFS files, workspace links, prompts, skill discovery/activation
@@ -143,6 +145,101 @@ supported behavior.
 | How it works | [Design walkthrough](../design.md), [engine guide](../../crates/engine/README.md), [environment specification](../spec/04-environments.md), and the bot/channel/delegation designs above. |
 | Development and reference | [Repository contribution guidance](../../AGENTS.md), [contribution policy](../../CONTRIBUTING.md), [development guide](../../scripts/dev/README.md), [evaluation harness](../../crates/eval/README.md), [API exporter](../../crates/api/src/bin/export-schema.rs), [workflow exporter](../../crates/temporal-workflow/src/bin/export-workflow-contract.rs), and [profile configuration reference generator](../../platform/scripts/generate-config-reference.mjs). |
 
+## Implementation progress
+
+The initial writing batch is complete:
+
+- [Core concepts](../documentation/getting-started/concepts.md)
+- [Local quickstart](../documentation/getting-started/quickstart.md)
+- [First agent](../documentation/getting-started/first-agent.md)
+- [Environment overview](../documentation/environments/overview.md)
+- [Bring your own compute](../documentation/environments/bring-your-own-compute.md)
+- [Deployment overview](../documentation/deployment/overview.md)
+- [Self-hosting](../documentation/deployment/self-hosting.md)
+- [Documentation home](../documentation/index.md)
+
+The walkthroughs use the current UI and configuration surfaces. The first-agent
+example edits VFS files without compute. The self-hosting recipe builds release
+images from a pinned source revision and uses existing PostgreSQL, Temporal,
+and an HTTPS edge. Procedures were reviewed against source and generated
+contracts; a live deployment and credentialed model calls have not been run
+as part of this documentation work.
+
+Initial-batch verification passed: all 125 local links and anchors in the new and updated
+documents resolve, all 22 shell examples in the manual pass Bash syntax checks,
+and the deployment's Platform environment example passes its configuration
+parser. The five focused Platform configuration tests and release metadata
+verification also pass. Sub-agent reviews checked the UI sequences, daemon
+lifecycle, and deployment recipe against their implementations.
+
+The second writing batch adds the eight usage guides:
+
+- [Sessions and runs](../documentation/using-lightspeed/sessions-and-runs.md)
+- [Models and credentials](../documentation/using-lightspeed/models-and-credentials.md)
+- [Profiles and instructions](../documentation/using-lightspeed/profiles-and-instructions.md)
+- [Workspaces and skills](../documentation/using-lightspeed/workspaces-and-skills.md)
+- [Tools and MCP](../documentation/using-lightspeed/tools-and-mcp.md)
+- [Bots and triggers](../documentation/using-lightspeed/bots-and-triggers.md)
+- [Sub-agents and federation](../documentation/using-lightspeed/subagents-and-federation.md)
+- [Chat channels](../documentation/using-lightspeed/chat-channels.md)
+
+These continue the Acorn release example through a reviewer profile, sourced
+instructions, a skill, delegated review, and an event-driven bot. Source and
+contract reviews cover UI procedures, credentials, approvals, profile updates,
+event delivery, and channel pairing. The guides distinguish stored history
+from active context, shared files from copied setup, and event admission from
+completed work. Credentialed model, webhook, MCP, and messaging walkthroughs
+have not been exercised against live services.
+
+Second-batch verification passed: all 188 local links and anchors across the
+sixteen manual pages and five updated repository documents resolve. All 30
+Bash examples pass syntax checks, all three fenced JSON examples parse, and
+the manual has balanced code fences and no numeric roadmap references. All
+seven mentioned RPC methods or namespaces match the generated contract.
+The 29 focused web tests for session configuration and bot triggers, plus
+the three Rust skill-frontmatter parser tests, pass. The examples were
+reviewed against current UI, CLI, tool, and API contracts by the research
+sub-agents; shell examples were parsed without executing their operations.
+
+The third writing batch completes the environment guides:
+
+- [Using environments](../documentation/environments/using-environments.md)
+- [Processes and jobs](../documentation/environments/processes-and-jobs.md)
+- [Environment credentials](../documentation/environments/credentials.md)
+- [Incus VMs](../documentation/environments/incus-vms.md)
+- [Power and cleanup](../documentation/environments/power-and-cleanup.md)
+- [Networking and ingress](../documentation/environments/networking-and-ingress.md)
+
+These add a machine-side release-note check, job dependencies and promise
+lifetime, credential assignment and renewal, a standalone Incus recipe, power
+and cleanup procedures, and a public application test. Source reviews cover
+the current UI limitations, source-specific selection filters, interrupted
+jobs after daemon restart, initial-only profile credentials, idle-policy
+staging limits, and public ingress without visitor authentication. No live
+Incus build/provision, credentialed integration, or deployed ingress has been
+executed as part of this writing batch.
+
+Third-batch verification passed: all 249 local links and anchors across the
+twenty-two manual pages and five updated repository documents resolve. All
+45 Bash examples pass syntax checks, all eleven fenced JSON examples parse,
+and nineteen mentioned RPC methods or namespaces match the generated contract.
+The three new public API params examples also validate against its JSON Schema.
+The release-check script succeeds on a valid local fixture and rejects empty
+or incomplete notes. Twenty-two focused Rust tests cover provider configuration,
+ingress routing, job dependencies/retries/restart behavior, credential injection,
+and idle accounting; four web subscription tests also pass. Operational shell
+examples were not executed against the configured deployment.
+
+The root README links to the manual. Existing development guidance now reflects
+optional deployment API keys and the local daemon, the environment specification
+includes registration-key filtering, and the design guide points to the workspace
+manifest for its crate inventory. The README now describes fork/clone support
+as core/storage primitives, matching the absence of a creation action in the
+current public clients. The environment specification and overview now explain
+the current idle-policy staging limit, and the borrowed-compute walkthrough
+uses the supported CLI/API close path. Remaining topic guides and deeper
+operational recovery instructions follow the writing plan below.
+
 ## First writing pass
 
 Write in this order while retaining the target navigation above:
@@ -157,18 +254,13 @@ Write in this order while retaining the target navigation above:
    bots/channels/delegation, API and workflow integration, extensions,
    architecture, and contributor guides.
 
-The main writing gaps are coherent tutorials, an end-to-end deployment guide,
-and operational recovery procedures. Their presence in the proposed index is a
-writing requirement, not a claim that a tested deployment or recovery recipe
-already exists. Establish one verified self-hosting recipe first; add
-orchestrator-specific recipes when the repository actually supports them.
-
-Existing guidance also needs reconciliation during authoring. For example, the
-development README currently says the full/runtime profiles require deployment
-API keys, while the launcher permits startup without them and points users to
-per-universe credentials in the UI. The quickstart must follow the executable
-behavior. Similarly, the design document's final pointer to an AGENTS crate
-inventory is stale; the workspace manifest owns the current crate list.
+The first batch establishes the introductory tutorials and self-hosting path;
+the second adds the initial usage guides; the third completes the initial
+environment section. Operations, recovery, integration, internals, and
+development procedures remain to be written and exercised.
+Add orchestrator-specific recipes when the repository
+supports them. Continue reconciling older guidance against executable behavior
+as each new page is authored.
 
 ## Existing docs and publishing
 

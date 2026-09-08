@@ -1,8 +1,10 @@
 # Environments
 
-Lightspeed environments are universe-owned live resources backed by external
-providers. Sessions neither own nor attach copies of them. A session records
-only an optional active universe environment id.
+Lightspeed environments are universe-owned live resources reached through a
+provider, a stored daemon endpoint, or outbound daemon registration. A session
+records an optional active environment id rather than attaching a copy.
+Profile provisioning can separately tie an environment's cleanup to its
+originating session, as described below.
 
 Universe environments define ownership and selection, while explicit VFS and
 environment domains define filesystem/tool routing. Lightspeed is greenfield,
@@ -45,9 +47,11 @@ enter deterministic session state.
 
 ## Session policy and state
 
-`SessionConfig.features.environments` grants the capability and retains one
-optional policy: a provider allowlist. When it is absent, every universe
-provider is allowed. Environment-specific allowlists, tag rules, and capability
+`SessionConfig.features.environments` grants the capability and can filter
+provisioned environments by `providers` and registered environments by
+`registrationKeys`. Each list is independent: an absent list allows every
+environment of that source kind. External environments pass only when neither
+list is set. Environment-specific allowlists, tag rules, and capability
 predicates are intentionally deferred.
 
 Deterministic state contains only:
@@ -112,6 +116,13 @@ of running processes and jobs. The power reaper polls that report for
 `stopAfterMs`, `closeAfterMs`; non-decreasing) and records the most escalated
 due stage the provider supports, never while anything is executing. No
 per-call activity is written to Lightspeed storage.
+
+The current reaper considers only environments whose observed status is
+`ready` and whose desired power is `running`. After a policy pauses or stops
+one, later thresholds do not automatically keep escalating while it remains
+powered down. Public application traffic does not reset daemon activity and
+does not wake a sleeping target. Manual power changes do not apply the
+reaper's running-work guard.
 
 ## Discovery and selection tools
 

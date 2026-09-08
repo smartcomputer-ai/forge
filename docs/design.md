@@ -266,4 +266,5 @@ Where the pieces above live:
 - `crates/store-pg` / `crates/store-fs` — session log and CAS storage backends
 - `crates/api` / `crates/api-projection` — the client-facing types and projection helpers
 
-The full crate index lives in [`AGENTS.md`](../AGENTS.md) at the repo root.
+The current workspace members are listed in [`Cargo.toml`](../Cargo.toml)
+at the repo root.

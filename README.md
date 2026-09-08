@@ -122,8 +122,8 @@ Lightspeed covers the table stakes of a modern agent harness. Everything below w
 
 - [x] **Long-running agents**: sessions last weeks to months and survive restarts
 - [x] **Active-run control**: cancel or steer a run, or queue the next message
-- [x] **Session fork & clone**: branch from an agent's full state without
-  duplicating its data
+- [x] **Session fork & clone primitives**: share stored history for branches or
+  start from copied configuration; currently exposed at the core/storage layer
 - [x] **Workflow-backed tools**: external workflows create sessions and add
   durable tools with delivery, deadlines, results, and cancellation
 - [x] **One backend binary**: run every role in one process or scale them
@@ -212,6 +212,8 @@ npm run check
 
 ## Documentation
 
+- [Product documentation](docs/documentation/index.md) — concepts, first agent,
+  compute, and self-hosting
 - [Design](docs/design.md)
 - [Development environment](scripts/dev/README.md)
 - [Environment variables](docs/variables.md)
