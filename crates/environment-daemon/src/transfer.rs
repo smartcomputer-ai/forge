@@ -311,32 +311,6 @@ mod linux {
         observed.push((relative, before));
         Ok(())
     }
-    #[cfg(test)]
-    mod checks {
-        use super::*;
-        #[test]
-        fn expired_transfer_and_changed_source_are_failures() {
-            let mut budget = Budget::new(TransferLimits {
-                max_entries: 1,
-                max_depth: 0,
-                max_file_bytes: 1,
-                max_total_bytes: 1,
-                max_duration_ms: 1,
-            })
-            .unwrap();
-            budget.start = Instant::now() - Duration::from_secs(1);
-            assert_eq!(
-                budget.time().unwrap_err().code,
-                EnvironmentProtocolErrorCode::Timeout
-            );
-            let temp = tempfile::tempdir().unwrap();
-            let path = temp.path().join("file");
-            std::fs::write(&path, b"a").unwrap();
-            let before = std::fs::metadata(&path).unwrap();
-            std::fs::write(&path, b"changed").unwrap();
-            assert!(!same(&before, &std::fs::metadata(&path).unwrap()));
-        }
-    }
 
     pub fn capture(root: &Path, path: &Path, params: CaptureParams) -> Result<CaptureResponse> {
         let mut budget = Budget::new(params.limits)?;
@@ -549,6 +523,32 @@ mod linux {
             bytes: budget.bytes,
             retired_directory,
         })
+    }
+    #[cfg(test)]
+    mod checks {
+        use super::*;
+        #[test]
+        fn expired_transfer_and_changed_source_are_failures() {
+            let mut budget = Budget::new(TransferLimits {
+                max_entries: 1,
+                max_depth: 0,
+                max_file_bytes: 1,
+                max_total_bytes: 1,
+                max_duration_ms: 1,
+            })
+            .unwrap();
+            budget.start = Instant::now() - Duration::from_secs(1);
+            assert_eq!(
+                budget.time().unwrap_err().code,
+                EnvironmentProtocolErrorCode::Timeout
+            );
+            let temp = tempfile::tempdir().unwrap();
+            let path = temp.path().join("file");
+            std::fs::write(&path, b"a").unwrap();
+            let before = std::fs::metadata(&path).unwrap();
+            std::fs::write(&path, b"changed").unwrap();
+            assert!(!same(&before, &std::fs::metadata(&path).unwrap()));
+        }
     }
 }
 
