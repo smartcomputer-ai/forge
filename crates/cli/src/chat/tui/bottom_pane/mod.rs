@@ -168,8 +168,8 @@ impl BottomPaneState {
         self.slash_popup = None;
     }
 
-    pub(crate) fn open_skill_picker(&mut self, skills: &[api::SkillListItem]) {
-        self.active_view = Some(BottomPaneView::Picker(ListSelectionView::skills(skills)));
+    pub(crate) fn open_skill_picker(&mut self, catalogs: &[api::SkillCatalogView]) {
+        self.active_view = Some(BottomPaneView::Picker(ListSelectionView::skills(catalogs)));
         self.slash_popup = None;
     }
 

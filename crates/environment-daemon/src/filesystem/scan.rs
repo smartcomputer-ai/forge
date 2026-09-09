@@ -1,7 +1,18 @@
-//! Endpoint-local observations, sharing the transfer backend's scoped opens and metadata.
-use super::*;
+//! Bounded endpoint-local observations through the shared scoped filesystem backend.
+use super::backend::{
+    self, Directory, Result, conflict, digest, error, invalid, io, relative, valid_path,
+};
 use environment_protocol::shared::EnvironmentPath;
+use environment_protocol::{
+    data::inventory::*, error::EnvironmentProtocolErrorCode as Code, shared::ByteChunk,
+};
+use sha2::{Digest, Sha256};
 use std::{collections::BTreeSet, path::PathBuf};
+use std::{
+    io::Read,
+    path::Path,
+    time::{Duration, Instant},
+};
 
 pub fn scan(root: &Path, params: ScanParams) -> Result<ScanResponse> {
     let ceiling = InventoryLimits::default();

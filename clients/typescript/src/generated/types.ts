@@ -1549,26 +1549,20 @@ export type ApprovalDecisionFailureKind =
 export type ApprovalDecisionStatus = "decided" | "failed";
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "EnvironmentSkillAvailabilityView".
+ * via the `definition` "SkillCatalogAvailability".
  */
-export type EnvironmentSkillAvailabilityView = "available" | "stale" | "unavailable";
+export type SkillCatalogAvailability = "available" | "stale" | "unavailable";
 /**
- * The filesystem domain and paths needed for ordinary skill use.
- *
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "SkillLocationView".
+ * via the `definition` "SkillCatalogSource".
  */
-export type SkillLocationView =
+export type SkillCatalogSource =
   | {
-      environmentId: string;
-      skillDirPath: string;
-      skillDocPath: string;
-      type: "environment";
+      type: "vfs";
     }
   | {
-      skillDirPath: string;
-      skillDocPath: string;
-      type: "vfs";
+      environmentId: string;
+      type: "environment";
     };
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
@@ -5875,26 +5869,19 @@ export interface AgentApiOutcomeOfSkillListResponse {
  * via the `definition` "SkillListResponse".
  */
 export interface SkillListResponse {
-  catalogRef?: string | null;
-  /**
-   * Independent selected-environment catalog. The top-level fields describe VFS only.
-   */
-  environment?: EnvironmentSkillCatalogView | null;
-  skills?: SkillListItem[];
+  catalogs: SkillCatalogView[];
 }
 /**
- * Independently identified catalog, never merged or deduplicated with VFS skills.
+ * An independent catalog instance; sources are never merged or used as fallbacks.
  *
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "EnvironmentSkillCatalogView".
+ * via the `definition` "SkillCatalogView".
  */
-export interface EnvironmentSkillCatalogView {
-  availability: EnvironmentSkillAvailabilityView;
-  catalogId: string;
-  catalogRef: string;
-  contextKey: string;
-  environmentId: string;
+export interface SkillCatalogView {
+  availability: SkillCatalogAvailability;
+  catalogRef?: string | null;
   skills: SkillListItem[];
+  source: SkillCatalogSource;
   warnings: string[];
 }
 /**
@@ -5911,6 +5898,16 @@ export interface SkillListItem {
   name: string;
   shortDescription?: string | null;
   skillId: string;
+}
+/**
+ * Readable paths within the owning catalog's filesystem domain.
+ *
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "SkillLocationView".
+ */
+export interface SkillLocationView {
+  skillDirPath: string;
+  skillDocPath: string;
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema

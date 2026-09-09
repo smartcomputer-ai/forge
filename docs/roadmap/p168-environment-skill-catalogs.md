@@ -432,13 +432,18 @@ Progress:
 - Generic scans now report canonical paths, support opt-in confined symlink
   traversal, distinguish missing roots from inspection failures, and enforce
   aggregate quotas. Transfer operations keep their existing secure backend and
-  publication semantics. No skill parsing moved into envd or the protocol.
+  publication semantics. Shared confined access, observations, hashing, and errors
+  are owned by `filesystem/backend`; bounded `filesystem/scan.rs` and
+  `filesystem/transfer` are siblings. Scan diagnostics use filesystem language.
+  No skill parsing moved into envd or the protocol.
 - Workflow source invalidation appends ordinary keyed removal commands after
   recorded selection/configuration changes. It performs no scan. Gateway
   publications carry context revision checks and are rejected if work has been
   admitted or the selected source has changed in the meantime.
-- The API and CLI preserve the VFS section and add an independent environment
-  section with source locations, catalog reference, and availability. Installer
+- The API returns homogeneous `catalogs` views with catalog-level source identity,
+  reference, availability, skills, and warnings. Skill entries retain readable
+  paths without repeating source identity or exposing runtime context keys.
+  CLI and chat picker display each catalog separately. Installer
   copies in the two domains remain distinct; no combined menu is published.
 
 ### Verification
@@ -460,3 +465,14 @@ pass. The root `npm run check` stops at its `git diff --exit-code` generated-fil
 check because the requested generated updates are intentionally uncommitted;
 regeneration stability and the remaining check stages were verified separately.
 No live or credentialed suites were run.
+
+The catalog DTO and filesystem ownership follow-up passes 621 scoped Rust tests
+(API, CLI, environment daemon, and Temporal server libraries/binaries; one
+existing test remains ignored). Projection tests cover separate equal-name/path
+catalogs, environment-only unavailability, and selection changes preserving
+VFS. CLI tests cover source-specific readers, unavailable sources without
+fallback, ambiguous IDs, and separate picker sections. All 74 envd tests retain
+transfer and bounded-scan coverage after moving the shared backend. API and
+TypeScript/Configurator generation reproduces all 13 checked artifacts exactly;
+TypeScript checks, consumer/Configurator tests, and builds pass. The root check's
+uncommitted-generated-file limitation described above still applies.

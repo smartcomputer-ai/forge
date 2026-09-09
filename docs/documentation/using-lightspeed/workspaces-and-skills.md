@@ -210,10 +210,14 @@ remain separate entries.
 
 The environment catalog has the stable context key
 `runtime.catalog.skills.environment`; VFS retains `runtime.catalog.skills.vfs`.
-`session/skills/list` keeps the VFS `catalogRef` and `skills` fields and returns an
-independent `environment` section with its own catalog reference, environment
-identity, availability, skills, and parsing warnings. The CLI prints both
-sections and can select either by its distinct skill ID. Environment skills are
+`session/skills/list` returns a `catalogs` array. Every catalog has a `source`
+(`{ "type": "vfs" }` or `{ "type": "environment", "environmentId": "…" }`),
+`catalogRef`, `availability`, `skills`, and `warnings`. Source identity belongs
+to the catalog; each skill contains metadata and readable directory/document
+paths. Runtime context keys are not exposed in this response. An absent catalog
+is omitted; an observed empty or unavailable catalog retains its own section.
+The CLI and chat picker retain separate catalog sections and select skills by
+their distinct IDs. Environment skills are
 read with environment file tools and their scripts run with process tools on
 that machine. VFS skills continue to use VFS tools. Copies in both domains are
 advertised independently, with no deduplication or automatic fallback.

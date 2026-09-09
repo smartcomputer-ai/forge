@@ -449,28 +449,45 @@ fn run_terminal_notification_derives_destination_from_controller() {
 #[test]
 fn skill_list_response_exposes_readable_locations() {
     let catalog_ref = BlobRef::from_bytes(b"catalog");
-    let catalog = test_skill_catalog(
+    let mut catalog = test_skill_catalog(
         &catalog_ref,
         vec![
             test_skill_metadata("skill:review", "review", true),
             test_skill_metadata("skill:deploy", "deploy", false),
         ],
     );
+    catalog.warnings.push(tools::skills::SkillLoadWarning::new(
+        "workspace",
+        Some("/skills/broken".into()),
+        tools::skills::SkillLoadWarningKind::MissingSkillDoc,
+    ));
     let response = skill_list_response(Some(&catalog_ref), Some(&catalog));
 
-    assert_eq!(response.catalog_ref.as_deref(), Some(catalog_ref.as_str()));
-    assert_eq!(response.skills.len(), 2);
-    assert_eq!(response.skills[0].skill_id, "skill:review");
-    assert!(response.skills[0].enabled);
+    assert_eq!(response.catalogs[0].source, api::SkillCatalogSource::Vfs);
     assert_eq!(
-        response.skills[0].location,
-        SkillLocationView::Vfs {
+        response.catalogs[0].availability,
+        api::SkillCatalogAvailability::Available
+    );
+    assert_eq!(
+        response.catalogs[0].warnings,
+        vec!["workspace /skills/broken: missing SKILL.md"]
+    );
+    assert_eq!(
+        response.catalogs[0].catalog_ref.as_deref(),
+        Some(catalog_ref.as_str())
+    );
+    assert_eq!(response.catalogs[0].skills.len(), 2);
+    assert_eq!(response.catalogs[0].skills[0].skill_id, "skill:review");
+    assert!(response.catalogs[0].skills[0].enabled);
+    assert_eq!(
+        response.catalogs[0].skills[0].location,
+        SkillLocationView {
             skill_dir_path: "/skills/system/review".into(),
             skill_doc_path: "/skills/system/review/SKILL.md".into(),
         }
     );
-    assert_eq!(response.skills[1].skill_id, "skill:deploy");
-    assert!(!response.skills[1].enabled);
+    assert_eq!(response.catalogs[0].skills[1].skill_id, "skill:deploy");
+    assert!(!response.catalogs[0].skills[1].enabled);
 }
 
 #[test]
@@ -2651,8 +2668,8 @@ async fn skill_list_reads_latest_structured_provenance() {
         super::skills::skill_list_from_context(&blobs, &state)
             .await
             .unwrap()
-            .catalog_ref
-            .is_none()
+            .catalogs
+            .is_empty()
     );
     for (id, name) in [(1, "old"), (2, "current")] {
         let catalog = SkillCatalogSnapshot::new(
@@ -2682,12 +2699,94 @@ async fn skill_list_reads_latest_structured_provenance() {
     let response = super::skills::skill_list_from_context(&blobs, &state)
         .await
         .unwrap();
-    assert_eq!(response.skills[0].name, "current");
+    assert_eq!(response.catalogs[0].skills[0].name, "current");
     assert_eq!(
-        response.catalog_ref.as_deref(),
+        response.catalogs[0].catalog_ref.as_deref(),
         state.context.entries[1]
             .provenance_ref
             .as_ref()
             .map(BlobRef::as_str)
+    );
+    use tools::skills::environment::{
+        ENVIRONMENT_SKILL_CATALOG_CONTEXT_KEY, EnvironmentSkill, EnvironmentSkillAvailability,
+        EnvironmentSkillCatalog,
+    };
+    let vfs = response.catalogs[0].clone();
+    let mut environment = EnvironmentSkillCatalog::unavailable("machine");
+    environment.availability = EnvironmentSkillAvailability::Stale;
+    environment.warnings = vec!["scan incomplete".into()];
+    environment.skills.push(EnvironmentSkill {
+        skill_id: tools::skills::SkillId::new("environment:review"),
+        name: "current".into(),
+        description: "same named skill".into(),
+        short_description: None,
+        skill_dir_path: "/skills/system/current".into(),
+        skill_doc_path: "/skills/system/current/SKILL.md".into(),
+    });
+    let reference = blobs
+        .put_bytes(serde_json::to_vec(&environment).unwrap())
+        .await
+        .unwrap();
+    let mut entry = state.context.entries[1].clone();
+    entry.entry_id = engine::ContextEntryId::new(3);
+    entry.key = Some(ContextEntryKey::new(ENVIRONMENT_SKILL_CATALOG_CONTEXT_KEY));
+    entry.supersedes = None;
+    entry.provenance_ref = Some(reference.clone());
+    state.context.entries.push(entry);
+    state.environment.active_environment_id = Some(engine::EnvironmentId::new("machine"));
+    let response = super::skills::skill_list_from_context(&blobs, &state)
+        .await
+        .unwrap();
+    assert_eq!(response.catalogs.len(), 2);
+    assert_eq!(response.catalogs[0], vfs);
+    let projected = &response.catalogs[1];
+    assert_eq!(
+        projected.source,
+        api::SkillCatalogSource::Environment {
+            environment_id: "machine".into()
+        }
+    );
+    assert_eq!(projected.catalog_ref.as_deref(), Some(reference.as_str()));
+    assert_eq!(projected.availability, api::SkillCatalogAvailability::Stale);
+    assert_eq!(projected.warnings, environment.warnings);
+    assert_eq!(projected.skills[0].name, vfs.skills[0].name);
+    assert_eq!(projected.skills[0].location, vfs.skills[0].location);
+    let json = serde_json::to_value(&response).unwrap();
+    assert!(json["catalogs"][1].get("contextKey").is_none());
+    assert!(
+        json["catalogs"][1]["skills"][0]["location"]
+            .get("environmentId")
+            .is_none()
+    );
+    for selection in [Some(engine::EnvironmentId::new("other")), None] {
+        state.environment.active_environment_id = selection;
+        assert_eq!(
+            super::skills::skill_list_from_context(&blobs, &state)
+                .await
+                .unwrap()
+                .catalogs,
+            vec![vfs.clone()]
+        );
+    }
+    state.environment.active_environment_id = Some(engine::EnvironmentId::new("machine"));
+    state.context.entries.retain(|entry| {
+        entry.key.as_ref().unwrap().as_str() == ENVIRONMENT_SKILL_CATALOG_CONTEXT_KEY
+    });
+    environment.skills.clear();
+    environment.availability = EnvironmentSkillAvailability::Unavailable;
+    state.context.entries[0].provenance_ref = Some(
+        blobs
+            .put_bytes(serde_json::to_vec(&environment).unwrap())
+            .await
+            .unwrap(),
+    );
+    let response = super::skills::skill_list_from_context(&blobs, &state)
+        .await
+        .unwrap();
+    assert_eq!(response.catalogs.len(), 1);
+    assert!(response.catalogs[0].skills.is_empty());
+    assert_eq!(
+        response.catalogs[0].availability,
+        api::SkillCatalogAvailability::Unavailable
     );
 }

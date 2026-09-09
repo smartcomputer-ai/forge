@@ -243,7 +243,7 @@ export const METHOD_INFO = {
   "session/skills/list": {
     scope: "universe",
     summary: "List available session skills",
-    description: "Lists discovered skills with their VFS document and directory paths. Refreshes the catalog only while the session is open with no active or queued run. An absent catalog yields an empty result.",
+    description: "Returns separate VFS and environment catalogs with source, reference, availability, readable skill paths, and warnings. Refreshes only when open with no active or queued run, without waking environments. Absent catalogs are omitted.",
   },
   "session/profiles/apply": {
     scope: "universe",
@@ -977,7 +977,7 @@ export interface MethodMap {
   /**
    * List available session skills
    *
-   * Lists discovered skills with their VFS document and directory paths. Refreshes the catalog only while the session is open with no active or queued run. An absent catalog yields an empty result.
+   * Returns separate VFS and environment catalogs with source, reference, availability, readable skill paths, and warnings. Refreshes only when open with no active or queued run, without waking environments. Absent catalogs are omitted.
    */
   "session/skills/list": {
     params: Api.SkillListParams;
@@ -2109,7 +2109,7 @@ export const rpc = {
   /**
    * List available session skills
    *
-   * Lists discovered skills with their VFS document and directory paths. Refreshes the catalog only while the session is open with no active or queued run. An absent catalog yields an empty result.
+   * Returns separate VFS and environment catalogs with source, reference, availability, readable skill paths, and warnings. Refreshes only when open with no active or queued run, without waking environments. Absent catalogs are omitted.
    */
   sessionSkillsList(client: RpcCaller, params: Api.SkillListParams): Promise<Api.AgentApiOutcomeOfSkillListResponse> {
     return client.call("session/skills/list", params);

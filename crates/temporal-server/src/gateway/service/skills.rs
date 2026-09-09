@@ -130,33 +130,7 @@ impl GatewayAgentApi {
         &self,
         loaded: &LoadedSession,
     ) -> Result<SkillListResponse, AgentApiError> {
-        let mut response = skill_list_from_context(self.store.as_ref(), &loaded.state).await?;
-        let key =
-            ContextEntryKey::new(tools::skills::environment::ENVIRONMENT_SKILL_CATALOG_CONTEXT_KEY);
-        if let Some(entry) = engine::current_context_entry(&loaded.state, &key)
-            && let Some(reference) = &entry.provenance_ref
-        {
-            let bytes = self
-                .store
-                .read_bytes(reference)
-                .await
-                .map_err(map_blob_read_error)?;
-            let catalog: tools::skills::environment::EnvironmentSkillCatalog =
-                serde_json::from_slice(&bytes)
-                    .map_err(|error| AgentApiError::internal(error.to_string()))?;
-            // Selection can race an API read; never reinterpret a former machine's paths.
-            if loaded
-                .state
-                .environment
-                .active_environment_id
-                .as_ref()
-                .map(|id| id.as_str())
-                == Some(catalog.environment_id.as_str())
-            {
-                response.environment = Some(environment_skill_list_view(reference, catalog));
-            }
-        }
-        Ok(response)
+        skill_list_from_context(self.store.as_ref(), &loaded.state).await
     }
 
     pub(super) fn require_open_idle_session(
@@ -185,44 +159,66 @@ pub(super) fn skill_list_response(
 ) -> SkillListResponse {
     let Some(catalog) = catalog else {
         return SkillListResponse {
-            environment: None,
-            catalog_ref: None,
-            skills: Vec::new(),
+            catalogs: Vec::new(),
         };
     };
     SkillListResponse {
-        environment: None,
-        catalog_ref: catalog_ref.map(|catalog_ref| catalog_ref.as_str().to_owned()),
-        skills: catalog
-            .skills
-            .iter()
-            .map(|skill| SkillListItem {
-                skill_id: skill.skill_id.as_str().to_owned(),
-                name: skill.name.clone(),
-                description: skill.description.clone(),
-                short_description: skill.short_description.clone(),
-                enabled: skill.enabled,
-                location: match &skill.location {
-                    SkillLocation::LinkedSnapshot {
-                        skill_dir_path,
-                        skill_doc_path,
-                        ..
-                    }
-                    | SkillLocation::LinkedWorkspace {
-                        skill_dir_path,
-                        skill_doc_path,
-                        ..
-                    } => SkillLocationView::Vfs {
-                        skill_dir_path: skill_dir_path.to_string(),
-                        skill_doc_path: skill_doc_path.to_string(),
+        catalogs: vec![api::SkillCatalogView {
+            source: api::SkillCatalogSource::Vfs,
+            availability: api::SkillCatalogAvailability::Available,
+            warnings: catalog
+                .warnings
+                .iter()
+                .map(|warning| {
+                    use tools::skills::SkillLoadWarningKind;
+                    let message = match &warning.kind {
+                        SkillLoadWarningKind::UnavailableWorkspaceLink { reason } => {
+                            reason.as_str()
+                        }
+                        SkillLoadWarningKind::MissingSkillDoc => "missing SKILL.md",
+                        SkillLoadWarningKind::InvalidSkillDoc { message }
+                        | SkillLoadWarningKind::Filesystem { message } => message.as_str(),
+                    };
+                    let location = warning
+                        .path
+                        .as_ref()
+                        .map(|path| format!("{} {path}", warning.root_id))
+                        .unwrap_or_else(|| warning.root_id.clone());
+                    format!("{location}: {message}")
+                })
+                .collect(),
+            catalog_ref: catalog_ref.map(|catalog_ref| catalog_ref.as_str().to_owned()),
+            skills: catalog
+                .skills
+                .iter()
+                .map(|skill| SkillListItem {
+                    skill_id: skill.skill_id.as_str().to_owned(),
+                    name: skill.name.clone(),
+                    description: skill.description.clone(),
+                    short_description: skill.short_description.clone(),
+                    enabled: skill.enabled,
+                    location: match &skill.location {
+                        SkillLocation::LinkedSnapshot {
+                            skill_dir_path,
+                            skill_doc_path,
+                            ..
+                        }
+                        | SkillLocation::LinkedWorkspace {
+                            skill_dir_path,
+                            skill_doc_path,
+                            ..
+                        } => SkillLocationView {
+                            skill_dir_path: skill_dir_path.to_string(),
+                            skill_doc_path: skill_doc_path.to_string(),
+                        },
                     },
-                },
-            })
-            .collect(),
+                })
+                .collect(),
+        }],
     }
 }
 
-pub(super) async fn skill_list_from_context(
+async fn vfs_skill_list_from_context(
     blobs: &dyn BlobStore,
     state: &engine::CoreAgentState,
 ) -> Result<SkillListResponse, AgentApiError> {
@@ -230,9 +226,7 @@ pub(super) async fn skill_list_from_context(
         engine::current_context_entry(state, &ContextEntryKey::new(SKILL_CATALOG_CONTEXT_KEY))
     else {
         return Ok(SkillListResponse {
-            environment: None,
-            catalog_ref: None,
-            skills: Vec::new(),
+            catalogs: Vec::new(),
         });
     };
     let catalog_ref = entry
@@ -254,21 +248,17 @@ pub(super) async fn skill_list_from_context(
 fn environment_skill_list_view(
     reference: &BlobRef,
     catalog: tools::skills::environment::EnvironmentSkillCatalog,
-) -> api::EnvironmentSkillCatalogView {
+) -> api::SkillCatalogView {
     use tools::skills::environment::EnvironmentSkillAvailability;
-    api::EnvironmentSkillCatalogView {
-        catalog_id: catalog.catalog_id,
-        context_key: tools::skills::environment::ENVIRONMENT_SKILL_CATALOG_CONTEXT_KEY.into(),
-        environment_id: catalog.environment_id.clone(),
-        catalog_ref: reference.to_string(),
+    api::SkillCatalogView {
+        source: api::SkillCatalogSource::Environment {
+            environment_id: catalog.environment_id.clone(),
+        },
+        catalog_ref: Some(reference.to_string()),
         availability: match catalog.availability {
-            EnvironmentSkillAvailability::Available => {
-                api::EnvironmentSkillAvailabilityView::Available
-            }
-            EnvironmentSkillAvailability::Stale => api::EnvironmentSkillAvailabilityView::Stale,
-            EnvironmentSkillAvailability::Unavailable => {
-                api::EnvironmentSkillAvailabilityView::Unavailable
-            }
+            EnvironmentSkillAvailability::Available => api::SkillCatalogAvailability::Available,
+            EnvironmentSkillAvailability::Stale => api::SkillCatalogAvailability::Stale,
+            EnvironmentSkillAvailability::Unavailable => api::SkillCatalogAvailability::Unavailable,
         },
         skills: catalog
             .skills
@@ -279,8 +269,7 @@ fn environment_skill_list_view(
                 description: skill.description,
                 short_description: skill.short_description,
                 enabled: true,
-                location: api::SkillLocationView::Environment {
-                    environment_id: catalog.environment_id.clone(),
+                location: api::SkillLocationView {
                     skill_dir_path: skill.skill_dir_path,
                     skill_doc_path: skill.skill_doc_path,
                 },
@@ -288,4 +277,37 @@ fn environment_skill_list_view(
             .collect(),
         warnings: catalog.warnings,
     }
+}
+
+pub(super) async fn skill_list_from_context(
+    blobs: &dyn BlobStore,
+    state: &engine::CoreAgentState,
+) -> Result<SkillListResponse, AgentApiError> {
+    let mut response = vfs_skill_list_from_context(blobs, state).await?;
+    let key =
+        ContextEntryKey::new(tools::skills::environment::ENVIRONMENT_SKILL_CATALOG_CONTEXT_KEY);
+    if let Some(entry) = engine::current_context_entry(state, &key)
+        && let Some(reference) = &entry.provenance_ref
+    {
+        let bytes = blobs
+            .read_bytes(reference)
+            .await
+            .map_err(map_blob_read_error)?;
+        let catalog: tools::skills::environment::EnvironmentSkillCatalog =
+            serde_json::from_slice(&bytes)
+                .map_err(|error| AgentApiError::internal(error.to_string()))?;
+        // Selection can race an API read; never reinterpret a former machine's paths.
+        if state
+            .environment
+            .active_environment_id
+            .as_ref()
+            .map(|id| id.as_str())
+            == Some(catalog.environment_id.as_str())
+        {
+            response
+                .catalogs
+                .push(environment_skill_list_view(reference, catalog));
+        }
+    }
+    Ok(response)
 }

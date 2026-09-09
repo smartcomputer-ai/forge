@@ -9,13 +9,7 @@ pub struct SkillListParams {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct SkillListResponse {
-    /// Independent selected-environment catalog. The top-level fields describe VFS only.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub environment: Option<EnvironmentSkillCatalogView>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub catalog_ref: Option<String>,
-    #[serde(default)]
-    pub skills: Vec<SkillListItem>,
+    pub catalogs: Vec<SkillCatalogView>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -31,41 +25,40 @@ pub struct SkillListItem {
     pub location: SkillLocationView,
 }
 
-/// The filesystem domain and paths needed for ordinary skill use.
+/// Readable paths within the owning catalog's filesystem domain.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillLocationView {
+    pub skill_dir_path: String,
+    pub skill_doc_path: String,
+}
+
+/// An independent catalog instance; sources are never merged or used as fallbacks.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SkillCatalogView {
+    pub source: SkillCatalogSource,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub catalog_ref: Option<String>,
+    pub availability: SkillCatalogAvailability,
+    pub skills: Vec<SkillListItem>,
+    pub warnings: Vec<String>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(
     tag = "type",
     rename_all = "camelCase",
     rename_all_fields = "camelCase"
 )]
-pub enum SkillLocationView {
-    Environment {
-        environment_id: EnvironmentId,
-        skill_dir_path: String,
-        skill_doc_path: String,
-    },
-    Vfs {
-        skill_dir_path: String,
-        skill_doc_path: String,
-    },
-}
-
-/// Independently identified catalog, never merged or deduplicated with VFS skills.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub struct EnvironmentSkillCatalogView {
-    pub catalog_id: String,
-    pub context_key: String,
-    pub environment_id: EnvironmentId,
-    pub catalog_ref: String,
-    pub availability: EnvironmentSkillAvailabilityView,
-    pub skills: Vec<SkillListItem>,
-    pub warnings: Vec<String>,
+pub enum SkillCatalogSource {
+    Vfs,
+    Environment { environment_id: EnvironmentId },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
-pub enum EnvironmentSkillAvailabilityView {
+pub enum SkillCatalogAvailability {
     Available,
     Stale,
     Unavailable,

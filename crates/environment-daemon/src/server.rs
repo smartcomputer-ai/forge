@@ -428,5 +428,5 @@ mod transfer_tests {
 }
 
 #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
-#[path = "transfer/tests.rs"]
+#[path = "filesystem/transfer/tests.rs"]
 mod streaming_transfer_tests;

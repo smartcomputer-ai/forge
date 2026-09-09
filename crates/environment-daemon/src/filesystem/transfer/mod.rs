@@ -1,5 +1,7 @@
 //! Compatibility adapters for small inline copies. All confinement, hashing and
 //! publication use the same backend as paged transfers on Linux and macOS.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(super) mod session;
 use super::*;
 use environment_protocol::data::{inventory::*, transfer_session::*};
 use sha2::{Digest, Sha256};

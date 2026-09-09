@@ -196,8 +196,8 @@ impl ChatTuiApp {
                     ChatEvent::SessionsListed { sessions, .. } => {
                         self.bottom_pane.open_session_picker(sessions);
                     }
-                    ChatEvent::SkillsListed { skills, .. } => {
-                        self.bottom_pane.open_skill_picker(skills);
+                    ChatEvent::SkillsListed { catalogs, .. } => {
+                        self.bottom_pane.open_skill_picker(catalogs);
                     }
                     ChatEvent::HistoryReset { session_id } => {
                         self.options.session_id = session_id.clone();
@@ -706,17 +706,22 @@ mod tests {
         app.handle_ui_event(
             UiEvent::Chat(ChatEvent::SkillsListed {
                 session_id: app.options.session_id.clone(),
-                catalog_ref: Some("sha256:catalog".into()),
-                skills: vec![api::SkillListItem {
-                    skill_id: "lightspeed:review".into(),
-                    name: "Review".into(),
-                    description: "Review diffs".into(),
-                    short_description: Some("review changes".into()),
-                    enabled: true,
-                    location: api::SkillLocationView::Vfs {
-                        skill_dir_path: "/skills/review".into(),
-                        skill_doc_path: "/skills/review/SKILL.md".into(),
-                    },
+                catalogs: vec![api::SkillCatalogView {
+                    source: api::SkillCatalogSource::Vfs,
+                    availability: api::SkillCatalogAvailability::Available,
+                    warnings: vec![],
+                    catalog_ref: Some("sha256:catalog".into()),
+                    skills: vec![api::SkillListItem {
+                        skill_id: "lightspeed:review".into(),
+                        name: "Review".into(),
+                        description: "Review diffs".into(),
+                        short_description: Some("review changes".into()),
+                        enabled: true,
+                        location: api::SkillLocationView {
+                            skill_dir_path: "/skills/review".into(),
+                            skill_doc_path: "/skills/review/SKILL.md".into(),
+                        },
+                    }],
                 }],
             }),
             &FrameRequester::test_dummy(),

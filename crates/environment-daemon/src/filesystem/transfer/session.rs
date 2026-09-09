@@ -1,7 +1,10 @@
-//! Bounded transfer state machine. Only this adapter performs filesystem I/O.
+//! Bounded transfer sessions retain inventories and publish through the filesystem backend.
+use crate::filesystem::backend::{
+    self, Result, conflict, digest, error, invalid, io, relative, valid_digest, valid_path,
+};
 use environment_protocol::{
     data::{inventory::*, transfer::TransferOnExisting, transfer_session::*},
-    error::{EnvironmentProtocolError as Error, EnvironmentProtocolErrorCode as Code},
+    error::EnvironmentProtocolErrorCode as Code,
     shared::ByteChunk,
 };
 use sha2::{Digest, Sha256};
@@ -12,79 +15,9 @@ use std::{
     path::Path,
     time::{Duration, Instant},
 };
-#[path = "backend.rs"]
-mod backend;
 #[path = "journal.rs"]
 mod journal;
 use backend::{Directory, Observation};
-type Result<T> = std::result::Result<T, Error>;
-fn error(code: Code, message: impl Into<String>) -> Error {
-    Error::new(code, message)
-}
-fn invalid(message: &str) -> Error {
-    error(Code::InvalidRequest, message)
-}
-fn io(e: std::io::Error) -> Error {
-    use std::io::ErrorKind::*;
-    if backend::is_path_violation(&e) {
-        return error(Code::Forbidden, e.to_string());
-    }
-    error(
-        match e.kind() {
-            NotFound => Code::NotFound,
-            AlreadyExists => Code::Conflict,
-            PermissionDenied => Code::Forbidden,
-            Unsupported => Code::Unsupported,
-            InvalidInput => Code::InvalidRequest,
-            _ => Code::Internal,
-        },
-        e.to_string(),
-    )
-}
-fn conflict() -> Error {
-    error(
-        Code::Conflict,
-        "filesystem observation changed; start a new transfer",
-    )
-}
-pub fn valid_path(path: &str) -> bool {
-    path.len() <= MAX_INVENTORY_PATH_BYTES
-        && (path.is_empty()
-            || (!path.contains(['\\', '\0'])
-                && path
-                    .split('/')
-                    .all(|p| !p.is_empty() && p != "." && p != "..")))
-}
-fn valid_digest(value: &str) -> bool {
-    value.strip_prefix("sha256:").is_some_and(|s| {
-        s.len() == 64
-            && s.bytes()
-                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-    })
-}
-fn digest(hash: Sha256) -> String {
-    format!("sha256:{:x}", hash.finalize())
-}
-fn relative(root: &Path, path: &environment_protocol::shared::EnvironmentPath) -> Result<String> {
-    let path = Path::new(path.as_str())
-        .strip_prefix(root)
-        .map_err(|_| error(Code::Forbidden, "selection outside filesystem root"))?;
-    let value = path
-        .components()
-        .map(|component| match component {
-            std::path::Component::Normal(name) => name
-                .to_str()
-                .map(str::to_owned)
-                .ok_or_else(|| invalid("non-UTF-8 selection")),
-            _ => Err(invalid("invalid selection component")),
-        })
-        .collect::<Result<Vec<_>>>()?
-        .join("/");
-    if !valid_path(&value) {
-        return Err(invalid("invalid selection"));
-    }
-    Ok(value)
-}
 #[derive(Clone)]
 struct Source {
     path: String,
@@ -1292,10 +1225,6 @@ fn retained_page(path: &Path, count: u32, offset: u32) -> Result<TransferRespons
         next_offset: (end < count).then_some(end),
     })
 }
-
-#[path = "scan.rs"]
-mod scan_impl;
-pub use scan_impl::scan;
 
 #[cfg(test)]
 mod tests {

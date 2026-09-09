@@ -125,8 +125,7 @@ pub(crate) enum ChatEvent {
     },
     SkillsListed {
         session_id: String,
-        catalog_ref: Option<String>,
-        skills: Vec<api::SkillListItem>,
+        catalogs: Vec<api::SkillCatalogView>,
     },
     SessionSelected(ChatSessionSummary),
     HistoryReset {

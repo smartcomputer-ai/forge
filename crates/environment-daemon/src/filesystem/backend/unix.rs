@@ -51,7 +51,7 @@ fn check(meta: Metadata) -> io::Result<Observation> {
     } else {
         Err(io::Error::new(
             io::ErrorKind::Unsupported,
-            "symlinks and special files cannot transfer",
+            "scoped filesystem access does not support symlinks or special files",
         ))
     }
 }

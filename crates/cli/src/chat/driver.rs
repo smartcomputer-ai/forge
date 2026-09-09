@@ -645,8 +645,7 @@ impl ChatSessionDriver {
             .result;
         Ok(vec![ChatEvent::SkillsListed {
             session_id: self.session_id.clone(),
-            catalog_ref: response.catalog_ref,
-            skills: response.skills,
+            catalogs: response.catalogs,
         }])
     }
 
@@ -1708,40 +1707,7 @@ fn progress_label(status: ChatProgressStatus) -> &'static str {
 }
 
 fn format_skill_list(response: &api::SkillListResponse) -> String {
-    let mut lines = vec![format_catalog_ref(response.catalog_ref.as_deref())];
-    lines.push(format!("skills {}", response.skills.len()));
-    for skill in &response.skills {
-        let enabled = if skill.enabled { "enabled" } else { "disabled" };
-        lines.push(format!("- {} [{}] {}", skill.skill_id, enabled, skill.name));
-        let skill_doc_path = crate::skills_cli::skill_location_label(&skill.location);
-        lines.push(format!("  {skill_doc_path}"));
-        if !skill.description.trim().is_empty() {
-            lines.push(format!("  {}", preview(&skill.description)));
-        }
-        if let Some(short_description) = &skill.short_description {
-            lines.push(format!("  short {}", preview(short_description)));
-        }
-    }
-    if let Some(environment) = &response.environment {
-        lines.push(format!(
-            "Environment {} {:?} catalogRef {}",
-            environment.environment_id, environment.availability, environment.catalog_ref
-        ));
-        for skill in &environment.skills {
-            lines.push(format!(
-                "- {} {}\n  {}\n  {}",
-                skill.skill_id,
-                skill.name,
-                crate::skills_cli::skill_location_label(&skill.location),
-                preview(&skill.description)
-            ));
-        }
-    }
-    lines.join("\n")
-}
-
-fn format_catalog_ref(catalog_ref: Option<&str>) -> String {
-    format!("catalogRef {}", catalog_ref.unwrap_or("-"))
+    crate::skills_cli::format_skill_catalogs(response)
 }
 
 fn preview(value: &str) -> String {
@@ -1916,18 +1882,22 @@ mod tests {
     #[test]
     fn formats_skill_list_for_transcript_notice() {
         let response = api::SkillListResponse {
-            environment: None,
-            catalog_ref: Some("sha256:catalog".into()),
-            skills: vec![api::SkillListItem {
-                skill_id: "lightspeed:review".into(),
-                name: "Review".into(),
-                description: "Review repository changes.".into(),
-                short_description: Some("review diffs".into()),
-                enabled: true,
-                location: api::SkillLocationView::Vfs {
-                    skill_dir_path: "/skills/review".into(),
-                    skill_doc_path: "/skills/review/SKILL.md".into(),
-                },
+            catalogs: vec![api::SkillCatalogView {
+                source: api::SkillCatalogSource::Vfs,
+                availability: api::SkillCatalogAvailability::Available,
+                warnings: vec![],
+                catalog_ref: Some("sha256:catalog".into()),
+                skills: vec![api::SkillListItem {
+                    skill_id: "lightspeed:review".into(),
+                    name: "Review".into(),
+                    description: "Review repository changes.".into(),
+                    short_description: Some("review diffs".into()),
+                    enabled: true,
+                    location: api::SkillLocationView {
+                        skill_dir_path: "/skills/review".into(),
+                        skill_doc_path: "/skills/review/SKILL.md".into(),
+                    },
+                }],
             }],
         };
 

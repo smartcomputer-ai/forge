@@ -859,9 +859,19 @@ async fn dispatch_json_rpc_routes_skills_list() {
     .await;
 
     assert!(response.error.is_none());
+    let result = response.result.expect("result")["result"].clone();
     assert_eq!(
-        response.result.expect("result")["result"]["skills"][0]["location"],
-        json!({"type":"vfs", "skillDirPath":"/skills/one", "skillDocPath":"/skills/one/SKILL.md"})
+        result.as_object().unwrap().keys().collect::<Vec<_>>(),
+        vec!["catalogs"]
+    );
+    let catalog = &result["catalogs"][0];
+    assert_eq!(catalog["source"], json!({"type": "vfs"}));
+    assert_eq!(catalog["availability"], "available");
+    assert_eq!(catalog["warnings"], json!([]));
+    assert!(catalog.get("contextKey").is_none());
+    assert_eq!(
+        catalog["skills"][0]["location"],
+        json!({"skillDirPath":"/skills/one", "skillDocPath":"/skills/one/SKILL.md"})
     );
 }
 
@@ -2137,18 +2147,22 @@ impl AgentApiService for TestService {
         _params: SkillListParams,
     ) -> Result<AgentApiOutcome<SkillListResponse>, AgentApiError> {
         Ok(AgentApiOutcome::new(SkillListResponse {
-            environment: None,
-            catalog_ref: Some(format!("sha256:{}", "5".repeat(64))),
-            skills: vec![SkillListItem {
-                skill_id: "skill:one".to_owned(),
-                name: "one".to_owned(),
-                description: "Use when testing skills.".to_owned(),
-                short_description: Some("test skill".to_owned()),
-                enabled: true,
-                location: SkillLocationView::Vfs {
-                    skill_dir_path: "/skills/one".into(),
-                    skill_doc_path: "/skills/one/SKILL.md".into(),
-                },
+            catalogs: vec![SkillCatalogView {
+                source: SkillCatalogSource::Vfs,
+                availability: SkillCatalogAvailability::Available,
+                warnings: vec![],
+                catalog_ref: Some(format!("sha256:{}", "5".repeat(64))),
+                skills: vec![SkillListItem {
+                    skill_id: "skill:one".to_owned(),
+                    name: "one".to_owned(),
+                    description: "Use when testing skills.".to_owned(),
+                    short_description: Some("test skill".to_owned()),
+                    enabled: true,
+                    location: SkillLocationView {
+                        skill_dir_path: "/skills/one".into(),
+                        skill_doc_path: "/skills/one/SKILL.md".into(),
+                    },
+                }],
             }],
         }))
     }

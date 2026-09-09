@@ -197,7 +197,7 @@ Injects input into the named active run; the model sees it at the next turn boun
 
 **List available session skills**
 
-Lists discovered skills with their VFS document and directory paths. Refreshes the catalog only while the session is open with no active or queued run. An absent catalog yields an empty result.
+Returns separate VFS and environment catalogs with source, reference, availability, readable skill paths, and warnings. Refreshes only when open with no active or queued run, without waking environments. Absent catalogs are omitted.
 
 - Params: `SkillListParams`
 - Result: `AgentApiOutcome<SkillListResponse>`

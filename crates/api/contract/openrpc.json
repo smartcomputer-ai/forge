@@ -8907,56 +8907,6 @@
         "description": "A freshly minted registration secret. `Debug` output is redacted so the\nplaintext cannot leak through derived logging; it is shown once.",
         "type": "string"
       },
-      "EnvironmentSkillAvailabilityView": {
-        "enum": [
-          "available",
-          "stale",
-          "unavailable"
-        ],
-        "type": "string"
-      },
-      "EnvironmentSkillCatalogView": {
-        "description": "Independently identified catalog, never merged or deduplicated with VFS skills.",
-        "properties": {
-          "availability": {
-            "$ref": "#/components/schemas/EnvironmentSkillAvailabilityView"
-          },
-          "catalogId": {
-            "type": "string"
-          },
-          "catalogRef": {
-            "type": "string"
-          },
-          "contextKey": {
-            "type": "string"
-          },
-          "environmentId": {
-            "type": "string"
-          },
-          "skills": {
-            "items": {
-              "$ref": "#/components/schemas/SkillListItem"
-            },
-            "type": "array"
-          },
-          "warnings": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          }
-        },
-        "required": [
-          "catalogId",
-          "contextKey",
-          "environmentId",
-          "catalogRef",
-          "availability",
-          "skills",
-          "warnings"
-        ],
-        "type": "object"
-      },
       "EnvironmentSkillsFeature": {
         "additionalProperties": false,
         "description": "Discovery scope resolved on the selected machine, never on the worker.",
@@ -15797,6 +15747,82 @@
         ],
         "type": "object"
       },
+      "SkillCatalogAvailability": {
+        "enum": [
+          "available",
+          "stale",
+          "unavailable"
+        ],
+        "type": "string"
+      },
+      "SkillCatalogSource": {
+        "oneOf": [
+          {
+            "properties": {
+              "type": {
+                "const": "vfs",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "environmentId": {
+                "type": "string"
+              },
+              "type": {
+                "const": "environment",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "environmentId"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "SkillCatalogView": {
+        "description": "An independent catalog instance; sources are never merged or used as fallbacks.",
+        "properties": {
+          "availability": {
+            "$ref": "#/components/schemas/SkillCatalogAvailability"
+          },
+          "catalogRef": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "skills": {
+            "items": {
+              "$ref": "#/components/schemas/SkillListItem"
+            },
+            "type": "array"
+          },
+          "source": {
+            "$ref": "#/components/schemas/SkillCatalogSource"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "source",
+          "availability",
+          "skills",
+          "warnings"
+        ],
+        "type": "object"
+      },
       "SkillListItem": {
         "properties": {
           "description": {
@@ -15848,81 +15874,33 @@
       },
       "SkillListResponse": {
         "properties": {
-          "catalogRef": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "environment": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/EnvironmentSkillCatalogView"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "description": "Independent selected-environment catalog. The top-level fields describe VFS only."
-          },
-          "skills": {
-            "default": [],
+          "catalogs": {
             "items": {
-              "$ref": "#/components/schemas/SkillListItem"
+              "$ref": "#/components/schemas/SkillCatalogView"
             },
             "type": "array"
           }
         },
+        "required": [
+          "catalogs"
+        ],
         "type": "object"
       },
       "SkillLocationView": {
-        "description": "The filesystem domain and paths needed for ordinary skill use.",
-        "oneOf": [
-          {
-            "properties": {
-              "environmentId": {
-                "type": "string"
-              },
-              "skillDirPath": {
-                "type": "string"
-              },
-              "skillDocPath": {
-                "type": "string"
-              },
-              "type": {
-                "const": "environment",
-                "type": "string"
-              }
-            },
-            "required": [
-              "type",
-              "environmentId",
-              "skillDirPath",
-              "skillDocPath"
-            ],
-            "type": "object"
+        "description": "Readable paths within the owning catalog's filesystem domain.",
+        "properties": {
+          "skillDirPath": {
+            "type": "string"
           },
-          {
-            "properties": {
-              "skillDirPath": {
-                "type": "string"
-              },
-              "skillDocPath": {
-                "type": "string"
-              },
-              "type": {
-                "const": "vfs",
-                "type": "string"
-              }
-            },
-            "required": [
-              "type",
-              "skillDirPath",
-              "skillDocPath"
-            ],
-            "type": "object"
+          "skillDocPath": {
+            "type": "string"
           }
-        ]
+        },
+        "required": [
+          "skillDirPath",
+          "skillDocPath"
+        ],
+        "type": "object"
       },
       "SubagentAgentPin": {
         "description": "The profile a sub-agent was spawned from, pinned at its revision.",
@@ -17872,7 +17850,7 @@
       "summary": "Steer the active run"
     },
     {
-      "description": "Lists discovered skills with their VFS document and directory paths. Refreshes the catalog only while the session is open with no active or queued run. An absent catalog yields an empty result.",
+      "description": "Returns separate VFS and environment catalogs with source, reference, availability, readable skill paths, and warnings. Refreshes only when open with no active or queued run, without waking environments. Absent catalogs are omitted.",
       "name": "session/skills/list",
       "paramStructure": "by-name",
       "params": [

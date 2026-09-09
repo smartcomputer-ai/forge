@@ -3383,7 +3383,7 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
     "name": "lightspeed_session_skills_list",
     "method": "session/skills/list",
     "summary": "List available session skills",
-    "description": "Lists discovered skills with their VFS document and directory paths. Refreshes the catalog only while the session is open with no active or queued run. An absent catalog yields an empty result.",
+    "description": "Returns separate VFS and environment catalogs with source, reference, availability, readable skill paths, and warnings. Refreshes only when open with no active or queued run, without waking environments. Absent catalogs are omitted.",
     "paramsType": "SkillListParams",
     "resultType": "AgentApiOutcome<SkillListResponse>",
     "inputSchema": {

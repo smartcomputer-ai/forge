@@ -1,8 +1,8 @@
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-#[path = "transfer/session.rs"]
-mod transfer_session;
+mod backend;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod scan;
 use environment_protocol::data::transfer::*;
-#[path = "transfer.rs"]
 mod transfer;
 use std::{
     io,
@@ -30,7 +30,7 @@ pub struct LocalFileSystem {
     cwd: PathBuf,
     writable: bool,
     #[cfg(any(target_os = "linux", target_os = "macos"))]
-    transfers: std::sync::Arc<std::sync::Mutex<transfer_session::TransferManager>>,
+    transfers: std::sync::Arc<std::sync::Mutex<transfer::session::TransferManager>>,
 }
 
 impl LocalFileSystem {
@@ -51,7 +51,7 @@ impl LocalFileSystem {
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         {
             self.transfers = std::sync::Arc::new(std::sync::Mutex::new(
-                transfer_session::TransferManager::with_journal(path)?,
+                transfer::session::TransferManager::with_journal(path)?,
             ));
             let weak = std::sync::Arc::downgrade(&self.transfers);
             std::thread::Builder::new()
@@ -66,7 +66,7 @@ impl LocalFileSystem {
                             manager.lock().ok().and_then(|mut manager| manager.expire());
                         drop(manager);
                         if let Some(directory) = directory {
-                            transfer_session::TransferManager::cleanup_expired(&directory);
+                            transfer::session::TransferManager::cleanup_expired(&directory);
                         }
                     }
                 })
@@ -96,7 +96,7 @@ impl LocalFileSystem {
                     destination
                 }
             };
-            *path = EnvironmentPath::new(self.resolve_transfer_path(path)?.to_string_lossy())
+            *path = EnvironmentPath::new(self.resolve_scoped_path(path)?.to_string_lossy())
                 .map_err(|e| {
                     EnvironmentProtocolError::new(
                         EnvironmentProtocolErrorCode::InvalidRequest,
@@ -138,7 +138,7 @@ impl LocalFileSystem {
         mut params: environment_protocol::data::inventory::ScanParams,
     ) -> Result<environment_protocol::data::inventory::ScanResponse, EnvironmentProtocolError> {
         for path in &mut params.roots {
-            *path = EnvironmentPath::new(self.resolve_transfer_path(path)?.to_string_lossy())
+            *path = EnvironmentPath::new(self.resolve_scoped_path(path)?.to_string_lossy())
                 .map_err(|e| {
                     EnvironmentProtocolError::new(
                         EnvironmentProtocolErrorCode::InvalidRequest,
@@ -149,7 +149,7 @@ impl LocalFileSystem {
         #[cfg(any(target_os = "linux", target_os = "macos"))]
         {
             let root = self.root.clone();
-            tokio::task::spawn_blocking(move || transfer_session::scan(&root, params))
+            tokio::task::spawn_blocking(move || scan::scan(&root, params))
                 .await
                 .map_err(|e| {
                     EnvironmentProtocolError::new(
@@ -395,7 +395,7 @@ impl LocalFileSystem {
             })?
     }
 
-    fn resolve_transfer_path(
+    fn resolve_scoped_path(
         &self,
         path: &EnvironmentPath,
     ) -> Result<PathBuf, EnvironmentProtocolError> {
