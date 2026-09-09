@@ -142,22 +142,8 @@ export type ContextEntryKindView =
       type: "instructions";
     }
   | {
-      type: "vfsCatalog";
-    }
-  | {
-      type: "skillCatalog";
-    }
-  | {
-      type: "subagentCatalog";
-    }
-  | {
       title: string;
       type: "catalog";
-    }
-  | {
-      catalogId: string;
-      skillId: string;
-      type: "skillActivation";
     }
   | {
       callId: string;
@@ -674,10 +660,6 @@ export type SessionEventKindView =
   | {
       catalogRef?: string | null;
       type: "skillCatalogSet";
-    }
-  | {
-      skillIds: string[];
-      type: "skillActivationsSet";
     }
   | {
       baseRevision: number;
@@ -1567,21 +1549,20 @@ export type ApprovalDecisionFailureKind =
 export type ApprovalDecisionStatus = "decided" | "failed";
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "SkillActivationScope".
+ * via the `definition` "SkillCatalogAvailability".
  */
-export type SkillActivationScope = "run" | "session";
+export type SkillCatalogAvailability = "available" | "stale" | "unavailable";
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "SkillActivationSource".
+ * via the `definition` "SkillCatalogSource".
  */
-export type SkillActivationSource =
+export type SkillCatalogSource =
   | {
-      callId: string;
-      type: "toolResult";
+      type: "vfs";
     }
   | {
-      contextRef: string;
-      type: "directContext";
+      environmentId: string;
+      type: "environment";
     };
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
@@ -2098,7 +2079,31 @@ export interface EnvironmentsFeature {
    * remains available when this is false.
    */
   selectionTools?: boolean;
+  /**
+   * Independent environment skill discovery. Absent disables discovery.
+   */
+  skills?: EnvironmentSkillsFeature | null;
   version?: number;
+}
+/**
+ * Discovery scope resolved on the selected machine, never on the worker.
+ *
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "EnvironmentSkillsFeature".
+ */
+export interface EnvironmentSkillsFeature {
+  /**
+   * Additional absolute or working-directory-relative discovery roots.
+   */
+  additionalRoots?: string[];
+  /**
+   * Absolute ancestor boundary. Absent scans only the working directory.
+   */
+  projectRoot?: string | null;
+  /**
+   * Absolute session working directory; absent uses the endpoint default.
+   */
+  workingDirectory?: string | null;
 }
 /**
  * Grants remote MCP tools by declaring linked servers from the universe MCP
@@ -2187,12 +2192,16 @@ export interface VfsFeature {
    */
   prompts?: VfsPromptsConfig | null;
   /**
-   * Skill discovery sourcing from the VFS.
+   * Independent VFS skill discovery. Absent disables discovery and removes
+   * its runtime catalog; enabling it requires explicit linked roots.
    */
   skills?: VfsSkillsConfig | null;
   /**
    * Agent-facing filesystem tool surface; absent = no fs tools. Per-path
    * writability is defined by each workspace link's own access.
+   * With the environments feature granted, `readOnly` also exposes
+   * `vfs_materialize`; `edit` additionally exposes `vfs_capture`.
+   * Prompt/skill sourcing alone does not grant transfer tools.
    */
   tools?: VfsToolSurface | null;
   version?: number;
@@ -2218,10 +2227,12 @@ export interface VfsPromptsConfig {
  */
 export interface VfsSkillsConfig {
   /**
-   * Absent means the conventional roots; an explicit list must be
-   * non-empty.
+   * Explicit absolute discovery roots in the linked VFS namespace. Must be
+   * non-empty and contained in workspace links; no roots are inferred.
+   *
+   * @minItems 1
    */
-  roots?: string[] | null;
+  roots: [string, ...string[]];
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
@@ -5850,68 +5861,6 @@ export interface SessionStartResponse {
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "AgentApiOutcomeOfSkillActivateResponse".
- */
-export interface AgentApiOutcomeOfSkillActivateResponse {
-  notifications?: AgentNotification[];
-  result: SkillActivateResponse;
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "SkillActivateResponse".
- */
-export interface SkillActivateResponse {
-  activation: SkillActivationView;
-  active?: SkillActivationView[];
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "SkillActivationView".
- */
-export interface SkillActivationView {
-  catalogId: string;
-  catalogRef: string;
-  description?: string | null;
-  name?: string | null;
-  scope: SkillActivationScope;
-  shortDescription?: string | null;
-  skillId: string;
-  source: SkillActivationSource;
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "AgentApiOutcomeOfSkillActiveResponse".
- */
-export interface AgentApiOutcomeOfSkillActiveResponse {
-  notifications?: AgentNotification[];
-  result: SkillActiveResponse;
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "SkillActiveResponse".
- */
-export interface SkillActiveResponse {
-  activations?: SkillActivationView[];
-  catalogRef?: string | null;
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "AgentApiOutcomeOfSkillDeactivateResponse".
- */
-export interface AgentApiOutcomeOfSkillDeactivateResponse {
-  notifications?: AgentNotification[];
-  result: SkillDeactivateResponse;
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "SkillDeactivateResponse".
- */
-export interface SkillDeactivateResponse {
-  active?: SkillActivationView[];
-  skillId: string;
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "AgentApiOutcomeOfSkillListResponse".
  */
 export interface AgentApiOutcomeOfSkillListResponse {
@@ -5923,20 +5872,45 @@ export interface AgentApiOutcomeOfSkillListResponse {
  * via the `definition` "SkillListResponse".
  */
 export interface SkillListResponse {
+  catalogs: SkillCatalogView[];
+}
+/**
+ * An independent catalog instance; sources are never merged or used as fallbacks.
+ *
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "SkillCatalogView".
+ */
+export interface SkillCatalogView {
+  availability: SkillCatalogAvailability;
   catalogRef?: string | null;
-  skills?: SkillListItem[];
+  skills: SkillListItem[];
+  source: SkillCatalogSource;
+  warnings: string[];
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "SkillListItem".
  */
 export interface SkillListItem {
-  active: boolean;
   description: string;
   enabled: boolean;
+  /**
+   * Where to read the instructions and resolve supporting files.
+   */
+  location: SkillLocationView;
   name: string;
   shortDescription?: string | null;
   skillId: string;
+}
+/**
+ * Readable paths within the owning catalog's filesystem domain.
+ *
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "SkillLocationView".
+ */
+export interface SkillLocationView {
+  skillDirPath: string;
+  skillDocPath: string;
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
@@ -6717,6 +6691,7 @@ export interface ContextAppendEntry {
   /**
    * Stable client-chosen context key. Re-sending the same key with the
    * same content is a no-op, so the key doubles as the idempotency handle.
+   * `run`, `run.*`, `runtime`, and `runtime.*` are reserved for the runtime.
    */
   key: string;
 }
@@ -6743,7 +6718,8 @@ export interface ContextRemoveParams {
   /**
    * Active context keys to remove. Removing a key that is already absent
    * is a per-key no-op (`absent`), so retries are idempotent. Keys under
-   * reserved runtime namespaces (`run.`) are rejected request-level.
+   * reserved namespaces (`run`, `run.*`, `runtime`, `runtime.*`) are rejected
+   * request-level.
    */
   keys: string[];
   sessionId: string;
@@ -7683,30 +7659,6 @@ export interface SessionStartParams {
   };
   profile?: ProfileSource | null;
   sessionId?: string | null;
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "SkillActivateParams".
- */
-export interface SkillActivateParams {
-  scope?: SkillActivationScope & string;
-  sessionId: string;
-  skillId: string;
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "SkillActiveParams".
- */
-export interface SkillActiveParams {
-  sessionId: string;
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "SkillDeactivateParams".
- */
-export interface SkillDeactivateParams {
-  sessionId: string;
-  skillId: string;
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema

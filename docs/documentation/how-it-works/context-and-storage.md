@@ -34,8 +34,8 @@ assembled.
 
 Audio preprocessing uses this pattern directly: it stores transcript text and
 filename in a structured payload and retains the original audio as provenance.
-The adapter renders the transcript label for the model, while display and skill
-activation consume the text field.
+The adapter renders the transcript label for the model, while display
+projections consume the text field.
 
 Active context has a revision and ordered entries. Adding, removing, or
 rewriting entries happens through events. An entry removed from the active
@@ -97,8 +97,10 @@ instructions.
 
 Skills use a related separation. Discovery supplies a sorted metadata catalog
 so the model can find and read an appropriate `SKILL.md` through the VFS.
-Explicit activation adds the loaded skill body to context. Run-scoped
-activations expire with the run, while session activations remain active.
+Selecting a skill submits ordinary run input or steering that asks the model
+to read its document. Skill reads and inserted skill text use ordinary
+conversation retention and compaction. The current catalog remains retained,
+but skill bodies have no dedicated scope, expiry, or protected context state.
 Environment files do not participate in this automatic prompt and skill
 discovery.
 
@@ -119,6 +121,20 @@ changes the old model request when someone edits the workspace.
 Prompt caching rewards repeated request material, but an agent's context also
 needs to evolve. Lightspeed makes ordering and updates deliberate so changes
 need not disturb more of the request than necessary.
+
+VFS, skill, sub-agent, and client catalogs share one `Catalog { title }`
+context kind. Each runtime publisher stores the rendered text in CAS and keeps
+its structured snapshot in `provenance_ref` for API reads and source retention.
+Provider adapters read that stored text and add only the title and, for a
+successor, an update header. Replaying an old entry does not rerender its source
+with newer publisher code.
+
+Catalog identity comes from its key. The runtime owns `runtime.catalog.vfs`,
+`runtime.catalog.skills.vfs`, and `runtime.catalog.subagents`. Public context
+append and remove reject `runtime` and `runtime.*`, as well as `run` and `run.*`.
+Client catalogs use other keys. Source discovery and refresh policy remain
+specific to each publisher; publishing compares both text and provenance.
+The executable tool registry remains separate from catalog context documents.
 
 A changed keyed catalog is appended as the current version at the context
 tail. Earlier versions remain in their original positions, with their bytes
@@ -182,8 +198,9 @@ adapters use `targetTokens` as summary guidance and an output budget; the
 OpenAI Responses compact adapter does not send that setting to its compact
 endpoint. Understand the configured mode together with the session's API kind.
 
-Instructions, current catalogs, and active skill instructions survive
-compaction. Eligible conversation and superseded catalogs can be removed;
+Instructions and current catalogs survive compaction. Skill reads and inserted
+skill text follow ordinary conversation retention. Eligible conversation and
+superseded catalogs can be removed;
 nonterminal tool work and unconsumed active input are protected. These rules
 retain the material needed to continue valid execution while reducing the
 conversation carried forward.
@@ -263,8 +280,10 @@ Bot events, reducer checkpoints, and VFS records also retain the content they
 own.
 
 Nested formats record edges. A snapshot manifest retains its file blobs; a
-skill catalog retains its documents; an instruction assembly report retains
-its sources. Merely placing a hash-shaped string inside arbitrary payload
+snapshot-backed skill catalog retains its source snapshots. Its published text
+and structured catalog are both retained by the context event, through content
+and provenance references. An instruction
+assembly report retains its sources. Merely placing a hash-shaped string inside arbitrary payload
 bytes does not create a retention relationship. The writer of a format must
 declare the edges that make its embedded references meaningful to collection.
 

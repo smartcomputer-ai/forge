@@ -698,7 +698,8 @@ async fn emit(
     let Some(to) = emit.to else {
         input.session = emit.session_key.map(|key| RoutedSession {
             session_id: bot_keyed_session_id(&bot.bot_id, &key),
-            label: key,
+            label: key.clone(),
+            session_key: Some(key),
             close_policy: RoutedSessionClosePolicy::Inherit,
         });
         let stored = api.store_bot_event(bot, input).await?;

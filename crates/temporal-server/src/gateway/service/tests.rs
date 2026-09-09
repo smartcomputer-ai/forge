@@ -447,127 +447,47 @@ fn run_terminal_notification_derives_destination_from_controller() {
 }
 
 #[test]
-fn skill_list_response_marks_active_catalog_entries() {
+fn skill_list_response_exposes_readable_locations() {
     let catalog_ref = BlobRef::from_bytes(b"catalog");
-    let catalog = test_skill_catalog(
+    let mut catalog = test_skill_catalog(
         &catalog_ref,
         vec![
             test_skill_metadata("skill:review", "review", true),
             test_skill_metadata("skill:deploy", "deploy", false),
         ],
     );
-    let activation = direct_activation(
-        "skill:review",
-        &catalog_ref,
-        &BlobRef::from_bytes(b"review-body"),
-        ApiSkillActivationScope::Run,
-    );
+    catalog.warnings.push(tools::skills::SkillLoadWarning::new(
+        "workspace",
+        Some("/skills/broken".into()),
+        tools::skills::SkillLoadWarningKind::MissingSkillDoc,
+    ));
+    let response = skill_list_response(Some(&catalog_ref), Some(&catalog));
 
-    let response = skill_list_response(Some(&catalog_ref), Some(&catalog), &[&activation]);
-
-    assert_eq!(response.catalog_ref.as_deref(), Some(catalog_ref.as_str()));
-    assert_eq!(response.skills.len(), 2);
-    assert_eq!(response.skills[0].skill_id, "skill:review");
-    assert!(response.skills[0].enabled);
-    assert!(response.skills[0].active);
-    assert_eq!(response.skills[1].skill_id, "skill:deploy");
-    assert!(!response.skills[1].enabled);
-    assert!(!response.skills[1].active);
-}
-
-#[test]
-fn skill_active_response_exposes_activation_sources_and_metadata() {
-    let catalog_ref = BlobRef::from_bytes(b"catalog");
-    let context_ref = BlobRef::from_bytes(b"direct-body");
-    let catalog = test_skill_catalog(
-        &catalog_ref,
-        vec![
-            test_skill_metadata("skill:review", "review", true),
-            test_skill_metadata("skill:deploy", "deploy", true),
-        ],
-    );
-    let direct = direct_activation(
-        "skill:review",
-        &catalog_ref,
-        &context_ref,
-        ApiSkillActivationScope::Session,
-    );
-    let run_scoped = direct_activation(
-        "skill:deploy",
-        &catalog_ref,
-        &BlobRef::from_bytes(b"deploy-body"),
-        ApiSkillActivationScope::Run,
-    );
-
-    let response =
-        skill_active_response(Some(&catalog_ref), Some(&catalog), &[&direct, &run_scoped]);
-
-    assert_eq!(response.catalog_ref.as_deref(), Some(catalog_ref.as_str()));
-    assert_eq!(response.activations.len(), 2);
-    assert_eq!(response.activations[0].name.as_deref(), Some("review"));
+    assert_eq!(response.catalogs[0].source, api::SkillCatalogSource::Vfs);
     assert_eq!(
-        response.activations[0].source,
-        ApiSkillActivationSource::DirectContext {
-            context_ref: context_ref.as_str().to_owned()
+        response.catalogs[0].availability,
+        api::SkillCatalogAvailability::Available
+    );
+    assert_eq!(
+        response.catalogs[0].warnings,
+        vec!["workspace /skills/broken: missing SKILL.md"]
+    );
+    assert_eq!(
+        response.catalogs[0].catalog_ref.as_deref(),
+        Some(catalog_ref.as_str())
+    );
+    assert_eq!(response.catalogs[0].skills.len(), 2);
+    assert_eq!(response.catalogs[0].skills[0].skill_id, "skill:review");
+    assert!(response.catalogs[0].skills[0].enabled);
+    assert_eq!(
+        response.catalogs[0].skills[0].location,
+        SkillLocationView {
+            skill_dir_path: "/skills/system/review".into(),
+            skill_doc_path: "/skills/system/review/SKILL.md".into(),
         }
     );
-    assert_eq!(
-        response.activations[0].scope,
-        ApiSkillActivationScope::Session
-    );
-    assert_eq!(response.activations[1].name.as_deref(), Some("deploy"));
-    assert_eq!(response.activations[1].scope, ApiSkillActivationScope::Run);
-}
-
-#[test]
-fn active_skill_ids_after_upsert_replaces_same_skill_only() {
-    let catalog_ref = BlobRef::from_bytes(b"catalog");
-    let other = direct_activation(
-        "skill:deploy",
-        &catalog_ref,
-        &BlobRef::from_bytes(b"deploy-body"),
-        ApiSkillActivationScope::Run,
-    );
-    let mut state = engine::CoreAgentState::new();
-    state.context.entries = vec![
-        direct_activation(
-            "skill:review",
-            &catalog_ref,
-            &BlobRef::from_bytes(b"old-body"),
-            ApiSkillActivationScope::Run,
-        ),
-        other,
-    ];
-
-    let ids = active_skill_ids_after_upsert(&state, SkillId::new("skill:review"));
-
-    assert_eq!(
-        ids,
-        vec![SkillId::new("skill:deploy"), SkillId::new("skill:review")]
-    );
-}
-
-#[test]
-fn active_skill_ids_after_remove_drops_selected_skill() {
-    let catalog_ref = BlobRef::from_bytes(b"catalog");
-    let review = direct_activation(
-        "skill:review",
-        &catalog_ref,
-        &BlobRef::from_bytes(b"review-body"),
-        ApiSkillActivationScope::Run,
-    );
-    let deploy = direct_activation(
-        "skill:deploy",
-        &catalog_ref,
-        &BlobRef::from_bytes(b"deploy-body"),
-        ApiSkillActivationScope::Session,
-    );
-    let mut state = engine::CoreAgentState::new();
-    state.context.entries = vec![review, deploy];
-
-    let remaining = active_skill_ids_after_remove(&state, &SkillId::new("skill:review"));
-
-    assert_eq!(remaining, vec![SkillId::new("skill:deploy")]);
+    assert_eq!(response.catalogs[0].skills[1].skill_id, "skill:deploy");
+    assert!(!response.catalogs[0].skills[1].enabled);
 }
 
 #[test]
@@ -1451,6 +1371,7 @@ fn environment_tool_subgrants_are_default_off_and_map_explicit_opt_in() {
                     registration_keys: None,
                     selection_tools: true,
                     jobs: true,
+                    skills: None,
                 }),
                 ..api::FeaturesConfig::default()
             }),
@@ -1609,6 +1530,79 @@ fn vfs_feature_grant_maps_tool_surfaces() {
     .expect("map config");
 
     assert_eq!(config.features.vfs.expect("vfs feature").tools, None);
+}
+
+#[test]
+fn profile_and_session_grants_derive_vfs_transfer_tools() {
+    for environments in [false, true] {
+        for surface in [None, Some("none"), Some("readOnly"), Some("edit")] {
+            let mut features = serde_json::json!({});
+            if let Some(surface) = surface {
+                features["vfs"] = serde_json::json!({});
+                if surface != "none" {
+                    features["vfs"]["tools"] = serde_json::json!(surface);
+                }
+            }
+            if environments {
+                // Selection tools and jobs are independent of transfer availability.
+                features["environments"] = serde_json::json!({});
+            }
+            let profile: api::ProfileDocument =
+                serde_json::from_value(serde_json::json!({"config": {"features": features}}))
+                    .unwrap();
+            let config =
+                engine_session_config_from_api(profile.config.unwrap(), openai_model()).unwrap();
+            let toolset_config =
+                GatewayAgentApi::session_toolset_config(&config, environments, false);
+            let registered = tools::toolset::register_toolset(&toolset_config).unwrap();
+            for (id, expected) in [
+                (
+                    "vfs.materialize",
+                    environments && matches!(surface, Some("readOnly" | "edit")),
+                ),
+                ("vfs.capture", environments && surface == Some("edit")),
+            ] {
+                assert_eq!(
+                    registered.tools.contains_key(&ToolName::new(id)),
+                    expected,
+                    "surface={surface:?}, environments={environments}, tool={id}"
+                );
+            }
+            assert!(
+                !registered
+                    .tools
+                    .contains_key(&ToolName::new("env.vfs_materialize"))
+            );
+            assert!(
+                !registered
+                    .tools
+                    .contains_key(&ToolName::new("env.vfs_capture"))
+            );
+            for api_kind in [
+                ProviderApiKind::OpenAiResponses,
+                ProviderApiKind::AnthropicMessages,
+                ProviderApiKind::OpenAiCompletions,
+            ] {
+                let visible = tools::runtime::ToolCatalog::from_registrations(
+                    &registered.tools,
+                    &tools::runtime::ToolTarget::api_kind(api_kind),
+                )
+                .unwrap();
+                for (name, id) in [
+                    ("vfs_materialize", "vfs.materialize"),
+                    ("vfs_capture", "vfs.capture"),
+                ] {
+                    assert_eq!(
+                        visible.get(&ToolName::new(name)).is_some(),
+                        registered.tools.contains_key(&ToolName::new(id))
+                    );
+                    if let Some(binding) = visible.get(&ToolName::new(name)) {
+                        assert_eq!(binding.logical_id, id);
+                    }
+                }
+            }
+        }
+    }
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -2242,7 +2236,7 @@ fn test_skill_metadata_with_snapshot(
     snapshot_ref: BlobRef,
 ) -> SkillMetadata {
     SkillMetadata {
-        skill_id: SkillId::new(skill_id),
+        skill_id: tools::skills::SkillId::new(skill_id),
         name: name.to_owned(),
         description: format!("Use when testing {name}."),
         short_description: Some(format!("{name} skill")),
@@ -2261,39 +2255,6 @@ fn test_skill_metadata_with_snapshot(
             skill_dir_path: VfsPath::parse(format!("/skills/system/{name}")).unwrap(),
             skill_doc_path: VfsPath::parse(format!("/skills/system/{name}/SKILL.md")).unwrap(),
         },
-        skill_doc_ref: None,
-    }
-}
-
-fn direct_activation(
-    skill_id: &str,
-    catalog_ref: &BlobRef,
-    context_ref: &BlobRef,
-    scope: ApiSkillActivationScope,
-) -> ContextEntry {
-    let skill_id = SkillId::new(skill_id);
-    let input = skill_activation_context_input(
-        tools::skills::VFS_SKILL_CATALOG_ID.to_owned(),
-        skill_id.clone(),
-        catalog_ref.clone(),
-        context_ref.clone(),
-        scope,
-        None,
-    );
-    ContextEntry {
-        entry_id: engine::ContextEntryId::new(1),
-        key: Some(skill_activation_context_key(
-            tools::skills::VFS_SKILL_CATALOG_ID,
-            &skill_id,
-        )),
-        kind: input.kind,
-        source: engine::ContextEntrySource::ContextEdit,
-        content: input.content,
-        preview: input.preview,
-        origin: input.origin,
-        provenance_ref: input.provenance_ref,
-        token_estimate: input.token_estimate,
-        supersedes: None,
     }
 }
 
@@ -2697,4 +2658,171 @@ async fn input_origin_rejects_blank_and_oversized_values() {
             AgentApiErrorKind::InvalidRequest
         );
     }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn skill_list_reads_latest_structured_provenance() {
+    let blobs = engine::storage::InMemoryBlobStore::new();
+    let mut state = engine::CoreAgentState::new();
+    assert!(
+        super::skills::skill_list_from_context(&blobs, &state)
+            .await
+            .unwrap()
+            .catalogs
+            .is_empty()
+    );
+    for (id, name) in [(1, "old"), (2, "current")] {
+        let catalog = SkillCatalogSnapshot::new(
+            vec![test_skill_metadata("skill:review", name, true)],
+            Vec::new(),
+        );
+        let source_ref = blobs
+            .put_bytes(serde_json::to_vec(&catalog).unwrap())
+            .await
+            .unwrap();
+        let input = tools::skills::skill_catalog_context_input(&blobs, &catalog, source_ref)
+            .await
+            .unwrap();
+        state.context.entries.push(ContextEntry {
+            entry_id: engine::ContextEntryId::new(id),
+            key: Some(ContextEntryKey::new(SKILL_CATALOG_CONTEXT_KEY)),
+            kind: input.kind,
+            source: engine::ContextEntrySource::ContextEdit,
+            content: input.content,
+            preview: input.preview,
+            origin: input.origin,
+            provenance_ref: input.provenance_ref,
+            token_estimate: input.token_estimate,
+            supersedes: (id == 2).then(|| engine::ContextEntryId::new(1)),
+        });
+    }
+    assert!(
+        super::skills::skill_list_from_context(&blobs, &state)
+            .await
+            .unwrap()
+            .catalogs
+            .is_empty()
+    );
+    let mut config =
+        engine_session_config_from_api(api::SessionConfig::default(), openai_model()).unwrap();
+    config.features.vfs = Some(engine::VfsFeature {
+        skills: Some(engine::VfsSkillsConfig {
+            roots: vec!["/skills/system".into()],
+        }),
+        ..Default::default()
+    });
+    state.lifecycle.config = Some(config);
+    let response = super::skills::skill_list_from_context(&blobs, &state)
+        .await
+        .unwrap();
+    assert_eq!(response.catalogs[0].skills[0].name, "current");
+    assert_eq!(
+        response.catalogs[0].catalog_ref.as_deref(),
+        state.context.entries[1]
+            .provenance_ref
+            .as_ref()
+            .map(BlobRef::as_str)
+    );
+    use tools::skills::environment::{
+        ENVIRONMENT_SKILL_CATALOG_CONTEXT_KEY, EnvironmentSkill, EnvironmentSkillAvailability,
+        EnvironmentSkillCatalog,
+    };
+    let vfs = response.catalogs[0].clone();
+    let mut environment = EnvironmentSkillCatalog::unavailable("machine");
+    environment.availability = EnvironmentSkillAvailability::Stale;
+    environment.warnings = vec!["scan incomplete".into()];
+    environment.skills.push(EnvironmentSkill {
+        skill_id: tools::skills::SkillId::new("environment:review"),
+        name: "current".into(),
+        description: "same named skill".into(),
+        short_description: None,
+        skill_dir_path: "/skills/system/current".into(),
+        skill_doc_path: "/skills/system/current/SKILL.md".into(),
+    });
+    let reference = blobs
+        .put_bytes(serde_json::to_vec(&environment).unwrap())
+        .await
+        .unwrap();
+    let mut entry = state.context.entries[1].clone();
+    entry.entry_id = engine::ContextEntryId::new(3);
+    entry.key = Some(ContextEntryKey::new(ENVIRONMENT_SKILL_CATALOG_CONTEXT_KEY));
+    entry.supersedes = None;
+    entry.provenance_ref = Some(reference.clone());
+    state.context.entries.push(entry);
+    state.environment.active_environment_id = Some(engine::EnvironmentId::new("machine"));
+    let response = super::skills::skill_list_from_context(&blobs, &state)
+        .await
+        .unwrap();
+    assert_eq!(response.catalogs.len(), 2);
+    assert_eq!(response.catalogs[0], vfs);
+    let projected = &response.catalogs[1];
+    assert_eq!(
+        projected.source,
+        api::SkillCatalogSource::Environment {
+            environment_id: "machine".into()
+        }
+    );
+    assert_eq!(projected.catalog_ref.as_deref(), Some(reference.as_str()));
+    assert_eq!(projected.availability, api::SkillCatalogAvailability::Stale);
+    assert_eq!(projected.warnings, environment.warnings);
+    assert_eq!(projected.skills[0].name, vfs.skills[0].name);
+    assert_eq!(projected.skills[0].location, vfs.skills[0].location);
+    let json = serde_json::to_value(&response).unwrap();
+    assert!(json["catalogs"][1].get("contextKey").is_none());
+    assert!(
+        json["catalogs"][1]["skills"][0]["location"]
+            .get("environmentId")
+            .is_none()
+    );
+    for selection in [Some(engine::EnvironmentId::new("other")), None] {
+        state.environment.active_environment_id = selection;
+        assert_eq!(
+            super::skills::skill_list_from_context(&blobs, &state)
+                .await
+                .unwrap()
+                .catalogs,
+            vec![vfs.clone()]
+        );
+    }
+    state.environment.active_environment_id = Some(engine::EnvironmentId::new("machine"));
+    state
+        .lifecycle
+        .config
+        .as_mut()
+        .unwrap()
+        .features
+        .vfs
+        .as_mut()
+        .unwrap()
+        .skills = None;
+    let disabled = super::skills::skill_list_from_context(&blobs, &state)
+        .await
+        .unwrap();
+    assert_eq!(disabled.catalogs.len(), 1);
+    assert_eq!(
+        disabled.catalogs[0].source,
+        api::SkillCatalogSource::Environment {
+            environment_id: "machine".into()
+        }
+    );
+    state.context.entries.retain(|entry| {
+        entry.key.as_ref().unwrap().as_str() == ENVIRONMENT_SKILL_CATALOG_CONTEXT_KEY
+    });
+    environment.skills.clear();
+    environment.availability = EnvironmentSkillAvailability::Unavailable;
+    state.context.entries[0].provenance_ref = Some(
+        blobs
+            .put_bytes(serde_json::to_vec(&environment).unwrap())
+            .await
+            .unwrap(),
+    );
+    let response = super::skills::skill_list_from_context(&blobs, &state)
+        .await
+        .unwrap();
+    assert_eq!(response.catalogs.len(), 1);
+    assert!(response.catalogs[0].skills.is_empty());
+    assert_eq!(
+        response.catalogs[0].availability,
+        api::SkillCatalogAvailability::Unavailable
+    );
 }

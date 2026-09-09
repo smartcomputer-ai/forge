@@ -149,21 +149,6 @@ pub trait AgentApiService: Send + Sync {
         params: SkillListParams,
     ) -> Result<AgentApiOutcome<SkillListResponse>, AgentApiError>;
 
-    async fn active_skills(
-        &self,
-        params: SkillActiveParams,
-    ) -> Result<AgentApiOutcome<SkillActiveResponse>, AgentApiError>;
-
-    async fn activate_skill(
-        &self,
-        params: SkillActivateParams,
-    ) -> Result<AgentApiOutcome<SkillActivateResponse>, AgentApiError>;
-
-    async fn deactivate_skill(
-        &self,
-        params: SkillDeactivateParams,
-    ) -> Result<AgentApiOutcome<SkillDeactivateResponse>, AgentApiError>;
-
     async fn activate_session_environment(
         &self,
         params: SessionEnvironmentActivateParams,

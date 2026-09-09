@@ -465,6 +465,28 @@ pub fn remove_manifest_path(
     Ok(())
 }
 
+/// Replace exactly one selected boundary. Siblings are preserved; directories are
+/// replaced as complete trees. A workspace root must remain a directory.
+pub fn replace_manifest_entry(
+    manifest: &mut VfsSnapshotManifest,
+    path: &VfsPath,
+    entry: VfsEntry,
+) -> Result<(), VfsError> {
+    if path.components().is_empty() {
+        let totals = entry_totals(&entry)?;
+        let VfsEntry::Directory(root) = entry else {
+            return Err(VfsError::InvalidOperation {
+                message: "workspace root must remain a directory".into(),
+            });
+        };
+        manifest.root = root;
+        manifest.totals = totals;
+        Ok(())
+    } else {
+        insert_or_replace_entry(manifest, path, entry)
+    }
+}
+
 pub fn copy_manifest_path(
     manifest: &mut VfsSnapshotManifest,
     source: &VfsPath,

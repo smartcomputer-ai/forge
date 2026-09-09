@@ -27,9 +27,6 @@ export const METHODS = [
   "session/runs/approvals/decide",
   "session/runs/steer",
   "session/skills/list",
-  "session/skills/active",
-  "session/skills/activate",
-  "session/skills/deactivate",
   "session/profiles/apply",
   "session/environments/activate",
   "session/environments/deactivate",
@@ -246,22 +243,7 @@ export const METHOD_INFO = {
   "session/skills/list": {
     scope: "universe",
     summary: "List available session skills",
-    description: "Refreshes the session's configured VFS skill catalog and reports which discovered skills are enabled and active. An absent catalog yields an empty result.",
-  },
-  "session/skills/active": {
-    scope: "universe",
-    summary: "List active session skills",
-    description: "Returns skill instructions currently injected into context, including activation scope and source.",
-  },
-  "session/skills/activate": {
-    scope: "universe",
-    summary: "Activate a session skill",
-    description: "Loads an enabled skill from the current catalog and injects its instructions into an open idle session. Run-scoped activation is the default.",
-  },
-  "session/skills/deactivate": {
-    scope: "universe",
-    summary: "Deactivate a session skill",
-    description: "Removes an active skill's injected context from an open idle session; the skill must currently be active.",
+    description: "Returns separate VFS and environment catalogs with source, reference, availability, readable skill paths, and warnings. Refreshes only when open with no active or queued run, without waking environments. Absent catalogs are omitted.",
   },
   "session/profiles/apply": {
     scope: "universe",
@@ -995,38 +977,11 @@ export interface MethodMap {
   /**
    * List available session skills
    *
-   * Refreshes the session's configured VFS skill catalog and reports which discovered skills are enabled and active. An absent catalog yields an empty result.
+   * Returns separate VFS and environment catalogs with source, reference, availability, readable skill paths, and warnings. Refreshes only when open with no active or queued run, without waking environments. Absent catalogs are omitted.
    */
   "session/skills/list": {
     params: Api.SkillListParams;
     result: Api.AgentApiOutcomeOfSkillListResponse;
-  };
-  /**
-   * List active session skills
-   *
-   * Returns skill instructions currently injected into context, including activation scope and source.
-   */
-  "session/skills/active": {
-    params: Api.SkillActiveParams;
-    result: Api.AgentApiOutcomeOfSkillActiveResponse;
-  };
-  /**
-   * Activate a session skill
-   *
-   * Loads an enabled skill from the current catalog and injects its instructions into an open idle session. Run-scoped activation is the default.
-   */
-  "session/skills/activate": {
-    params: Api.SkillActivateParams;
-    result: Api.AgentApiOutcomeOfSkillActivateResponse;
-  };
-  /**
-   * Deactivate a session skill
-   *
-   * Removes an active skill's injected context from an open idle session; the skill must currently be active.
-   */
-  "session/skills/deactivate": {
-    params: Api.SkillDeactivateParams;
-    result: Api.AgentApiOutcomeOfSkillDeactivateResponse;
   };
   /**
    * Apply a profile to a session
@@ -2154,34 +2109,10 @@ export const rpc = {
   /**
    * List available session skills
    *
-   * Refreshes the session's configured VFS skill catalog and reports which discovered skills are enabled and active. An absent catalog yields an empty result.
+   * Returns separate VFS and environment catalogs with source, reference, availability, readable skill paths, and warnings. Refreshes only when open with no active or queued run, without waking environments. Absent catalogs are omitted.
    */
   sessionSkillsList(client: RpcCaller, params: Api.SkillListParams): Promise<Api.AgentApiOutcomeOfSkillListResponse> {
     return client.call("session/skills/list", params);
-  },
-  /**
-   * List active session skills
-   *
-   * Returns skill instructions currently injected into context, including activation scope and source.
-   */
-  sessionSkillsActive(client: RpcCaller, params: Api.SkillActiveParams): Promise<Api.AgentApiOutcomeOfSkillActiveResponse> {
-    return client.call("session/skills/active", params);
-  },
-  /**
-   * Activate a session skill
-   *
-   * Loads an enabled skill from the current catalog and injects its instructions into an open idle session. Run-scoped activation is the default.
-   */
-  sessionSkillsActivate(client: RpcCaller, params: Api.SkillActivateParams): Promise<Api.AgentApiOutcomeOfSkillActivateResponse> {
-    return client.call("session/skills/activate", params);
-  },
-  /**
-   * Deactivate a session skill
-   *
-   * Removes an active skill's injected context from an open idle session; the skill must currently be active.
-   */
-  sessionSkillsDeactivate(client: RpcCaller, params: Api.SkillDeactivateParams): Promise<Api.AgentApiOutcomeOfSkillDeactivateResponse> {
-    return client.call("session/skills/deactivate", params);
   },
   /**
    * Apply a profile to a session

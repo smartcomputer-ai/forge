@@ -602,10 +602,6 @@ function applyNonToolCallItem(
       break;
     }
     case "instructions":
-    case "vfsCatalog":
-    case "skillCatalog":
-    case "subagentCatalog":
-    case "skillActivation":
       if (displayableSystemText(item.preview ?? "")) {
         state.entries.push({
           kind: "system",
@@ -616,7 +612,7 @@ function applyNonToolCallItem(
       }
       break;
     case "catalog": {
-      // A client-owned catalog renders its title; a superseded version stays
+      // A catalog renders its title; a superseded version stays
       // in context for prefix stability and is shown dimmed.
       const text = kind.title || item.preview || "";
       if (displayableSystemText(text)) {

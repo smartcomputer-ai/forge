@@ -86,7 +86,9 @@ impl DaemonRuntime {
             config.fs_root.clone(),
             config.cwd.clone(),
             !config.read_only_fs,
-        );
+        )
+        .with_transfer_state_dir(config.state_dir.join("transfers"))
+        .map_err(|e| anyhow::anyhow!("transfer state: {e:?}"))?;
         let processes = ProcessManager::new(config.cwd.clone(), config.fs_root.clone())
             .with_scrubbed_env(config.scrubbed_env.clone());
         let jobs = JobManager::new(
@@ -175,6 +177,11 @@ fn environment_capabilities(config: &DaemonConfig) -> EnvironmentCapabilities {
         filesystem_search: true,
         filesystem_glob: true,
         filesystem_ranged_read: true,
+        filesystem_transfer: cfg!(any(target_os = "linux", target_os = "macos")),
+        filesystem_scan: cfg!(any(target_os = "linux", target_os = "macos")),
+        filesystem_capture: cfg!(any(target_os = "linux", target_os = "macos")),
+        filesystem_materialize: cfg!(any(target_os = "linux", target_os = "macos"))
+            && !config.read_only_fs,
         process_start: true,
         process_stdin: true,
         process_terminate: true,

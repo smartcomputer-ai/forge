@@ -1,8 +1,11 @@
 use std::{cmp::Ordering, collections::BTreeSet};
 
+use super::SkillId;
+use crate::catalog::{
+    SKILL_CATALOG_CONTEXT_KEY, catalog_context_input, catalog_publication_command,
+};
 use engine::{
-    BlobRef, ContextEntryInput, ContextEntryKey, ContextEntryKind, CoreAgentCommand,
-    CoreAgentState, SKILL_CATALOG_CONTEXT_KEY, SkillId,
+    BlobRef, ContextEntryInput, CoreAgentCommand,
     storage::{BlobGraphStore, BlobStore, BlobStoreError, record_contains_edges},
 };
 use serde::Serialize;
@@ -91,13 +94,11 @@ pub async fn build_skill_catalog(
     build_skill_catalog_with_warnings(blobs, blob_graph, roots, Vec::new()).await
 }
 
-/// Every blob a catalog document names: skill docs plus the snapshot
-/// manifests skills were read from. The catalog write records one `contains`
-/// edge per ref so they stay reachable while the catalog is.
+/// Retain source snapshots for pinned catalogs. Discovery metadata carries no
+/// skill body references; ordinary file reads retain their own recorded bytes.
 pub fn skill_catalog_blob_refs(catalog: &SkillCatalogSnapshot) -> BTreeSet<BlobRef> {
     let mut refs = BTreeSet::new();
     for skill in &catalog.skills {
-        refs.extend(skill.skill_doc_ref.clone());
         if let SkillSource::Snapshot { snapshot_ref, .. } = &skill.source {
             refs.insert(snapshot_ref.clone());
         }
@@ -125,7 +126,7 @@ pub async fn build_skill_catalog_with_warnings(
     let mut source_inputs = Vec::new();
 
     for input in sorted_roots {
-        let scan = scan_root(blobs, input).await?;
+        let scan = scan_root(input).await?;
         skills.extend(scan.skills);
         warnings.extend(scan.warnings);
         source_inputs.push(scan.source_input);
@@ -153,68 +154,45 @@ pub async fn build_skill_catalog_with_warnings(
 pub async fn prepare_skill_catalog_publication(
     blobs: &dyn BlobStore,
     blob_graph: Option<&dyn BlobGraphStore>,
-    state: &CoreAgentState,
+    current: Option<&ContextEntryInput>,
     roots: &[SkillCatalogRootInput<'_>],
 ) -> Result<SkillCatalogPublication, SkillCatalogError> {
-    prepare_skill_catalog_publication_with_warnings(blobs, blob_graph, state, roots, Vec::new())
+    prepare_skill_catalog_publication_with_warnings(blobs, blob_graph, current, roots, Vec::new())
         .await
 }
 
 pub async fn prepare_skill_catalog_publication_with_warnings(
     blobs: &dyn BlobStore,
     blob_graph: Option<&dyn BlobGraphStore>,
-    state: &CoreAgentState,
+    current: Option<&ContextEntryInput>,
     roots: &[SkillCatalogRootInput<'_>],
     warnings: Vec<SkillLoadWarning>,
 ) -> Result<SkillCatalogPublication, SkillCatalogError> {
     let build = build_skill_catalog_with_warnings(blobs, blob_graph, roots, warnings).await?;
-    let command = if current_skill_catalog_ref(state).as_ref() == Some(&build.catalog_ref) {
-        None
-    } else {
-        Some(CoreAgentCommand::UpsertContext {
-            expected_revision: None,
-            key: ContextEntryKey::new(SKILL_CATALOG_CONTEXT_KEY),
-            entry: skill_catalog_context_input(build.catalog_ref.clone()),
-        })
-    };
+    let entry =
+        skill_catalog_context_input(blobs, &build.catalog, build.catalog_ref.clone()).await?;
+    let command = catalog_publication_command(current, SKILL_CATALOG_CONTEXT_KEY, entry);
 
     Ok(SkillCatalogPublication { build, command })
 }
 
-pub fn skill_catalog_context_input(catalog_ref: BlobRef) -> ContextEntryInput {
-    ContextEntryInput {
-        kind: ContextEntryKind::SkillCatalog,
-        content: engine::ContentRef {
-            content_ref: catalog_ref,
-            media_type: None,
-            provider_kind: None,
-        },
-        preview: Some("VFS skill catalog".to_owned()),
-        origin: None,
-        provenance_ref: None,
-        token_estimate: None,
-    }
-}
-
-fn current_skill_catalog_ref(state: &CoreAgentState) -> Option<BlobRef> {
-    state
-        .context
-        .entries
-        .iter()
-        .rev()
-        .find(|entry| {
-            entry
-                .key
-                .as_ref()
-                .is_some_and(|key| key.as_str() == SKILL_CATALOG_CONTEXT_KEY)
-        })
-        .map(|entry| entry.content.content_ref.clone())
-}
-
-async fn scan_root(
+pub async fn skill_catalog_context_input(
     blobs: &dyn BlobStore,
-    input: &SkillCatalogRootInput<'_>,
-) -> Result<RootScanResult, SkillCatalogError> {
+    catalog: &SkillCatalogSnapshot,
+    catalog_ref: BlobRef,
+) -> Result<ContextEntryInput, BlobStoreError> {
+    let mut entry = catalog_context_input(
+        blobs,
+        "VFS skill catalog",
+        super::catalog_text::skill_catalog_text(catalog),
+        catalog_ref,
+    )
+    .await?;
+    entry.origin = Some("runtime.vfs.skills".to_owned());
+    Ok(entry)
+}
+
+async fn scan_root(input: &SkillCatalogRootInput<'_>) -> Result<RootScanResult, SkillCatalogError> {
     let mut scan = RootScan::new(input);
     let entries = match input.root.fs_read_directory(input.fs).await {
         Ok(entries) => entries,
@@ -295,14 +273,7 @@ async fn scan_root(
             }
         };
 
-        let skill_doc_ref = blobs.put_bytes(markdown.into_bytes()).await?;
-        match metadata_for_skill(
-            input,
-            &skill_dir_path,
-            &skill_doc_path,
-            frontmatter,
-            skill_doc_ref,
-        ) {
+        match metadata_for_skill(input, &skill_dir_path, &skill_doc_path, frontmatter) {
             Ok(metadata) => scan.skills.push(metadata),
             Err(error) => {
                 scan.warn(
@@ -323,7 +294,6 @@ fn metadata_for_skill(
     skill_dir_path: &FsPath,
     skill_doc_path: &FsPath,
     frontmatter: crate::skills::SkillFrontmatter,
-    skill_doc_ref: BlobRef,
 ) -> Result<SkillMetadata, SkillCatalogError> {
     let skill_id = skill_id_for_path(&input.root, skill_doc_path);
     let location = location_for_skill(&input.root, skill_dir_path, skill_doc_path)?;
@@ -345,7 +315,6 @@ fn metadata_for_skill(
         }),
         dependencies: SkillDependencies::default(),
         location,
-        skill_doc_ref: Some(skill_doc_ref),
     })
 }
 
@@ -566,7 +535,7 @@ mod tests {
     use std::sync::Arc;
 
     use engine::{
-        BlobRef, ContextEntry, ContextEntryId, ContextEntrySource,
+        BlobRef,
         storage::{BlobStore, InMemoryBlobStore},
     };
     use vfs::VfsWorkspaceId;
@@ -630,7 +599,7 @@ mod tests {
     }
 
     /// The recorded edge set must equal every ref the catalog document
-    /// embeds: skill docs and the snapshot manifests they were read from.
+    /// embeds: the immutable source snapshot manifests.
     #[tokio::test]
     async fn catalog_writes_record_an_edge_for_every_embedded_ref() {
         let fs = skill_fs(&[
@@ -684,8 +653,8 @@ mod tests {
         assert!(embedded.contains(&snapshot_ref));
         assert_eq!(
             embedded.len(),
-            3,
-            "two skill docs and the snapshot manifest"
+            1,
+            "only the source snapshot manifest is retained by the catalog"
         );
         assert!(
             BlobRef::parse(&build.build_record.source_fingerprint.digest).is_err(),
@@ -790,7 +759,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn catalog_ref_changes_when_pinned_skill_body_changes() {
+    async fn catalog_ref_stays_stable_when_only_workspace_skill_body_changes() {
         let fs = skill_fs(&[(
             "/skills/review/SKILL.md",
             format!(
@@ -802,11 +771,12 @@ mod tests {
         )])
         .await;
         let blobs = InMemoryBlobStore::new();
-        let root = SkillCatalogRoot {
+        let mut root = SkillCatalogRoot {
             root_id: "vfs".to_owned(),
             root_path: FsPath::new("/skills").unwrap(),
-            source: SkillCatalogRootSource::LinkedSnapshot {
-                snapshot_ref: BlobRef::from_bytes(b"snapshot-1"),
+            source: SkillCatalogRootSource::LinkedWorkspace {
+                workspace_id: VfsWorkspaceId::new("workspace-skills"),
+                workspace_head_ref: BlobRef::from_bytes(b"head-1"),
                 link_path: VfsPath::parse("/skills").unwrap(),
             },
             trust: SkillTrustLevel::User,
@@ -830,12 +800,25 @@ mod tests {
         .await
         .expect("edit body");
 
+        if let SkillCatalogRootSource::LinkedWorkspace {
+            workspace_head_ref, ..
+        } = &mut root.source
+        {
+            *workspace_head_ref = BlobRef::from_bytes(b"head-2");
+        }
         let second = build_skill_catalog(&blobs, None, &[root_input(&fs, root)])
             .await
             .expect("second build");
 
-        assert_ne!(first.catalog_ref, second.catalog_ref);
-        assert_eq!(
+        assert_eq!(first.catalog_ref, second.catalog_ref);
+        assert!(skill_catalog_blob_refs(&second.catalog).is_empty());
+        assert!(
+            fs.read_file_text(&FsPath::new("/skills/review/SKILL.md").unwrap())
+                .await
+                .unwrap()
+                .contains("Second body.")
+        );
+        assert_ne!(
             first.build_record.source_fingerprint.digest,
             second.build_record.source_fingerprint.digest
         );
@@ -883,24 +866,43 @@ mod tests {
         )])
         .await;
         let blobs = InMemoryBlobStore::new();
-        let state = CoreAgentState::new();
 
         let publication = prepare_skill_catalog_publication(
             &blobs,
             None,
-            &state,
+            None,
             &[root_input(&fs, snapshot_root("system", "/skills"))],
         )
         .await
         .expect("prepare publication");
 
+        let Some(CoreAgentCommand::UpsertContext { key, entry, .. }) = publication.command else {
+            panic!("catalog publication");
+        };
+        assert_eq!(key.as_str(), SKILL_CATALOG_CONTEXT_KEY);
         assert_eq!(
-            publication.command,
-            Some(CoreAgentCommand::UpsertContext {
-                expected_revision: None,
-                key: ContextEntryKey::new(SKILL_CATALOG_CONTEXT_KEY),
-                entry: skill_catalog_context_input(publication.build.catalog_ref.clone()),
-            })
+            entry.kind,
+            engine::ContextEntryKind::Catalog {
+                title: "VFS skill catalog".to_owned()
+            }
+        );
+        assert_eq!(
+            entry.provenance_ref.as_ref(),
+            Some(&publication.build.catalog_ref)
+        );
+        assert_eq!(
+            blobs.read_bytes(&entry.content.content_ref).await.unwrap(),
+            format!("When a skill is relevant, read its SKILL.md through the appropriate VFS file tool before following it. VFS skill paths are not environment paths.\n\n- review ({})\n  description: Use when reviewing.\n  skill_doc_path: /skills/review/SKILL.md\n  skill_dir_path: /skills/review\n", publication.build.catalog.skills[0].skill_id).into_bytes()
+        );
+        assert_eq!(
+            serde_json::from_slice::<SkillCatalogSnapshot>(
+                &blobs
+                    .read_bytes(entry.provenance_ref.as_ref().unwrap())
+                    .await
+                    .unwrap()
+            )
+            .unwrap(),
+            publication.build.catalog
         );
     }
 
@@ -915,35 +917,18 @@ mod tests {
         let first = prepare_skill_catalog_publication(
             &blobs,
             None,
-            &CoreAgentState::new(),
+            None,
             &[root_input(&fs, snapshot_root("system", "/skills"))],
         )
         .await
         .expect("first publication");
-        let mut state = CoreAgentState::new();
-        state.context.entries = vec![ContextEntry {
-            entry_id: ContextEntryId::new(1),
-            key: Some(ContextEntryKey::new(SKILL_CATALOG_CONTEXT_KEY)),
-            kind: ContextEntryKind::SkillCatalog,
-            source: ContextEntrySource::Runtime {
-                label: "skills.catalog.vfs".to_owned(),
-            },
-            content: engine::ContentRef {
-                content_ref: first.build.catalog_ref.clone(),
-                media_type: None,
-                provider_kind: None,
-            },
-            preview: Some("skills catalog".to_owned()),
-            origin: None,
-            provenance_ref: None,
-            token_estimate: None,
-            supersedes: None,
-        }];
-
+        let Some(CoreAgentCommand::UpsertContext { entry, .. }) = &first.command else {
+            panic!("catalog publication");
+        };
         let second = prepare_skill_catalog_publication(
             &blobs,
             None,
-            &state,
+            Some(entry),
             &[root_input(&fs, snapshot_root("system", "/skills"))],
         )
         .await

@@ -3,7 +3,7 @@
 //! Each lane owns a context clone, finishes its own bookkeeping, and
 //! records failures on the controller instead of failing the workflow.
 
-use api::{BotEventOutcome, BotRecentDeliverySnapshot, BotSessionKind, LlmUsageView};
+use api::{BotEventOutcome, BotRecentDeliverySnapshot, LlmUsageView};
 use bots::{BotDeliveryPhase, RoutedSession, ids};
 use engine::{BlobRef, EmissionEnvelope, PromiseResolution, REPLY_COMPLETION_KEY};
 use futures::{FutureExt, pin_mut, select};
@@ -312,6 +312,7 @@ async fn ensure_routed_session(
                 // main session tracks profile revisions across its life.
                 None,
                 tools_ref.clone(),
+                Some(session),
             )
         });
         match activity(ctx, BotActivities::ensure_session, request).await {
@@ -319,15 +320,12 @@ async fn ensure_routed_session(
                 carried_tool_ids, ..
             }) => {
                 let now = now_ms(ctx);
-                let kind = if session_id.contains(":e-") {
-                    BotSessionKind::PerEvent
-                } else {
-                    BotSessionKind::PerKey
-                };
+                let kind = ids::bot_session_kind(&session_id);
                 ctx.state_mut(|state| {
                     state.extra_sessions.push(ManagedSession {
                         session_id: session_id.clone(),
                         label: session.label.clone(),
+                        session_key: session.session_key.clone(),
                         kind,
                         last_active_at_ms: Some(now),
                         close_policy: session.close_policy,

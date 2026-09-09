@@ -52,10 +52,7 @@ pub(crate) enum PickerSelection {
     MaxTokens(Option<u32>),
     SlashCommand(SlashCommandKind),
     Session(String),
-    Skill {
-        skill_id: String,
-        scope: api::SkillActivationScope,
-    },
+    Skill { skill_id: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -124,38 +121,69 @@ impl ListSelectionView {
         Self::new("Select session", rows)
     }
 
-    pub(crate) fn skills(skills: &[api::SkillListItem], scope: api::SkillActivationScope) -> Self {
-        let rows = skills
-            .iter()
-            .map(|skill| {
+    pub(crate) fn skills(catalogs: &[api::SkillCatalogView]) -> Self {
+        let mut rows = Vec::new();
+        for catalog in catalogs {
+            rows.push(
                 ListSelectionRow::new(
-                    skill.skill_id.clone(),
-                    skill_description(skill),
+                    crate::skills_cli::catalog_source_label(&catalog.source),
+                    format!(
+                        "{:?} · {} · {}",
+                        catalog.availability,
+                        catalog.catalog_ref.as_deref().unwrap_or("-"),
+                        catalog.warnings.join("; ")
+                    ),
                     PickerSelection::Skill {
-                        skill_id: skill.skill_id.clone(),
-                        scope,
+                        skill_id: String::new(),
                     },
                 )
-                .with_disabled_reason((!skill.enabled).then(|| "skill is disabled".to_string()))
-            })
-            .collect::<Vec<_>>();
+                .with_disabled_reason(Some("catalog heading".into())),
+            );
+            for skill in &catalog.skills {
+                rows.push(
+                    ListSelectionRow::new(
+                        skill.skill_id.clone(),
+                        format!(
+                            "{} · {}",
+                            skill_description(skill),
+                            skill.location.skill_doc_path
+                        ),
+                        PickerSelection::Skill {
+                            skill_id: skill.skill_id.clone(),
+                        },
+                    )
+                    .with_disabled_reason(
+                        if catalog.availability == api::SkillCatalogAvailability::Unavailable {
+                            Some("skill catalog is unavailable".into())
+                        } else {
+                            (!skill.enabled).then(|| "skill is disabled".to_string())
+                        },
+                    ),
+                );
+            }
+        }
         if rows.is_empty() {
             return Self::new(
                 "Select skill",
                 vec![
                     ListSelectionRow::new(
                         "no skills",
-                        "mount a workspace containing .lightspeed/skills or .agents/skills",
+                        "configure features.vfs.skills.roots or environment skills",
                         PickerSelection::Skill {
                             skill_id: String::new(),
-                            scope,
                         },
                     )
                     .with_disabled_reason(Some("no skills in the current catalog".into())),
                 ],
             );
         }
-        Self::new("Select skill", rows)
+        let mut view = Self::new("Select skill", rows);
+        view.selected = view
+            .rows
+            .iter()
+            .position(|row| row.disabled_reason.as_deref() != Some("catalog heading"))
+            .unwrap_or(0);
+        view
     }
 
     pub(crate) fn model(current: &str, editable: bool) -> Self {
@@ -445,9 +473,6 @@ fn session_description(summary: &ChatSessionSummary, current: bool) -> String {
 
 fn skill_description(skill: &api::SkillListItem) -> String {
     let mut parts = Vec::new();
-    if skill.active {
-        parts.push("active".to_string());
-    }
     if !skill.enabled {
         parts.push("disabled".to_string());
     }
@@ -502,40 +527,100 @@ mod tests {
 
     #[test]
     fn skill_picker_confirms_enabled_skill() {
-        let mut picker = ListSelectionView::skills(
-            &[api::SkillListItem {
+        let mut picker = ListSelectionView::skills(&[api::SkillCatalogView {
+            source: api::SkillCatalogSource::Vfs,
+            catalog_ref: None,
+            availability: api::SkillCatalogAvailability::Available,
+            warnings: vec![],
+            skills: vec![api::SkillListItem {
                 skill_id: "lightspeed:review".into(),
                 name: "Review".into(),
                 description: "Review diffs".into(),
                 short_description: None,
                 enabled: true,
-                active: false,
+                location: api::SkillLocationView {
+                    skill_dir_path: "/skills/review".into(),
+                    skill_doc_path: "/skills/review/SKILL.md".into(),
+                },
             }],
-            api::SkillActivationScope::Session,
-        );
+        }]);
 
         assert_eq!(
             picker.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
             ListSelectionAction::Selected(PickerSelection::Skill {
                 skill_id: "lightspeed:review".into(),
-                scope: api::SkillActivationScope::Session,
             })
         );
     }
 
     #[test]
+    fn skill_picker_keeps_catalog_sections_and_unavailable_entries() {
+        let skill = api::SkillListItem {
+            skill_id: "vfs:review".into(),
+            name: "Review".into(),
+            description: "review".into(),
+            short_description: None,
+            enabled: true,
+            location: api::SkillLocationView {
+                skill_dir_path: "/skills/review".into(),
+                skill_doc_path: "/skills/review/SKILL.md".into(),
+            },
+        };
+        let vfs = api::SkillCatalogView {
+            source: api::SkillCatalogSource::Vfs,
+            catalog_ref: Some("vfs-ref".into()),
+            availability: api::SkillCatalogAvailability::Available,
+            skills: vec![skill],
+            warnings: vec![],
+        };
+        let mut environment = vfs.clone();
+        environment.source = api::SkillCatalogSource::Environment {
+            environment_id: "machine".into(),
+        };
+        environment.availability = api::SkillCatalogAvailability::Unavailable;
+        environment.catalog_ref = Some("env-ref".into());
+        environment.skills[0].skill_id = "environment:review".into();
+        let mut picker = ListSelectionView::skills(&[vfs, environment]);
+        assert_eq!(picker.rows.len(), 4);
+        assert_eq!(picker.rows[0].label, "VFS");
+        assert_eq!(picker.rows[2].label, "Environment machine");
+        assert!(picker.rows[2].description.contains("Unavailable"));
+        picker.handle_key(KeyEvent::new(
+            KeyCode::Down,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        picker.handle_key(KeyEvent::new(
+            KeyCode::Down,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        assert_eq!(
+            picker.handle_key(KeyEvent::new(
+                KeyCode::Enter,
+                crossterm::event::KeyModifiers::NONE
+            )),
+            ListSelectionAction::Rejected("skill catalog is unavailable".into())
+        );
+    }
+
+    #[test]
     fn skill_picker_rejects_disabled_skill() {
-        let mut picker = ListSelectionView::skills(
-            &[api::SkillListItem {
+        let mut picker = ListSelectionView::skills(&[api::SkillCatalogView {
+            source: api::SkillCatalogSource::Vfs,
+            catalog_ref: None,
+            availability: api::SkillCatalogAvailability::Available,
+            warnings: vec![],
+            skills: vec![api::SkillListItem {
                 skill_id: "lightspeed:review".into(),
                 name: "Review".into(),
                 description: "Review diffs".into(),
                 short_description: None,
                 enabled: false,
-                active: false,
+                location: api::SkillLocationView {
+                    skill_dir_path: "/skills/review".into(),
+                    skill_doc_path: "/skills/review/SKILL.md".into(),
+                },
             }],
-            api::SkillActivationScope::Run,
-        );
+        }]);
 
         assert_eq!(
             picker.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),

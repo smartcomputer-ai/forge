@@ -110,11 +110,172 @@ pub async fn delete_objects_under_prefix(
     Ok(deleted)
 }
 
+/// Whole-file CAS identity over a bounded pull source and bounded multipart writes.
+/// Dropping the caller schedules multipart abort, including activity cancellation.
+pub(crate) async fn put_streamed_object(
+    store: &dyn ObjectStore,
+    key: &str,
+    expected: &BlobRef,
+    size: u64,
+    source: &mut dyn engine::storage::BlobSource,
+) -> Result<object_store::PutResult, BlobStoreError> {
+    use sha2::{Digest, Sha256};
+    struct Guard(Option<Box<dyn object_store::MultipartUpload>>);
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            if let Some(mut upload) = self.0.take()
+                && let Ok(handle) = tokio::runtime::Handle::try_current()
+            {
+                handle.spawn(async move {
+                    let _ = upload.abort().await;
+                });
+            }
+        }
+    }
+    if size > 1024_u64.pow(4) {
+        return Err(BlobStoreError::Store {
+            message: "streamed blob exceeds one TiB limit".into(),
+        });
+    }
+    let mut guard = Guard(Some(
+        store
+            .put_multipart(&ObjectPath::from(key))
+            .await
+            .map_err(|e| object_store_error("begin multipart blob", key, e))?,
+    ));
+    let upload = &mut guard.0;
+    // Keep at most one part in flight and fewer than 10,000 parts up to one TiB.
+    let part_size = (8 * 1024 * 1024).max(size.div_ceil(9000) as usize);
+    let result = async {
+        let mut hash = Sha256::new();
+        let mut length = 0u64;
+        let mut part = Vec::with_capacity(part_size + 256 * 1024);
+        loop {
+            let chunk = source.read_chunk(256 * 1024).await?;
+            if chunk.is_empty() {
+                break;
+            }
+            length =
+                length
+                    .checked_add(chunk.len() as u64)
+                    .ok_or_else(|| BlobStoreError::Store {
+                        message: "blob length overflow".into(),
+                    })?;
+            if chunk.len() > 256 * 1024 || length > size {
+                return Err(BlobStoreError::Store {
+                    message: "blob stream exceeded size/chunk limit".into(),
+                });
+            }
+            hash.update(&chunk);
+            part.extend(chunk);
+            if part.len() >= part_size {
+                upload
+                    .as_mut()
+                    .unwrap()
+                    .put_part(std::mem::take(&mut part).into())
+                    .await
+                    .map_err(|e| crate::shared::object_store_error("upload blob part", key, e))?;
+                part = Vec::with_capacity(part_size + 256 * 1024);
+            }
+        }
+        if length != size || format!("sha256:{:x}", hash.finalize()) != expected.as_str() {
+            return Err(BlobStoreError::Store {
+                message: "blob stream length/digest mismatch".into(),
+            });
+        }
+        if !part.is_empty() {
+            upload
+                .as_mut()
+                .unwrap()
+                .put_part(part.into())
+                .await
+                .map_err(|e| crate::shared::object_store_error("upload final blob part", key, e))?;
+        }
+        upload
+            .as_mut()
+            .unwrap()
+            .complete()
+            .await
+            .map_err(|e| crate::shared::object_store_error("complete multipart blob", key, e))
+    }
+    .await;
+    match result {
+        Ok(value) => {
+            guard.0.take();
+            Ok(value)
+        }
+        Err(error) => {
+            if let Some(mut upload) = guard.0.take() {
+                let _ = upload.abort().await;
+            }
+            Err(error)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::PgStoreConfig;
     use uuid::Uuid;
+
+    struct Source {
+        remaining: u64,
+    }
+    #[async_trait::async_trait]
+    impl engine::storage::BlobSource for Source {
+        async fn read_chunk(&mut self, max_bytes: usize) -> Result<Vec<u8>, BlobStoreError> {
+            assert!(max_bytes <= 256 * 1024);
+            let count = self.remaining.min(max_bytes as u64) as usize;
+            self.remaining -= count as u64;
+            Ok(vec![0x91; count])
+        }
+    }
+    #[tokio::test(flavor = "current_thread")]
+    async fn multipart_stream_verifies_raw_identity_and_aborts_invalid_content() {
+        let store = object_store::memory::InMemory::new();
+        let size = 10 * 1024 * 1024 + 13;
+        let expected = BlobRef::from_bytes(&vec![0x91; size]);
+        put_streamed_object(
+            &store,
+            "complete",
+            &expected,
+            size as u64,
+            &mut Source {
+                remaining: size as u64,
+            },
+        )
+        .await
+        .unwrap();
+        let bytes = store
+            .get(&ObjectPath::from("complete"))
+            .await
+            .unwrap()
+            .bytes()
+            .await
+            .unwrap();
+        assert_eq!(BlobRef::from_bytes(&bytes), expected);
+        for (key, length, digest) in [
+            ("short", size as u64 - 1, expected.clone()),
+            ("wrong", size as u64, BlobRef::from_bytes(b"wrong")),
+        ] {
+            assert!(
+                put_streamed_object(
+                    &store,
+                    key,
+                    &digest,
+                    size as u64,
+                    &mut Source { remaining: length }
+                )
+                .await
+                .is_err()
+            );
+            assert!(matches!(
+                store.get(&ObjectPath::from(key)).await,
+                Err(object_store::Error::NotFound { .. })
+            ));
+        }
+    }
 
     #[test]
     fn universe_cas_prefix_contains_every_direct_blob_key() {

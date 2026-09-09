@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use engine::{ProviderApiKind, ToolName, ToolSpec, WorkflowToolBinding};
 
 use crate::{
-    builtin::{BuiltinTool, BuiltinToolOperation, BuiltinToolSurface},
+    builtin::{BuiltinTool, BuiltinToolDomain, BuiltinToolOperation, BuiltinToolSurface},
     concurrency::ConcurrencyToolsetConfig,
     definitions::{BuiltinSettings, register},
     error::{ToolError, ToolResult},
@@ -97,6 +97,11 @@ impl BuiltinToolsetConfig {
                 BuiltinToolOperation::Grep => config.vfs.grep = true,
                 BuiltinToolOperation::Glob => config.vfs.glob = true,
                 BuiltinToolOperation::ListDir => config.vfs.list_dir = true,
+                BuiltinToolOperation::Materialize | BuiltinToolOperation::Capture => {
+                    return Err(ToolError::InvalidRequest {
+                        message: "transfer tools require both VFS and environment grants".into(),
+                    });
+                }
                 BuiltinToolOperation::RunProcess
                 | BuiltinToolOperation::ContinueProcess
                 | BuiltinToolOperation::JobSubmit
@@ -114,6 +119,14 @@ impl BuiltinToolsetConfig {
 
     pub fn enable_operation(&mut self, operation: BuiltinToolOperation) {
         match operation {
+            BuiltinToolOperation::Materialize => {
+                self.vfs.read_file = true;
+                self.environment.filesystem.write_file = true;
+            }
+            BuiltinToolOperation::Capture => {
+                self.vfs.write_file = true;
+                self.environment.filesystem.read_file = true;
+            }
             BuiltinToolOperation::ReadFile => self.environment.filesystem.read_file = true,
             BuiltinToolOperation::WriteFile => self.environment.filesystem.write_file = true,
             BuiltinToolOperation::EditFile => self.environment.filesystem.edit_file = true,
@@ -131,6 +144,19 @@ impl BuiltinToolsetConfig {
 
     pub fn enabled(&self) -> bool {
         self.vfs.enabled() || self.environment.enabled()
+    }
+
+    /// Compose the VFS family from its filesystem grants and the environment
+    /// grants needed for explicit transfers between the two domains.
+    fn vfs_operations(&self) -> Vec<BuiltinToolOperation> {
+        let mut operations = self.vfs.operations();
+        if self.vfs.read_file && self.environment.filesystem.write_file {
+            operations.push(BuiltinToolOperation::Materialize);
+        }
+        if self.vfs.write_file && self.environment.filesystem.read_file {
+            operations.push(BuiltinToolOperation::Capture);
+        }
+        operations
     }
 }
 
@@ -379,21 +405,18 @@ pub fn register_toolset(config: &ToolsetConfig) -> ToolResult<RegisteredToolset>
         Ok(())
     };
     for (domain, operations) in [
+        (BuiltinToolDomain::Vfs, config.builtin.vfs_operations()),
         (
-            crate::builtin::BuiltinToolDomain::Vfs,
-            config.builtin.vfs.operations(),
-        ),
-        (
-            crate::builtin::BuiltinToolDomain::Environment,
+            BuiltinToolDomain::Environment,
             config.builtin.environment.operations(),
         ),
     ] {
         for operation in operations {
             let tool = match domain {
-                crate::builtin::BuiltinToolDomain::Vfs => {
+                BuiltinToolDomain::Vfs => {
                     BuiltinTool::vfs(operation, BuiltinToolSurface::Canonical)
                 }
-                crate::builtin::BuiltinToolDomain::Environment => {
+                BuiltinToolDomain::Environment => {
                     BuiltinTool::environment(operation, BuiltinToolSurface::Canonical)
                 }
             };
@@ -763,7 +786,9 @@ mod tests {
         assert!(names.contains(&"vfs_read_file".to_owned()));
         assert!(names.contains(&"read_file".to_owned()));
         assert!(names.contains(&"exec_command".to_owned()));
-        assert_eq!(names.len(), 16);
+        assert!(names.contains(&"vfs_materialize".to_owned()));
+        assert!(names.contains(&"vfs_capture".to_owned()));
+        assert_eq!(names.len(), 18);
         assert!(
             toolset
                 .catalog

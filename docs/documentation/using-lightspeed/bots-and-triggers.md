@@ -10,6 +10,24 @@ Other events can create separate threads, for example one conversation per
 incident or pull request. The bot record remains the same while those
 conversations have their own histories and lifecycles.
 
+Bot session instructions include the bot ID, exact session ID, and session
+kind: `main`, `keyed`, or `per-event`. Keyed threads also receive their original
+routing key, plus a human-readable thread label when it differs from the key.
+Keys and labels appear as JSON-quoted data. Main and per-event sessions have
+no routing key.
+
+A routing key identifies a logical thread within a bot, such as `pr-42` or a
+chat conversation key. Resetting that thread changes its concrete session ID
+but retains the routing key. With `bot_emit`, omit `to` and pass that original
+key as `sessionKey` to send an event back to the keyed thread. Omitting
+`sessionKey` sends a self-event to Main, even from a routed thread. A session
+ID or thread label is not a substitute for the original key.
+
+These instructions are composed when a session is created or its bot profile
+is reapplied. Existing routed threads retain their instructions until reset;
+older routing records may lack the original key, which is then omitted rather
+than inferred from the label or session ID.
+
 This walkthrough builds `release-watch`, which reviews the Acorn release
 files from [Build your first agent](../getting-started/first-agent.md). First
 create the read-only `release-reviewer` profile from

@@ -422,12 +422,16 @@ pub struct VfsFeature {
     pub workspace_links: Vec<WorkspaceLink>,
     /// Agent-facing filesystem tool surface; absent = no fs tools. Per-path
     /// writability is defined by each workspace link's own access.
+    /// With the environments feature granted, `readOnly` also exposes
+    /// `vfs_materialize`; `edit` additionally exposes `vfs_capture`.
+    /// Prompt/skill sourcing alone does not grant transfer tools.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tools: Option<VfsToolSurface>,
     /// Prompt-instruction sourcing from the VFS.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompts: Option<VfsPromptsConfig>,
-    /// Skill discovery sourcing from the VFS.
+    /// Independent VFS skill discovery. Absent disables discovery and removes
+    /// its runtime catalog; enabling it requires explicit linked roots.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub skills: Option<VfsSkillsConfig>,
 }
@@ -474,13 +478,13 @@ pub struct VfsPromptsConfig {
     pub roots: Option<Vec<String>>,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct VfsSkillsConfig {
-    /// Absent means the conventional roots; an explicit list must be
-    /// non-empty.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub roots: Option<Vec<String>>,
+    /// Explicit absolute discovery roots in the linked VFS namespace. Must be
+    /// non-empty and contained in workspace links; no roots are inferred.
+    #[schemars(length(min = 1))]
+    pub roots: Vec<String>,
 }
 
 /// Grants network access through the web toolset; `fetch` and `search` are
@@ -597,6 +601,24 @@ pub struct EnvironmentsFeature {
     /// active, ready environment with matching job capabilities.
     #[serde(default)]
     pub jobs: bool,
+    /// Independent environment skill discovery. Absent disables discovery.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skills: Option<EnvironmentSkillsFeature>,
+}
+
+/// Discovery scope resolved on the selected machine, never on the worker.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct EnvironmentSkillsFeature {
+    /// Absolute session working directory; absent uses the endpoint default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub working_directory: Option<String>,
+    /// Absolute ancestor boundary. Absent scans only the working directory.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_root: Option<String>,
+    /// Additional absolute or working-directory-relative discovery roots.
+    #[serde(default)]
+    pub additional_roots: Vec<String>,
 }
 
 /// Grants remote MCP tools by declaring linked servers from the universe MCP
@@ -757,6 +779,7 @@ pub struct ContextAppendParams {
 pub struct ContextAppendEntry {
     /// Stable client-chosen context key. Re-sending the same key with the
     /// same content is a no-op, so the key doubles as the idempotency handle.
+    /// `run`, `run.*`, `runtime`, and `runtime.*` are reserved for the runtime.
     pub key: String,
     pub item: InputItem,
 }
@@ -820,7 +843,8 @@ pub struct ContextRemoveParams {
     pub session_id: SessionId,
     /// Active context keys to remove. Removing a key that is already absent
     /// is a per-key no-op (`absent`), so retries are idempotent. Keys under
-    /// reserved runtime namespaces (`run.`) are rejected request-level.
+    /// reserved namespaces (`run`, `run.*`, `runtime`, `runtime.*`) are rejected
+    /// request-level.
     pub keys: Vec<String>,
 }
 
@@ -1410,9 +1434,6 @@ pub enum SessionEventKindView {
     },
     SkillCatalogSet {
         catalog_ref: Option<String>,
-    },
-    SkillActivationsSet {
-        skill_ids: Vec<String>,
     },
     ToolsReplaced {
         base_revision: u64,

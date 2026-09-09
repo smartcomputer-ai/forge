@@ -347,3 +347,49 @@ async fn controller_client_sends_typed_adoption_request() {
         "legacy/hand-built-vm"
     );
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn data_client_transfer_methods_preserve_binary_payloads() {
+    use environment_protocol::data::transfer::*;
+    let entries = vec![TransferEntry {
+        path: "".into(),
+        content: TransferContent::File {
+            data: ByteChunk::from(vec![0, 255, 128]),
+            executable: true,
+        },
+    }];
+    let limits = TransferLimits {
+        max_entries: 1,
+        max_depth: 0,
+        max_file_bytes: 3,
+        max_total_bytes: 3,
+        max_duration_ms: 1000,
+    };
+    let transport = MockTransport::with_recv([
+        json!({"jsonrpc":"2.0", "id":1, "result": {"destination":"/file", "entries":1, "bytes":3, "retiredDirectory":null}}),
+        json!({"jsonrpc":"2.0", "id":2, "result": {"source":"/file", "entries":entries, "bytes":3}}),
+    ]);
+    let mut client = EnvironmentDataClient::new(transport);
+    let request = MaterializeParams {
+        destination: EnvironmentPath::new("/file").unwrap(),
+        entries: entries.clone(),
+        limits,
+        on_existing: TransferOnExisting::Error,
+    };
+    assert_eq!(client.materialize(&request).await.unwrap().bytes, 3);
+    let captured = client
+        .capture(&CaptureParams {
+            source: request.destination.clone(),
+            limits,
+        })
+        .await
+        .unwrap();
+    assert_eq!(captured.entries, entries);
+    let transport = client.into_rpc().into_inner();
+    assert_eq!(transport.sent[0]["method"], "fs/materialize");
+    assert_eq!(
+        transport.sent[0]["params"],
+        serde_json::to_value(request).unwrap()
+    );
+    assert_eq!(transport.sent[1]["method"], "fs/capture");
+}

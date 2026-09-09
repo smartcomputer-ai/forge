@@ -1,3 +1,9 @@
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod backend;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod scan;
+use environment_protocol::data::transfer::*;
+mod transfer;
 use std::{
     io,
     path::{Component, Path, PathBuf},
@@ -23,6 +29,8 @@ pub struct LocalFileSystem {
     root: PathBuf,
     cwd: PathBuf,
     writable: bool,
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    transfers: std::sync::Arc<std::sync::Mutex<transfer::session::TransferManager>>,
 }
 
 impl LocalFileSystem {
@@ -31,7 +39,147 @@ impl LocalFileSystem {
             root: normalize_path(root),
             cwd: normalize_path(cwd),
             writable,
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            transfers: Default::default(),
         }
+    }
+
+    pub fn with_transfer_state_dir(
+        mut self,
+        path: PathBuf,
+    ) -> Result<Self, EnvironmentProtocolError> {
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        {
+            self.transfers = std::sync::Arc::new(std::sync::Mutex::new(
+                transfer::session::TransferManager::with_journal(path)?,
+            ));
+            let weak = std::sync::Arc::downgrade(&self.transfers);
+            std::thread::Builder::new()
+                .name("transfer-expiry".into())
+                .spawn(move || {
+                    loop {
+                        std::thread::sleep(Duration::from_secs(30));
+                        let Some(manager) = weak.upgrade() else {
+                            break;
+                        };
+                        let directory =
+                            manager.lock().ok().and_then(|mut manager| manager.expire());
+                        drop(manager);
+                        if let Some(directory) = directory {
+                            transfer::session::TransferManager::cleanup_expired(&directory);
+                        }
+                    }
+                })
+                .map_err(|e| {
+                    EnvironmentProtocolError::new(
+                        EnvironmentProtocolErrorCode::Internal,
+                        e.to_string(),
+                    )
+                })?;
+        }
+        Ok(self)
+    }
+
+    pub async fn transfer(
+        &self,
+        mut request: environment_protocol::data::transfer_session::TransferRequest,
+    ) -> Result<
+        environment_protocol::data::transfer_session::TransferResponse,
+        EnvironmentProtocolError,
+    > {
+        use environment_protocol::data::transfer_session::{TransferRequest, TransferSelection};
+        if let TransferRequest::Begin { selection, .. } = &mut request {
+            let path = match selection {
+                TransferSelection::Capture { source } => source,
+                TransferSelection::Materialize { destination, .. } => {
+                    self.ensure_writable()?;
+                    destination
+                }
+            };
+            *path = EnvironmentPath::new(self.resolve_scoped_path(path)?.to_string_lossy())
+                .map_err(|e| {
+                    EnvironmentProtocolError::new(
+                        EnvironmentProtocolErrorCode::InvalidRequest,
+                        e.to_string(),
+                    )
+                })?;
+        }
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        {
+            let transfers = self.transfers.clone();
+            let root = self.root.clone();
+            tokio::task::spawn_blocking(move || {
+                transfers
+                    .lock()
+                    .map_err(|_| {
+                        EnvironmentProtocolError::new(
+                            EnvironmentProtocolErrorCode::Internal,
+                            "transfer lock poisoned",
+                        )
+                    })?
+                    .execute(&root, request)
+            })
+            .await
+            .map_err(|e| {
+                EnvironmentProtocolError::new(EnvironmentProtocolErrorCode::Internal, e.to_string())
+            })?
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        {
+            Err(EnvironmentProtocolError::new(
+                EnvironmentProtocolErrorCode::Unsupported,
+                "filesystem transfer backend unavailable",
+            ))
+        }
+    }
+
+    pub async fn scan(
+        &self,
+        mut params: environment_protocol::data::inventory::ScanParams,
+    ) -> Result<environment_protocol::data::inventory::ScanResponse, EnvironmentProtocolError> {
+        for path in &mut params.roots {
+            *path = EnvironmentPath::new(self.resolve_scoped_path(path)?.to_string_lossy())
+                .map_err(|e| {
+                    EnvironmentProtocolError::new(
+                        EnvironmentProtocolErrorCode::InvalidRequest,
+                        e.to_string(),
+                    )
+                })?;
+        }
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        {
+            let root = self.root.clone();
+            tokio::task::spawn_blocking(move || scan::scan(&root, params))
+                .await
+                .map_err(|e| {
+                    EnvironmentProtocolError::new(
+                        EnvironmentProtocolErrorCode::Internal,
+                        e.to_string(),
+                    )
+                })?
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        {
+            Err(EnvironmentProtocolError::new(
+                EnvironmentProtocolErrorCode::Unsupported,
+                "filesystem scan backend unavailable",
+            ))
+        }
+    }
+
+    pub async fn capture(
+        &self,
+        params: CaptureParams,
+    ) -> Result<CaptureResponse, EnvironmentProtocolError> {
+        transfer::capture(self, params).await
+    }
+
+    pub async fn materialize(
+        &self,
+        params: MaterializeParams,
+    ) -> Result<MaterializeResponse, EnvironmentProtocolError> {
+        self.ensure_writable()?;
+        transfer::materialize(self, params).await
     }
 
     pub async fn read_file(
@@ -245,6 +393,45 @@ impl LocalFileSystem {
                     error.to_string(),
                 )
             })?
+    }
+
+    fn resolve_scoped_path(
+        &self,
+        path: &EnvironmentPath,
+    ) -> Result<PathBuf, EnvironmentProtocolError> {
+        if Path::new(path.as_str()).is_absolute() {
+            return self.resolve(path);
+        }
+        // Cwd and root are administrator-owned configuration. Resolve their aliases,
+        // then retain the configured root spelling for scope checks and returned paths.
+        // User-selected components are still opened without following symlinks.
+        let root = self
+            .root
+            .canonicalize()
+            .map_err(|e| io_error(e, &self.root))?;
+        let cwd = self
+            .cwd
+            .canonicalize()
+            .map_err(|e| io_error(e, &self.cwd))?;
+        let relative = cwd.strip_prefix(&root).map_err(|_| {
+            EnvironmentProtocolError::new(
+                EnvironmentProtocolErrorCode::Forbidden,
+                "configured cwd is outside filesystem root",
+            )
+        })?;
+        let path = EnvironmentPath::new(
+            self.root
+                .join(relative)
+                .join(path.as_str())
+                .to_string_lossy(),
+        )
+        .map_err(|e| {
+            EnvironmentProtocolError::new(
+                EnvironmentProtocolErrorCode::InvalidRequest,
+                e.to_string(),
+            )
+        })?;
+        self.resolve(&path)
     }
 
     fn resolve(&self, path: &EnvironmentPath) -> Result<PathBuf, EnvironmentProtocolError> {

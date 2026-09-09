@@ -2061,6 +2061,14 @@ fn features_config_to_api(
                 registration_keys: environments.registration_keys.clone(),
                 selection_tools: environments.selection_tools,
                 jobs: environments.jobs,
+                skills: environments
+                    .skills
+                    .as_ref()
+                    .map(|skills| api::EnvironmentSkillsFeature {
+                        working_directory: skills.working_directory.clone(),
+                        project_root: skills.project_root.clone(),
+                        additional_roots: skills.additional_roots.clone(),
+                    }),
             }),
         mcp: features.mcp.as_ref().map(mcp_feature_to_api),
     })
@@ -2343,18 +2351,8 @@ fn context_entry_kind_to_api(kind: &ContextEntryKind) -> ContextEntryKindView {
             role: context_message_role_to_api(role),
         },
         ContextEntryKind::Instructions => ContextEntryKindView::Instructions,
-        ContextEntryKind::VfsCatalog => ContextEntryKindView::VfsCatalog,
-        ContextEntryKind::SkillCatalog => ContextEntryKindView::SkillCatalog,
-        ContextEntryKind::SubagentCatalog => ContextEntryKindView::SubagentCatalog,
         ContextEntryKind::Catalog { title } => ContextEntryKindView::Catalog {
             title: title.clone(),
-        },
-        ContextEntryKind::SkillActivation {
-            catalog_id,
-            skill_id,
-        } => ContextEntryKindView::SkillActivation {
-            catalog_id: catalog_id.clone(),
-            skill_id: skill_id.as_str().to_owned(),
         },
         ContextEntryKind::ToolCall { call_id, name } => ContextEntryKindView::ToolCall {
             call_id: call_id.as_str().to_owned(),
@@ -3977,7 +3975,9 @@ mod tests {
                     prompts: Some(engine::VfsPromptsConfig {
                         roots: Some(vec!["/prompts".to_owned()]),
                     }),
-                    skills: Some(engine::VfsSkillsConfig { roots: None }),
+                    skills: Some(engine::VfsSkillsConfig {
+                        roots: vec!["/workspace/skills".into()],
+                    }),
                 }),
                 web: Some(engine::WebFeature {
                     version: engine::CURRENT_FEATURE_VERSION,
@@ -4047,7 +4047,9 @@ mod tests {
                         prompts: Some(api::VfsPromptsConfig {
                             roots: Some(vec!["/prompts".to_owned()]),
                         }),
-                        skills: Some(api::VfsSkillsConfig { roots: None }),
+                        skills: Some(api::VfsSkillsConfig {
+                            roots: vec!["/workspace/skills".into()]
+                        }),
                     }),
                     web: Some(api::WebFeature {
                         version: api::CURRENT_FEATURE_VERSION,
@@ -4077,6 +4079,7 @@ mod tests {
                         registration_keys: None,
                         selection_tools: false,
                         jobs: false,
+                        skills: None,
                     }),
                     mcp: Some(api::McpFeature {
                         version: api::CURRENT_FEATURE_VERSION,

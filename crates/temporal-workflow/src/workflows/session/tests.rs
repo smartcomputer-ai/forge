@@ -1567,3 +1567,315 @@ fn closed_quiescent_workflow_can_complete() {
 
     assert!(wait_loop::workflow_state_is_closed_and_quiescent(&workflow));
 }
+
+#[test]
+fn environment_catalog_switch_removal_replays_without_mutating_vfs() {
+    fn append(
+        state: &mut CoreAgentState,
+        log: &mut Vec<CoreAgentEntry>,
+        command: CoreAgentCommand,
+    ) {
+        for proposal in engine::admit_command(state, command, 1).unwrap() {
+            let entry = CoreAgentEntry {
+                position: SessionPosition {
+                    seq: EventSeq::new(log.len() as u64 + 1),
+                },
+                observed_at_ms: 1,
+                joins: proposal.joins,
+                event: proposal.event,
+            };
+            engine::apply_event(state, &entry).unwrap();
+            log.push(entry);
+        }
+    }
+    let mut state = CoreAgentState::new();
+    let mut log = Vec::new();
+    let mut config = agent_session_args_with_close_on_terminal(false).session_config;
+    config.features.environments = Some(engine::EnvironmentsFeature {
+        skills: Some(Default::default()),
+        ..Default::default()
+    });
+    append(
+        &mut state,
+        &mut log,
+        CoreAgentCommand::OpenSession { config },
+    );
+    append(
+        &mut state,
+        &mut log,
+        CoreAgentCommand::SetActiveEnvironment {
+            environment_id: engine::EnvironmentId::new("first"),
+        },
+    );
+    let vfs_key = ContextEntryKey::new("runtime.catalog.skills.vfs");
+    let env_key = ContextEntryKey::new("runtime.catalog.skills.environment");
+    for (key, origin) in [
+        (vfs_key.clone(), None),
+        (
+            env_key.clone(),
+            Some("runtime.environment:first".to_owned()),
+        ),
+    ] {
+        append(
+            &mut state,
+            &mut log,
+            CoreAgentCommand::UpsertContext {
+                expected_revision: None,
+                key,
+                entry: ContextEntryInput {
+                    origin,
+                    kind: ContextEntryKind::Catalog {
+                        title: "Skills".into(),
+                    },
+                    content: engine::ContentRef::text(BlobRef::from_bytes(b"menu")),
+                    preview: None,
+                    provenance_ref: None,
+                    token_estimate: None,
+                },
+            },
+        );
+    }
+    let vfs = engine::current_context_entry(&state, &vfs_key)
+        .unwrap()
+        .clone();
+    let environment_publication = CoreAgentCommand::UpsertContext {
+        expected_revision: None,
+        key: env_key.clone(),
+        entry: engine::current_catalog_inputs(&state)[&env_key].clone(),
+    };
+    assert!(!drive::environment_catalog_publication_is_obsolete(
+        &state,
+        &environment_publication
+    ));
+    let mut disabled = state.clone();
+    disabled
+        .lifecycle
+        .config
+        .as_mut()
+        .unwrap()
+        .features
+        .environments
+        .as_mut()
+        .unwrap()
+        .skills = None;
+    assert!(drive::invalid_environment_catalog_command(&disabled).is_some());
+    assert_eq!(
+        engine::current_context_entry(&disabled, &vfs_key),
+        Some(&vfs)
+    );
+    disabled
+        .lifecycle
+        .config
+        .as_mut()
+        .unwrap()
+        .features
+        .environments
+        .as_mut()
+        .unwrap()
+        .skills = Some(Default::default());
+    disabled.lifecycle.config.as_mut().unwrap().features.vfs = None;
+    assert!(drive::invalid_environment_catalog_command(&disabled).is_none());
+
+    assert!(drive::invalid_environment_catalog_command(&state).is_none());
+    assert!(
+        admissions::should_refresh_runtime_projection_before_admitting(
+            &state,
+            &request_input_run("idle")
+        )
+    );
+    append(&mut state, &mut log, request_input_run("queued"));
+    assert!(drive::environment_catalog_publication_is_obsolete(
+        &state,
+        &environment_publication
+    ));
+    assert!(
+        !admissions::should_refresh_runtime_projection_before_admitting(
+            &state,
+            &request_input_run("already-queued")
+        )
+    );
+    // The same boundary handles API selection and recorded selection tool effects.
+    append(
+        &mut state,
+        &mut log,
+        CoreAgentCommand::SetActiveEnvironment {
+            environment_id: engine::EnvironmentId::new("second"),
+        },
+    );
+    let removal = drive::invalid_environment_catalog_command(&state).unwrap();
+    assert!(matches!(&removal, CoreAgentCommand::RemoveContext { key, .. } if key == &env_key));
+    assert!(!admissions::should_refresh_runtime_projection_before_admitting(&state, &removal));
+    append(&mut state, &mut log, removal);
+    assert!(engine::current_context_entry(&state, &env_key).is_none());
+    assert_eq!(engine::current_context_entry(&state, &vfs_key), Some(&vfs));
+    let mut replayed = CoreAgentState::new();
+    for entry in &log {
+        engine::apply_event(&mut replayed, entry).unwrap();
+    }
+    assert_eq!(state, replayed);
+}
+
+#[test]
+fn catalog_discovery_is_never_scheduled_for_continuation_or_tool_controls() {
+    let mut state = CoreAgentState::new();
+    state.lifecycle.status = CoreAgentStatus::Open;
+    for command in [
+        CoreAgentCommand::ClearActiveEnvironment,
+        CoreAgentCommand::SetActiveEnvironment {
+            environment_id: engine::EnvironmentId::new("machine"),
+        },
+        CoreAgentCommand::RemoveContext {
+            expected_revision: None,
+            key: ContextEntryKey::new("runtime.catalog.skills.environment"),
+        },
+    ] {
+        assert!(!admissions::should_refresh_runtime_projection_before_admitting(&state, &command));
+    }
+}
+
+#[test]
+fn vfs_skill_revocation_is_source_scoped_and_replays() {
+    fn append(
+        state: &mut CoreAgentState,
+        log: &mut Vec<CoreAgentEntry>,
+        command: CoreAgentCommand,
+    ) {
+        let proposals = engine::admit_command(state, command, 1).unwrap();
+        for proposal in proposals {
+            let entry = CoreAgentEntry {
+                position: SessionPosition {
+                    seq: EventSeq::new(log.len() as u64 + 1),
+                },
+                observed_at_ms: 1,
+                joins: proposal.joins,
+                event: proposal.event,
+            };
+            engine::apply_event(state, &entry).unwrap();
+            log.push(entry);
+        }
+    }
+    let mut state = CoreAgentState::new();
+    let mut log = Vec::new();
+    let mut config = agent_session_args_with_close_on_terminal(false).session_config;
+    config.features.vfs = Some(engine::VfsFeature {
+        workspace_links: vec![engine::WorkspaceLink {
+            path: "/skills".into(),
+            target: engine::WorkspaceLinkTarget::Workspace {
+                workspace_id: "skills".into(),
+            },
+            access: engine::WorkspaceLinkAccess::ReadOnly,
+        }],
+        skills: Some(engine::VfsSkillsConfig {
+            roots: vec!["/skills".into()],
+        }),
+        ..Default::default()
+    });
+    config.features.environments = Some(engine::EnvironmentsFeature {
+        skills: Some(Default::default()),
+        ..Default::default()
+    });
+    append(
+        &mut state,
+        &mut log,
+        CoreAgentCommand::OpenSession { config },
+    );
+    let key = ContextEntryKey::new("runtime.catalog.skills.vfs");
+    let env_key = ContextEntryKey::new("runtime.catalog.skills.environment");
+    let entry = ContextEntryInput {
+        origin: Some("runtime.vfs.skills".into()),
+        kind: ContextEntryKind::Catalog {
+            title: "VFS skills".into(),
+        },
+        content: engine::ContentRef::text(BlobRef::from_bytes(b"menu")),
+        preview: None,
+        provenance_ref: None,
+        token_estimate: None,
+    };
+    let publication = CoreAgentCommand::UpsertContext {
+        expected_revision: None,
+        key: key.clone(),
+        entry: entry.clone(),
+    };
+    assert!(!drive::vfs_skill_catalog_publication_is_obsolete(
+        &state,
+        &publication
+    ));
+    append(&mut state, &mut log, publication.clone());
+    let mut environment_entry = entry;
+    environment_entry.origin = None;
+    append(
+        &mut state,
+        &mut log,
+        CoreAgentCommand::UpsertContext {
+            expected_revision: None,
+            key: env_key.clone(),
+            entry: environment_entry,
+        },
+    );
+    let environment = engine::current_context_entry(&state, &env_key)
+        .unwrap()
+        .clone();
+    assert!(drive::invalid_vfs_skill_catalog_command(&state).is_none());
+    let mut queued = state.clone();
+    let mut queued_log = log.clone();
+    append(&mut queued, &mut queued_log, request_input_run("queued"));
+    assert!(drive::vfs_skill_catalog_publication_is_obsolete(
+        &queued,
+        &publication
+    ));
+    assert!(drive::invalid_vfs_skill_catalog_command(&queued).is_none());
+    let mut config = state.lifecycle.config.clone().unwrap();
+    config.features.vfs.as_mut().unwrap().skills = None;
+    append(
+        &mut state,
+        &mut log,
+        CoreAgentCommand::ReplaceSessionConfig {
+            expected_revision: None,
+            config,
+        },
+    );
+    assert!(drive::vfs_skill_catalog_publication_is_obsolete(
+        &state,
+        &publication
+    ));
+    let removal = drive::invalid_vfs_skill_catalog_command(&state).unwrap();
+    append(&mut state, &mut log, removal);
+    assert!(engine::current_context_entry(&state, &key).is_none());
+    assert_eq!(
+        engine::current_context_entry(&state, &env_key),
+        Some(&environment)
+    );
+    assert!(
+        state
+            .lifecycle
+            .config
+            .as_ref()
+            .unwrap()
+            .features
+            .environments
+            .as_ref()
+            .unwrap()
+            .skills
+            .is_some()
+    );
+    let mut replayed = CoreAgentState::new();
+    for entry in &log {
+        engine::apply_event(&mut replayed, entry).unwrap();
+    }
+    assert_eq!(state, replayed);
+    let mut external = match publication {
+        CoreAgentCommand::UpsertContext { entry, .. } => entry,
+        _ => unreachable!(),
+    };
+    external.origin = Some("controller".into());
+    let command = CoreAgentCommand::UpsertContext {
+        expected_revision: None,
+        key,
+        entry: external,
+    };
+    assert!(!drive::vfs_skill_catalog_publication_is_obsolete(
+        &state, &command
+    ));
+    append(&mut state, &mut log, command);
+    assert!(drive::invalid_vfs_skill_catalog_command(&state).is_none());
+}

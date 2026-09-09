@@ -36,6 +36,9 @@ webpki-roots = "1.0"
 libc = "0.2"
 
 [dev-dependencies]
+async-trait = "0.1"
+store-fs = { path = "../store-fs" }
+vfs = { path = "../vfs" }
 engine = { path = "../engine" }
 environment-client = { path = "../environment-client" }
 tools = { path = "../tools" }

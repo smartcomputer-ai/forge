@@ -33,6 +33,16 @@ impl ReadOnlyFileSystem {
 
 #[async_trait]
 impl FileSystem for ReadOnlyFileSystem {
+    async fn export_vfs(&self, path: &FsPath) -> FsResult<::vfs::VfsEntry> {
+        self.inner.export_vfs(path).await
+    }
+    async fn prepare_vfs_capture(
+        &self,
+        path: &FsPath,
+        _replace: bool,
+    ) -> FsResult<Box<dyn crate::fs::VfsCaptureTarget>> {
+        Err(self.deny_write(path))
+    }
     fn access_policy(&self) -> FileAccessPolicy {
         match self.inner.access_policy() {
             FileAccessPolicy::FullReadWrite | FileAccessPolicy::FullReadOnly => {

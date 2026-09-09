@@ -1,4 +1,4 @@
-use api::{RunStatus, SessionStatus, SkillActivationScope};
+use api::{RunStatus, SessionStatus};
 
 /// CLI-local filesystem tool surface setting: `None` grants a VFS without fs
 /// tools; the api-level surface is `api::VfsToolSurface`.
@@ -90,15 +90,8 @@ pub(crate) enum ChatCommand {
     },
     ListSessions,
     ListSkills,
-    ListActiveSkills,
-    PickSkill {
-        scope: SkillActivationScope,
-    },
-    ActivateSkill {
-        skill_id: String,
-        scope: SkillActivationScope,
-    },
-    DeactivateSkill {
+    PickSkill,
+    UseSkill {
         skill_id: String,
     },
     NewSession,
@@ -132,9 +125,7 @@ pub(crate) enum ChatEvent {
     },
     SkillsListed {
         session_id: String,
-        catalog_ref: Option<String>,
-        skills: Vec<api::SkillListItem>,
-        scope: SkillActivationScope,
+        catalogs: Vec<api::SkillCatalogView>,
     },
     SessionSelected(ChatSessionSummary),
     HistoryReset {

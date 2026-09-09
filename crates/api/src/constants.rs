@@ -42,9 +42,6 @@ pub const METHOD_SESSION_RUNS_STEER: &str = "session/runs/steer";
 // ── Sessions: prompt and skill state ────────────────────────────────────────
 
 pub const METHOD_SESSION_SKILLS_LIST: &str = "session/skills/list";
-pub const METHOD_SESSION_SKILLS_ACTIVE: &str = "session/skills/active";
-pub const METHOD_SESSION_SKILLS_ACTIVATE: &str = "session/skills/activate";
-pub const METHOD_SESSION_SKILLS_DEACTIVATE: &str = "session/skills/deactivate";
 
 // ── Sessions: bindings to universe resources ───────────────────────────────
 

@@ -20,9 +20,7 @@ use crate::chat::tui::bottom_pane::list_selection::PickerSelection;
 use crate::chat::tui::bottom_pane::{BottomPaneAction, BottomPaneState};
 use crate::chat::tui::custom_terminal::TuiFrame;
 use crate::chat::tui::frame::FrameRequester;
-use crate::chat::tui::slash::{
-    SlashCommand, SlashEffort, SlashMaxTokens, SlashSkillScope, parse_slash_command,
-};
+use crate::chat::tui::slash::{SlashCommand, SlashEffort, SlashMaxTokens, parse_slash_command};
 use crate::chat::tui::terminal::Tui;
 use crate::chat::tui::transcript::{TranscriptOptions, TranscriptState};
 
@@ -198,8 +196,8 @@ impl ChatTuiApp {
                     ChatEvent::SessionsListed { sessions, .. } => {
                         self.bottom_pane.open_session_picker(sessions);
                     }
-                    ChatEvent::SkillsListed { skills, scope, .. } => {
-                        self.bottom_pane.open_skill_picker(skills, *scope);
+                    ChatEvent::SkillsListed { catalogs, .. } => {
+                        self.bottom_pane.open_skill_picker(catalogs);
                     }
                     ChatEvent::HistoryReset { session_id } => {
                         self.options.session_id = session_id.clone();
@@ -398,30 +396,11 @@ impl ChatTuiApp {
             SlashCommand::SkillsList => {
                 self.send_chat_command(ChatCommand::ListSkills);
             }
-            SlashCommand::SkillsActive => {
-                self.send_chat_command(ChatCommand::ListActiveSkills);
+            SlashCommand::SkillPick => {
+                self.send_chat_command(ChatCommand::PickSkill);
             }
-            SlashCommand::SkillPick { scope } => {
-                self.send_chat_command(ChatCommand::PickSkill {
-                    scope: api_skill_activation_scope(scope),
-                });
-            }
-            SlashCommand::SkillActivate { skill_id, scope } => {
-                if skill_id.trim().is_empty() {
-                    self.local_error("/skill requires a skill id");
-                } else {
-                    self.send_chat_command(ChatCommand::ActivateSkill {
-                        skill_id,
-                        scope: api_skill_activation_scope(scope),
-                    });
-                }
-            }
-            SlashCommand::SkillDeactivate { skill_id } => {
-                if skill_id.trim().is_empty() {
-                    self.local_error("/skill-off requires a skill id");
-                } else {
-                    self.send_chat_command(ChatCommand::DeactivateSkill { skill_id });
-                }
+            SlashCommand::SkillUse { skill_id } => {
+                self.send_chat_command(ChatCommand::UseSkill { skill_id });
             }
             SlashCommand::Interrupt(reason) => {
                 self.interrupt_active_run(reason);
@@ -472,8 +451,8 @@ impl ChatTuiApp {
             PickerSelection::Session(session_id) => {
                 self.send_chat_command(ChatCommand::SwitchSession { session_id });
             }
-            PickerSelection::Skill { skill_id, scope } => {
-                self.send_chat_command(ChatCommand::ActivateSkill { skill_id, scope });
+            PickerSelection::Skill { skill_id } => {
+                self.send_chat_command(ChatCommand::UseSkill { skill_id });
             }
         }
     }
@@ -537,14 +516,7 @@ impl ChatTuiApp {
 }
 
 fn command_help() -> &'static str {
-    "commands: /new, /sessions, /skills, /skills-active, /skill, /skill-off, /model, /provider, /effort, /max-tokens, /interrupt, /steer, /approve, /reject, /help, /quit"
-}
-
-fn api_skill_activation_scope(scope: SlashSkillScope) -> api::SkillActivationScope {
-    match scope {
-        SlashSkillScope::Run => api::SkillActivationScope::Run,
-        SlashSkillScope::Session => api::SkillActivationScope::Session,
-    }
+    "commands: /new, /sessions, /skills, /skill, /model, /provider, /effort, /max-tokens, /interrupt, /steer, /approve, /reject, /help, /quit"
 }
 
 fn is_ctrl_c(key: KeyEvent) -> bool {
@@ -558,7 +530,7 @@ fn status_allows_run_control(status: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use api::{RunStatus, SkillActivationScope};
+    use api::RunStatus;
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
@@ -700,40 +672,24 @@ mod tests {
             ChatCommand::ListSkills
         );
 
-        app.submit_local_text("/skills-active".into());
-        assert_eq!(
-            command_rx.try_recv().expect("active command"),
-            ChatCommand::ListActiveSkills
-        );
-
+        app.run_control_active = true;
         app.submit_local_text("/skill".into());
         assert_eq!(
             command_rx.try_recv().expect("pick command"),
-            ChatCommand::PickSkill {
-                scope: SkillActivationScope::Run,
-            }
+            ChatCommand::PickSkill
         );
 
-        app.submit_local_text("/skill lightspeed:review session".into());
+        app.submit_local_text("/skill lightspeed:review".into());
         assert_eq!(
-            command_rx.try_recv().expect("activate command"),
-            ChatCommand::ActivateSkill {
-                skill_id: "lightspeed:review".into(),
-                scope: SkillActivationScope::Session,
-            }
-        );
-
-        app.submit_local_text("/skill-off lightspeed:review".into());
-        assert_eq!(
-            command_rx.try_recv().expect("deactivate command"),
-            ChatCommand::DeactivateSkill {
+            command_rx.try_recv().expect("use command"),
+            ChatCommand::UseSkill {
                 skill_id: "lightspeed:review".into(),
             }
         );
     }
 
     #[test]
-    fn skills_list_event_opens_picker_and_selection_activates_skill() {
+    fn skills_list_event_opens_picker_and_selection_uses_skill() {
         let (tx, _rx) = mpsc::unbounded_channel();
         let app_event_tx = AppEventSender::new(tx);
         let (command_tx, mut command_rx) = mpsc::unbounded_channel();
@@ -750,16 +706,23 @@ mod tests {
         app.handle_ui_event(
             UiEvent::Chat(ChatEvent::SkillsListed {
                 session_id: app.options.session_id.clone(),
-                catalog_ref: Some("sha256:catalog".into()),
-                skills: vec![api::SkillListItem {
-                    skill_id: "lightspeed:review".into(),
-                    name: "Review".into(),
-                    description: "Review diffs".into(),
-                    short_description: Some("review changes".into()),
-                    enabled: true,
-                    active: false,
+                catalogs: vec![api::SkillCatalogView {
+                    source: api::SkillCatalogSource::Vfs,
+                    availability: api::SkillCatalogAvailability::Available,
+                    warnings: vec![],
+                    catalog_ref: Some("sha256:catalog".into()),
+                    skills: vec![api::SkillListItem {
+                        skill_id: "lightspeed:review".into(),
+                        name: "Review".into(),
+                        description: "Review diffs".into(),
+                        short_description: Some("review changes".into()),
+                        enabled: true,
+                        location: api::SkillLocationView {
+                            skill_dir_path: "/skills/review".into(),
+                            skill_doc_path: "/skills/review/SKILL.md".into(),
+                        },
+                    }],
                 }],
-                scope: SkillActivationScope::Session,
             }),
             &FrameRequester::test_dummy(),
         );
@@ -770,10 +733,9 @@ mod tests {
         );
 
         assert_eq!(
-            command_rx.try_recv().expect("activate command"),
-            ChatCommand::ActivateSkill {
+            command_rx.try_recv().expect("use command"),
+            ChatCommand::UseSkill {
                 skill_id: "lightspeed:review".into(),
-                scope: SkillActivationScope::Session,
             }
         );
     }

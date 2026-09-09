@@ -524,46 +524,10 @@ async fn materialize_input_item(
             message: "instruction context entries must materialize as top-level instructions"
                 .to_owned(),
         }),
-        ContextEntryKind::VfsCatalog => {
-            let catalog =
-                crate::environment_prompts::read_vfs_catalog(blobs, &item.content.content_ref)
-                    .await?;
-            Ok(developer_message(crate::catalog_prompts::catalog_text(
-                item,
-                crate::environment_prompts::vfs_catalog_text(&catalog),
-            )))
-        }
-        ContextEntryKind::SkillCatalog => {
-            let catalog =
-                crate::skill_prompts::read_skill_catalog(blobs, &item.content.content_ref).await?;
-            Ok(developer_message(crate::catalog_prompts::catalog_text(
-                item,
-                crate::skill_prompts::skill_catalog_text(&catalog),
-            )))
-        }
-        ContextEntryKind::SubagentCatalog => {
-            let catalog =
-                crate::subagent_prompts::read_subagent_catalog(blobs, &item.content.content_ref)
-                    .await?;
-            Ok(developer_message(crate::catalog_prompts::catalog_text(
-                item,
-                crate::subagent_prompts::subagent_catalog_text(&catalog),
-            )))
-        }
         ContextEntryKind::Catalog { .. } => Ok(developer_message(
-            crate::catalog_prompts::external_catalog_text(blobs, item, &item.content.content_ref)
+            crate::catalog_prompts::stored_catalog_text(blobs, item, &item.content.content_ref)
                 .await?,
         )),
-        ContextEntryKind::SkillActivation { skill_id, .. } => {
-            let text = read_text(blobs, &item.content.content_ref).await?;
-            Ok(oai::ResponseInputItem::Message(oai::InputMessage {
-                role: oai::MessageRole::Developer,
-                content: oai::InputMessageContent::Text(
-                    crate::skill_prompts::skill_activation_text(skill_id, text),
-                ),
-                extra: Default::default(),
-            }))
-        }
         ContextEntryKind::ToolCall { .. }
         | ContextEntryKind::ReasoningState
         | ContextEntryKind::ProviderOpaque => Ok(oai::ResponseInputItem::Raw(
@@ -1511,7 +1475,6 @@ mod tests {
     use std::collections::BTreeMap;
     use std::sync::{Arc, Mutex};
 
-    use engine::SkillId;
     use engine::{
         ContextCompactionTask, ContextEntryId, ContextEntrySource, ContextSnapshot, CoreAgentLlm,
         FunctionToolSpec, LlmGenerationRequest, LlmRequest, ModelSelection, ProviderParams, RunId,
@@ -1519,10 +1482,6 @@ mod tests {
     };
     use llm_clients::HeaderSnapshot;
     use serde_json::json;
-    use tools::skills::{
-        SKILL_CATALOG_SCHEMA_VERSION, SkillCatalogSnapshot, SkillDependencies, SkillLocation,
-        SkillMetadata, SkillScope, SkillSource, SkillTrustLevel,
-    };
     use tools::web::search::{OpenAiResponsesWebSearchConfig, WebSearchContextSize, WebSearchMode};
 
     use super::*;
@@ -2382,46 +2341,15 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn materialize_create_request_maps_skill_context_as_developer_messages() {
+    async fn catalog_and_inserted_skill_text_use_their_ordinary_message_roles() {
         let blobs = InMemoryBlobStore::new();
-        let skill_id = SkillId::new("skill:deploy-review");
-        let snapshot_ref = engine::BlobRef::from_bytes(b"skills-snapshot");
-        let catalog_ref = crate::blob_io::put_json(
+        let catalog_ref = text_blob(
             &blobs,
-            &SkillCatalogSnapshot {
-                schema_version: SKILL_CATALOG_SCHEMA_VERSION.to_string(),
-                catalog_id: tools::skills::VFS_SKILL_CATALOG_ID.to_owned(),
-                source: tools::skills::SkillCatalogSource::Vfs,
-                skills: vec![SkillMetadata {
-                    skill_id: skill_id.clone(),
-                    name: "deploy-review".to_string(),
-                    description: "Review deployment risk.".to_string(),
-                    short_description: None,
-                    source: SkillSource::Snapshot {
-                        root_id: "vfs".to_string(),
-                        snapshot_ref: snapshot_ref.clone(),
-                    },
-                    scope: SkillScope::Global,
-                    enabled: true,
-                    trust: SkillTrustLevel::User,
-                    interface: None,
-                    dependencies: SkillDependencies::default(),
-                    location: SkillLocation::LinkedSnapshot {
-                        source_snapshot_ref: snapshot_ref,
-                        source_link_path: vfs::VfsPath::parse("/skills").unwrap(),
-                        skill_dir_path: vfs::VfsPath::parse("/skills/deploy-review").unwrap(),
-                        skill_doc_path: vfs::VfsPath::parse("/skills/deploy-review/SKILL.md")
-                            .unwrap(),
-                    },
-                    skill_doc_ref: None,
-                }],
-                warnings: Vec::new(),
-            },
+            "Read /skills/deploy-review/SKILL.md to review deployment risk.\n",
         )
-        .await
-        .expect("catalog");
+        .await;
         let input_ref = text_blob(&blobs, "Review this rollout.").await;
-        let activation_ref = text_blob(
+        let skill_text_ref = text_blob(
             &blobs,
             "# Deploy Review\n\nCheck rollout scope, blast radius, and rollback plan.",
         )
@@ -2430,9 +2358,11 @@ mod tests {
         let catalog_item = ContextEntry {
             key: None,
             entry_id: ContextEntryId::new(1),
-            kind: ContextEntryKind::SkillCatalog,
+            kind: ContextEntryKind::Catalog {
+                title: "VFS skill catalog".to_owned(),
+            },
             source: ContextEntrySource::Runtime {
-                label: "skills.catalog.vfs".to_string(),
+                label: "runtime.catalog.skills.vfs".to_string(),
             },
             content: engine::ContentRef {
                 content_ref: catalog_ref,
@@ -2466,18 +2396,17 @@ mod tests {
             token_estimate: None,
             supersedes: None,
         };
-        let activation_item = ContextEntry {
+        let skill_text_item = ContextEntry {
             key: None,
             entry_id: ContextEntryId::new(3),
-            kind: ContextEntryKind::SkillActivation {
-                catalog_id: tools::skills::VFS_SKILL_CATALOG_ID.to_owned(),
-                skill_id: skill_id.clone(),
+            kind: ContextEntryKind::Message {
+                role: ContextMessageRole::User,
             },
             source: ContextEntrySource::Runtime {
-                label: "skills.activation".to_string(),
+                label: "inserted-skill".to_string(),
             },
             content: engine::ContentRef {
-                content_ref: activation_ref,
+                content_ref: skill_text_ref,
                 media_type: None,
                 provider_kind: None,
             },
@@ -2487,7 +2416,7 @@ mod tests {
             token_estimate: None,
             supersedes: None,
         };
-        let request = intent_request(vec![catalog_item, user_item, activation_item]);
+        let request = intent_request(vec![catalog_item, user_item, skill_text_item]);
 
         let materialized = materialize_create_request(&blobs, &request)
             .await
@@ -2499,12 +2428,14 @@ mod tests {
             json!([
                 {
                     "role": "developer",
-                    "content": "VFS skill catalog:\n\nWhen a skill is relevant, read its SKILL.md through the appropriate VFS file tool before following it. VFS skill paths are not environment paths.\n\n- deploy-review (skill:deploy-review)\n  description: Review deployment risk.\n  skill_doc_path: /skills/deploy-review/SKILL.md\n"
+                    "content": "VFS skill catalog:\n\nRead /skills/deploy-review/SKILL.md to review deployment risk.\n"
                 },
-                { "role": "user", "content": "Review this rollout." },
                 {
-                    "role": "developer",
-                    "content": "Lightspeed loaded skill (skill:deploy-review):\n\n# Deploy Review\n\nCheck rollout scope, blast radius, and rollback plan."
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": "Review this rollout."},
+                        {"type": "input_text", "text": "# Deploy Review\n\nCheck rollout scope, blast radius, and rollback plan."}
+                    ]
                 }
             ])
         );

@@ -86,6 +86,92 @@ impl BlobStore for FsBlobStore {
         Ok(blob_ref)
     }
 
+    async fn read_blob_range(
+        &self,
+        blob_ref: &BlobRef,
+        offset: u64,
+        max_bytes: usize,
+    ) -> Result<Vec<u8>, BlobStoreError> {
+        use tokio::io::{AsyncReadExt, AsyncSeekExt};
+        if max_bytes > 1024 * 1024 {
+            return Err(BlobStoreError::Store {
+                message: "blob range limit exceeded".into(),
+            });
+        }
+        let paths = self.blob_paths(blob_ref)?;
+        let mut file = fs::File::open(&paths.data)
+            .await
+            .map_err(|e| blob_io_error("open blob", &paths.data, e))?;
+        file.seek(std::io::SeekFrom::Start(offset))
+            .await
+            .map_err(|e| blob_io_error("seek blob", &paths.data, e))?;
+        let mut bytes = Vec::with_capacity(max_bytes);
+        file.take(max_bytes as u64)
+            .read_to_end(&mut bytes)
+            .await
+            .map_err(|e| blob_io_error("read blob range", &paths.data, e))?;
+        Ok(bytes)
+    }
+
+    async fn put_stream(
+        &self,
+        expected: &BlobRef,
+        size: u64,
+        source: &mut dyn engine::storage::BlobSource,
+    ) -> Result<BlobRef, BlobStoreError> {
+        use sha2::{Digest, Sha256};
+        use tokio::io::AsyncWriteExt;
+        let paths = self.blob_paths(expected)?;
+        fs::create_dir_all(&paths.dir)
+            .await
+            .map_err(|e| blob_io_error("create blob directory", &paths.dir, e))?;
+        let temporary = tempfile::NamedTempFile::new_in(&paths.dir)
+            .map_err(|e| blob_io_error("create blob spool", &paths.dir, e))?;
+        let mut file = fs::File::from_std(
+            temporary
+                .reopen()
+                .map_err(|e| blob_io_error("open blob spool", &paths.dir, e))?,
+        );
+        let mut hash = Sha256::new();
+        let mut length = 0u64;
+        loop {
+            let chunk = source.read_chunk(256 * 1024).await?;
+            if chunk.is_empty() {
+                break;
+            }
+            length =
+                length
+                    .checked_add(chunk.len() as u64)
+                    .ok_or_else(|| BlobStoreError::Store {
+                        message: "blob length overflow".into(),
+                    })?;
+            if chunk.len() > 256 * 1024 || length > size {
+                return Err(BlobStoreError::Store {
+                    message: "blob stream exceeded size/chunk limit".into(),
+                });
+            }
+            hash.update(&chunk);
+            file.write_all(&chunk)
+                .await
+                .map_err(|e| blob_io_error("write blob spool", &paths.dir, e))?;
+        }
+        if length != size || format!("sha256:{:x}", hash.finalize()) != expected.as_str() {
+            return Err(BlobStoreError::Store {
+                message: "blob stream length/digest mismatch".into(),
+            });
+        }
+        file.sync_all()
+            .await
+            .map_err(|e| blob_io_error("sync blob spool", &paths.dir, e))?;
+        drop(file);
+        match temporary.persist_noclobber(&paths.data) {
+            Ok(_) => (),
+            Err(e) if e.error.kind() == io::ErrorKind::AlreadyExists => (),
+            Err(e) => return Err(blob_io_error("publish blob", &paths.data, e.error)),
+        }
+        Ok(expected.clone())
+    }
+
     async fn read_bytes(&self, blob_ref: &BlobRef) -> Result<Vec<u8>, BlobStoreError> {
         let paths = self.blob_paths(blob_ref)?;
         let bytes = fs::read(&paths.data).await.map_err(|error| {

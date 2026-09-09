@@ -53,6 +53,12 @@ pub(super) fn description(tool: BuiltinTool, scoped_paths: bool) -> String {
         BuiltinToolOperation::Grep => "Search UTF-8 files recursively with a regular expression.",
         BuiltinToolOperation::Glob => "Find files recursively with a glob pattern.",
         BuiltinToolOperation::ListDir => "List one directory.",
+        BuiltinToolOperation::Materialize => {
+            "Copy a VFS file or tree to the current environment. Replaces the complete selected destination by default, preserving siblings. Transfers only missing file content."
+        }
+        BuiltinToolOperation::Capture => {
+            "Capture an environment file or tree into a writable VFS workspace. Replaces the selected destination by default. Fails publication if the workspace changed concurrently; returns the captured snapshot for recovery."
+        }
         BuiltinToolOperation::RunProcess if tool.one_shot() => {
             "Run a command and wait until it exits, returning its output. With `timeout_ms` the command is killed at that deadline. A command may leave services running; they keep running until stopped or the environment closes. Interactive programs need `tty: true`."
         }
@@ -77,6 +83,12 @@ pub(super) fn description(tool: BuiltinTool, scoped_paths: bool) -> String {
 
 pub(super) fn input_schema(tool: BuiltinTool) -> Value {
     match tool.operation() {
+        BuiltinToolOperation::Materialize => {
+            json!({"type":"object","properties":{"source_vfs_path":{"type":"string"},"destination_environment_path":{"type":"string"},"on_existing":{"type":"string","enum":["replace","error"]}},"required":["source_vfs_path","destination_environment_path"],"additionalProperties":false})
+        }
+        BuiltinToolOperation::Capture => {
+            json!({"type":"object","properties":{"source_environment_path":{"type":"string"},"destination_vfs_path":{"type":"string"},"on_existing":{"type":"string","enum":["replace","error"]}},"required":["source_environment_path","destination_vfs_path"],"additionalProperties":false})
+        }
         BuiltinToolOperation::ReadFile => object(
             [
                 ("path", string("File path to read.")),
@@ -281,6 +293,24 @@ pub(super) async fn invoke_json(
     arguments: Value,
 ) -> ToolResult<ToolInvocationOutput> {
     match tool.operation() {
+        BuiltinToolOperation::Materialize => {
+            crate::transfer::invoke_materialize(
+                ctx.vfs()?,
+                ctx.environment()?,
+                ctx.transfer_operation_id(),
+                arguments,
+            )
+            .await
+        }
+        BuiltinToolOperation::Capture => {
+            crate::transfer::invoke_capture(
+                ctx.vfs()?,
+                ctx.environment()?,
+                ctx.transfer_operation_id(),
+                arguments,
+            )
+            .await
+        }
         BuiltinToolOperation::ReadFile => {
             let fs_ctx = ctx.filesystem()?;
             let result = invoke_read_file(fs_ctx, decode_args(arguments)?).await?;

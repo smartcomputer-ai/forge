@@ -16,42 +16,8 @@ impl GatewayAgentApi {
         if commands.is_empty() {
             return Ok(());
         }
-        let expected = commands
-            .iter()
-            .filter_map(|command| match command {
-                CoreAgentCommand::UpsertContext { key, entry, .. } => {
-                    Some((key.clone(), entry.clone()))
-                }
-                _ => None,
-            })
-            .collect::<Vec<_>>();
-        let removed = commands
-            .iter()
-            .filter_map(|command| match command {
-                CoreAgentCommand::RemoveContext { key, .. } => Some(key.clone()),
-                _ => None,
-            })
-            .collect::<Vec<_>>();
-        let mut correlations = BTreeMap::new();
-        for command in commands {
-            correlations.extend(
-                self.submit_correlated_context_commands(session_id, vec![command])
-                    .await?,
-            );
-        }
-        if !expected.is_empty() {
-            self.wait_for_context_entries_applied(session_id, &expected, &correlations)
-                .await?;
-        }
-        if !removed.is_empty() {
-            let (_, outcomes) = self
-                .wait_for_context_keys_removed(session_id, &removed, &correlations)
-                .await?;
-            if let Some(failure) = outcomes.into_values().flatten().next() {
-                return Err(map_admission_failure_to_api_error(&failure));
-            }
-        }
-        Ok(())
+        self.apply_catalog_refresh_commands(session_id, commands)
+            .await
     }
 
     pub(super) async fn environment_projection_refresh_commands(
@@ -68,10 +34,15 @@ impl GatewayAgentApi {
                 .context
                 .entries
                 .iter()
-                .any(|entry| entry.kind == ContextEntryKind::VfsCatalog)
+                .any(|entry| {
+                    entry
+                        .key
+                        .as_ref()
+                        .is_some_and(|key| key.as_str() == VFS_CATALOG_CONTEXT_KEY)
+                })
                 .then(|| CoreAgentCommand::RemoveContext {
                     expected_revision: None,
-                    key: ContextEntryKey::new(engine::VFS_CATALOG_CONTEXT_KEY),
+                    key: ContextEntryKey::new(VFS_CATALOG_CONTEXT_KEY),
                 })
                 .into_iter()
                 .collect());
@@ -82,7 +53,8 @@ impl GatewayAgentApi {
         let publication = tools::environment::projection::prepare_vfs_catalog_publication(
             self.store.as_ref(),
             Some(self.store.as_ref()),
-            state,
+            engine::current_catalog_inputs(state)
+                .get(&ContextEntryKey::new(VFS_CATALOG_CONTEXT_KEY)),
             catalog,
         )
         .await

@@ -197,37 +197,10 @@ Injects input into the named active run; the model sees it at the next turn boun
 
 **List available session skills**
 
-Refreshes the session's configured VFS skill catalog and reports which discovered skills are enabled and active. An absent catalog yields an empty result.
+Returns separate VFS and environment catalogs with source, reference, availability, readable skill paths, and warnings. Refreshes only when open with no active or queued run, without waking environments. Absent catalogs are omitted.
 
 - Params: `SkillListParams`
 - Result: `AgentApiOutcome<SkillListResponse>`
-
-### `session/skills/active`
-
-**List active session skills**
-
-Returns skill instructions currently injected into context, including activation scope and source.
-
-- Params: `SkillActiveParams`
-- Result: `AgentApiOutcome<SkillActiveResponse>`
-
-### `session/skills/activate`
-
-**Activate a session skill**
-
-Loads an enabled skill from the current catalog and injects its instructions into an open idle session. Run-scoped activation is the default.
-
-- Params: `SkillActivateParams`
-- Result: `AgentApiOutcome<SkillActivateResponse>`
-
-### `session/skills/deactivate`
-
-**Deactivate a session skill**
-
-Removes an active skill's injected context from an open idle session; the skill must currently be active.
-
-- Params: `SkillDeactivateParams`
-- Result: `AgentApiOutcome<SkillDeactivateResponse>`
 
 ### `session/profiles/apply`
 

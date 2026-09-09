@@ -164,6 +164,22 @@ also gives commands for real provider execution and environment lifecycle
 tests. The `environment_provider_live` suite uses an in-process provider with
 the real database and reconciler; it does not require Incus.
 
+VFS transfer coverage uses real Temporal, PostgreSQL, MinIO, and an envd that
+registers with a temporary local gateway. Its scripted model exercises each
+provider's tool presentation without a model key. On Linux or macOS, run:
+
+```bash
+source scripts/dev/env.sh
+cargo test -p temporal-server --test vfs_transfer_live -- --ignored --test-threads=1
+cargo test -p store-pg --test store_pg_live \
+  pg_live_streamed_blobs_verify_ranges_reuse_and_reject_corruption \
+  -- --ignored --test-threads=1
+```
+
+These tests cover profile grants, standalone hosted transfer dispatch,
+multi-page inventories, binary files above the old inline limit, replacement,
+content reuse, executable flags, conditional scans, and streamed CAS integrity.
+
 Temporal live tests share the local Temporal and PostgreSQL state. Always use
 `--test-threads=1`, including filtered runs, and don't run these suites
 concurrently in separate terminals. Run `runs_live_slow` by itself and allow

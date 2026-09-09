@@ -26,6 +26,9 @@ pub struct InitializeResponse {
     pub capabilities: EnvironmentCapabilities,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_cwd: Option<String>,
+    /// Home directory of the endpoint execution user.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub home_directory: Option<String>,
     pub implementation: ImplementationInfo,
 }
 

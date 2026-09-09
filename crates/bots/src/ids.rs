@@ -1,9 +1,9 @@
 //! Every identity the bots subsystem derives. Deterministic by
 //! construction: retries and duplicate fires converge on one row, one
-//! delivery, one run submission. Model-facing handles are `#N` counters
-//! and names; the digests here are internal.
+//! delivery, one run submission. Event handles shown to models are `#N`
+//! counters; session instructions also expose the concrete session id.
 
-use api::{BotId, BotTriggerId};
+use api::{BotId, BotSessionKind, BotTriggerId};
 use sha2::{Digest as _, Sha256};
 use uuid::Uuid;
 
@@ -31,6 +31,17 @@ fn digest_prefix(value: &str, len: usize) -> String {
 }
 
 // ── Sessions ────────────────────────────────────────────────────────────────
+
+/// Kind encoded in a controller-generated bot session id, including successors.
+pub fn bot_session_kind(session_id: &str) -> BotSessionKind {
+    if session_id.contains(":k-") {
+        BotSessionKind::PerKey
+    } else if session_id.contains(":e-") {
+        BotSessionKind::PerEvent
+    } else {
+        BotSessionKind::Main
+    }
+}
 
 /// The bot's main session: `bot:v1:{bot_id}` for generation 1,
 /// `bot:v1:{bot_id}-g{n}` after a rotation.

@@ -482,6 +482,7 @@ async fn run_environment_power_live_client(
                     registration_keys: None,
                     selection_tools: false,
                     jobs: false,
+                    skills: None,
                 }),
                 ..api::FeaturesConfig::default()
             }),

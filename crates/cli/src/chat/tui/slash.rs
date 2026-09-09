@@ -22,15 +22,8 @@ pub(crate) enum SlashCommand {
         note: Option<String>,
     },
     SkillsList,
-    SkillsActive,
-    SkillPick {
-        scope: SlashSkillScope,
-    },
-    SkillActivate {
-        skill_id: String,
-        scope: SlashSkillScope,
-    },
-    SkillDeactivate {
+    SkillPick,
+    SkillUse {
         skill_id: String,
     },
 }
@@ -49,9 +42,7 @@ pub(crate) enum SlashCommandKind {
     Approve,
     Reject,
     SkillsList,
-    SkillsActive,
-    SkillActivate,
-    SkillDeactivate,
+    SkillUse,
     Quit,
 }
 
@@ -65,12 +56,6 @@ pub(crate) enum SlashEffort {
 pub(crate) enum SlashMaxTokens {
     Pick,
     Set(Option<u32>),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SlashSkillScope {
-    Run,
-    Session,
 }
 
 pub(crate) fn parse_slash_command(text: &str) -> Result<Option<SlashCommand>> {
@@ -121,9 +106,7 @@ impl SlashCommandKind {
             SlashCommandKind::Effort,
             SlashCommandKind::MaxTokens,
             SlashCommandKind::SkillsList,
-            SlashCommandKind::SkillsActive,
-            SlashCommandKind::SkillActivate,
-            SlashCommandKind::SkillDeactivate,
+            SlashCommandKind::SkillUse,
             SlashCommandKind::Interrupt,
             SlashCommandKind::Steer,
             SlashCommandKind::Approve,
@@ -147,9 +130,7 @@ impl SlashCommandKind {
             SlashCommandKind::Approve => "approve",
             SlashCommandKind::Reject => "reject",
             SlashCommandKind::SkillsList => "skills",
-            SlashCommandKind::SkillsActive => "skills-active",
-            SlashCommandKind::SkillActivate => "skill",
-            SlashCommandKind::SkillDeactivate => "skill-off",
+            SlashCommandKind::SkillUse => "skill",
             SlashCommandKind::Quit => "quit",
         }
     }
@@ -168,9 +149,7 @@ impl SlashCommandKind {
             SlashCommandKind::Approve => "approve one pending tool call",
             SlashCommandKind::Reject => "reject one pending tool call",
             SlashCommandKind::SkillsList => "list available session skills",
-            SlashCommandKind::SkillsActive => "show active session skills",
-            SlashCommandKind::SkillActivate => "activate a skill by id",
-            SlashCommandKind::SkillDeactivate => "deactivate a skill by id",
+            SlashCommandKind::SkillUse => "use a skill by id",
             SlashCommandKind::Quit => "exit chat",
         }
     }
@@ -194,13 +173,7 @@ impl SlashCommandKind {
                 note: None,
             },
             SlashCommandKind::SkillsList => SlashCommand::SkillsList,
-            SlashCommandKind::SkillsActive => SlashCommand::SkillsActive,
-            SlashCommandKind::SkillActivate => SlashCommand::SkillPick {
-                scope: SlashSkillScope::Run,
-            },
-            SlashCommandKind::SkillDeactivate => SlashCommand::SkillDeactivate {
-                skill_id: String::new(),
-            },
+            SlashCommandKind::SkillUse => SlashCommand::SkillPick,
             SlashCommandKind::Quit => SlashCommand::Quit,
         }
     }
@@ -248,12 +221,7 @@ impl SlashCommandKind {
                 }
             }
             SlashCommandKind::SkillsList => SlashCommand::SkillsList,
-            SlashCommandKind::SkillsActive => SlashCommand::SkillsActive,
-            SlashCommandKind::SkillActivate => parse_skill_activate(args)?,
-            SlashCommandKind::SkillDeactivate => {
-                let skill_id = required_single_value(args, "/skill-off")?;
-                SlashCommand::SkillDeactivate { skill_id }
-            }
+            SlashCommandKind::SkillUse => parse_skill_use(args)?,
         })
     }
 
@@ -272,9 +240,7 @@ impl SlashCommandKind {
             "approve" => SlashCommandKind::Approve,
             "reject" => SlashCommandKind::Reject,
             "skills" | "skills-list" => SlashCommandKind::SkillsList,
-            "skills-active" | "active-skills" => SlashCommandKind::SkillsActive,
-            "skill" | "skill-activate" => SlashCommandKind::SkillActivate,
-            "skill-off" | "skill-deactivate" | "skill-disable" => SlashCommandKind::SkillDeactivate,
+            "skill" => SlashCommandKind::SkillUse,
             _ => return None,
         })
     }
@@ -301,36 +267,14 @@ fn parse_max_tokens(value: &str) -> Result<Option<u32>> {
     }
 }
 
-fn parse_skill_activate(args: &str) -> Result<SlashCommand> {
+fn parse_skill_use(args: &str) -> Result<SlashCommand> {
     let parts = args.split_whitespace().collect::<Vec<_>>();
     match parts.as_slice() {
-        [] => Ok(SlashCommand::SkillPick {
-            scope: SlashSkillScope::Run,
-        }),
-        ["--scope", value] => Ok(SlashCommand::SkillPick {
-            scope: parse_skill_scope(value)?,
-        }),
-        [skill_id] => Ok(SlashCommand::SkillActivate {
+        [] => Ok(SlashCommand::SkillPick),
+        [skill_id] if !skill_id.starts_with('-') => Ok(SlashCommand::SkillUse {
             skill_id: (*skill_id).to_owned(),
-            scope: SlashSkillScope::Run,
         }),
-        [skill_id, scope] => Ok(SlashCommand::SkillActivate {
-            skill_id: (*skill_id).to_owned(),
-            scope: parse_skill_scope(scope)?,
-        }),
-        [skill_id, "--scope", scope] => Ok(SlashCommand::SkillActivate {
-            skill_id: (*skill_id).to_owned(),
-            scope: parse_skill_scope(scope)?,
-        }),
-        _ => anyhow::bail!("usage: /skill [<skill-id>] [run|session]"),
-    }
-}
-
-fn parse_skill_scope(value: &str) -> Result<SlashSkillScope> {
-    match value {
-        "run" => Ok(SlashSkillScope::Run),
-        "session" => Ok(SlashSkillScope::Session),
-        other => anyhow::bail!("invalid skill scope '{other}' (expected run or session)"),
+        _ => anyhow::bail!("usage: /skill [<skill-id>]"),
     }
 }
 
@@ -348,6 +292,34 @@ fn required_single_value(args: &str, command: &str) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_skill_selection_without_lifecycle_controls() {
+        assert_eq!(
+            parse_slash_command("/skills").unwrap(),
+            Some(SlashCommand::SkillsList)
+        );
+        assert_eq!(
+            parse_slash_command("/skill").unwrap(),
+            Some(SlashCommand::SkillPick)
+        );
+        assert_eq!(
+            parse_slash_command("/skill skill:review").unwrap(),
+            Some(SlashCommand::SkillUse {
+                skill_id: "skill:review".into()
+            })
+        );
+        for command in [
+            "/skills-active",
+            "/active-skills",
+            "/skill-off skill:review",
+            "/skill-activate skill:review",
+            "/skill skill:review session",
+            "/skill --scope session",
+        ] {
+            assert!(parse_slash_command(command).is_err(), "{command}");
+        }
+    }
 
     #[test]
     fn parses_picker_commands_without_arguments() {
@@ -417,67 +389,6 @@ mod tests {
     }
 
     #[test]
-    fn parses_skill_commands() {
-        assert_eq!(
-            parse_slash_command("/skills").unwrap(),
-            Some(SlashCommand::SkillsList)
-        );
-        assert_eq!(
-            parse_slash_command("/skills-active").unwrap(),
-            Some(SlashCommand::SkillsActive)
-        );
-        assert_eq!(
-            parse_slash_command("/skill").unwrap(),
-            Some(SlashCommand::SkillPick {
-                scope: SlashSkillScope::Run,
-            })
-        );
-        assert_eq!(
-            parse_slash_command("/skill --scope session").unwrap(),
-            Some(SlashCommand::SkillPick {
-                scope: SlashSkillScope::Session,
-            })
-        );
-        assert_eq!(
-            parse_slash_command("/skill lightspeed:review").unwrap(),
-            Some(SlashCommand::SkillActivate {
-                skill_id: "lightspeed:review".into(),
-                scope: SlashSkillScope::Run,
-            })
-        );
-        assert_eq!(
-            parse_slash_command("/skill lightspeed:review session").unwrap(),
-            Some(SlashCommand::SkillActivate {
-                skill_id: "lightspeed:review".into(),
-                scope: SlashSkillScope::Session,
-            })
-        );
-        assert_eq!(
-            parse_slash_command("/skill lightspeed:review --scope session").unwrap(),
-            Some(SlashCommand::SkillActivate {
-                skill_id: "lightspeed:review".into(),
-                scope: SlashSkillScope::Session,
-            })
-        );
-        assert_eq!(
-            parse_slash_command("/skill-off lightspeed:review").unwrap(),
-            Some(SlashCommand::SkillDeactivate {
-                skill_id: "lightspeed:review".into(),
-            })
-        );
-    }
-
-    #[test]
-    fn skill_commands_require_skill_ids() {
-        let deactivate_error = parse_slash_command("/skill-off").expect_err("skill id required");
-        assert!(
-            deactivate_error
-                .to_string()
-                .contains("slash command /skill-off requires a skill id")
-        );
-    }
-
-    #[test]
     fn steer_requires_instruction() {
         let error = parse_slash_command("/steer").expect_err("steer needs text");
         assert!(
@@ -512,7 +423,7 @@ mod tests {
             matching_slash_commands("se"),
             vec![SlashCommandKind::Sessions]
         );
-        assert!(matching_slash_commands("skill").contains(&SlashCommandKind::SkillActivate));
+        assert!(matching_slash_commands("skill").contains(&SlashCommandKind::SkillUse));
         assert!(matching_slash_commands("").contains(&SlashCommandKind::Provider));
     }
 }

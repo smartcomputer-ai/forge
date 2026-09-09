@@ -2077,57 +2077,6 @@
         ],
         "type": "object"
       },
-      "AgentApiOutcomeOfSkillActivateResponse": {
-        "properties": {
-          "notifications": {
-            "items": {
-              "$ref": "#/components/schemas/AgentNotification"
-            },
-            "type": "array"
-          },
-          "result": {
-            "$ref": "#/components/schemas/SkillActivateResponse"
-          }
-        },
-        "required": [
-          "result"
-        ],
-        "type": "object"
-      },
-      "AgentApiOutcomeOfSkillActiveResponse": {
-        "properties": {
-          "notifications": {
-            "items": {
-              "$ref": "#/components/schemas/AgentNotification"
-            },
-            "type": "array"
-          },
-          "result": {
-            "$ref": "#/components/schemas/SkillActiveResponse"
-          }
-        },
-        "required": [
-          "result"
-        ],
-        "type": "object"
-      },
-      "AgentApiOutcomeOfSkillDeactivateResponse": {
-        "properties": {
-          "notifications": {
-            "items": {
-              "$ref": "#/components/schemas/AgentNotification"
-            },
-            "type": "array"
-          },
-          "result": {
-            "$ref": "#/components/schemas/SkillDeactivateResponse"
-          }
-        },
-        "required": [
-          "result"
-        ],
-        "type": "object"
-      },
       "AgentApiOutcomeOfSkillListResponse": {
         "properties": {
           "notifications": {
@@ -7109,7 +7058,7 @@
             "$ref": "#/components/schemas/InputItem"
           },
           "key": {
-            "description": "Stable client-chosen context key. Re-sending the same key with the\nsame content is a no-op, so the key doubles as the idempotency handle.",
+            "description": "Stable client-chosen context key. Re-sending the same key with the\nsame content is a no-op, so the key doubles as the idempotency handle.\n`run`, `run.*`, `runtime`, and `runtime.*` are reserved for the runtime.",
             "type": "string"
           }
         },
@@ -7324,43 +7273,7 @@
             "type": "object"
           },
           {
-            "properties": {
-              "type": {
-                "const": "vfsCatalog",
-                "type": "string"
-              }
-            },
-            "required": [
-              "type"
-            ],
-            "type": "object"
-          },
-          {
-            "properties": {
-              "type": {
-                "const": "skillCatalog",
-                "type": "string"
-              }
-            },
-            "required": [
-              "type"
-            ],
-            "type": "object"
-          },
-          {
-            "properties": {
-              "type": {
-                "const": "subagentCatalog",
-                "type": "string"
-              }
-            },
-            "required": [
-              "type"
-            ],
-            "type": "object"
-          },
-          {
-            "description": "A client-owned catalog published through `session/context/append`.",
+            "description": "Runtime or client catalog with a stored text body and independent key.",
             "properties": {
               "title": {
                 "type": "string"
@@ -7373,26 +7286,6 @@
             "required": [
               "type",
               "title"
-            ],
-            "type": "object"
-          },
-          {
-            "properties": {
-              "catalogId": {
-                "type": "string"
-              },
-              "skillId": {
-                "type": "string"
-              },
-              "type": {
-                "const": "skillActivation",
-                "type": "string"
-              }
-            },
-            "required": [
-              "type",
-              "catalogId",
-              "skillId"
             ],
             "type": "object"
           },
@@ -7769,7 +7662,7 @@
       "ContextRemoveParams": {
         "properties": {
           "keys": {
-            "description": "Active context keys to remove. Removing a key that is already absent\nis a per-key no-op (`absent`), so retries are idempotent. Keys under\nreserved runtime namespaces (`run.`) are rejected request-level.",
+            "description": "Active context keys to remove. Removing a key that is already absent\nis a per-key no-op (`absent`), so retries are idempotent. Keys under\nreserved namespaces (`run`, `run.*`, `runtime`, `runtime.*`) are rejected\nrequest-level.",
             "items": {
               "type": "string"
             },
@@ -9014,6 +8907,35 @@
         "description": "A freshly minted registration secret. `Debug` output is redacted so the\nplaintext cannot leak through derived logging; it is shown once.",
         "type": "string"
       },
+      "EnvironmentSkillsFeature": {
+        "additionalProperties": false,
+        "description": "Discovery scope resolved on the selected machine, never on the worker.",
+        "properties": {
+          "additionalRoots": {
+            "default": [],
+            "description": "Additional absolute or working-directory-relative discovery roots.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "projectRoot": {
+            "description": "Absolute ancestor boundary. Absent scans only the working directory.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "workingDirectory": {
+            "description": "Absolute session working directory; absent uses the endpoint default.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
       "EnvironmentSourceView": {
         "oneOf": [
           {
@@ -9303,6 +9225,17 @@
             "default": false,
             "description": "Exposes `environment_list`, `environment_activate`, and\n`environment_deactivate` to the model. `environment_read` is available\nwhenever environments are enabled, and external API/profile activation\nremains available when this is false.",
             "type": "boolean"
+          },
+          "skills": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EnvironmentSkillsFeature"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Independent environment skill discovery. Absent disables discovery."
           },
           "version": {
             "default": 1,
@@ -14391,25 +14324,6 @@
           },
           {
             "properties": {
-              "skillIds": {
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              "type": {
-                "const": "skillActivationsSet",
-                "type": "string"
-              }
-            },
-            "required": [
-              "type",
-              "skillIds"
-            ],
-            "type": "object"
-          },
-          {
-            "properties": {
               "baseRevision": {
                 "format": "uint64",
                 "minimum": 0,
@@ -15833,207 +15747,97 @@
         ],
         "type": "object"
       },
-      "SkillActivateParams": {
-        "properties": {
-          "scope": {
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/SkillActivationScope"
-              }
-            ],
-            "default": "run"
-          },
-          "sessionId": {
-            "type": "string"
-          },
-          "skillId": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "sessionId",
-          "skillId"
-        ],
-        "type": "object"
-      },
-      "SkillActivateResponse": {
-        "properties": {
-          "activation": {
-            "$ref": "#/components/schemas/SkillActivationView"
-          },
-          "active": {
-            "default": [],
-            "items": {
-              "$ref": "#/components/schemas/SkillActivationView"
-            },
-            "type": "array"
-          }
-        },
-        "required": [
-          "activation"
-        ],
-        "type": "object"
-      },
-      "SkillActivationScope": {
+      "SkillCatalogAvailability": {
         "enum": [
-          "run",
-          "session"
+          "available",
+          "stale",
+          "unavailable"
         ],
         "type": "string"
       },
-      "SkillActivationSource": {
+      "SkillCatalogSource": {
         "oneOf": [
           {
             "properties": {
-              "callId": {
-                "type": "string"
-              },
               "type": {
-                "const": "toolResult",
+                "const": "vfs",
                 "type": "string"
               }
             },
             "required": [
-              "type",
-              "callId"
+              "type"
             ],
             "type": "object"
           },
           {
             "properties": {
-              "contextRef": {
+              "environmentId": {
                 "type": "string"
               },
               "type": {
-                "const": "directContext",
+                "const": "environment",
                 "type": "string"
               }
             },
             "required": [
               "type",
-              "contextRef"
+              "environmentId"
             ],
             "type": "object"
           }
         ]
       },
-      "SkillActivationView": {
+      "SkillCatalogView": {
+        "description": "An independent catalog instance; sources are never merged or used as fallbacks.",
         "properties": {
-          "catalogId": {
-            "type": "string"
+          "availability": {
+            "$ref": "#/components/schemas/SkillCatalogAvailability"
           },
           "catalogRef": {
-            "type": "string"
-          },
-          "description": {
             "type": [
               "string",
               "null"
             ]
           },
-          "name": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "scope": {
-            "$ref": "#/components/schemas/SkillActivationScope"
-          },
-          "shortDescription": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "skillId": {
-            "type": "string"
+          "skills": {
+            "items": {
+              "$ref": "#/components/schemas/SkillListItem"
+            },
+            "type": "array"
           },
           "source": {
-            "$ref": "#/components/schemas/SkillActivationSource"
-          }
-        },
-        "required": [
-          "catalogId",
-          "skillId",
-          "catalogRef",
-          "scope",
-          "source"
-        ],
-        "type": "object"
-      },
-      "SkillActiveParams": {
-        "properties": {
-          "sessionId": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "sessionId"
-        ],
-        "type": "object"
-      },
-      "SkillActiveResponse": {
-        "properties": {
-          "activations": {
-            "default": [],
+            "$ref": "#/components/schemas/SkillCatalogSource"
+          },
+          "warnings": {
             "items": {
-              "$ref": "#/components/schemas/SkillActivationView"
+              "type": "string"
             },
             "type": "array"
-          },
-          "catalogRef": {
-            "type": [
-              "string",
-              "null"
-            ]
-          }
-        },
-        "type": "object"
-      },
-      "SkillDeactivateParams": {
-        "properties": {
-          "sessionId": {
-            "type": "string"
-          },
-          "skillId": {
-            "type": "string"
           }
         },
         "required": [
-          "sessionId",
-          "skillId"
-        ],
-        "type": "object"
-      },
-      "SkillDeactivateResponse": {
-        "properties": {
-          "active": {
-            "default": [],
-            "items": {
-              "$ref": "#/components/schemas/SkillActivationView"
-            },
-            "type": "array"
-          },
-          "skillId": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "skillId"
+          "source",
+          "availability",
+          "skills",
+          "warnings"
         ],
         "type": "object"
       },
       "SkillListItem": {
         "properties": {
-          "active": {
-            "type": "boolean"
-          },
           "description": {
             "type": "string"
           },
           "enabled": {
             "type": "boolean"
+          },
+          "location": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/SkillLocationView"
+              }
+            ],
+            "description": "Where to read the instructions and resolve supporting files."
           },
           "name": {
             "type": "string"
@@ -16053,7 +15857,7 @@
           "name",
           "description",
           "enabled",
-          "active"
+          "location"
         ],
         "type": "object"
       },
@@ -16070,20 +15874,32 @@
       },
       "SkillListResponse": {
         "properties": {
-          "catalogRef": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "skills": {
-            "default": [],
+          "catalogs": {
             "items": {
-              "$ref": "#/components/schemas/SkillListItem"
+              "$ref": "#/components/schemas/SkillCatalogView"
             },
             "type": "array"
           }
         },
+        "required": [
+          "catalogs"
+        ],
+        "type": "object"
+      },
+      "SkillLocationView": {
+        "description": "Readable paths within the owning catalog's filesystem domain.",
+        "properties": {
+          "skillDirPath": {
+            "type": "string"
+          },
+          "skillDocPath": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "skillDirPath",
+          "skillDocPath"
+        ],
         "type": "object"
       },
       "SubagentAgentPin": {
@@ -16715,7 +16531,7 @@
                 "type": "null"
               }
             ],
-            "description": "Skill discovery sourcing from the VFS."
+            "description": "Independent VFS skill discovery. Absent disables discovery and removes\nits runtime catalog; enabling it requires explicit linked roots."
           },
           "tools": {
             "anyOf": [
@@ -16726,7 +16542,7 @@
                 "type": "null"
               }
             ],
-            "description": "Agent-facing filesystem tool surface; absent = no fs tools. Per-path\nwritability is defined by each workspace link's own access."
+            "description": "Agent-facing filesystem tool surface; absent = no fs tools. Per-path\nwritability is defined by each workspace link's own access.\nWith the environments feature granted, `readOnly` also exposes\n`vfs_materialize`; `edit` additionally exposes `vfs_capture`.\nPrompt/skill sourcing alone does not grant transfer tools."
           },
           "version": {
             "default": 1,
@@ -16764,16 +16580,17 @@
         "additionalProperties": false,
         "properties": {
           "roots": {
-            "description": "Absent means the conventional roots; an explicit list must be\nnon-empty.",
+            "description": "Explicit absolute discovery roots in the linked VFS namespace. Must be\nnon-empty and contained in workspace links; no roots are inferred.",
             "items": {
               "type": "string"
             },
-            "type": [
-              "array",
-              "null"
-            ]
+            "minItems": 1,
+            "type": "array"
           }
         },
+        "required": [
+          "roots"
+        ],
         "type": "object"
       },
       "VfsSnapshotCommitParams": {
@@ -18034,7 +17851,7 @@
       "summary": "Steer the active run"
     },
     {
-      "description": "Refreshes the session's configured VFS skill catalog and reports which discovered skills are enabled and active. An absent catalog yields an empty result.",
+      "description": "Returns separate VFS and environment catalogs with source, reference, availability, readable skill paths, and warnings. Refreshes only when open with no active or queued run, without waking environments. Absent catalogs are omitted.",
       "name": "session/skills/list",
       "paramStructure": "by-name",
       "params": [
@@ -18053,69 +17870,6 @@
         }
       },
       "summary": "List available session skills"
-    },
-    {
-      "description": "Returns skill instructions currently injected into context, including activation scope and source.",
-      "name": "session/skills/active",
-      "paramStructure": "by-name",
-      "params": [
-        {
-          "name": "params",
-          "required": true,
-          "schema": {
-            "$ref": "#/components/schemas/SkillActiveParams"
-          }
-        }
-      ],
-      "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "#/components/schemas/AgentApiOutcomeOfSkillActiveResponse"
-        }
-      },
-      "summary": "List active session skills"
-    },
-    {
-      "description": "Loads an enabled skill from the current catalog and injects its instructions into an open idle session. Run-scoped activation is the default.",
-      "name": "session/skills/activate",
-      "paramStructure": "by-name",
-      "params": [
-        {
-          "name": "params",
-          "required": true,
-          "schema": {
-            "$ref": "#/components/schemas/SkillActivateParams"
-          }
-        }
-      ],
-      "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "#/components/schemas/AgentApiOutcomeOfSkillActivateResponse"
-        }
-      },
-      "summary": "Activate a session skill"
-    },
-    {
-      "description": "Removes an active skill's injected context from an open idle session; the skill must currently be active.",
-      "name": "session/skills/deactivate",
-      "paramStructure": "by-name",
-      "params": [
-        {
-          "name": "params",
-          "required": true,
-          "schema": {
-            "$ref": "#/components/schemas/SkillDeactivateParams"
-          }
-        }
-      ],
-      "result": {
-        "name": "result",
-        "schema": {
-          "$ref": "#/components/schemas/AgentApiOutcomeOfSkillDeactivateResponse"
-        }
-      },
-      "summary": "Deactivate a session skill"
     },
     {
       "description": "Applies a named or inline profile's config, instructions, and environment setup to an existing session; mutating profile sections require it to be open and idle. Pass current revisions to guard concurrent changes.",

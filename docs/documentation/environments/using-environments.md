@@ -58,12 +58,12 @@ Suppose the session also links the release-notes VFS workspace at `/workspace`.
 That path belongs to the session's VFS view. It does not place the files in a
 directory named `/workspace` on the selected machine.
 
-To check a VFS artifact with a command, transfer it deliberately. Ask the agent
-to read the source with VFS tools, write a copy into a dedicated directory on
-the machine with environment tools, and run the check against that copy.
-Bring the result back into VFS when it should be retained with the project.
-[Processes and jobs](processes-and-jobs.md) follows this operation through a
-small release-note check.
+To check VFS content with a command, use `vfs_materialize` to copy the selected
+file or tree to an exact environment destination. Use `vfs_capture` to save
+machine outputs into a writable VFS workspace. Both replace the complete
+selected destination by default, preserving siblings. See
+[VFS transfer](vfs-transfer.md) for partial copies, content reuse, large files,
+and workspace revision conflicts.
 
 After transfer, the copies can diverge. Editing the machine's copy does not
 update VFS, and changing the active environment does not move either copy.

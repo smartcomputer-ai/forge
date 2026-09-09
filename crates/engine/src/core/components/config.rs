@@ -169,6 +169,8 @@ pub struct VfsFeature {
     /// `edit` adds the write tools. Per-path writability is defined and
     /// enforced by each workspace link's own access — this field shapes which tools
     /// exist, not path permissions.
+    /// With environments granted, read-only tools also expose materialize;
+    /// editing tools additionally expose capture into writable workspace links.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tools: Option<VfsToolSurface>,
     /// Prompt-instruction sourcing from the VFS; absent = prompts are not
@@ -229,12 +231,11 @@ pub struct VfsPromptsConfig {
     pub roots: Option<Vec<String>>,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VfsSkillsConfig {
-    /// VFS roots to source skills from. `None` means the conventional
-    /// roots; an explicit list must be non-empty.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub roots: Option<Vec<String>>,
+    /// Explicit absolute discovery roots in the linked VFS namespace. Must be
+    /// non-empty and contained in workspace links; no roots are inferred.
+    pub roots: Vec<String>,
 }
 
 /// Grants network access through the web toolset. `fetch` and `search` are
@@ -414,6 +415,9 @@ pub struct EnvironmentsFeature {
     /// execution remains gated by active environment capabilities.
     #[serde(default)]
     pub jobs: bool,
+    /// Independent environment skill discovery. Absent disables discovery.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skills: Option<EnvironmentSkillsFeature>,
 }
 
 impl Default for EnvironmentsFeature {
@@ -424,8 +428,23 @@ impl Default for EnvironmentsFeature {
             registration_keys: None,
             selection_tools: false,
             jobs: false,
+            skills: None,
         }
     }
+}
+
+/// Discovery scope resolved on the selected machine, never on the worker.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EnvironmentSkillsFeature {
+    /// Absolute session working directory; absent uses the endpoint default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub working_directory: Option<String>,
+    /// Absolute ancestor boundary. Absent scans only the working directory.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_root: Option<String>,
+    /// Additional absolute or working-directory-relative discovery roots.
+    #[serde(default)]
+    pub additional_roots: Vec<String>,
 }
 
 /// Grants remote MCP tools by declaring linked servers from the universe MCP
@@ -600,7 +619,7 @@ fn validate_features(
             validate_source_roots("vfs prompts", prompts.roots.as_deref(), &link_paths)?;
         }
         if let Some(skills) = &vfs.skills {
-            validate_source_roots("vfs skills", skills.roots.as_deref(), &link_paths)?;
+            validate_source_roots("vfs skills", Some(&skills.roots), &link_paths)?;
         }
     }
     if let Some(web) = &features.web {
@@ -744,7 +763,7 @@ fn validate_source_roots(
     };
     if roots.is_empty() {
         return Err(DomainError::InvariantViolation(format!(
-            "explicit {} roots must be non-empty; omit roots for the conventional defaults",
+            "explicit {} roots must be non-empty; omit the sourcing block to disable it",
             feature
         )));
     }
@@ -1193,9 +1212,7 @@ mod tests {
     fn explicit_empty_source_roots_are_rejected() {
         let mut config = config(ProviderApiKind::OpenAiResponses, None);
         config.features.vfs = Some(VfsFeature {
-            skills: Some(VfsSkillsConfig {
-                roots: Some(Vec::new()),
-            }),
+            skills: Some(VfsSkillsConfig { roots: Vec::new() }),
             ..VfsFeature::default()
         });
 
@@ -1204,6 +1221,50 @@ mod tests {
             .expect_err("explicit empty roots must fail validation");
 
         assert!(matches!(error, DomainError::InvariantViolation(_)));
+    }
+
+    #[test]
+    fn vfs_skills_require_linked_roots_and_are_independent_of_environment_skills() {
+        let mut config = config(ProviderApiKind::OpenAiResponses, None);
+        config.features.environments = Some(EnvironmentsFeature {
+            skills: Some(EnvironmentSkillsFeature::default()),
+            ..Default::default()
+        });
+        config.features.vfs = Some(VfsFeature {
+            tools: Some(VfsToolSurface::ReadOnly),
+            workspace_links: vec![WorkspaceLink {
+                path: "/workspace".into(),
+                target: WorkspaceLinkTarget::Workspace {
+                    workspace_id: "project".into(),
+                },
+                access: WorkspaceLinkAccess::ReadOnly,
+            }],
+            ..Default::default()
+        });
+        config.validate().unwrap();
+        assert!(config.features.vfs.as_ref().unwrap().skills.is_none());
+        for roots in [
+            vec![],
+            vec!["relative"],
+            vec!["/outside"],
+            vec!["/workspace/../skills"],
+            vec!["/workspace/skills", "/workspace/skills"],
+        ] {
+            config.features.vfs.as_mut().unwrap().skills = Some(VfsSkillsConfig {
+                roots: roots.into_iter().map(String::from).collect(),
+            });
+            assert!(matches!(
+                config.validate(),
+                Err(DomainError::InvariantViolation(_))
+            ));
+        }
+        config.features.vfs.as_mut().unwrap().skills = Some(VfsSkillsConfig {
+            roots: vec!["/workspace/team-skills".into()],
+        });
+        config.validate().unwrap();
+        config.features.environments = None;
+        config.validate().unwrap();
+        assert!(serde_json::from_str::<VfsSkillsConfig>("{}").is_err());
     }
 
     #[test]

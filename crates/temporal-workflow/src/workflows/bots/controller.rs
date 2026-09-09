@@ -380,11 +380,14 @@ pub(super) fn ensure_request(
     display_name: String,
     applied_profile_revision: Option<u64>,
     tools_ref: Option<String>,
+    routed_session: Option<&bots::RoutedSession>,
 ) -> BotEnsureSessionRequest {
     BotEnsureSessionRequest {
         universe_id: state.config.universe_id,
         bot_id: state.config.bot_id.clone(),
         session_id,
+        session_key: routed_session.and_then(|session| session.session_key.clone()),
+        session_label: routed_session.map(|session| session.label.clone()),
         display_name: Some(display_name),
         profile_id: state.config.profile_id.clone(),
         brief: state.config.brief.clone(),
@@ -558,6 +561,7 @@ pub(super) async fn reconcile_session(ctx: &Ctx) -> bool {
                 state.main_session_id(),
                 state.bot_label(),
                 state.applied_revision_for_ensure(),
+                None,
                 None,
             )
         });

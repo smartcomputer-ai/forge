@@ -26,6 +26,7 @@ serde_json = "1"
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "uuid", "json"] }
 thiserror = "1"
 tracing = "0.1"
+tokio = { version = "1", features = ["rt"] }
 uuid = { version = "1", features = ["v4"] }
 vfs = { path = "../vfs" }
 

@@ -385,18 +385,6 @@ async fn anthropic_messages_live_selects_and_reads_the_matching_skill() {
         "model read a decoy skill: {:?}",
         read_paths(blobs.as_ref(), &outcome.emitted_entries).await
     );
-    assert!(
-        outcome.emitted_entries.iter().all(|entry| {
-            !matches!(
-                &entry.event,
-                CoreAgentEvent::Context(engine::ContextEvent::EntriesApplied { entries, .. })
-                    if entries.iter().any(|entry| {
-                        matches!(entry.kind, ContextEntryKind::SkillActivation { .. })
-                    })
-            )
-        }),
-        "reading SKILL.md should not create a skill activation"
-    );
 
     let assistant_text = assistant_text(blobs.as_ref(), &outcome.emitted_entries).await;
     assert!(
@@ -419,9 +407,14 @@ fn session_config(model: ModelSelection, workspace_links: Vec<WorkspaceLink>) ->
         context: ContextConfig { compaction: None },
         features: engine::FeaturesConfig {
             vfs: Some(engine::VfsFeature {
+                skills: Some(engine::VfsSkillsConfig {
+                    roots: workspace_links
+                        .iter()
+                        .map(|link| link.path.clone())
+                        .collect(),
+                }),
                 workspace_links,
                 tools: Some(engine::VfsToolSurface::ReadOnly),
-                skills: Some(engine::VfsSkillsConfig::default()),
                 ..engine::VfsFeature::default()
             }),
             ..engine::FeaturesConfig::default()

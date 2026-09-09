@@ -1,5 +1,7 @@
 //! Typed data-plane client methods.
 
+use environment_protocol::data::methods::{FS_CAPTURE_METHOD, FS_MATERIALIZE_METHOD};
+use environment_protocol::data::transfer::*;
 use environment_protocol::data::{
     fs::{
         CopyParams, CopyResponse, CreateDirectoryParams, CreateDirectoryResponse,
@@ -70,6 +72,42 @@ where
 
     pub async fn initialized(&mut self, params: &InitializedParams) -> EnvironmentClientResult<()> {
         self.rpc.notify(INITIALIZED_METHOD, params).await
+    }
+
+    pub async fn scan(
+        &mut self,
+        params: &environment_protocol::data::inventory::ScanParams,
+    ) -> EnvironmentClientResult<environment_protocol::data::inventory::ScanResponse> {
+        self.rpc
+            .request(environment_protocol::data::methods::FS_SCAN_METHOD, params)
+            .await
+    }
+
+    pub async fn transfer(
+        &mut self,
+        params: &environment_protocol::data::transfer_session::TransferRequest,
+    ) -> EnvironmentClientResult<environment_protocol::data::transfer_session::TransferResponse>
+    {
+        self.rpc
+            .request(
+                environment_protocol::data::methods::FS_TRANSFER_METHOD,
+                params,
+            )
+            .await
+    }
+
+    pub async fn capture(
+        &mut self,
+        params: &CaptureParams,
+    ) -> EnvironmentClientResult<CaptureResponse> {
+        self.rpc.request(FS_CAPTURE_METHOD, params).await
+    }
+
+    pub async fn materialize(
+        &mut self,
+        params: &MaterializeParams,
+    ) -> EnvironmentClientResult<MaterializeResponse> {
+        self.rpc.request(FS_MATERIALIZE_METHOD, params).await
     }
 
     pub async fn read_file(

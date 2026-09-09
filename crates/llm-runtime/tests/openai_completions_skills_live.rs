@@ -1,9 +1,10 @@
 use std::sync::Arc;
+use tools::skills::SkillId;
 
 use engine::{
     ContextEntry, ContextEntryId, ContextEntryKind, ContextEntrySource, ContextMessageRole,
     ContextSnapshot, LlmGenerationRequest, LlmRequest, ModelSelection, ProviderApiKind, RunId,
-    SessionId, SkillId, TurnId,
+    SessionId, TurnId,
     storage::{BlobStore, InMemoryBlobStore},
 };
 use llm_runtime::{LlmGenerationAdapter, OpenAiCompletionsLlmAdapter};
@@ -110,7 +111,6 @@ async fn openai_completions_runtime_live_skill_catalog_exposes_relevant_skill_pa
                 skill_doc_path: VfsPath::parse("/skills/release-audit/SKILL.md")
                     .expect("skill doc path"),
             },
-            skill_doc_ref: None,
         }],
         Vec::new(),
     );
@@ -118,6 +118,12 @@ async fn openai_completions_runtime_live_skill_catalog_exposes_relevant_skill_pa
         .put_bytes(serde_json::to_vec(&catalog).expect("catalog JSON"))
         .await
         .expect("store catalog");
+    let catalog_input =
+        tools::skills::skill_catalog_context_input(blobs.as_ref(), &catalog, catalog_ref)
+            .await
+            .expect("render catalog");
+    let mut catalog_entry = entry(1, catalog_input.kind, catalog_input.content.content_ref);
+    catalog_entry.provenance_ref = catalog_input.provenance_ref;
     let user = blobs
         .insert_text(
             "I need to check a release for missing migration and changelog work. Which skill should I read, and at what exact path?",
@@ -127,7 +133,7 @@ async fn openai_completions_runtime_live_skill_catalog_exposes_relevant_skill_pa
     let output = answer(
         blobs.clone(),
         request(vec![
-            entry(1, ContextEntryKind::SkillCatalog, catalog_ref),
+            catalog_entry,
             entry(
                 2,
                 ContextEntryKind::Message {
@@ -145,43 +151,4 @@ async fn openai_completions_runtime_live_skill_catalog_exposes_relevant_skill_pa
         output.contains("/skills/release-audit/skill.md"),
         "output: {output}"
     );
-}
-
-#[tokio::test(flavor = "current_thread")]
-#[ignore = "requires OPENAI_API_KEY (costs real money)"]
-async fn openai_completions_runtime_live_skill_activation_is_followed() {
-    let blobs = Arc::new(InMemoryBlobStore::new());
-    let skill_id = SkillId::new("skill:marker-protocol");
-    let activation = blobs
-        .insert_text(
-            "# Marker protocol\nWhen asked for the protocol marker, reply exactly SKILL_MARKER=COMPL-SKILL-8421 and add nothing else.",
-        )
-        .await;
-    let user = blobs
-        .insert_text("What is the protocol marker? The decoy is SKILL_MARKER=WRONG-0000.")
-        .await;
-
-    let output = answer(
-        blobs.clone(),
-        request(vec![
-            entry(
-                1,
-                ContextEntryKind::SkillActivation {
-                    catalog_id: "vfs".to_owned(),
-                    skill_id,
-                },
-                activation,
-            ),
-            entry(
-                2,
-                ContextEntryKind::Message {
-                    role: ContextMessageRole::User,
-                },
-                user,
-            ),
-        ]),
-    )
-    .await;
-
-    assert_eq!(output.trim(), "SKILL_MARKER=COMPL-SKILL-8421");
 }

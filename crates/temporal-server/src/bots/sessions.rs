@@ -23,8 +23,8 @@ use api::{
 use bots::{
     ids::appended_event_context_key,
     tools::{
-        BOT_TOOL_DESCRIPTION_NAMES, BOT_TOOL_NAMES, BOT_TOOL_SCHEMA_NAMES, bot_instructions,
-        bot_tool_description, bot_tool_schema, bot_workflow_tool_declarations,
+        BOT_TOOL_DESCRIPTION_NAMES, BOT_TOOL_NAMES, BOT_TOOL_SCHEMA_NAMES, BotSessionInstructions,
+        bot_instructions, bot_tool_description, bot_tool_schema, bot_workflow_tool_declarations,
         compose_instructions,
     },
     views::{delivery_input_items, steer_input_items},
@@ -419,7 +419,16 @@ pub async fn ensure_session(
     let base_instructions = read_profile_instructions(blobs, &profile).await?;
     let instructions = compose_instructions(
         &base_instructions,
-        &bot_instructions(&request.bot_id, request.brief.as_deref(), request.emit),
+        &bot_instructions(
+            &request.bot_id,
+            BotSessionInstructions {
+                session_id: &request.session_id,
+                session_key: request.session_key.as_deref(),
+                label: request.session_label.as_deref(),
+            },
+            request.brief.as_deref(),
+            request.emit,
+        ),
     );
     let resolved = resolve_bot_profile(&profile, instructions);
 

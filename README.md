@@ -102,7 +102,11 @@ Lightspeed covers the table stakes of a modern agent harness. Everything below w
 - [x] **Web access**: provider-hosted search/fetch for Anthropic Messages,
   hosted search for OpenAI Responses, and guarded local fetch/extraction on
   non-Anthropic routes
-- [x] **Skills**, automatically discovered and loaded from the virtual filesystem
+- [x] **Catalogs**: one keyed text representation for VFS, skill, sub-agent,
+  and client catalogs, with independent source data and version history
+- [x] **Skills**: an opt-in VFS catalog with explicitly configured linked roots
+  and ordinary file reads; CLI and
+  chat selection ask the agent to read and use the selected skill
 - [x] **Hosted and native MCP**: connect local or remote servers with API keys
   or OAuth; Lightspeed handles tool discovery and approvals
 - [x] **Sub-agents**: delegate work to supervised child agents with configurable
@@ -112,7 +116,8 @@ Lightspeed covers the table stakes of a modern agent harness. Everything below w
 **Bots & channels**
 
 - [x] **Bots**: create always-on agents that wake up for scheduled tasks,
-  incoming webhooks, data changes, or chat messages
+  incoming webhooks, data changes, or chat messages; session instructions
+  identify their conversation, thread kind, and original routing key
 - [x] **Bot federation**: bots talk to each other and coordinate work
 - [x] **Triggers**: bots can create and manage their own schedules, webhooks,
   and pollers
@@ -138,6 +143,13 @@ Lightspeed covers the table stakes of a modern agent harness. Everything below w
   Kubernetes pods, and benchmark sandboxes need no inbound address
 - [x] **Power states and idle policy**: environments pause, suspend, or stop when
   idle, then wake automatically when needed
+- [x] **Environment skill discovery**: separate VFS and selected-machine catalogs
+  exposed through one catalog API shape,
+  refreshed at idle boundaries from ordinary installer directories; see
+  [Workspaces and skills](docs/documentation/using-lightspeed/workspaces-and-skills.md)
+- [x] **VFS–environment transfer**: materialize and capture files or trees on Linux
+  and macOS, with whole-file reuse, bounded streaming, and atomic replacement;
+  see [VFS transfer](docs/documentation/environments/vfs-transfer.md)
 - [x] **Environment jobs**: run downloads, experiments, or delegated coding work
   in the background and check the results later
 
@@ -195,7 +207,7 @@ payload, preserving native provider data for replay. API message and reasoning
 views include full visible text; detailed run reads also include the terminal
 output independently of active context. Tool payloads retain bounded previews
 and can be expanded through raw blob reads. Optional provenance links
-an entry to its source audio, prompt assembly report, or skill catalog.
+an entry to its source audio or prompt assembly report.
 
 The [architecture walkthrough](docs/documentation/how-it-works/architecture.md)
 introduces the system. Continue with the

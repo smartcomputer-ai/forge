@@ -22,6 +22,7 @@ use environments::{
 };
 use store_pg::PgStore;
 use tools::{
+    builtin::BuiltinToolRequirements,
     concurrency::{
         AwaitArgs, CancelArgs, DetachArgs, SleepArgs, SleepOutput, cancel_promises_from_runtime,
         cancel_promises_model_visible_text, detach_promises_from_runtime,
@@ -114,7 +115,8 @@ impl SessionTools {
         self
     }
 
-    pub(crate) fn with_environment_gateway(
+    /// Route environment calls through this deployment's gateway.
+    pub fn with_environment_gateway(
         mut self,
         gateway: crate::environment_gateway::EnvironmentGatewayClientConfig,
     ) -> Self {
@@ -1374,9 +1376,10 @@ impl CoreAgentTools for SessionTools {
                     .tool_id
                     .as_ref()
                     .is_some_and(is_environment_selection_tool)
-                    && call.tool_id.as_ref().is_some_and(|id| {
-                        id.as_str().starts_with("env.") && id.as_str() != "env.job_read"
-                    })
+                    && call
+                        .tool_id
+                        .as_ref()
+                        .is_some_and(|id| BuiltinToolRequirements::for_id(id).active_environment)
             });
         if selection_calls > 1 || mixes_environment_dependency {
             let mut results = Vec::with_capacity(request.calls.len());
@@ -1456,12 +1459,12 @@ impl CoreAgentTools for SessionTools {
         let has_vfs_call = request.calls.iter().any(|call| {
             call.tool_id
                 .as_ref()
-                .is_some_and(|id| id.as_str().starts_with("vfs."))
+                .is_some_and(|id| BuiltinToolRequirements::for_id(id).vfs)
         });
         let has_environment_call = request.calls.iter().any(|call| {
             call.tool_id
                 .as_ref()
-                .is_some_and(|id| id.as_str().starts_with("env."))
+                .is_some_and(|id| BuiltinToolRequirements::for_id(id).active_environment)
                 || call
                     .tool_id
                     .as_ref()
@@ -1517,10 +1520,9 @@ impl CoreAgentTools for SessionTools {
                     call.tool_id
                         .as_ref()
                         .is_some_and(|id| id.as_str() == "env.job_read")
-                        || call
-                            .tool_id
-                            .as_ref()
-                            .is_some_and(|id| id.as_str().starts_with("env."))
+                        || call.tool_id.as_ref().is_some_and(|id| {
+                            BuiltinToolRequirements::for_id(id).active_environment
+                        })
                 }) {
                     // Batch-unit execution has no workflow-level readiness wait;
                     // report the blocker as an ordinary failed call.
@@ -1652,11 +1654,11 @@ impl SessionTools {
         let is_vfs_call = call
             .tool_id
             .as_ref()
-            .is_some_and(|id| id.as_str().starts_with("vfs."));
+            .is_some_and(|id| BuiltinToolRequirements::for_id(id).vfs);
         let is_environment_call = call
             .tool_id
             .as_ref()
-            .is_some_and(|id| id.as_str().starts_with("env."));
+            .is_some_and(|id| BuiltinToolRequirements::for_id(id).active_environment);
         let environments = if is_environment_call || is_job_call {
             let environments = self.environment_manager_for_session(&batch_request).await?;
             match environments.active_blocker() {
@@ -1839,7 +1841,7 @@ fn per_call_batch_rule_violation(
 ) -> Option<&'static str> {
     let call = &request.call;
     let is_env_dependent = |tool_id: Option<&engine::ToolName>| {
-        tool_id.is_some_and(|id| id.as_str().starts_with("env.") && id.as_str() != "env.job_read")
+        tool_id.is_some_and(|id| BuiltinToolRequirements::for_id(id).active_environment)
     };
     let sibling_selection = request.sibling_calls.iter().any(|sibling| {
         sibling
@@ -2023,6 +2025,8 @@ mod tests {
             "run_process" => "env.run_process",
             "job_read" => "env.job_read",
             "vfs_read_file" | "VfsRead" => "vfs.read_file",
+            "vfs_materialize" => "vfs.materialize",
+            "vfs_capture" => "vfs.capture",
             "web_fetch" => "web.fetch",
             other => other,
         })
@@ -2082,6 +2086,24 @@ mod tests {
 
     #[test]
     fn per_call_batch_rules_flag_only_participating_calls() {
+        for transfer in ["vfs_materialize", "vfs_capture"] {
+            assert!(
+                per_call_batch_rule_violation(&per_call_request(
+                    transfer,
+                    b"{}",
+                    &[("environment_activate", b"{}")],
+                ))
+                .is_some()
+            );
+            assert!(
+                per_call_batch_rule_violation(&per_call_request(
+                    "environment_activate",
+                    b"{}",
+                    &[(transfer, b"{}")],
+                ))
+                .is_some()
+            );
+        }
         // A selection call with an environment-dependent sibling fails, and
         // an environment-dependent call with a selection sibling fails.
         assert!(
@@ -3083,6 +3105,214 @@ mod tests {
         RuntimeEnvironment::from_resource(resource, tool_context)
     }
 
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    mod transfers {
+        use super::*;
+        use environment_protocol::data::transfer_session::{TransferRequest, TransferResponse};
+
+        struct LocalTransfer(environment_daemon::filesystem::LocalFileSystem);
+
+        #[async_trait]
+        impl tools::transfer::EnvironmentTransfer for LocalTransfer {
+            async fn request(
+                &self,
+                request: TransferRequest,
+            ) -> tools::ToolResult<TransferResponse> {
+                self.0
+                    .transfer(request)
+                    .await
+                    .map_err(|error| tools::ToolError::InvalidRequest {
+                        message: error.message,
+                    })
+            }
+        }
+
+        async fn dispatch(
+            tools: &SessionTools,
+            request: engine::ToolInvocationCallRequest,
+            batch: bool,
+        ) -> ToolInvocationResult {
+            if batch {
+                tools
+                    .invoke_batch(request.into_batch_request())
+                    .await
+                    .unwrap()
+                    .completed_result()
+                    .unwrap()
+                    .results
+                    .remove(0)
+            } else {
+                tools.invoke_call(request).await.unwrap()
+            }
+        }
+
+        async fn succeeded(
+            blobs: &InMemoryBlobStore,
+            result: &ToolInvocationResult,
+        ) -> serde_json::Value {
+            if result.status != ToolCallStatus::Succeeded {
+                panic!(
+                    "{}",
+                    blobs
+                        .read_text(result.error_ref.as_ref().unwrap())
+                        .await
+                        .unwrap()
+                );
+            }
+            serde_json::from_slice(
+                &blobs
+                    .read_bytes(result.output_ref.as_ref().unwrap())
+                    .await
+                    .unwrap(),
+            )
+            .unwrap()
+        }
+
+        #[tokio::test(flavor = "current_thread")]
+        async fn hosted_transfer_dispatch_loads_both_domains_and_publishes_capture() {
+            for batch in [false, true] {
+                for api_kind in [
+                    ProviderApiKind::OpenAiResponses,
+                    ProviderApiKind::AnthropicMessages,
+                    ProviderApiKind::OpenAiCompletions,
+                ] {
+                    let (blobs, tools, session_id, workspace_links) =
+                        session_tools_with_readme_link().await;
+                    let root = tempfile::tempdir().unwrap();
+                    let fs = environment_daemon::filesystem::LocalFileSystem::new(
+                        root.path().into(),
+                        root.path().into(),
+                        true,
+                    );
+                    let environment = test_environment(
+                        blobs.clone(),
+                        Arc::new(RecordingProcessExecutor::default()),
+                    );
+                    let mut context = environment.tool_context().clone();
+                    context.transfer = Some(Arc::new(LocalTransfer(fs)));
+                    let environment =
+                        RuntimeEnvironment::from_resource(environment.resource().clone(), context);
+                    let tools = tools
+                        .with_blob_graph(blobs.clone())
+                        .with_environment(environment);
+                    let args = serde_json::to_vec(&serde_json::json!({
+                        "source_vfs_path": "/workspace/README.md",
+                        "destination_environment_path": "./created/nested/README.md",
+                    }))
+                    .unwrap();
+                    let mut request = per_call_request("vfs_materialize", &args, &[]);
+                    request.session_id = session_id;
+                    request.workspace_links = workspace_links.clone();
+                    request.active_environment_id = Some(EnvironmentId::new("test"));
+                    request.environment_policy =
+                        Some(engine::EnvironmentPolicyRuntime::new(None, None));
+                    request.call.arguments_ref = blobs.put_bytes(args).await.unwrap();
+                    let builtin = request.call.builtin.as_mut().unwrap();
+                    builtin.model.api_kind = api_kind;
+                    builtin.spec.settings = serde_json::json!({"presentation":"provider_default"});
+                    let result = dispatch(&tools, request.clone(), batch).await;
+                    succeeded(&blobs, &result).await;
+                    assert_eq!(
+                        std::fs::read(root.path().join("created/nested/README.md")).unwrap(),
+                        b"hello\n"
+                    );
+
+                    // A completed retry through the hosted path must keep its operation
+                    // identity and preserve edits made after publication.
+                    std::fs::write(
+                        root.path().join("created/nested/README.md"),
+                        b"environment edit",
+                    )
+                    .unwrap();
+                    succeeded(&blobs, &dispatch(&tools, request.clone(), batch).await).await;
+                    assert_eq!(
+                        std::fs::read(root.path().join("created/nested/README.md")).unwrap(),
+                        b"environment edit"
+                    );
+
+                    let mut capture = request.clone();
+                    capture.call.call_id = ToolCallId::new("capture");
+                    capture.call.tool_id = Some(test_tool_id("vfs_capture"));
+                    capture.call.tool_name = ToolName::new("vfs_capture");
+                    capture.call.arguments_ref = blobs
+                        .put_bytes(
+                            serde_json::to_vec(&serde_json::json!({
+                                "source_environment_path":"./created/nested/README.md",
+                                "destination_vfs_path":"/workspace/results/nested/captured.txt",
+                            }))
+                            .unwrap(),
+                        )
+                        .await
+                        .unwrap();
+                    let result = dispatch(&tools, capture.clone(), batch).await;
+                    let output = succeeded(&blobs, &result).await;
+                    assert_eq!(output["published"], true);
+                    let workspace = tools
+                        .workspace_store
+                        .read_workspace(&VfsWorkspaceId::new("workspace_1"))
+                        .await
+                        .unwrap();
+                    let manifest =
+                        vfs::read_snapshot_manifest(blobs.as_ref(), &workspace.head_snapshot_ref)
+                            .await
+                            .unwrap();
+                    assert_eq!(
+                        vfs::read_snapshot_file(
+                            blobs.as_ref(),
+                            &manifest,
+                            &vfs::VfsPath::parse("/results/nested/captured.txt").unwrap()
+                        )
+                        .await
+                        .unwrap(),
+                        b"environment edit"
+                    );
+                    assert_eq!(
+                        vfs::read_snapshot_file(
+                            blobs.as_ref(),
+                            &manifest,
+                            &vfs::VfsPath::parse("/README.md").unwrap()
+                        )
+                        .await
+                        .unwrap(),
+                        b"hello\n"
+                    );
+                    let output_ref = result.output_ref.unwrap();
+                    let snapshot_ref =
+                        BlobRef::parse(output["snapshot_ref"].as_str().unwrap()).unwrap();
+                    assert!(
+                        blobs
+                            .edges()
+                            .contains(&BlobEdge::contains(output_ref, snapshot_ref))
+                    );
+                    assert!(
+                        !result.effects.is_empty(),
+                        "workspace effects must be drained from the VFS context"
+                    );
+
+                    // Link permissions are enforced even if a call has an admitted
+                    // editing-tool identity.
+                    capture.call.call_id = ToolCallId::new("capture-readonly");
+                    capture.workspace_links[0].access = WorkspaceLinkAccess::ReadOnly;
+                    assert_eq!(
+                        dispatch(&tools, capture, batch).await.status,
+                        ToolCallStatus::Failed
+                    );
+                    request.workspace_links.clear();
+                    assert_eq!(
+                        dispatch(&tools, request.clone(), batch).await.status,
+                        ToolCallStatus::Failed
+                    );
+                    request.workspace_links = workspace_links;
+                    request.active_environment_id = None;
+                    assert_eq!(
+                        dispatch(&tools, request, batch).await.status,
+                        ToolCallStatus::Failed
+                    );
+                }
+            }
+        }
+    }
+
     async fn register_test_environment_provider(
         store: &InMemoryEnvironmentRegistryStore,
         provider_id: &str,
@@ -3363,6 +3593,15 @@ mod tests {
         };
 
         // Hosted per-call path: the call does not run and reports not-ready.
+        for name in ["vfs_materialize", "vfs_capture"] {
+            let mut transfer = request.clone();
+            transfer.call.tool_id = Some(test_tool_id(name));
+            transfer.call.tool_name = ToolName::new(name);
+            assert!(matches!(
+                tools.invoke_call_execution(transfer).await.unwrap(),
+                ToolCallExecution::EnvironmentNotReady { .. }
+            ));
+        }
         let execution = tools
             .invoke_call_execution(request.clone())
             .await

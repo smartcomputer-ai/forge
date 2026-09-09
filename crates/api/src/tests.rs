@@ -859,73 +859,19 @@ async fn dispatch_json_rpc_routes_skills_list() {
     .await;
 
     assert!(response.error.is_none());
+    let result = response.result.expect("result")["result"].clone();
     assert_eq!(
-        response.result.expect("result")["result"]["skills"][0]["active"],
-        json!(true)
+        result.as_object().unwrap().keys().collect::<Vec<_>>(),
+        vec!["catalogs"]
     );
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn dispatch_json_rpc_routes_skills_active() {
-    let response = dispatch_json_rpc(
-        &TestService,
-        JsonRpcRequest {
-            id: RequestId::Number(1),
-            method: METHOD_SESSION_SKILLS_ACTIVE.to_owned(),
-            params: Some(json!({ "sessionId": "session_1" })),
-        },
-    )
-    .await;
-
-    assert!(response.error.is_none());
+    let catalog = &result["catalogs"][0];
+    assert_eq!(catalog["source"], json!({"type": "vfs"}));
+    assert_eq!(catalog["availability"], "available");
+    assert_eq!(catalog["warnings"], json!([]));
+    assert!(catalog.get("contextKey").is_none());
     assert_eq!(
-        response.result.expect("result")["result"]["activations"][0]["source"]["type"],
-        json!("directContext")
-    );
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn dispatch_json_rpc_routes_skills_activate() {
-    let response = dispatch_json_rpc(
-        &TestService,
-        JsonRpcRequest {
-            id: RequestId::Number(1),
-            method: METHOD_SESSION_SKILLS_ACTIVATE.to_owned(),
-            params: Some(json!({
-                "sessionId": "session_1",
-                "skillId": "skill:one",
-                "scope": "session"
-            })),
-        },
-    )
-    .await;
-
-    assert!(response.error.is_none());
-    assert_eq!(
-        response.result.expect("result")["result"]["activation"]["scope"],
-        json!("session")
-    );
-}
-
-#[tokio::test(flavor = "current_thread")]
-async fn dispatch_json_rpc_routes_skills_deactivate() {
-    let response = dispatch_json_rpc(
-        &TestService,
-        JsonRpcRequest {
-            id: RequestId::Number(1),
-            method: METHOD_SESSION_SKILLS_DEACTIVATE.to_owned(),
-            params: Some(json!({
-                "sessionId": "session_1",
-                "skillId": "skill:one"
-            })),
-        },
-    )
-    .await;
-
-    assert!(response.error.is_none());
-    assert_eq!(
-        response.result.expect("result")["result"]["skillId"],
-        json!("skill:one")
+        catalog["skills"][0]["location"],
+        json!({"skillDirPath":"/skills/one", "skillDocPath":"/skills/one/SKILL.md"})
     );
 }
 
@@ -2201,47 +2147,23 @@ impl AgentApiService for TestService {
         _params: SkillListParams,
     ) -> Result<AgentApiOutcome<SkillListResponse>, AgentApiError> {
         Ok(AgentApiOutcome::new(SkillListResponse {
-            catalog_ref: Some(format!("sha256:{}", "5".repeat(64))),
-            skills: vec![SkillListItem {
-                skill_id: "skill:one".to_owned(),
-                name: "one".to_owned(),
-                description: "Use when testing skills.".to_owned(),
-                short_description: Some("test skill".to_owned()),
-                enabled: true,
-                active: true,
+            catalogs: vec![SkillCatalogView {
+                source: SkillCatalogSource::Vfs,
+                availability: SkillCatalogAvailability::Available,
+                warnings: vec![],
+                catalog_ref: Some(format!("sha256:{}", "5".repeat(64))),
+                skills: vec![SkillListItem {
+                    skill_id: "skill:one".to_owned(),
+                    name: "one".to_owned(),
+                    description: "Use when testing skills.".to_owned(),
+                    short_description: Some("test skill".to_owned()),
+                    enabled: true,
+                    location: SkillLocationView {
+                        skill_dir_path: "/skills/one".into(),
+                        skill_doc_path: "/skills/one/SKILL.md".into(),
+                    },
+                }],
             }],
-        }))
-    }
-
-    async fn active_skills(
-        &self,
-        _params: SkillActiveParams,
-    ) -> Result<AgentApiOutcome<SkillActiveResponse>, AgentApiError> {
-        Ok(AgentApiOutcome::new(SkillActiveResponse {
-            catalog_ref: Some(format!("sha256:{}", "5".repeat(64))),
-            activations: vec![test_skill_activation(SkillActivationScope::Run)],
-        }))
-    }
-
-    async fn activate_skill(
-        &self,
-        params: SkillActivateParams,
-    ) -> Result<AgentApiOutcome<SkillActivateResponse>, AgentApiError> {
-        assert_eq!(params.skill_id, "skill:one");
-        let activation = test_skill_activation(params.scope);
-        Ok(AgentApiOutcome::new(SkillActivateResponse {
-            activation: activation.clone(),
-            active: vec![activation],
-        }))
-    }
-
-    async fn deactivate_skill(
-        &self,
-        params: SkillDeactivateParams,
-    ) -> Result<AgentApiOutcome<SkillDeactivateResponse>, AgentApiError> {
-        Ok(AgentApiOutcome::new(SkillDeactivateResponse {
-            skill_id: params.skill_id,
-            active: Vec::new(),
         }))
     }
 
@@ -3374,21 +3296,6 @@ fn test_run(id: RunId, status: RunStatus) -> RunView {
         tool_batches: Vec::new(),
         usage: None,
         pending_approvals: Vec::new(),
-    }
-}
-
-fn test_skill_activation(scope: SkillActivationScope) -> SkillActivationView {
-    SkillActivationView {
-        catalog_id: "vfs".to_owned(),
-        skill_id: "skill:one".to_owned(),
-        name: Some("one".to_owned()),
-        description: Some("Use when testing skills.".to_owned()),
-        short_description: Some("test skill".to_owned()),
-        catalog_ref: format!("sha256:{}", "5".repeat(64)),
-        scope,
-        source: SkillActivationSource::DirectContext {
-            context_ref: format!("sha256:{}", "6".repeat(64)),
-        },
     }
 }
 

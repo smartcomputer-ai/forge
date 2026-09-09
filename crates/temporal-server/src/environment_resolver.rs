@@ -340,6 +340,256 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn environment_skills_idle_discovery_reuses_observations_and_never_wakes() {
+        use engine::{
+            CoreAgentCommand,
+            storage::{BlobStore, InMemoryBlobStore},
+        };
+        use futures_util::{SinkExt, StreamExt};
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        use tools::skills::environment::{EnvironmentSkillAvailability, EnvironmentSkillCatalog};
+        let (resolver, environment_id) = resolver().await;
+        let store = resolver.environments.clone();
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+        std::fs::create_dir_all(root.join(".agents/skills/review")).unwrap();
+        let doc = "---\nname: review\ndescription: Review code.\n---\nbody";
+        let skill_path = root.join(".agents/skills/review/SKILL.md");
+        std::fs::write(&skill_path, doc).unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let gateway = crate::environment_gateway::EnvironmentGatewayClientConfig::new(
+            format!("http://{}", listener.local_addr().unwrap()),
+            "test",
+        );
+        let scans = Arc::new(AtomicUsize::new(0));
+        let unchanged = Arc::new(AtomicUsize::new(0));
+        let supported = Arc::new(AtomicBool::new(true));
+        let stall = Arc::new(AtomicBool::new(false));
+        let task = {
+            let scans = scans.clone();
+            let unchanged = unchanged.clone();
+            let supported = supported.clone();
+            let stall = stall.clone();
+            let root = root.clone();
+            tokio::spawn(async move {
+                loop {
+                    let (socket, _) = listener.accept().await.unwrap();
+                    let mut socket = tokio_tungstenite::accept_async(socket).await.unwrap();
+                    while let Some(Ok(message)) = socket.next().await {
+                        let Ok(text) = message.to_text() else {
+                            continue;
+                        };
+                        let Ok(request) = serde_json::from_str::<serde_json::Value>(text) else {
+                            continue;
+                        };
+                        let Some(id) = request.get("id") else {
+                            continue;
+                        };
+                        if stall.load(Ordering::SeqCst) {
+                            std::future::pending::<()>().await;
+                        }
+                        let result = match request["method"].as_str().unwrap() {
+                            "initialize" => {
+                                serde_json::json!({ "protocolVersion": environment_protocol::shared::CURRENT_PROTOCOL_VERSION, "connectionId": "test", "capabilities": {"filesystemRead": true, "filesystemScan": supported.load(Ordering::SeqCst)}, "defaultCwd": root, "homeDirectory": root, "implementation": {"name": "test", "version": "1"} })
+                            }
+                            "fs/scan" => {
+                                scans.fetch_add(1, Ordering::SeqCst);
+                                let fs = environment_daemon::filesystem::LocalFileSystem::new(
+                                    root.clone(),
+                                    root.clone(),
+                                    false,
+                                );
+                                let result = fs
+                                    .scan(
+                                        serde_json::from_value(request["params"].clone()).unwrap(),
+                                    )
+                                    .await
+                                    .unwrap();
+                                if result.unchanged {
+                                    unchanged.fetch_add(1, Ordering::SeqCst);
+                                }
+                                serde_json::to_value(result).unwrap()
+                            }
+                            other => panic!("unexpected discovery RPC: {other}"),
+                        };
+                        if socket
+                            .send(tokio_tungstenite::tungstenite::Message::Text(
+                                serde_json::json!({"jsonrpc":"2.0", "id":id, "result":result})
+                                    .to_string()
+                                    .into(),
+                            ))
+                            .await
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                }
+            })
+        };
+        let blobs = InMemoryBlobStore::new();
+        let session_id = engine::SessionId::new(uuid::Uuid::new_v4().to_string());
+        let feature = engine::EnvironmentsFeature {
+            skills: Some(Default::default()),
+            ..Default::default()
+        };
+        let refresh = |current| {
+            crate::environment_skills::refresh(
+                &blobs,
+                Some(&resolver),
+                Some(&gateway),
+                &session_id,
+                Some(&feature),
+                Some(&environment_id),
+                current,
+            )
+        };
+        let entry = |command| match command {
+            Some(CoreAgentCommand::UpsertContext { entry, .. }) => entry,
+            other => panic!("expected publication: {other:?}"),
+        };
+        // Offline inspection never changes desired power and never opens a data route.
+        let before = store.read_environment(&environment_id).await.unwrap();
+        let unavailable = entry(refresh(None).await.unwrap());
+        assert_eq!(scans.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            store.read_environment(&environment_id).await.unwrap(),
+            before
+        );
+        assert!(refresh(Some(&unavailable)).await.unwrap().is_none());
+        store
+            .observe_provisioned_environment(ObserveProvisionedEnvironment {
+                environment_id: environment_id.clone(),
+                provider_target_id: ProviderTargetId::new("target-1"),
+                status: EnvironmentStatus::Ready,
+                power_states: vec![PowerState::Running, PowerState::Paused],
+                observed_at_ms: 20,
+            })
+            .await
+            .unwrap();
+        let available = entry(refresh(Some(&unavailable)).await.unwrap());
+        let catalog: EnvironmentSkillCatalog = serde_json::from_slice(
+            &blobs
+                .read_bytes(available.provenance_ref.as_ref().unwrap())
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            catalog.availability,
+            EnvironmentSkillAvailability::Available
+        );
+        assert_eq!(catalog.skills.len(), 1);
+        assert!(refresh(Some(&available)).await.unwrap().is_none());
+        assert_eq!(unchanged.load(Ordering::SeqCst), 1);
+        std::fs::write(&skill_path, doc.replace("body", "edit")).unwrap();
+        assert!(
+            refresh(Some(&available)).await.unwrap().is_none(),
+            "body changes do not publish"
+        );
+        std::fs::write(&skill_path, doc.replace("Review code.", "Review changes.")).unwrap();
+        let edited = entry(refresh(Some(&available)).await.unwrap());
+        assert_ne!(edited.content, available.content);
+        // A partial result retains the same source as stale; it cannot claim deletion.
+        std::fs::write(&skill_path, vec![b'x'; 65537]).unwrap();
+        let stale = entry(refresh(Some(&edited)).await.unwrap());
+        let catalog: EnvironmentSkillCatalog = serde_json::from_slice(
+            &blobs
+                .read_bytes(stale.provenance_ref.as_ref().unwrap())
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(catalog.availability, EnvironmentSkillAvailability::Stale);
+        assert_eq!(catalog.skills.len(), 1);
+        assert!(refresh(Some(&stale)).await.unwrap().is_none());
+        // Missing fs/scan is explicit unavailable discovery, with no RPC fallback.
+        supported.store(false, Ordering::SeqCst);
+        let before = scans.load(Ordering::SeqCst);
+        assert!(refresh(Some(&stale)).await.unwrap().is_none());
+        assert_eq!(scans.load(Ordering::SeqCst), before);
+        supported.store(true, Ordering::SeqCst);
+        std::fs::remove_file(&skill_path).unwrap();
+        let empty = entry(refresh(Some(&stale)).await.unwrap());
+        let catalog: EnvironmentSkillCatalog = serde_json::from_slice(
+            &blobs
+                .read_bytes(empty.provenance_ref.as_ref().unwrap())
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(catalog.skills.is_empty());
+        assert_eq!(
+            catalog.availability,
+            EnvironmentSkillAvailability::Available
+        );
+        // Deselection removes only this catalog key.
+        let cleared = crate::environment_skills::refresh(
+            &blobs,
+            Some(&resolver),
+            Some(&gateway),
+            &session_id,
+            Some(&feature),
+            None,
+            Some(&empty),
+        )
+        .await
+        .unwrap();
+        assert!(
+            matches!(cleared, Some(CoreAgentCommand::RemoveContext { key, .. }) if key.as_str() == "runtime.catalog.skills.environment")
+        );
+        let mut denied = feature.clone();
+        denied.providers = Some(vec!["not-granted".into()]);
+        let denied_entry = entry(
+            crate::environment_skills::refresh(
+                &blobs,
+                Some(&resolver),
+                Some(&gateway),
+                &session_id,
+                Some(&denied),
+                Some(&environment_id),
+                Some(&available),
+            )
+            .await
+            .unwrap(),
+        );
+        let denied_catalog: EnvironmentSkillCatalog = serde_json::from_slice(
+            &blobs
+                .read_bytes(denied_entry.provenance_ref.as_ref().unwrap())
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            denied_catalog.availability,
+            EnvironmentSkillAvailability::Unavailable
+        );
+        assert!(
+            denied_catalog.skills.is_empty(),
+            "a revoked domain grant cannot retain advertised paths"
+        );
+        stall.store(true, Ordering::SeqCst);
+        let start = std::time::Instant::now();
+        let timed_out = entry(refresh(Some(&available)).await.unwrap());
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(6),
+            "unresponsive endpoint must remain bounded"
+        );
+        let timed_out_catalog: EnvironmentSkillCatalog = serde_json::from_slice(
+            &blobs
+                .read_bytes(timed_out.provenance_ref.as_ref().unwrap())
+                .await
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            timed_out_catalog.availability,
+            EnvironmentSkillAvailability::Stale
+        );
+        task.abort();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn provider_filter_applies_to_list_read_and_selection() {
         let (resolver, environment_id) = resolver().await;
         let denied =

@@ -330,6 +330,7 @@ export function normalizeSessionConfig(value: unknown): SessionConfig | undefine
       if (providers.length) next.providers = providers;
       if (feature.selectionTools === true) next.selectionTools = true;
       if (feature.jobs === true) next.jobs = true;
+      if ("skills" in feature) next.skills = record(feature.skills);
     }
     if (name === "mcp") {
       const servers = Array.isArray(feature.servers)
@@ -530,6 +531,7 @@ export function SessionConfigEditor({
                 {name === "vfs" && (
                   <VfsFields
                     feature={record(features.vfs)}
+                    environmentsGranted={"environments" in features}
                     workspaces={workspaces}
                     workspacesLoading={workspacesLoading}
                     patch={(fn) => patchFeature("vfs", fn)}
@@ -1159,11 +1161,13 @@ function FeaturePanel({
 
 function VfsFields({
   feature,
+  environmentsGranted,
   workspaces,
   workspacesLoading,
   patch,
 }: {
   feature: RecordValue;
+  environmentsGranted: boolean;
   workspaces: WorkspaceOption[];
   workspacesLoading: boolean;
   patch: (fn: (feature: RecordValue) => void) => void;
@@ -1218,6 +1222,15 @@ function VfsFields({
               <SelectItem value="edit">Edit files</SelectItem>
             </SelectContent>
           </Select>
+          <FieldDescription>
+            {!environmentsGranted
+              ? "Enable Environments to also transfer files between linked workspaces and a selected environment."
+              : feature.tools === "edit"
+                ? "Includes materialize to the selected environment and capture into writable workspace links."
+                : feature.tools === "readOnly"
+                  ? "Includes materialize to the selected environment. Linked VFS files remain read only through these tools."
+                  : "Choose Read only or Edit files to enable workspace transfer tools. Prompt and skill sourcing alone does not enable transfers."}
+          </FieldDescription>
         </Field>
         <Field>
           <FieldLabel>Prompt roots</FieldLabel>
@@ -1234,7 +1247,7 @@ function VfsFields({
           <FieldDescription className="text-xs">Comma-separated paths.</FieldDescription>
         </Field>
         <Field>
-          <FieldLabel>Skill roots</FieldLabel>
+          <FieldLabel>VFS skill roots</FieldLabel>
           <Input
             className="font-mono"
             value={commaList(skills.roots)}
@@ -1245,7 +1258,7 @@ function VfsFields({
             })}
             placeholder="/skills, /team/skills"
           />
-          <FieldDescription className="text-xs">Comma-separated paths.</FieldDescription>
+          <FieldDescription className="text-xs">Comma-separated absolute paths inside workspace links. Empty disables VFS skill discovery; environment skills are configured separately.</FieldDescription>
         </Field>
       </div>
 

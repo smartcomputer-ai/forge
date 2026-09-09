@@ -47,6 +47,8 @@ pub enum BuiltinToolOperation {
     JobSubmit,
     JobRun,
     JobRead,
+    Materialize,
+    Capture,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
@@ -60,6 +62,23 @@ pub enum BuiltinToolSurface {
 pub enum BuiltinToolDomain {
     Vfs,
     Environment,
+}
+
+/// Resources used by a built-in call, independent of its catalog family.
+/// Job reads resolve their explicit handles through the job adapter and do not
+/// depend on the selected environment.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct BuiltinToolRequirements {
+    pub vfs: bool,
+    pub active_environment: bool,
+}
+
+impl BuiltinToolRequirements {
+    pub fn for_id(id: &ToolName) -> Self {
+        BuiltinTool::from_logical_id(id.as_str())
+            .map(|tool| tool.requirements())
+            .unwrap_or_default()
+    }
 }
 
 /// Which of a surface's presentations of an operation this tool is. Only
@@ -86,6 +105,11 @@ pub struct BuiltinTool {
 pub enum BuiltinToolContext<'a> {
     Vfs(&'a FsToolContext),
     Environment(&'a EnvironmentToolContext),
+    Transfer {
+        vfs: &'a FsToolContext,
+        environment: &'a EnvironmentToolContext,
+        operation_id: Option<&'a str>,
+    },
 }
 
 impl<'a> BuiltinToolContext<'a> {
@@ -99,12 +123,32 @@ impl<'a> BuiltinToolContext<'a> {
                         message: "environment_filesystem_unavailable".to_owned(),
                     })
             }
+            Self::Transfer { .. } => Err(ToolError::InvalidRequest {
+                message: "transfer paths must identify their filesystem domain".into(),
+            }),
+        }
+    }
+
+    pub fn vfs(self) -> ToolResult<&'a FsToolContext> {
+        match self {
+            Self::Vfs(vfs) | Self::Transfer { vfs, .. } => Ok(vfs),
+            Self::Environment(_) => Err(ToolError::InvalidRequest {
+                message: "no_vfs_workspace_links".into(),
+            }),
+        }
+    }
+
+    pub fn transfer_operation_id(self) -> Option<&'a str> {
+        match self {
+            Self::Transfer { operation_id, .. } => operation_id,
+            _ => None,
         }
     }
 
     pub fn environment(self) -> ToolResult<&'a EnvironmentToolContext> {
         match self {
             Self::Environment(ctx) => Ok(ctx),
+            Self::Transfer { environment, .. } => Ok(environment),
             Self::Vfs(_) => Err(ToolError::InvalidRequest {
                 message: "environment tool cannot use a VFS context".to_owned(),
             }),
@@ -114,6 +158,7 @@ impl<'a> BuiltinToolContext<'a> {
     pub fn blobs(self) -> &'a std::sync::Arc<dyn engine::storage::BlobStore> {
         match self {
             Self::Vfs(ctx) => &ctx.blobs,
+            Self::Transfer { vfs, .. } => &vfs.blobs,
             Self::Environment(ctx) => &ctx.blobs,
         }
     }
@@ -121,6 +166,7 @@ impl<'a> BuiltinToolContext<'a> {
     pub fn limits(self) -> crate::limits::ToolLimits {
         match self {
             Self::Vfs(ctx) => ctx.limits,
+            Self::Transfer { vfs, .. } => vfs.limits,
             Self::Environment(ctx) => ctx.limits,
         }
     }
@@ -132,6 +178,13 @@ impl<'a> BuiltinToolContext<'a> {
                 .filesystem
                 .as_ref()
                 .map_or_else(Vec::new, |ctx| ctx.fs.drain_tool_effects()),
+            Self::Transfer {
+                vfs, environment, ..
+            } => {
+                let mut effects = vfs.fs.drain_tool_effects();
+                effects.extend(Self::Environment(environment).drain_tool_effects());
+                effects
+            }
         }
     }
 }
@@ -147,6 +200,10 @@ impl BuiltinTool {
         self
     }
     pub const fn environment(operation: BuiltinToolOperation, surface: BuiltinToolSurface) -> Self {
+        assert!(!matches!(
+            operation,
+            BuiltinToolOperation::Materialize | BuiltinToolOperation::Capture
+        ));
         Self {
             domain: BuiltinToolDomain::Environment,
             operation,
@@ -170,6 +227,8 @@ impl BuiltinTool {
                 | BuiltinToolOperation::Grep
                 | BuiltinToolOperation::Glob
                 | BuiltinToolOperation::ListDir
+                | BuiltinToolOperation::Materialize
+                | BuiltinToolOperation::Capture
         ));
         Self {
             domain: BuiltinToolDomain::Vfs,
@@ -223,6 +282,23 @@ impl BuiltinTool {
         self.domain
     }
 
+    pub const fn requirements(self) -> BuiltinToolRequirements {
+        let transfer = self.is_transfer();
+        BuiltinToolRequirements {
+            vfs: matches!(self.domain, BuiltinToolDomain::Vfs),
+            active_environment: transfer
+                || (matches!(self.domain, BuiltinToolDomain::Environment)
+                    && !matches!(self.operation, BuiltinToolOperation::JobRead)),
+        }
+    }
+
+    pub const fn is_transfer(self) -> bool {
+        matches!(
+            self.operation,
+            BuiltinToolOperation::Materialize | BuiltinToolOperation::Capture
+        )
+    }
+
     pub const fn variant(self) -> BuiltinToolVariant {
         self.variant
     }
@@ -240,6 +316,8 @@ impl BuiltinTool {
             (BuiltinToolDomain::Vfs, BuiltinToolOperation::Grep) => "vfs.grep",
             (BuiltinToolDomain::Vfs, BuiltinToolOperation::Glob) => "vfs.glob",
             (BuiltinToolDomain::Vfs, BuiltinToolOperation::ListDir) => "vfs.list_dir",
+            (BuiltinToolDomain::Vfs, BuiltinToolOperation::Materialize) => "vfs.materialize",
+            (BuiltinToolDomain::Vfs, BuiltinToolOperation::Capture) => "vfs.capture",
             (BuiltinToolDomain::Environment, BuiltinToolOperation::ReadFile) => "env.read_file",
             (BuiltinToolDomain::Environment, BuiltinToolOperation::WriteFile) => "env.write_file",
             (BuiltinToolDomain::Environment, BuiltinToolOperation::EditFile) => "env.edit_file",
@@ -254,6 +332,10 @@ impl BuiltinTool {
             (BuiltinToolDomain::Environment, BuiltinToolOperation::JobSubmit) => "env.job_submit",
             (BuiltinToolDomain::Environment, BuiltinToolOperation::JobRun) => "env.job_run",
             (BuiltinToolDomain::Environment, BuiltinToolOperation::JobRead) => "env.job_read",
+            (
+                BuiltinToolDomain::Environment,
+                BuiltinToolOperation::Materialize | BuiltinToolOperation::Capture,
+            ) => unreachable!(),
             (
                 BuiltinToolDomain::Vfs,
                 BuiltinToolOperation::RunProcess
@@ -305,6 +387,8 @@ impl BuiltinTool {
                 (BuiltinToolSurface::ClaudeCodeLike, BuiltinToolOperation::Grep) => "VfsGrep",
                 (BuiltinToolSurface::ClaudeCodeLike, BuiltinToolOperation::Glob) => "VfsGlob",
                 (BuiltinToolSurface::ClaudeCodeLike, BuiltinToolOperation::ListDir) => "VfsListDir",
+                (_, BuiltinToolOperation::Materialize) => "vfs_materialize",
+                (_, BuiltinToolOperation::Capture) => "vfs_capture",
                 (
                     _,
                     BuiltinToolOperation::RunProcess
@@ -362,6 +446,9 @@ impl BuiltinTool {
             (_, BuiltinToolOperation::JobSubmit, _) => {
                 crate::environment::jobs::JOB_SUBMIT_TOOL_NAME
             }
+            (_, BuiltinToolOperation::Materialize | BuiltinToolOperation::Capture, _) => {
+                unreachable!()
+            }
             (_, BuiltinToolOperation::JobRun, _) => crate::environment::jobs::JOB_RUN_TOOL_NAME,
             (_, BuiltinToolOperation::JobRead, _) => crate::environment::jobs::JOB_READ_TOOL_NAME,
             (BuiltinToolSurface::ClaudeCodeLike, BuiltinToolOperation::ReadFile, _) => "Read",
@@ -413,6 +500,14 @@ impl BuiltinTool {
             "vfs.glob" => Self::vfs(BuiltinToolOperation::Glob, BuiltinToolSurface::Canonical),
             "vfs.list_dir" => {
                 Self::vfs(BuiltinToolOperation::ListDir, BuiltinToolSurface::Canonical)
+            }
+            // Accept already-admitted identities from the initial transfer implementation.
+            "vfs.materialize" | "env.vfs_materialize" => Self::vfs(
+                BuiltinToolOperation::Materialize,
+                BuiltinToolSurface::Canonical,
+            ),
+            "vfs.capture" | "env.vfs_capture" => {
+                Self::vfs(BuiltinToolOperation::Capture, BuiltinToolSurface::Canonical)
             }
             "env.read_file" => Self::environment(
                 BuiltinToolOperation::ReadFile,
@@ -527,7 +622,7 @@ impl BuiltinTool {
     }
 
     pub const fn is_filesystem_operation(self) -> bool {
-        !self.requires_process() && !self.requires_jobs()
+        !self.requires_process() && !self.requires_jobs() && !self.is_transfer()
     }
 
     pub const fn parallelism(self) -> ToolParallelism {
@@ -542,7 +637,9 @@ impl BuiltinTool {
             | BuiltinToolOperation::RunProcess
             | BuiltinToolOperation::ContinueProcess
             | BuiltinToolOperation::JobSubmit
-            | BuiltinToolOperation::JobRun => ToolParallelism::Exclusive,
+            | BuiltinToolOperation::JobRun
+            | BuiltinToolOperation::Materialize
+            | BuiltinToolOperation::Capture => ToolParallelism::Exclusive,
             BuiltinToolOperation::JobRead => ToolParallelism::ParallelSafe,
         }
     }
@@ -572,6 +669,12 @@ impl BuiltinTool {
                 class: ToolExecutionClass::RemoteInteractive,
                 retry_safe: false,
             },
+            BuiltinToolOperation::Materialize | BuiltinToolOperation::Capture => {
+                ToolExecutionSpec {
+                    class: ToolExecutionClass::Bulk,
+                    retry_safe: false,
+                }
+            }
             BuiltinToolOperation::JobRead => ToolExecutionSpec {
                 class: ToolExecutionClass::RemoteInteractive,
                 retry_safe: true,
@@ -601,15 +704,19 @@ impl BuiltinTool {
             BuiltinToolSurface::CodexLike => Ok(codex::description(self, scoped_paths)),
             BuiltinToolSurface::ClaudeCodeLike => claude::description(self, scoped_paths),
         }?;
-        let boundary = match self.domain {
-            BuiltinToolDomain::Vfs => {
-                " Accesses only session-linked VFS workspaces and snapshots; these files are not visible to environment commands."
-            }
-            BuiltinToolDomain::Environment if self.is_filesystem_operation() => {
-                " Accesses only the active environment filesystem; it does not read or modify linked VFS files."
-            }
-            BuiltinToolDomain::Environment => {
-                " Operates only in the active environment; linked VFS files are not implicitly available."
+        let boundary = if self.is_transfer() {
+            " Explicitly transfers between session-linked VFS paths and the selected environment. Both domains' access rules apply."
+        } else {
+            match self.domain {
+                BuiltinToolDomain::Vfs => {
+                    " Accesses only session-linked VFS workspaces and snapshots; these files are not visible to environment commands."
+                }
+                BuiltinToolDomain::Environment if self.is_filesystem_operation() => {
+                    " Accesses only the active environment filesystem; it does not read or modify linked VFS files."
+                }
+                BuiltinToolDomain::Environment => {
+                    " Operates only in the active environment; linked VFS files are not implicitly available."
+                }
             }
         };
         Ok(format!("{description}{boundary}"))
@@ -651,6 +758,8 @@ impl BuiltinToolOperation {
             Self::JobSubmit => "job_submit",
             Self::JobRun => "job_run",
             Self::JobRead => "job_read",
+            Self::Materialize => "vfs_materialize",
+            Self::Capture => "vfs_capture",
         }
     }
 }
@@ -665,6 +774,66 @@ mod tests {
 
     fn target() -> ToolTarget {
         ToolTarget::api_kind(ProviderApiKind::OpenAiResponses)
+    }
+
+    #[test]
+    fn transfer_family_and_resource_requirements_are_independent() {
+        for (canonical_id, legacy_id, name) in [
+            ("vfs.materialize", "env.vfs_materialize", "vfs_materialize"),
+            ("vfs.capture", "env.vfs_capture", "vfs_capture"),
+        ] {
+            for id in [canonical_id, legacy_id] {
+                for surface in [
+                    BuiltinToolSurface::Canonical,
+                    BuiltinToolSurface::CodexLike,
+                    BuiltinToolSurface::ClaudeCodeLike,
+                ] {
+                    let tool = BuiltinTool::from_logical_id(id)
+                        .unwrap()
+                        .with_surface(surface);
+                    assert_eq!(tool.domain(), BuiltinToolDomain::Vfs);
+                    assert_eq!(tool.logical_id(), canonical_id);
+                    assert_eq!(tool.name_str(), name);
+                    assert_eq!(
+                        tool.requirements(),
+                        BuiltinToolRequirements {
+                            vfs: true,
+                            active_environment: true
+                        }
+                    );
+                    let binding = tool.binding(&target());
+                    assert_eq!(
+                        BuiltinTool::from_binding(
+                            id,
+                            binding.adapter_id.as_deref(),
+                            binding.tool_name.as_str(),
+                        ),
+                        Some(tool)
+                    );
+                    let description = tool.description(true).unwrap();
+                    assert!(description.contains("Both domains' access rules apply"));
+                    assert!(!description.contains("Accesses only session-linked"));
+                }
+            }
+        }
+        assert_eq!(
+            BuiltinToolRequirements::for_id(&ToolName::new("vfs.read_file")),
+            BuiltinToolRequirements {
+                vfs: true,
+                active_environment: false
+            }
+        );
+        assert_eq!(
+            BuiltinToolRequirements::for_id(&ToolName::new("env.run_process")),
+            BuiltinToolRequirements {
+                vfs: false,
+                active_environment: true
+            }
+        );
+        assert_eq!(
+            BuiltinToolRequirements::for_id(&ToolName::new("env.job_read")),
+            BuiltinToolRequirements::default()
+        );
     }
 
     #[test]

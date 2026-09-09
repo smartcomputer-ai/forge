@@ -23,6 +23,15 @@ export const PROFILE_CONFIG_REFERENCE = `// Every field is optional — omit any
       "registrationKeys": ["string"],
       // Exposes \`environment_list\`, \`environment_activate\`, and \`environment_deactivate\` to the model. \`environment_read\` is available whenever environments are enabled, and external API/profile activation remains available when this is false.
       "selectionTools": true | false,
+      // Independent environment skill discovery. Absent disables discovery.
+      "skills": {
+        // Additional absolute or working-directory-relative discovery roots.
+        "additionalRoots": ["string"],
+        // Absolute ancestor boundary. Absent scans only the working directory.
+        "projectRoot": "string",
+        // Absolute session working directory; absent uses the endpoint default.
+        "workingDirectory": "string",
+      },
       "version": 0,
     },
     // Grants remote MCP tools by declaring linked servers from the universe MCP catalog; must link at least one server, with unique server ids.
@@ -62,12 +71,13 @@ export const PROFILE_CONFIG_REFERENCE = `// Every field is optional — omit any
         // Absent means the conventional roots; an explicit list must be non-empty.
         "roots": ["string"],
       },
-      // Skill discovery sourcing from the VFS.
+      // Independent VFS skill discovery. Absent disables discovery and removes its runtime catalog; enabling it requires explicit linked roots.
       "skills": {
-        // Absent means the conventional roots; an explicit list must be non-empty.
+        // Explicit absolute discovery roots in the linked VFS namespace. Must be non-empty and contained in workspace links; no roots are inferred.
+        // (required when this object is present)
         "roots": ["string"],
       },
-      // Agent-facing filesystem tool surface; absent = no fs tools. Per-path writability is defined by each workspace link's own access.
+      // Agent-facing filesystem tool surface; absent = no fs tools. Per-path writability is defined by each workspace link's own access. With the environments feature granted, \`readOnly\` also exposes \`vfs_materialize\`; \`edit\` additionally exposes \`vfs_capture\`. Prompt/skill sourcing alone does not grant transfer tools.
       "tools": "readOnly" | "edit",
       "version": 0,
       // Catalog resources exposed in the session's workspace namespace.

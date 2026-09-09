@@ -87,7 +87,7 @@ can link to the same workspace. Those sessions still have separate
 conversations even though they can work with shared files.
 
 Instructions and skills can also come from linked VFS content. A skill is a
-documented procedure that the agent can discover and activate for relevant
+documented procedure that the agent can discover, read, and follow for relevant
 work. It adds guidance; the session's granted capabilities still determine
 which tools are available.
 

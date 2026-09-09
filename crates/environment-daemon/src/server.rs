@@ -1,4 +1,8 @@
 use anyhow::Context as _;
+use environment_protocol::data::{
+    methods::{FS_CAPTURE_METHOD, FS_MATERIALIZE_METHOD},
+    transfer::*,
+};
 use environment_protocol::{
     data::{
         fs::{
@@ -202,6 +206,7 @@ async fn handle_data(
                 ));
             }
             encode_result(InitializeResponse {
+                home_directory: std::env::var("HOME").ok(),
                 protocol_version: CURRENT_PROTOCOL_VERSION,
                 connection_id: runtime.next_connection_id(),
                 capabilities: runtime.capabilities(),
@@ -243,6 +248,27 @@ async fn handle_data(
             runtime
                 .filesystem()
                 .remove(decode_params::<RemoveParams>(params)?)
+                .await?,
+        ),
+        environment_protocol::data::methods::FS_SCAN_METHOD => {
+            encode_result(runtime.filesystem().scan(decode_params(params)?).await?)
+        }
+        environment_protocol::data::methods::FS_TRANSFER_METHOD => encode_result(
+            runtime
+                .filesystem()
+                .transfer(decode_params(params)?)
+                .await?,
+        ),
+        FS_CAPTURE_METHOD => encode_result(
+            runtime
+                .filesystem()
+                .capture(decode_params::<CaptureParams>(params)?)
+                .await?,
+        ),
+        FS_MATERIALIZE_METHOD => encode_result(
+            runtime
+                .filesystem()
+                .materialize(decode_params::<MaterializeParams>(params)?)
                 .await?,
         ),
         FS_COPY_METHOD => encode_result(
@@ -324,3 +350,83 @@ async fn handle_data(
 pub(crate) fn tracing_line(message: &str) {
     eprintln!("lightspeed-envd {message}");
 }
+
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+mod transfer_tests {
+    use super::*;
+    use crate::config::DaemonConfig;
+    use environment_protocol::shared::{ByteChunk, EnvironmentPath};
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn transfer_dispatch_and_read_only_capabilities() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().to_path_buf();
+        for read_only in [false, true] {
+            let runtime = DaemonRuntime::new(DaemonConfig {
+                listen: None,
+                cwd: root.clone(),
+                fs_root: root.clone(),
+                state_dir: root.join("state"),
+                read_only_fs: read_only,
+                registration: None,
+                scrubbed_env: vec![],
+            })
+            .unwrap();
+            assert!(runtime.capabilities().filesystem_capture);
+            assert_eq!(runtime.capabilities().filesystem_materialize, !read_only);
+            let limits = TransferLimits {
+                max_entries: 1,
+                max_depth: 0,
+                max_file_bytes: 2,
+                max_total_bytes: 2,
+                max_duration_ms: 1000,
+            };
+            let entries = vec![TransferEntry {
+                path: "".into(),
+                content: TransferContent::File {
+                    data: ByteChunk::from(vec![0, 255]),
+                    executable: true,
+                },
+            }];
+            let request = MaterializeParams {
+                destination: EnvironmentPath::new("binary").unwrap(),
+                entries: entries.clone(),
+                limits,
+                on_existing: TransferOnExisting::Replace,
+            };
+            let result = handle_data(
+                &runtime,
+                FS_MATERIALIZE_METHOD,
+                serde_json::to_value(request).unwrap(),
+            )
+            .await;
+            if read_only {
+                assert_eq!(
+                    result.unwrap_err().code,
+                    EnvironmentProtocolErrorCode::CapabilityUnavailable
+                );
+            } else {
+                assert_eq!(result.unwrap()["bytes"], 2);
+            }
+            let captured: CaptureResponse = serde_json::from_value(
+                handle_data(
+                    &runtime,
+                    FS_CAPTURE_METHOD,
+                    serde_json::to_value(CaptureParams {
+                        source: EnvironmentPath::new("binary").unwrap(),
+                        limits,
+                    })
+                    .unwrap(),
+                )
+                .await
+                .unwrap(),
+            )
+            .unwrap();
+            assert_eq!(captured.entries, entries);
+        }
+    }
+}
+
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+#[path = "filesystem/transfer/tests.rs"]
+mod streaming_transfer_tests;

@@ -253,6 +253,37 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
           },
           "type": "object"
         },
+        "EnvironmentSkillsFeature": {
+          "additionalProperties": {
+            "not": {}
+          },
+          "description": "Discovery scope resolved on the selected machine, never on the worker.",
+          "properties": {
+            "additionalRoots": {
+              "default": [],
+              "description": "Additional absolute or working-directory-relative discovery roots.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "projectRoot": {
+              "description": "Absolute ancestor boundary. Absent scans only the working directory.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "workingDirectory": {
+              "description": "Absolute session working directory; absent uses the endpoint default.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "type": "object"
+        },
         "EnvironmentsFeature": {
           "additionalProperties": {
             "not": {}
@@ -288,6 +319,17 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
               "default": false,
               "description": "Exposes `environment_list`, `environment_activate`, and\n`environment_deactivate` to the model. `environment_read` is available\nwhenever environments are enabled, and external API/profile activation\nremains available when this is false.",
               "type": "boolean"
+            },
+            "skills": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/EnvironmentSkillsFeature"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Independent environment skill discovery. Absent disables discovery."
             },
             "version": {
               "default": 1,
@@ -1071,7 +1113,7 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                   "type": "null"
                 }
               ],
-              "description": "Skill discovery sourcing from the VFS."
+              "description": "Independent VFS skill discovery. Absent disables discovery and removes\nits runtime catalog; enabling it requires explicit linked roots."
             },
             "tools": {
               "anyOf": [
@@ -1082,7 +1124,7 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                   "type": "null"
                 }
               ],
-              "description": "Agent-facing filesystem tool surface; absent = no fs tools. Per-path\nwritability is defined by each workspace link's own access."
+              "description": "Agent-facing filesystem tool surface; absent = no fs tools. Per-path\nwritability is defined by each workspace link's own access.\nWith the environments feature granted, `readOnly` also exposes\n`vfs_materialize`; `edit` additionally exposes `vfs_capture`.\nPrompt/skill sourcing alone does not grant transfer tools."
             },
             "version": {
               "default": 1,
@@ -1124,16 +1166,17 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
           },
           "properties": {
             "roots": {
-              "description": "Absent means the conventional roots; an explicit list must be\nnon-empty.",
+              "description": "Explicit absolute discovery roots in the linked VFS namespace. Must be\nnon-empty and contained in workspace links; no roots are inferred.",
               "items": {
                 "type": "string"
               },
-              "type": [
-                "array",
-                "null"
-              ]
+              "minItems": 1,
+              "type": "array"
             }
           },
+          "required": [
+            "roots"
+          ],
           "type": "object"
         },
         "VfsToolSurface": {
@@ -1474,6 +1517,37 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
           },
           "type": "object"
         },
+        "EnvironmentSkillsFeature": {
+          "additionalProperties": {
+            "not": {}
+          },
+          "description": "Discovery scope resolved on the selected machine, never on the worker.",
+          "properties": {
+            "additionalRoots": {
+              "default": [],
+              "description": "Additional absolute or working-directory-relative discovery roots.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "projectRoot": {
+              "description": "Absolute ancestor boundary. Absent scans only the working directory.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "workingDirectory": {
+              "description": "Absolute session working directory; absent uses the endpoint default.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "type": "object"
+        },
         "EnvironmentsFeature": {
           "additionalProperties": {
             "not": {}
@@ -1509,6 +1583,17 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
               "default": false,
               "description": "Exposes `environment_list`, `environment_activate`, and\n`environment_deactivate` to the model. `environment_read` is available\nwhenever environments are enabled, and external API/profile activation\nremains available when this is false.",
               "type": "boolean"
+            },
+            "skills": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/EnvironmentSkillsFeature"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Independent environment skill discovery. Absent disables discovery."
             },
             "version": {
               "default": 1,
@@ -1956,7 +2041,7 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                   "type": "null"
                 }
               ],
-              "description": "Skill discovery sourcing from the VFS."
+              "description": "Independent VFS skill discovery. Absent disables discovery and removes\nits runtime catalog; enabling it requires explicit linked roots."
             },
             "tools": {
               "anyOf": [
@@ -1967,7 +2052,7 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                   "type": "null"
                 }
               ],
-              "description": "Agent-facing filesystem tool surface; absent = no fs tools. Per-path\nwritability is defined by each workspace link's own access."
+              "description": "Agent-facing filesystem tool surface; absent = no fs tools. Per-path\nwritability is defined by each workspace link's own access.\nWith the environments feature granted, `readOnly` also exposes\n`vfs_materialize`; `edit` additionally exposes `vfs_capture`.\nPrompt/skill sourcing alone does not grant transfer tools."
             },
             "version": {
               "default": 1,
@@ -2009,16 +2094,17 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
           },
           "properties": {
             "roots": {
-              "description": "Absent means the conventional roots; an explicit list must be\nnon-empty.",
+              "description": "Explicit absolute discovery roots in the linked VFS namespace. Must be\nnon-empty and contained in workspace links; no roots are inferred.",
               "items": {
                 "type": "string"
               },
-              "type": [
-                "array",
-                "null"
-              ]
+              "minItems": 1,
+              "type": "array"
             }
           },
+          "required": [
+            "roots"
+          ],
           "type": "object"
         },
         "VfsToolSurface": {
@@ -2418,7 +2504,7 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
               "$ref": "#/definitions/InputItem"
             },
             "key": {
-              "description": "Stable client-chosen context key. Re-sending the same key with the\nsame content is a no-op, so the key doubles as the idempotency handle.",
+              "description": "Stable client-chosen context key. Re-sending the same key with the\nsame content is a no-op, so the key doubles as the idempotency handle.\n`run`, `run.*`, `runtime`, and `runtime.*` are reserved for the runtime.",
               "type": "string"
             }
           },
@@ -2560,7 +2646,7 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
       "$schema": "http://json-schema.org/draft-07/schema#",
       "properties": {
         "keys": {
-          "description": "Active context keys to remove. Removing a key that is already absent\nis a per-key no-op (`absent`), so retries are idempotent. Keys under\nreserved runtime namespaces (`run.`) are rejected request-level.",
+          "description": "Active context keys to remove. Removing a key that is already absent\nis a per-key no-op (`absent`), so retries are idempotent. Keys under\nreserved namespaces (`run`, `run.*`, `runtime`, `runtime.*`) are rejected\nrequest-level.",
           "items": {
             "type": "string"
           },
@@ -3299,7 +3385,7 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
     "name": "lightspeed_session_skills_list",
     "method": "session/skills/list",
     "summary": "List available session skills",
-    "description": "Refreshes the session's configured VFS skill catalog and reports which discovered skills are enabled and active. An absent catalog yields an empty result.",
+    "description": "Returns separate VFS and environment catalogs with source, reference, availability, readable skill paths, and warnings. Refreshes only when open with no active or queued run, without waking environments. Absent catalogs are omitted.",
     "paramsType": "SkillListParams",
     "resultType": "AgentApiOutcome<SkillListResponse>",
     "inputSchema": {
@@ -3311,91 +3397,6 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
       },
       "required": [
         "sessionId"
-      ],
-      "type": "object"
-    }
-  },
-  {
-    "name": "lightspeed_session_skills_active",
-    "method": "session/skills/active",
-    "summary": "List active session skills",
-    "description": "Returns skill instructions currently injected into context, including activation scope and source.",
-    "paramsType": "SkillActiveParams",
-    "resultType": "AgentApiOutcome<SkillActiveResponse>",
-    "inputSchema": {
-      "$schema": "http://json-schema.org/draft-07/schema#",
-      "properties": {
-        "sessionId": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "sessionId"
-      ],
-      "type": "object"
-    }
-  },
-  {
-    "name": "lightspeed_session_skills_activate",
-    "method": "session/skills/activate",
-    "summary": "Activate a session skill",
-    "description": "Loads an enabled skill from the current catalog and injects its instructions into an open idle session. Run-scoped activation is the default.",
-    "paramsType": "SkillActivateParams",
-    "resultType": "AgentApiOutcome<SkillActivateResponse>",
-    "inputSchema": {
-      "$schema": "http://json-schema.org/draft-07/schema#",
-      "properties": {
-        "scope": {
-          "allOf": [
-            {
-              "$ref": "#/definitions/SkillActivationScope"
-            }
-          ],
-          "default": "run"
-        },
-        "sessionId": {
-          "type": "string"
-        },
-        "skillId": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "sessionId",
-        "skillId"
-      ],
-      "type": "object",
-      "definitions": {
-        "SkillActivationScope": {
-          "enum": [
-            "run",
-            "session"
-          ],
-          "type": "string"
-        }
-      }
-    }
-  },
-  {
-    "name": "lightspeed_session_skills_deactivate",
-    "method": "session/skills/deactivate",
-    "summary": "Deactivate a session skill",
-    "description": "Removes an active skill's injected context from an open idle session; the skill must currently be active.",
-    "paramsType": "SkillDeactivateParams",
-    "resultType": "AgentApiOutcome<SkillDeactivateResponse>",
-    "inputSchema": {
-      "$schema": "http://json-schema.org/draft-07/schema#",
-      "properties": {
-        "sessionId": {
-          "type": "string"
-        },
-        "skillId": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "sessionId",
-        "skillId"
       ],
       "type": "object"
     }
@@ -3611,6 +3612,37 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
           },
           "type": "object"
         },
+        "EnvironmentSkillsFeature": {
+          "additionalProperties": {
+            "not": {}
+          },
+          "description": "Discovery scope resolved on the selected machine, never on the worker.",
+          "properties": {
+            "additionalRoots": {
+              "default": [],
+              "description": "Additional absolute or working-directory-relative discovery roots.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "projectRoot": {
+              "description": "Absolute ancestor boundary. Absent scans only the working directory.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "workingDirectory": {
+              "description": "Absolute session working directory; absent uses the endpoint default.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "type": "object"
+        },
         "EnvironmentsFeature": {
           "additionalProperties": {
             "not": {}
@@ -3646,6 +3678,17 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
               "default": false,
               "description": "Exposes `environment_list`, `environment_activate`, and\n`environment_deactivate` to the model. `environment_read` is available\nwhenever environments are enabled, and external API/profile activation\nremains available when this is false.",
               "type": "boolean"
+            },
+            "skills": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/EnvironmentSkillsFeature"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Independent environment skill discovery. Absent disables discovery."
             },
             "version": {
               "default": 1,
@@ -4390,7 +4433,7 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                   "type": "null"
                 }
               ],
-              "description": "Skill discovery sourcing from the VFS."
+              "description": "Independent VFS skill discovery. Absent disables discovery and removes\nits runtime catalog; enabling it requires explicit linked roots."
             },
             "tools": {
               "anyOf": [
@@ -4401,7 +4444,7 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                   "type": "null"
                 }
               ],
-              "description": "Agent-facing filesystem tool surface; absent = no fs tools. Per-path\nwritability is defined by each workspace link's own access."
+              "description": "Agent-facing filesystem tool surface; absent = no fs tools. Per-path\nwritability is defined by each workspace link's own access.\nWith the environments feature granted, `readOnly` also exposes\n`vfs_materialize`; `edit` additionally exposes `vfs_capture`.\nPrompt/skill sourcing alone does not grant transfer tools."
             },
             "version": {
               "default": 1,
@@ -4443,16 +4486,17 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
           },
           "properties": {
             "roots": {
-              "description": "Absent means the conventional roots; an explicit list must be\nnon-empty.",
+              "description": "Explicit absolute discovery roots in the linked VFS namespace. Must be\nnon-empty and contained in workspace links; no roots are inferred.",
               "items": {
                 "type": "string"
               },
-              "type": [
-                "array",
-                "null"
-              ]
+              "minItems": 1,
+              "type": "array"
             }
           },
+          "required": [
+            "roots"
+          ],
           "type": "object"
         },
         "VfsToolSurface": {
@@ -5591,6 +5635,37 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
           },
           "type": "object"
         },
+        "EnvironmentSkillsFeature": {
+          "additionalProperties": {
+            "not": {}
+          },
+          "description": "Discovery scope resolved on the selected machine, never on the worker.",
+          "properties": {
+            "additionalRoots": {
+              "default": [],
+              "description": "Additional absolute or working-directory-relative discovery roots.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "projectRoot": {
+              "description": "Absolute ancestor boundary. Absent scans only the working directory.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "workingDirectory": {
+              "description": "Absolute session working directory; absent uses the endpoint default.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "type": "object"
+        },
         "EnvironmentsFeature": {
           "additionalProperties": {
             "not": {}
@@ -5626,6 +5701,17 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
               "default": false,
               "description": "Exposes `environment_list`, `environment_activate`, and\n`environment_deactivate` to the model. `environment_read` is available\nwhenever environments are enabled, and external API/profile activation\nremains available when this is false.",
               "type": "boolean"
+            },
+            "skills": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/EnvironmentSkillsFeature"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Independent environment skill discovery. Absent disables discovery."
             },
             "version": {
               "default": 1,
@@ -6268,7 +6354,7 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                   "type": "null"
                 }
               ],
-              "description": "Skill discovery sourcing from the VFS."
+              "description": "Independent VFS skill discovery. Absent disables discovery and removes\nits runtime catalog; enabling it requires explicit linked roots."
             },
             "tools": {
               "anyOf": [
@@ -6279,7 +6365,7 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                   "type": "null"
                 }
               ],
-              "description": "Agent-facing filesystem tool surface; absent = no fs tools. Per-path\nwritability is defined by each workspace link's own access."
+              "description": "Agent-facing filesystem tool surface; absent = no fs tools. Per-path\nwritability is defined by each workspace link's own access.\nWith the environments feature granted, `readOnly` also exposes\n`vfs_materialize`; `edit` additionally exposes `vfs_capture`.\nPrompt/skill sourcing alone does not grant transfer tools."
             },
             "version": {
               "default": 1,
@@ -6321,16 +6407,17 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
           },
           "properties": {
             "roots": {
-              "description": "Absent means the conventional roots; an explicit list must be\nnon-empty.",
+              "description": "Explicit absolute discovery roots in the linked VFS namespace. Must be\nnon-empty and contained in workspace links; no roots are inferred.",
               "items": {
                 "type": "string"
               },
-              "type": [
-                "array",
-                "null"
-              ]
+              "minItems": 1,
+              "type": "array"
             }
           },
+          "required": [
+            "roots"
+          ],
           "type": "object"
         },
         "VfsToolSurface": {
@@ -6782,6 +6869,37 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
           },
           "type": "object"
         },
+        "EnvironmentSkillsFeature": {
+          "additionalProperties": {
+            "not": {}
+          },
+          "description": "Discovery scope resolved on the selected machine, never on the worker.",
+          "properties": {
+            "additionalRoots": {
+              "default": [],
+              "description": "Additional absolute or working-directory-relative discovery roots.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "projectRoot": {
+              "description": "Absolute ancestor boundary. Absent scans only the working directory.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "workingDirectory": {
+              "description": "Absolute session working directory; absent uses the endpoint default.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "type": "object"
+        },
         "EnvironmentsFeature": {
           "additionalProperties": {
             "not": {}
@@ -6817,6 +6935,17 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
               "default": false,
               "description": "Exposes `environment_list`, `environment_activate`, and\n`environment_deactivate` to the model. `environment_read` is available\nwhenever environments are enabled, and external API/profile activation\nremains available when this is false.",
               "type": "boolean"
+            },
+            "skills": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/EnvironmentSkillsFeature"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Independent environment skill discovery. Absent disables discovery."
             },
             "version": {
               "default": 1,
@@ -7459,7 +7588,7 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                   "type": "null"
                 }
               ],
-              "description": "Skill discovery sourcing from the VFS."
+              "description": "Independent VFS skill discovery. Absent disables discovery and removes\nits runtime catalog; enabling it requires explicit linked roots."
             },
             "tools": {
               "anyOf": [
@@ -7470,7 +7599,7 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                   "type": "null"
                 }
               ],
-              "description": "Agent-facing filesystem tool surface; absent = no fs tools. Per-path\nwritability is defined by each workspace link's own access."
+              "description": "Agent-facing filesystem tool surface; absent = no fs tools. Per-path\nwritability is defined by each workspace link's own access.\nWith the environments feature granted, `readOnly` also exposes\n`vfs_materialize`; `edit` additionally exposes `vfs_capture`.\nPrompt/skill sourcing alone does not grant transfer tools."
             },
             "version": {
               "default": 1,
@@ -7512,16 +7641,17 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
           },
           "properties": {
             "roots": {
-              "description": "Absent means the conventional roots; an explicit list must be\nnon-empty.",
+              "description": "Explicit absolute discovery roots in the linked VFS namespace. Must be\nnon-empty and contained in workspace links; no roots are inferred.",
               "items": {
                 "type": "string"
               },
-              "type": [
-                "array",
-                "null"
-              ]
+              "minItems": 1,
+              "type": "array"
             }
           },
+          "required": [
+            "roots"
+          ],
           "type": "object"
         },
         "VfsToolSurface": {

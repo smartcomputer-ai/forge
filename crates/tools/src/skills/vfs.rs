@@ -169,43 +169,10 @@ pub async fn resolve_linked_vfs_skill_roots(
     })
 }
 
-pub fn conventional_vfs_skill_root_specs(links: &[ResolvedWorkspaceLink]) -> Vec<VfsSkillRootSpec> {
-    let mut specs = Vec::new();
-    let mut seen = BTreeSet::new();
-    for link in links {
-        if is_skills_link(&link.path) {
-            push_spec(&mut specs, &mut seen, spec_for_skills_link(&link.path));
-        }
-        if matches!(
-            link.target,
-            ResolvedWorkspaceLinkTarget::AvailableWorkspace { .. }
-                | ResolvedWorkspaceLinkTarget::Unavailable {
-                    declared_target: engine::WorkspaceLinkTarget::Workspace { .. },
-                    ..
-                }
-        ) {
-            push_spec(
-                &mut specs,
-                &mut seen,
-                workspace_skill_root(&link.path, ".lightspeed/skills"),
-            );
-            push_spec(
-                &mut specs,
-                &mut seen,
-                workspace_skill_root(&link.path, ".agents/skills"),
-            );
-        }
-    }
-    specs
-}
-
 pub fn configured_vfs_skill_root_specs(
     links: &[ResolvedWorkspaceLink],
-    roots: Option<&[String]>,
+    roots: &[String],
 ) -> Result<Vec<VfsSkillRootSpec>, SkillVfsRootError> {
-    let Some(roots) = roots else {
-        return Ok(conventional_vfs_skill_root_specs(links));
-    };
     roots
         .iter()
         .map(|root| {
@@ -234,54 +201,6 @@ pub fn configured_vfs_skill_root_specs(
             ))
         })
         .collect()
-}
-
-fn push_spec(
-    specs: &mut Vec<VfsSkillRootSpec>,
-    seen: &mut BTreeSet<String>,
-    spec: VfsSkillRootSpec,
-) {
-    if seen.insert(spec.root_id.clone()) {
-        specs.push(spec);
-    }
-}
-
-fn is_skills_link(path: &VfsPath) -> bool {
-    let components = path.components();
-    components.first() == Some(&"skills") && components.len() >= 2
-}
-
-fn spec_for_skills_link(path: &VfsPath) -> VfsSkillRootSpec {
-    let trust = if path.as_str() == "/skills/system" {
-        SkillTrustLevel::System
-    } else {
-        SkillTrustLevel::User
-    };
-    VfsSkillRootSpec::new(
-        root_id_for_vfs_path("vfs", path),
-        path.clone(),
-        trust,
-        SkillScope::Global,
-    )
-}
-
-fn workspace_skill_root(link_path: &VfsPath, suffix: &str) -> VfsSkillRootSpec {
-    let path = append_vfs_path(link_path, suffix);
-    VfsSkillRootSpec::new(
-        root_id_for_vfs_path("workspace", &path),
-        path,
-        SkillTrustLevel::Project,
-        SkillScope::Global,
-    )
-}
-
-fn append_vfs_path(base: &VfsPath, suffix: &str) -> VfsPath {
-    let path = if base.is_root() {
-        format!("/{suffix}")
-    } else {
-        format!("{}/{suffix}", base.as_str())
-    };
-    VfsPath::parse(path).expect("conventional VFS skill root path")
 }
 
 fn root_id_for_vfs_path(prefix: &str, path: &VfsPath) -> String {
@@ -585,10 +504,29 @@ mod tests {
     }
 
     #[test]
-    fn configured_skill_roots_replace_conventional_roots() {
+    fn empty_configured_roots_do_not_infer_roots_from_links() {
+        let links = vec![resolved_link(
+            "/skills/system",
+            ResolvedWorkspaceLinkTarget::Unavailable {
+                declared_target: engine::WorkspaceLinkTarget::Workspace {
+                    workspace_id: "skills".into(),
+                },
+                reason: "deleted".into(),
+            },
+            WorkspaceLinkAccess::ReadOnly,
+        )];
+        assert!(
+            configured_vfs_skill_root_specs(&links, &[])
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn configured_skill_roots_preserve_source_locations() {
         let roots = configured_vfs_skill_root_specs(
             &[],
-            Some(&["/skills/system".to_owned(), "/custom/skills".to_owned()]),
+            &["/skills/system".to_owned(), "/custom/skills".to_owned()],
         )
         .expect("configured roots");
 

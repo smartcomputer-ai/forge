@@ -183,6 +183,7 @@ pub fn compute_route_session(
         BotTriggerRoute::PerEvent => Some(RoutedSession {
             session_id: bot_per_event_session_id(bot_id, event_id),
             label: format!("event {}", truncate_chars(event_id, PER_EVENT_LABEL_CHARS)),
+            session_key: None,
             close_policy: RoutedSessionClosePolicy::Inherit,
         }),
         BotTriggerRoute::PerKey { key } => {
@@ -195,6 +196,7 @@ pub fn compute_route_session(
             Some(RoutedSession {
                 session_id: bot_keyed_session_id(bot_id, &key),
                 label,
+                session_key: Some(key),
                 close_policy: RoutedSessionClosePolicy::Inherit,
             })
         }
@@ -457,6 +459,7 @@ mod tests {
         assert_eq!(suffix.len(), 12);
         assert!(is_hex(suffix), "{suffix}");
         assert_eq!(routed.label, "event delivery-1");
+        assert_eq!(routed.session_key, None);
         assert_eq!(routed.close_policy, RoutedSessionClosePolicy::Inherit);
         assert_eq!(
             routed,
@@ -496,6 +499,7 @@ mod tests {
         )
         .expect("routed");
         assert_eq!(routed.label, "7");
+        assert_eq!(routed.session_key.as_deref(), Some("7"));
         let suffix = routed
             .session_id
             .strip_prefix("bot:v1:triage:k-7-")
@@ -512,6 +516,7 @@ mod tests {
         let routed =
             compute_route_session(&bot(), &per_key(Some("data.repo")), None, "e", &ctx).unwrap();
         assert_eq!(routed.label, "acme/widgets");
+        assert_eq!(routed.session_key.as_deref(), Some("acme/widgets"));
         assert_eq!(
             routed.session_id,
             bot_keyed_session_id(&bot(), "acme/widgets")
@@ -617,6 +622,18 @@ mod tests {
             compute_route_session(&bot(), &per_key(None), Some(RoutePreset::Chat), "e", &ctx)
                 .unwrap();
         assert_eq!(routed.label, "Ops room");
+        assert_eq!(routed.session_key.as_deref(), Some("telegram:12345"));
+        let stored = serde_json::to_value(&routed).unwrap();
+        assert_eq!(stored["sessionKey"], "telegram:12345");
+        assert_eq!(
+            serde_json::from_value::<RoutedSession>(stored.clone()).unwrap(),
+            routed
+        );
+        let mut legacy = stored;
+        legacy.as_object_mut().unwrap().remove("sessionKey");
+        let legacy: RoutedSession = serde_json::from_value(legacy).unwrap();
+        assert_eq!(legacy.session_key, None);
+        assert_eq!(legacy.label, "Ops room");
         assert_eq!(
             routed.session_id,
             bot_keyed_session_id(&bot(), "telegram:12345")

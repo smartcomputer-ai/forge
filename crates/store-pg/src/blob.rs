@@ -203,6 +203,158 @@ impl BlobStore for PgStore {
         Ok(refs)
     }
 
+    async fn retain_blob(&self, blob_ref: &BlobRef) -> Result<(), BlobStoreError> {
+        self.touch_blob_refs(std::slice::from_ref(blob_ref)).await
+    }
+
+    async fn read_blob_range(
+        &self,
+        blob_ref: &BlobRef,
+        offset: u64,
+        max_bytes: usize,
+    ) -> Result<Vec<u8>, BlobStoreError> {
+        use object_store::ObjectStoreExt;
+        if max_bytes > 1024 * 1024 {
+            return Err(BlobStoreError::Store {
+                message: "blob range limit exceeded".into(),
+            });
+        }
+        // PostgreSQL also slices inline values at the source, even if a deployment
+        // uses an unusually high inline threshold. The receiver verifies the whole hash.
+        let row = sqlx::query(
+            "SELECT byte_len, object_key, CASE WHEN inline_bytes IS NOT NULL \
+             THEN substring(inline_bytes FROM (LEAST($3,byte_len)+1)::integer FOR $4) \
+             END AS inline_bytes FROM cas_blobs WHERE universe_id=$1 AND digest=$2",
+        )
+        .bind(self.config.universe_id)
+        .bind(sha256_hex(blob_ref)?)
+        .bind(i64::try_from(offset).unwrap_or(i64::MAX))
+        .bind(max_bytes as i32)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| blob_sql_error("load blob range", e))?
+        .ok_or_else(|| BlobStoreError::NotFound {
+            blob_ref: blob_ref.clone(),
+        })?;
+        let length: i64 = row
+            .try_get("byte_len")
+            .map_err(|e| blob_sql_error("decode blob length", e))?;
+        let length = length as u64;
+        if offset >= length {
+            return Ok(vec![]);
+        }
+        let end = offset.saturating_add(max_bytes as u64).min(length);
+        if let Some(bytes) = row
+            .try_get::<Option<Vec<u8>>, _>("inline_bytes")
+            .map_err(|e| blob_sql_error("decode inline bytes", e))?
+        {
+            if bytes.len() as u64 != end - offset {
+                return Err(BlobStoreError::Store {
+                    message: "inline blob range length mismatch".into(),
+                });
+            }
+            return Ok(bytes);
+        }
+        let key: String = row
+            .try_get("object_key")
+            .map_err(|e| blob_sql_error("decode object key", e))?;
+        let store = self
+            .object_store
+            .as_ref()
+            .ok_or_else(|| BlobStoreError::Store {
+                message: "object store unavailable".into(),
+            })?;
+        store
+            .get_range(&object_store::path::Path::from(key.as_str()), offset..end)
+            .await
+            .map(|b| b.to_vec())
+            .map_err(|e| crate::shared::object_store_error("read object range", &key, e))
+    }
+
+    async fn put_stream(
+        &self,
+        expected: &BlobRef,
+        size: u64,
+        source: &mut dyn engine::storage::BlobSource,
+    ) -> Result<BlobRef, BlobStoreError> {
+        let digest = sha256_hex(expected)?;
+        // Admission renews existing content without downloading or re-uploading it.
+        if self.has_blob(expected).await? {
+            if self.stat_blob(expected).await?.byte_len != size {
+                return Err(BlobStoreError::Store {
+                    message: "existing blob size differs from stream".into(),
+                });
+            }
+            self.retain_blob(expected).await?;
+            return Ok(expected.clone());
+        }
+        if size <= self.config.inline_threshold_bytes.min(8 * 1024 * 1024) as u64 {
+            let mut bytes = Vec::new();
+            loop {
+                let chunk = source.read_chunk(256 * 1024).await?;
+                if chunk.is_empty() {
+                    break;
+                }
+                if chunk.len() > 256 * 1024 || bytes.len() as u64 + chunk.len() as u64 > size {
+                    return Err(BlobStoreError::Store {
+                        message: "blob stream size mismatch".into(),
+                    });
+                }
+                bytes.extend(chunk);
+            }
+            if bytes.len() as u64 != size || BlobRef::from_bytes(&bytes) != *expected {
+                return Err(BlobStoreError::Store {
+                    message: "blob stream length/digest mismatch".into(),
+                });
+            }
+            return self.put_single_blob(bytes).await;
+        }
+        if size > 1024_u64.pow(4) {
+            return Err(BlobStoreError::Store {
+                message: "streamed blob exceeds one TiB limit".into(),
+            });
+        }
+        self.ensure_universe()
+            .await
+            .map_err(|e| blob_store_error("ensure universe", e))?;
+        let key = direct_blob_key(&self.config, expected)?;
+        let store = self
+            .object_store
+            .as_ref()
+            .ok_or_else(|| BlobStoreError::Store {
+                message: "large blob requires object storage".into(),
+            })?;
+        let result =
+            crate::object::put_streamed_object(store.as_ref(), &key, expected, size, source)
+                .await?;
+        let stored: Option<String> = sqlx::query_scalar(
+            r#"
+            INSERT INTO cas_blobs (
+                universe_id, digest, byte_len, storage_kind, object_key,
+                object_etag, object_version, created_at_ms, touched_at_ms
+            )
+            VALUES ($1, $2, $3, 'object', $4, $5, $6, $7, $7)
+            ON CONFLICT (universe_id, digest) DO UPDATE
+            SET touched_at_ms = GREATEST(cas_blobs.touched_at_ms, EXCLUDED.touched_at_ms)
+            RETURNING object_key
+            "#,
+        )
+        .bind(self.config.universe_id)
+        .bind(digest)
+        .bind(size as i64)
+        .bind(&key)
+        .bind(result.e_tag)
+        .bind(result.version)
+        .bind(unix_now_ms())
+        .fetch_one(&self.pool)
+        .await
+        .map_err(|e| blob_sql_error("publish streamed blob", e))?;
+        if stored.as_deref() != Some(key.as_str()) {
+            let _ = self.delete_blob_objects(&[key]).await;
+        }
+        Ok(expected.clone())
+    }
+
     async fn read_bytes(&self, blob_ref: &BlobRef) -> Result<Vec<u8>, BlobStoreError> {
         let digest = sha256_hex(blob_ref)?;
         if let Some(cache) = &self.blob_cache

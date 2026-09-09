@@ -133,6 +133,15 @@ async fn openai_completions_runtime_live_vfs_catalog_prompt_preserves_domain_and
         .put_bytes(serde_json::to_vec(&catalog).expect("catalog JSON"))
         .await
         .expect("store catalog");
+    let catalog_input = tools::environment::projection::vfs_catalog_context_input(
+        blobs.as_ref(),
+        &catalog,
+        catalog_ref,
+    )
+    .await
+    .expect("render catalog");
+    let mut catalog_entry = entry(1, catalog_input.kind, catalog_input.content.content_ref);
+    catalog_entry.provenance_ref = catalog_input.provenance_ref;
     let user = blobs
         .insert_text(
             "Which path is mounted, is it read-only or read/write, and should I use vfs tools or environment tools? Answer in one sentence.",
@@ -142,7 +151,7 @@ async fn openai_completions_runtime_live_vfs_catalog_prompt_preserves_domain_and
     let output = answer(
         blobs.clone(),
         request(vec![
-            entry(1, ContextEntryKind::VfsCatalog, catalog_ref),
+            catalog_entry,
             entry(
                 2,
                 ContextEntryKind::Message {

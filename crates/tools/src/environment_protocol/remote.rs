@@ -67,6 +67,31 @@ impl<T> Clone for RemoteEnvironmentConnection<T> {
     }
 }
 
+#[async_trait]
+impl<T: JsonRpcTransport + Send + 'static> crate::transfer::EnvironmentTransfer
+    for RemoteEnvironmentConnection<T>
+{
+    async fn request(
+        &self,
+        request: environment_protocol::data::transfer_session::TransferRequest,
+    ) -> crate::error::ToolResult<environment_protocol::data::transfer_session::TransferResponse>
+    {
+        if !self.capabilities.filesystem_transfer {
+            return Err(crate::error::ToolError::UnsupportedCapability {
+                message: "environment transfer unavailable".into(),
+            });
+        }
+        self.client
+            .lock()
+            .await
+            .transfer(&request)
+            .await
+            .map_err(|e| crate::error::ToolError::InvalidRequest {
+                message: e.to_string(),
+            })
+    }
+}
+
 impl<T> RemoteEnvironmentConnection<T>
 where
     T: JsonRpcTransport + Send + 'static,
@@ -139,6 +164,9 @@ where
             .map(|executor| Arc::new(executor) as Arc<dyn JobExecutor>);
         let mut fs_ctx = FsToolContext::new(fs, blobs.clone());
         let mut env_ctx = EnvironmentToolContext::new(process, blobs);
+        if self.capabilities.filesystem_transfer {
+            env_ctx.transfer = Some(Arc::new(self.clone()));
+        }
         if let Some(jobs) = jobs {
             env_ctx = env_ctx.with_jobs(jobs);
         }

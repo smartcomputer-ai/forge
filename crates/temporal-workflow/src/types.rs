@@ -826,6 +826,10 @@ pub struct ToolPreparePromiseControlsActivityRequest {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeProjectionRefreshActivityRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environments: Option<engine::EnvironmentsFeature>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_environment_id: Option<engine::EnvironmentId>,
     pub session_id: SessionId,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub workspace_links: Vec<engine::WorkspaceLink>,
@@ -835,16 +839,14 @@ pub struct RuntimeProjectionRefreshActivityRequest {
     pub vfs_prompt_roots: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub active_instruction_inputs: BTreeMap<engine::ContextEntryKey, engine::ContextEntryInput>,
-    pub vfs_skills_enabled: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub vfs_skill_roots: Option<Vec<String>>,
-    pub active_catalog_ref: Option<BlobRef>,
-    pub active_vfs_catalog_ref: Option<BlobRef>,
+    pub vfs_skills: Option<engine::VfsSkillsConfig>,
+    /// Current keyed catalogs, including source provenance, for publication comparison.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub active_catalogs: BTreeMap<engine::ContextEntryKey, engine::ContextEntryInput>,
     /// The admitted sub-agent grant; the catalog entry follows it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subagents: Option<engine::SubagentsFeature>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub active_subagent_catalog_ref: Option<BlobRef>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

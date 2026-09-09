@@ -4,9 +4,11 @@
 //! sub-agent execution workflow; the session runtime only admits the call,
 //! pins the grant, and hands the invocation to the generic start machinery.
 
+use crate::catalog::{
+    SUBAGENT_CATALOG_CONTEXT_KEY, catalog_context_input, catalog_publication_command,
+};
 use engine::{
-    BlobRef, ContextEntryInput, ContextEntryKey, ContextEntryKind, CoreAgentCommand,
-    SUBAGENT_CATALOG_CONTEXT_KEY, SubagentLimits,
+    BlobRef, ContextEntryInput, CoreAgentCommand, SubagentLimits,
     storage::{BlobStore, BlobStoreError},
 };
 use serde::{Deserialize, Serialize};
@@ -174,7 +176,7 @@ pub enum SubagentResultStatus {
 pub const SUBAGENT_CATALOG_SCHEMA_VERSION: &str = "lightspeed.subagents.catalog.v1";
 
 /// The agent menu as the model sees it: the grant's allowlist joined with
-/// the current profile records. Published as a `SubagentCatalog` context
+/// the current profile records. Published as a generic `Catalog` context
 /// entry and refreshed like the skill catalog (before each run on an idle
 /// session, and on idle API reads), so description edits land at the next
 /// run while the pinned profile revision still governs each child.
@@ -207,19 +209,18 @@ impl SubagentCatalogSnapshot {
     }
 }
 
-pub fn subagent_catalog_context_input(catalog_ref: BlobRef) -> ContextEntryInput {
-    ContextEntryInput {
-        kind: ContextEntryKind::SubagentCatalog,
-        content: engine::ContentRef {
-            content_ref: catalog_ref,
-            media_type: Some("application/json".to_owned()),
-            provider_kind: None,
-        },
-        preview: Some("Sub-agent catalog".to_owned()),
-        origin: None,
-        provenance_ref: None,
-        token_estimate: None,
-    }
+pub async fn subagent_catalog_context_input(
+    blobs: &dyn BlobStore,
+    snapshot: &SubagentCatalogSnapshot,
+    snapshot_ref: BlobRef,
+) -> Result<ContextEntryInput, BlobStoreError> {
+    catalog_context_input(
+        blobs,
+        "Sub-agent catalog",
+        crate::subagent_catalog_text::subagent_catalog_text(snapshot),
+        snapshot_ref,
+    )
+    .await
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -235,30 +236,19 @@ pub enum SubagentCatalogError {
 /// active entry (content-addressed, so an unchanged catalog is a no-op).
 pub async fn prepare_subagent_catalog_publication(
     blobs: &dyn BlobStore,
-    active_catalog_ref: Option<&BlobRef>,
+    current: Option<&ContextEntryInput>,
     snapshot: &SubagentCatalogSnapshot,
 ) -> Result<Option<CoreAgentCommand>, SubagentCatalogError> {
     let bytes = serde_json::to_vec(snapshot).map_err(|error| SubagentCatalogError::Encode {
         message: error.to_string(),
     })?;
     let catalog_ref = blobs.put_bytes(bytes).await?;
-    if active_catalog_ref == Some(&catalog_ref) {
-        return Ok(None);
-    }
-    Ok(Some(CoreAgentCommand::UpsertContext {
-        expected_revision: None,
-        key: ContextEntryKey::new(SUBAGENT_CATALOG_CONTEXT_KEY),
-        entry: subagent_catalog_context_input(catalog_ref),
-    }))
-}
-
-pub fn clear_subagent_catalog_command(
-    active_catalog_ref: Option<&BlobRef>,
-) -> Option<CoreAgentCommand> {
-    active_catalog_ref.map(|_| CoreAgentCommand::RemoveContext {
-        expected_revision: None,
-        key: ContextEntryKey::new(SUBAGENT_CATALOG_CONTEXT_KEY),
-    })
+    let entry = subagent_catalog_context_input(blobs, snapshot, catalog_ref).await?;
+    Ok(catalog_publication_command(
+        current,
+        SUBAGENT_CATALOG_CONTEXT_KEY,
+        entry,
+    ))
 }
 
 pub fn subagent_tool_definition(
