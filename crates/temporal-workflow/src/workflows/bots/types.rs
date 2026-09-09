@@ -18,6 +18,12 @@ pub struct BotEnsureSessionRequest {
     pub universe_id: Uuid,
     pub bot_id: BotId,
     pub session_id: String,
+    /// Original key for a keyed thread; never a derived session id or label.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_key: Option<String>,
+    /// Human label of the routed thread, without the bot's display name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_label: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
     pub profile_id: ProfileId,

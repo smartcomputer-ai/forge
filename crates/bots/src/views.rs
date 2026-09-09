@@ -785,6 +785,7 @@ mod tests {
             session: Some(RoutedSession {
                 session_id: "bot:v1:triage:k-pr-12-0123abcd".to_owned(),
                 label: "pr-12".to_owned(),
+                session_key: None,
                 close_policy: Default::default(),
             }),
             sender_bot_id: None,
@@ -814,6 +815,7 @@ mod tests {
             session: Some(RoutedSession {
                 session_id: "bot:v1:infra:k-inc-7-abcd1234".to_owned(),
                 label: "inc-7".to_owned(),
+                session_key: None,
                 close_policy: Default::default(),
             }),
         });

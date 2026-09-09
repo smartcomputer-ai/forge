@@ -145,6 +145,7 @@ fn event(
         session: Some(RoutedSession {
             session_id: format!("bot:v1:{bot_id}:main"),
             label: "main".to_owned(),
+            session_key: None,
             close_policy: RoutedSessionClosePolicy::Inherit,
         }),
         sender_bot_id: sender_bot_id.map(BotId::new),

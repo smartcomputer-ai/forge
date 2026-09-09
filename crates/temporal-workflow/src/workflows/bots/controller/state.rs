@@ -139,6 +139,9 @@ impl CoalesceBuffer {
 pub struct ManagedSession {
     pub session_id: String,
     pub label: String,
+    /// Preserved for self events and federation receipts across continuations.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_key: Option<String>,
     pub kind: BotSessionKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_active_at_ms: Option<i64>,
@@ -612,6 +615,9 @@ impl ControllerState {
         if routed.close_policy != RoutedSessionClosePolicy::Inherit {
             known.close_policy = routed.close_policy;
         }
+        if routed.session_key.is_some() {
+            known.session_key = routed.session_key.clone();
+        }
         known.last_active_at_ms = Some(observed_at_ms);
         true
     }
@@ -990,6 +996,7 @@ impl ControllerState {
             .map(|session| RoutedSession {
                 session_id: ids::routed_session_base(&session.session_id).to_owned(),
                 label: session.label.clone(),
+                session_key: session.session_key.clone(),
                 close_policy: session.close_policy,
             });
         BotControllerSummary {
@@ -1452,6 +1459,7 @@ mod tests {
         event.session = Some(RoutedSession {
             session_id: session.to_owned(),
             label: "pr 42".to_owned(),
+            session_key: None,
             close_policy: RoutedSessionClosePolicy::Inherit,
         });
         event
@@ -1666,6 +1674,7 @@ mod tests {
         append.session = Some(RoutedSession {
             session_id: "bot:v1:triage:k-a-1".to_owned(),
             label: "a".to_owned(),
+            session_key: None,
             close_policy: RoutedSessionClosePolicy::Inherit,
         });
         state.accept_event(append, NOW).unwrap();
@@ -2058,6 +2067,7 @@ mod tests {
         state.extra_sessions.push(ManagedSession {
             session_id: "bot:v1:triage:k-pr-42-abcdef01-g2".to_owned(),
             label: "pr 42".to_owned(),
+            session_key: Some("pr-42".to_owned()),
             kind: BotSessionKind::PerKey,
             last_active_at_ms: Some(NOW),
             close_policy: RoutedSessionClosePolicy::Never,
@@ -2068,6 +2078,7 @@ mod tests {
         let routed = summary.routed_session.expect("routed session");
         assert_eq!(routed.session_id, "bot:v1:triage:k-pr-42-abcdef01");
         assert_eq!(routed.label, "pr 42");
+        assert_eq!(routed.session_key.as_deref(), Some("pr-42"));
         assert_eq!(summary.snapshot.active_deliveries.len(), 1);
         let main = state.controller_summary("bot:v1:triage", NOW);
         assert_eq!(main.hops, 0);
@@ -2084,6 +2095,7 @@ mod tests {
         ManagedSession {
             session_id: id.to_owned(),
             label: id.to_owned(),
+            session_key: None,
             kind: BotSessionKind::PerKey,
             last_active_at_ms: Some(last_active),
             close_policy,
@@ -2163,12 +2175,91 @@ mod tests {
         let routed = RoutedSession {
             session_id: "bot:v1:triage:k-a-1".to_owned(),
             label: "a".to_owned(),
+            session_key: None,
             close_policy: RoutedSessionClosePolicy::Inherit,
         };
 
         assert!(state.observe_routed_session(&routed.session_id, &routed, NOW + 5_000));
         assert!(state.expired_sessions(NOW + 10_000).is_empty());
         assert_eq!(state.next_idle_close_deadline(), Some(NOW + 15_000));
+    }
+
+    #[test]
+    fn routed_keys_survive_session_rotation_and_legacy_activity_payloads_load() {
+        let mut state = ready(fresh());
+        let route = RoutedSession {
+            session_id: ids::bot_keyed_session_id(&state.config.bot_id, "telegram:12345"),
+            label: "Ops room".to_owned(),
+            session_key: Some("telegram:12345".to_owned()),
+            close_policy: RoutedSessionClosePolicy::Never,
+        };
+        for generation in 1..=2 {
+            let session_id = state.resolve_routed_session_id(&route.session_id);
+            assert_eq!(
+                session_id,
+                ids::routed_session_generation_id(&route.session_id, generation)
+            );
+            let request = super::super::ensure_request(
+                &state,
+                "controller",
+                session_id.clone(),
+                state.routed_label(&route.label),
+                None,
+                None,
+                Some(&route),
+            );
+            assert_eq!(request.session_id, session_id);
+            assert_eq!(request.session_key.as_deref(), Some("telegram:12345"));
+            assert_eq!(request.session_label.as_deref(), Some("Ops room"));
+            let mut wire = serde_json::to_value(&request).unwrap();
+            assert_eq!(
+                serde_json::from_value::<super::super::BotEnsureSessionRequest>(wire.clone())
+                    .unwrap(),
+                request
+            );
+            wire.as_object_mut().unwrap().remove("session_key");
+            wire.as_object_mut().unwrap().remove("session_label");
+            let legacy: super::super::BotEnsureSessionRequest =
+                serde_json::from_value(wire).unwrap();
+            assert_eq!(legacy.session_id, session_id);
+            assert_eq!(legacy.session_key, None);
+            assert_eq!(legacy.session_label, None);
+            state.bump_routed_generation(&route.session_id);
+        }
+        let main = super::super::ensure_request(
+            &state,
+            "controller",
+            state.main_session_id(),
+            state.bot_label(),
+            None,
+            None,
+            None,
+        );
+        assert_eq!(main.session_key, None);
+        assert_eq!(main.session_label, None);
+    }
+
+    #[test]
+    fn observing_a_new_event_recovers_a_known_threads_key_without_erasing_it() {
+        let mut state = ready(fresh());
+        let id = ids::bot_keyed_session_id(&state.config.bot_id, "telegram:12345");
+        state
+            .extra_sessions
+            .push(managed(&id, RoutedSessionClosePolicy::Never, NOW));
+        let mut route = RoutedSession {
+            session_id: id.clone(),
+            label: "Ops room".to_owned(),
+            session_key: Some("telegram:12345".to_owned()),
+            close_policy: RoutedSessionClosePolicy::Never,
+        };
+        assert!(state.observe_routed_session(&id, &route, NOW + 1));
+        route.session_key = None;
+        assert!(state.observe_routed_session(&id, &route, NOW + 2));
+        let summary = state.controller_summary(&id, NOW + 2);
+        assert_eq!(
+            summary.routed_session.unwrap().session_key.as_deref(),
+            Some("telegram:12345")
+        );
     }
 
     #[test]
@@ -2331,6 +2422,7 @@ mod tests {
             NOW,
         ));
         state.request_rotation("bot:v1:triage:k-a-1-g2".to_owned());
+        state.extra_sessions[0].session_key = Some("original routing key".to_owned());
         state.runs_today = 4;
         state.events_processed = 120;
         state.set_cursor("bot:v1:triage", 17);
@@ -2350,6 +2442,13 @@ mod tests {
         let json = serde_json::to_string(&carry).unwrap();
         let decoded: BotControllerCarry = serde_json::from_str(&json).unwrap();
         assert_eq!(decoded, carry);
+        let mut legacy = serde_json::to_value(&carry).unwrap();
+        legacy["extra_sessions"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("session_key");
+        let legacy: BotControllerCarry = serde_json::from_value(legacy).unwrap();
+        assert_eq!(legacy.extra_sessions[0].session_key, None);
         let next = ControllerState::new(
             BotControllerArgs {
                 config: state.config.clone(),

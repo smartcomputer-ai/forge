@@ -112,7 +112,8 @@ Lightspeed covers the table stakes of a modern agent harness. Everything below w
 **Bots & channels**
 
 - [x] **Bots**: create always-on agents that wake up for scheduled tasks,
-  incoming webhooks, data changes, or chat messages
+  incoming webhooks, data changes, or chat messages; session instructions
+  identify their conversation, thread kind, and original routing key
 - [x] **Bot federation**: bots talk to each other and coordinate work
 - [x] **Triggers**: bots can create and manage their own schedules, webhooks,
   and pollers

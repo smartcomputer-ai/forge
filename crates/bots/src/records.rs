@@ -284,6 +284,10 @@ pub enum RoutedSessionClosePolicy {
 pub struct RoutedSession {
     pub session_id: String,
     pub label: String,
+    /// Original per-key routing value, distinct from the display label and
+    /// derived session id. Absent for per-event routes and older records.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_key: Option<String>,
     #[serde(default)]
     pub close_policy: RoutedSessionClosePolicy,
 }
