@@ -559,53 +559,23 @@ mod tests {
     }
 
     #[test]
-    fn skills_active_parse_accepts_json() {
+    fn skills_use_parse_accepts_skill_id() {
         let cli = Cli::try_parse_from([
             "lightspeed",
             "skills",
-            "active",
+            "use",
             "--api-url",
-            "http://127.0.0.1:18080/rpc",
+            "http://localhost:18080/rpc",
             "--session",
             "session_1",
             "--json",
-        ])
-        .expect("parse skills active");
-        assert!(matches!(cli.command, Command::Skills(_)));
-    }
-
-    #[test]
-    fn skills_activate_parse_accepts_scope() {
-        let cli = Cli::try_parse_from([
-            "lightspeed",
-            "skills",
-            "activate",
-            "--api-url",
-            "http://127.0.0.1:18080/rpc",
-            "--session",
-            "session_1",
-            "--scope",
-            "session",
             "skill:review",
         ])
-        .expect("parse skills activate");
+        .expect("parse skill use");
         assert!(matches!(cli.command, Command::Skills(_)));
-    }
-
-    #[test]
-    fn skills_deactivate_parse_accepts_skill_id() {
-        let cli = Cli::try_parse_from([
-            "lightspeed",
-            "skills",
-            "deactivate",
-            "--api-url",
-            "http://127.0.0.1:18080/rpc",
-            "--session",
-            "session_1",
-            "skill:review",
-        ])
-        .expect("parse skills deactivate");
-        assert!(matches!(cli.command, Command::Skills(_)));
+        for command in ["active", "activate", "deactivate"] {
+            assert!(Cli::try_parse_from(["lightspeed", "skills", command]).is_err());
+        }
     }
 
     #[test]

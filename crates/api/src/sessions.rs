@@ -1414,9 +1414,6 @@ pub enum SessionEventKindView {
     SkillCatalogSet {
         catalog_ref: Option<String>,
     },
-    SkillActivationsSet {
-        skill_ids: Vec<String>,
-    },
     ToolsReplaced {
         base_revision: u64,
         revision: u64,

@@ -1,9 +1,10 @@
 use std::sync::Arc;
+use tools::skills::SkillId;
 
 use engine::{
     ContextEntry, ContextEntryId, ContextEntryKind, ContextEntrySource, ContextMessageRole,
     ContextSnapshot, LlmGenerationRequest, LlmRequest, ModelSelection, ProviderApiKind, RunId,
-    SessionId, SkillId, TurnId,
+    SessionId, TurnId,
     storage::{BlobStore, InMemoryBlobStore},
 };
 use llm_runtime::{LlmGenerationAdapter, OpenAiCompletionsLlmAdapter};
@@ -110,7 +111,6 @@ async fn openai_completions_runtime_live_skill_catalog_exposes_relevant_skill_pa
                 skill_doc_path: VfsPath::parse("/skills/release-audit/SKILL.md")
                     .expect("skill doc path"),
             },
-            skill_doc_ref: None,
         }],
         Vec::new(),
     );
@@ -145,43 +145,4 @@ async fn openai_completions_runtime_live_skill_catalog_exposes_relevant_skill_pa
         output.contains("/skills/release-audit/skill.md"),
         "output: {output}"
     );
-}
-
-#[tokio::test(flavor = "current_thread")]
-#[ignore = "requires OPENAI_API_KEY (costs real money)"]
-async fn openai_completions_runtime_live_skill_activation_is_followed() {
-    let blobs = Arc::new(InMemoryBlobStore::new());
-    let skill_id = SkillId::new("skill:marker-protocol");
-    let activation = blobs
-        .insert_text(
-            "# Marker protocol\nWhen asked for the protocol marker, reply exactly SKILL_MARKER=COMPL-SKILL-8421 and add nothing else.",
-        )
-        .await;
-    let user = blobs
-        .insert_text("What is the protocol marker? The decoy is SKILL_MARKER=WRONG-0000.")
-        .await;
-
-    let output = answer(
-        blobs.clone(),
-        request(vec![
-            entry(
-                1,
-                ContextEntryKind::SkillActivation {
-                    catalog_id: "vfs".to_owned(),
-                    skill_id,
-                },
-                activation,
-            ),
-            entry(
-                2,
-                ContextEntryKind::Message {
-                    role: ContextMessageRole::User,
-                },
-                user,
-            ),
-        ]),
-    )
-    .await;
-
-    assert_eq!(output.trim(), "SKILL_MARKER=COMPL-SKILL-8421");
 }

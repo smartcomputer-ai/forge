@@ -1,6 +1,7 @@
 //! Skill discovery and catalog construction.
 
 pub mod catalog;
+mod id;
 pub mod model;
 pub mod parser;
 pub mod vfs;
@@ -11,6 +12,7 @@ pub use catalog::{
     prepare_skill_catalog_publication, prepare_skill_catalog_publication_with_warnings,
     skill_catalog_context_input,
 };
+pub use id::SkillId;
 pub use model::*;
 pub use parser::{SkillFrontmatter, SkillParseError, parse_skill_frontmatter};
 pub use vfs::{

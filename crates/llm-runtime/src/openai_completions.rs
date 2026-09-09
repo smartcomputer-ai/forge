@@ -695,13 +695,6 @@ async fn materialize_message(
             crate::catalog_prompts::external_catalog_text(blobs, entry, &entry.content.content_ref)
                 .await?,
         )),
-        ContextEntryKind::SkillActivation { skill_id, .. } => Ok(text_message(
-            dialect.instruction_role(),
-            crate::skill_prompts::skill_activation_text(
-                skill_id,
-                read_text(blobs, &entry.content.content_ref).await?,
-            ),
-        )),
         ContextEntryKind::ToolResult { call_id, .. } => Ok(oai_c::CompletionMessage {
             role: "tool".to_owned(),
             content: Some(oai_c::CompletionMessageContent::Text(

@@ -2349,13 +2349,6 @@ fn context_entry_kind_to_api(kind: &ContextEntryKind) -> ContextEntryKindView {
         ContextEntryKind::Catalog { title } => ContextEntryKindView::Catalog {
             title: title.clone(),
         },
-        ContextEntryKind::SkillActivation {
-            catalog_id,
-            skill_id,
-        } => ContextEntryKindView::SkillActivation {
-            catalog_id: catalog_id.clone(),
-            skill_id: skill_id.as_str().to_owned(),
-        },
         ContextEntryKind::ToolCall { call_id, name } => ContextEntryKindView::ToolCall {
             call_id: call_id.as_str().to_owned(),
             name: name.as_str().to_owned(),

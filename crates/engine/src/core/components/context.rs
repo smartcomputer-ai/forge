@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     BlobRef, CompactionPolicy, ContextEntryKey, ContextItemId, CoreAgentEvent,
     CoreAgentEventProposal, CoreAgentJoins, CoreAgentState, CoreAgentStatus, DomainError,
-    PlanningError, ProviderApiKind, RunId, RunSource, RunStatus, SkillId, SteeringId, ToolBatchId,
+    PlanningError, ProviderApiKind, RunId, RunSource, RunStatus, SteeringId, ToolBatchId,
     ToolCallId, ToolName, TurnId,
 };
 
@@ -22,9 +22,6 @@ pub const SUBAGENT_CATALOG_CONTEXT_KEY: &str = "subagents.catalog";
 /// between prefix rewrites (one invalidation per `CAP` changes, not per
 /// change).
 pub const SUPERSEDED_CATALOG_CAP: usize = 5;
-pub const SKILL_ACTIVATION_CONTEXT_KEY_PREFIX: &str = "skills.activation.";
-pub const SKILL_ACTIVATION_PROVIDER_KIND_RUN: &str = "lightspeed.skill.activation.run";
-pub const SKILL_ACTIVATION_PROVIDER_KIND_SESSION: &str = "lightspeed.skill.activation.session";
 pub const OPENAI_RESPONSES_COMPACTION_PROVIDER_KIND: &str = "openai.responses.compaction";
 pub const OPENAI_COMPLETIONS_COMPACTION_PROVIDER_KIND: &str = "openai.completions.compaction";
 pub const OPENAI_RESPONSES_WEB_SEARCH_CALL_PROVIDER_KIND: &str = "openai.responses.web_search_call";
@@ -243,10 +240,6 @@ pub enum ContextEntryKind {
     Catalog {
         title: String,
     },
-    SkillActivation {
-        catalog_id: String,
-        skill_id: SkillId,
-    },
     ToolCall {
         call_id: ToolCallId,
         name: ToolName,
@@ -408,13 +401,13 @@ pub(crate) fn compactable_context_entry_ids(state: &CoreAgentState) -> Vec<Conte
         .collect()
 }
 
-/// Configuration entries (instructions, current catalogs, skill activations)
+/// Configuration entries (instructions and current catalogs)
 /// survive compaction; conversation does not. A superseded catalog version
 /// is stale configuration kept only for prefix stability, so it is the
 /// first thing a prefix rewrite may drop.
 fn is_compactable_entry(state: &CoreAgentState, entry: &ContextEntry) -> bool {
     match &entry.kind {
-        ContextEntryKind::Instructions | ContextEntryKind::SkillActivation { .. } => false,
+        ContextEntryKind::Instructions => false,
         kind if is_supersedable_catalog_kind(kind) => {
             is_superseded_context_entry(state, entry.entry_id)
         }
@@ -712,29 +705,6 @@ fn validate_external_context_edit_entry(
             ContextEntryKind::VfsCatalog => Ok(()),
             _ => Err(DomainError::InvariantViolation(format!(
                 "VFS catalog context key {} cannot supply context entry kind {:?}",
-                key, entry.kind
-            ))),
-        };
-    }
-
-    if key
-        .as_str()
-        .starts_with(SKILL_ACTIVATION_CONTEXT_KEY_PREFIX)
-    {
-        return match &entry.kind {
-            ContextEntryKind::SkillActivation {
-                catalog_id,
-                skill_id,
-            } if &skill_activation_context_key(catalog_id, skill_id) == key => Ok(()),
-            ContextEntryKind::SkillActivation {
-                catalog_id,
-                skill_id,
-            } => Err(DomainError::InvariantViolation(format!(
-                "skill activation context key {} does not match catalog {} and skill {}",
-                key, catalog_id, skill_id
-            ))),
-            _ => Err(DomainError::InvariantViolation(format!(
-                "skill activation context key {} cannot supply context entry kind {:?}",
                 key, entry.kind
             ))),
         };
@@ -1094,32 +1064,6 @@ pub fn is_superseded_context_entry(state: &CoreAgentState, entry_id: ContextEntr
         .entries
         .iter()
         .any(|entry| entry.supersedes == Some(entry_id))
-}
-
-pub fn skill_activation_context_key(catalog_id: &str, skill_id: &SkillId) -> ContextEntryKey {
-    ContextEntryKey::new(format!(
-        "{SKILL_ACTIVATION_CONTEXT_KEY_PREFIX}{catalog_id}.{}",
-        skill_id.as_str()
-    ))
-}
-
-pub fn is_run_scoped_skill_activation_entry(entry: &ContextEntry) -> bool {
-    matches!(entry.kind, ContextEntryKind::SkillActivation { .. })
-        && entry.content.provider_kind.as_deref() == Some(SKILL_ACTIVATION_PROVIDER_KIND_RUN)
-}
-
-pub(crate) fn expire_run_scoped_context_entries(
-    state: &mut CoreAgentState,
-) -> Result<(), DomainError> {
-    let before = state.context.entries.len();
-    state
-        .context
-        .entries
-        .retain(|entry| !is_run_scoped_skill_activation_entry(entry));
-    if state.context.entries.len() != before {
-        bump_context_revision(state)?;
-    }
-    Ok(())
 }
 
 fn entries_applied_proposal(

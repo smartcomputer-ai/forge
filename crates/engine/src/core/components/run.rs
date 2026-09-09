@@ -967,7 +967,6 @@ fn finish_active_run(
         failure,
         notify_on_terminal: active_run.notify_on_terminal,
     });
-    crate::core::components::context::expire_run_scoped_context_entries(state)?;
     Ok(())
 }
 

@@ -1,8 +1,8 @@
-//! Provider-neutral prompt text for skill catalog and activation context
+//! Provider-neutral prompt text for skill catalog context
 //! entries. Adapters lower these entries into whatever message shape their
 //! provider expects, but the visible text is identical across providers.
 
-use engine::{BlobRef, SkillId, storage::BlobStore};
+use engine::{BlobRef, storage::BlobStore};
 use tools::skills::{SkillCatalogSnapshot, SkillLocation, SkillMetadata};
 
 use crate::error::{LlmAdapterError, LlmAdapterResult};
@@ -36,11 +36,12 @@ pub(crate) fn skill_catalog_text(catalog: &SkillCatalogSnapshot) -> String {
 
 fn skill_catalog_entry(skill: &SkillMetadata) -> String {
     let mut entry = format!(
-        "- {} ({})\n  description: {}\n  skill_doc_path: {}",
+        "- {} ({})\n  description: {}\n  skill_doc_path: {}\n  skill_dir_path: {}",
         skill.name,
         skill.skill_id,
         skill.description,
-        skill_doc_path(&skill.location)
+        skill_doc_path(&skill.location),
+        skill_dir_path(&skill.location)
     );
     if let Some(short_description) = &skill.short_description {
         entry.push_str(&format!("\n  short_description: {short_description}"));
@@ -56,6 +57,9 @@ fn skill_doc_path(location: &SkillLocation) -> &str {
     }
 }
 
-pub(crate) fn skill_activation_text(skill_id: &SkillId, text: String) -> String {
-    format!("Lightspeed loaded skill ({skill_id}):\n\n{text}")
+fn skill_dir_path(location: &SkillLocation) -> &str {
+    match location {
+        SkillLocation::LinkedSnapshot { skill_dir_path, .. }
+        | SkillLocation::LinkedWorkspace { skill_dir_path, .. } => skill_dir_path.as_str(),
+    }
 }

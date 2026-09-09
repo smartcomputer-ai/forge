@@ -853,7 +853,7 @@ mod tests {
     use tools::skills::{SkillCatalogSnapshot, SkillLocation};
     use tools::{
         fs::tools::ReadFileResult,
-        fs::{FileSystem, FsPath, FsToolContext, LinkedVfsFileSystem},
+        fs::{FsPath, FsToolContext, LinkedVfsFileSystem},
         runtime::InlineToolRuntime,
         toolset::{ToolsetConfig, register_toolset},
     };
@@ -1892,7 +1892,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn read_file_of_cataloged_skill_doc_does_not_record_activation() {
+    async fn read_file_of_cataloged_skill_doc_records_an_ordinary_tool_result() {
         let sessions = Arc::new(InMemorySessionStore::new());
         let blobs = Arc::new(InMemoryBlobStore::new());
         let blob_store: Arc<dyn BlobStore> = blobs.clone();
@@ -1986,23 +1986,10 @@ mod tests {
 
         assert_eq!(outcome.quiescence, RunnerQuiescence::Idle);
         assert_eq!(outcome.state.runs.completed[0].status, RunStatus::Completed);
-        assert!(outcome.emitted_entries.iter().all(|entry| {
-            !matches!(
-                &entry.event,
-                CoreAgentEvent::Context(engine::ContextEvent::EntriesApplied { entries, .. })
-                    if entries.iter().any(|entry| {
-                        matches!(entry.kind, ContextEntryKind::SkillActivation { .. })
-                    })
-            )
+        assert!(outcome.state.context.entries.iter().any(|entry| {
+            matches!(&entry.kind, ContextEntryKind::ToolResult { call_id, is_error: false }
+                if call_id.as_str() == "call-read-skill")
         }));
-        assert!(
-            outcome
-                .state
-                .context
-                .entries
-                .iter()
-                .all(|entry| { !matches!(entry.kind, ContextEntryKind::SkillActivation { .. }) })
-        );
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -2150,15 +2137,42 @@ mod tests {
             }],
         )
         .expect("current linked fs");
-        let current_skill = current_fs
-            .read_file_text(&FsPath::new("/skills/system/deploy-review/SKILL.md").unwrap())
-            .await
-            .expect("read current skill");
-        assert!(current_skill.contains("Updated body"));
+        let current_skill = tools::fs::tools::invoke_read_file(
+            &FsToolContext::new(Arc::new(current_fs), blob_store.clone()).with_cwd(FsPath::root()),
+            tools::fs::tools::ReadFileArgs {
+                path: FsPath::new("/skills/system/deploy-review/SKILL.md").unwrap(),
+                offset: None,
+                limit: None,
+            },
+        )
+        .await
+        .expect("ordinary read of current skill");
+        assert!(current_skill.text.contains("Updated body"));
 
         let pinned_skill = read_file_result(blobs.as_ref(), &output_ref).await;
         assert!(pinned_skill.text.contains("Original body"));
         assert!(!pinned_skill.text.contains("Updated body"));
+        let replayed = runner
+            .load_state(&session_id)
+            .await
+            .expect("replay after workspace edit");
+        assert_eq!(replayed, outcome.state);
+        let recorded = replayed
+            .context
+            .entries
+            .iter()
+            .find(|entry| {
+                matches!(&entry.kind, ContextEntryKind::ToolResult { call_id, is_error: false }
+                    if call_id.as_str() == "call-read-skill")
+            })
+            .expect("recorded ordinary read");
+        // The model-visible rendering is stored separately from the structured output.
+        let recorded_text = blobs
+            .read_text(&recorded.content.content_ref)
+            .await
+            .expect("recorded model-visible text");
+        assert!(recorded_text.contains("Original body"));
+        assert!(!recorded_text.contains("Updated body"));
     }
 
     fn tool_output_ref(outcome: &DriveOutcome, call_id: &str) -> BlobRef {

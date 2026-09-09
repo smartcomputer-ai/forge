@@ -352,12 +352,8 @@ impl ChatSessionDriver {
                 }])
             }
             ChatCommand::ListSkills => self.list_skills().await,
-            ChatCommand::ListActiveSkills => self.list_active_skills().await,
-            ChatCommand::PickSkill { scope } => self.pick_skill(scope).await,
-            ChatCommand::ActivateSkill { skill_id, scope } => {
-                self.activate_skill(skill_id, scope).await
-            }
-            ChatCommand::DeactivateSkill { skill_id } => self.deactivate_skill(skill_id).await,
+            ChatCommand::PickSkill => self.pick_skill().await,
+            ChatCommand::UseSkill { skill_id } => self.use_skill(skill_id).await,
             ChatCommand::NewSession => self.new_session().await,
             ChatCommand::SteerRun { text } => self.steer_active_run(text).await,
             ChatCommand::InterruptRun { .. } => self.cancel_active_run().await,
@@ -638,22 +634,7 @@ impl ChatSessionDriver {
         ])
     }
 
-    async fn list_active_skills(&mut self) -> Result<Vec<ChatEvent>> {
-        let response = self
-            .api
-            .active_skills(api::SkillActiveParams {
-                session_id: self.session_id.clone(),
-            })
-            .await
-            .map_err(api_error)?
-            .result;
-        Ok(vec![self.notice_event(
-            "active-skills",
-            format_active_skills(&response),
-        )])
-    }
-
-    async fn pick_skill(&mut self, scope: api::SkillActivationScope) -> Result<Vec<ChatEvent>> {
+    async fn pick_skill(&mut self) -> Result<Vec<ChatEvent>> {
         let response = self
             .api
             .list_skills(api::SkillListParams {
@@ -666,59 +647,24 @@ impl ChatSessionDriver {
             session_id: self.session_id.clone(),
             catalog_ref: response.catalog_ref,
             skills: response.skills,
-            scope,
         }])
     }
 
-    async fn activate_skill(
-        &mut self,
-        skill_id: String,
-        scope: api::SkillActivationScope,
-    ) -> Result<Vec<ChatEvent>> {
-        if !self.is_quiescent() {
-            return Ok(vec![ChatEvent::Error(ChatErrorView {
-                message: "skill activation is only available while no run is active".into(),
-                action: Some("wait for the current run to finish first".into()),
-            })]);
-        }
-
-        let response = self
+    async fn use_skill(&mut self, skill_id: String) -> Result<Vec<ChatEvent>> {
+        let catalog = self
             .api
-            .activate_skill(api::SkillActivateParams {
+            .list_skills(api::SkillListParams {
                 session_id: self.session_id.clone(),
-                skill_id,
-                scope,
             })
             .await
             .map_err(api_error)?
             .result;
-        Ok(vec![self.notice_event(
-            "skill-activated",
-            format_skill_activation_response(&response),
-        )])
-    }
-
-    async fn deactivate_skill(&mut self, skill_id: String) -> Result<Vec<ChatEvent>> {
-        if !self.is_quiescent() {
-            return Ok(vec![ChatEvent::Error(ChatErrorView {
-                message: "skill deactivation is only available while no run is active".into(),
-                action: Some("wait for the current run to finish first".into()),
-            })]);
+        let text = crate::skills_cli::skill_selection_input(&catalog, &skill_id)?;
+        if self.active_run_id().is_some() {
+            self.steer_active_run(text).await
+        } else {
+            self.submit_user_message(text).await
         }
-
-        let response = self
-            .api
-            .deactivate_skill(api::SkillDeactivateParams {
-                session_id: self.session_id.clone(),
-                skill_id,
-            })
-            .await
-            .map_err(api_error)?
-            .result;
-        Ok(vec![self.notice_event(
-            "skill-deactivated",
-            format_skill_deactivation_response(&response),
-        )])
     }
 
     async fn collect_finished_run(&mut self) -> Result<Vec<ChatEvent>> {
@@ -999,7 +945,6 @@ impl ChatSessionDriver {
             | SessionEventKindView::ContextCompactionRequested { .. }
             | SessionEventKindView::ContextCompactionFinished { .. }
             | SessionEventKindView::SkillCatalogSet { .. }
-            | SessionEventKindView::SkillActivationsSet { .. }
             | SessionEventKindView::TurnCompleted { .. }
             | SessionEventKindView::TurnCancelled { .. }
             | SessionEventKindView::ToolsReplaced { .. }
@@ -1771,12 +1716,10 @@ fn format_skill_list(response: &api::SkillListResponse) -> String {
 
     lines.push(format!("skills {}", response.skills.len()));
     for skill in &response.skills {
-        let active = if skill.active { "active" } else { "inactive" };
         let enabled = if skill.enabled { "enabled" } else { "disabled" };
-        lines.push(format!(
-            "- {} [{} {}] {}",
-            skill.skill_id, active, enabled, skill.name
-        ));
+        lines.push(format!("- {} [{}] {}", skill.skill_id, enabled, skill.name));
+        let api::SkillLocationView::Vfs { skill_doc_path, .. } = &skill.location;
+        lines.push(format!("  VFS {skill_doc_path}"));
         if !skill.description.trim().is_empty() {
             lines.push(format!("  {}", preview(&skill.description)));
         }
@@ -1787,74 +1730,8 @@ fn format_skill_list(response: &api::SkillListResponse) -> String {
     lines.join("\n")
 }
 
-fn format_active_skills(response: &api::SkillActiveResponse) -> String {
-    let mut lines = vec![format_catalog_ref(response.catalog_ref.as_deref())];
-    if response.activations.is_empty() {
-        lines.push("active 0".into());
-        return lines.join("\n");
-    }
-
-    lines.push(format!("active {}", response.activations.len()));
-    for activation in &response.activations {
-        push_skill_activation_lines(&mut lines, activation);
-    }
-    lines.join("\n")
-}
-
-fn format_skill_activation_response(response: &api::SkillActivateResponse) -> String {
-    let mut lines = vec![format!(
-        "activated {} ({})",
-        response.activation.skill_id,
-        skill_scope_label(response.activation.scope)
-    )];
-    push_skill_activation_lines(&mut lines, &response.activation);
-    lines.push(format!("active {}", response.active.len()));
-    lines.join("\n")
-}
-
-fn format_skill_deactivation_response(response: &api::SkillDeactivateResponse) -> String {
-    [
-        format!("deactivated {}", response.skill_id),
-        format!("active {}", response.active.len()),
-    ]
-    .join("\n")
-}
-
-fn push_skill_activation_lines(lines: &mut Vec<String>, activation: &api::SkillActivationView) {
-    let name = activation.name.as_deref().unwrap_or("-");
-    lines.push(format!(
-        "- {} [{} {}] {}",
-        activation.skill_id,
-        skill_scope_label(activation.scope),
-        skill_source_label(&activation.source),
-        name
-    ));
-    if let Some(description) = &activation.description
-        && !description.trim().is_empty()
-    {
-        lines.push(format!("  {}", preview(description)));
-    }
-    lines.push(format!("  catalogRef {}", activation.catalog_ref));
-}
-
 fn format_catalog_ref(catalog_ref: Option<&str>) -> String {
     format!("catalogRef {}", catalog_ref.unwrap_or("-"))
-}
-
-fn skill_scope_label(scope: api::SkillActivationScope) -> &'static str {
-    match scope {
-        api::SkillActivationScope::Run => "run",
-        api::SkillActivationScope::Session => "session",
-    }
-}
-
-fn skill_source_label(source: &api::SkillActivationSource) -> String {
-    match source {
-        api::SkillActivationSource::ToolResult { call_id } => format!("toolResult:{call_id}"),
-        api::SkillActivationSource::DirectContext { context_ref } => {
-            format!("directContext:{context_ref}")
-        }
-    }
 }
 
 fn preview(value: &str) -> String {
@@ -2036,44 +1913,19 @@ mod tests {
                 description: "Review repository changes.".into(),
                 short_description: Some("review diffs".into()),
                 enabled: true,
-                active: true,
+                location: api::SkillLocationView::Vfs {
+                    skill_dir_path: "/skills/review".into(),
+                    skill_doc_path: "/skills/review/SKILL.md".into(),
+                },
             }],
         };
 
         let rendered = format_skill_list(&response);
 
         assert!(rendered.contains("catalogRef sha256:catalog"));
-        assert!(rendered.contains("- lightspeed:review [active enabled] Review"));
+        assert!(rendered.contains("- lightspeed:review [enabled] Review"));
         assert!(rendered.contains("Review repository changes."));
         assert!(rendered.contains("short review diffs"));
-    }
-
-    #[test]
-    fn formats_active_skills_for_transcript_notice() {
-        let response = api::SkillActiveResponse {
-            catalog_ref: Some("sha256:catalog".into()),
-            activations: vec![api::SkillActivationView {
-                catalog_id: "vfs".into(),
-                skill_id: "lightspeed:review".into(),
-                name: Some("Review".into()),
-                description: Some("Review repository changes.".into()),
-                short_description: None,
-                catalog_ref: "sha256:catalog".into(),
-                scope: api::SkillActivationScope::Session,
-                source: api::SkillActivationSource::DirectContext {
-                    context_ref: "sha256:skill-doc".into(),
-                },
-            }],
-        };
-
-        let rendered = format_active_skills(&response);
-
-        assert!(rendered.contains("active 1"));
-        assert!(
-            rendered
-                .contains("- lightspeed:review [session directContext:sha256:skill-doc] Review")
-        );
-        assert!(rendered.contains("catalogRef sha256:catalog"));
     }
 
     #[test]

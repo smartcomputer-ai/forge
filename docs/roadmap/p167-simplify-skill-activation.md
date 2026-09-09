@@ -1,6 +1,6 @@
 # P167 — Simplify Skill Activation
 
-Status: proposed, 2026-09-08. Design only; not implemented.
+Status: implemented, 2026-09-09.
 
 The [VFS expansion freeze](p166-vfs-environment-transfer.md#vfs-expansion-freeze)
 does not block removing the activation lifecycle. The existing workspace model
@@ -17,13 +17,13 @@ Trust ordinary compaction to summarize ongoing work, including relevant skills.
 Do not replace activation with protected file reads, a remembered-skill set,
 automatic re-injection, or a new compaction policy.
 
-## Existing behavior
+## Previous behavior
 
 The VFS skill catalog already supplies names, descriptions, and paths and asks
 the model to read relevant skill files. Ordinary skill reads do not need an
 activation operation.
 
-The separate explicit path currently includes:
+Before this change, the separate explicit path included:
 
 - `ContextEntryKind::SkillActivation` and reserved activation context keys.
 - Run/session activation scopes and run-end expiry.
@@ -142,11 +142,11 @@ Neither feature is needed to remove VFS skill activation.
 
 ## Compatibility and rollout
 
-This removes public methods and persisted context variants. Update generated
-contracts and all consumers together. For retained sessions, decide on an
-explicit migration of activation entries to ordinary content or retire that
-state before rollout. Fresh development state is another deployment option;
-the implementation must not silently reset databases or workflows.
+This greenfield change removes public methods and persisted context variants
+without backward compatibility. Update generated contracts and all consumers
+together. Existing histories containing activation entries are not supported
+by the new engine. Deployment must use fresh or separately retired development
+state; the implementation does not reset databases or workflows.
 
 Keep archived design documents historical. Update the current workspace/skills
 guide, API reference, CLI help, demos, and README when implementation ships.
@@ -170,7 +170,21 @@ not a reason to retain skill activation machinery here.
 
 Progress:
 
-- [ ] Engine and provider activation handling removed.
-- [ ] API/client activation state removed; ordinary selection retained.
-- [ ] Catalog and ordinary-read behavior verified.
-- [ ] Generated contracts and current documentation updated.
+- [x] Engine and provider activation handling removed.
+- [x] API/client activation state removed; ordinary selection retained.
+- [x] Catalog and ordinary-read behavior verified.
+- [x] Generated contracts and current documentation updated.
+
+Implemented client selection uses `skills use --session <session-id> <skill-id>`
+and the TUI `/skill` picker or `/skill <skill-id>`. Both submit ordinary input
+or steering with the VFS document path and base directory from
+`session/skills/list`. There is no replacement activation API.
+
+Verification completed across engine, tools, provider adapters, API and
+projection, gateway, workflow, CLI, and the test runner: 1,282 Rust tests passed
+after the targeted expectation corrections; 121 credentialed/live tests stayed
+ignored. All 362 TypeScript consumer tests, typechecks, web/demo builds, and docs
+checks passed. API and workflow exporters ran; the workflow export was unchanged.
+TypeScript and Configurator outputs were regenerated and a second generation
+was byte-identical. The npm generated-file gate reports the intentional
+uncommitted diff against HEAD; its remaining checks passed separately.

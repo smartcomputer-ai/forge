@@ -828,15 +828,6 @@ async fn materialize_block(
                     .await?,
             ),
         )),
-        ContextEntryKind::SkillActivation { skill_id, .. } => {
-            let text = read_text(blobs, &entry.content.content_ref).await?;
-            Ok((
-                am::MessageRole::User,
-                am::ContentBlockParam::text(crate::skill_prompts::skill_activation_text(
-                    skill_id, text,
-                )),
-            ))
-        }
         ContextEntryKind::ToolCall { .. }
         | ContextEntryKind::ReasoningState
         | ContextEntryKind::ProviderOpaque => {
@@ -3874,21 +3865,20 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn skill_context_lowers_as_user_messages() {
+    async fn inserted_skill_text_lowers_as_an_ordinary_user_message() {
         let blobs = InMemoryBlobStore::new();
-        let activation_ref = text_blob(&blobs, "# Deploy Review\n\nCheck rollout scope.").await;
+        let skill_text_ref = text_blob(&blobs, "# Deploy Review\n\nCheck rollout scope.").await;
         let entry = ContextEntry {
             key: None,
             entry_id: ContextEntryId::new(1),
-            kind: ContextEntryKind::SkillActivation {
-                catalog_id: tools::skills::VFS_SKILL_CATALOG_ID.to_owned(),
-                skill_id: engine::SkillId::new("skill:deploy-review"),
+            kind: ContextEntryKind::Message {
+                role: ContextMessageRole::User,
             },
             source: ContextEntrySource::Runtime {
-                label: "skills.activation".to_string(),
+                label: "inserted-skill".to_string(),
             },
             content: engine::ContentRef {
-                content_ref: activation_ref,
+                content_ref: skill_text_ref,
                 media_type: None,
                 provider_kind: None,
             },
@@ -3910,7 +3900,7 @@ mod tests {
                 "role": "user",
                 "content": [{
                     "type": "text",
-                    "text": "Lightspeed loaded skill (skill:deploy-review):\n\n# Deploy Review\n\nCheck rollout scope."
+                    "text": "# Deploy Review\n\nCheck rollout scope."
                 }]
             }])
         );

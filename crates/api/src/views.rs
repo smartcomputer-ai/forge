@@ -407,10 +407,6 @@ pub enum ContextEntryKindView {
     Catalog {
         title: String,
     },
-    SkillActivation {
-        catalog_id: String,
-        skill_id: SkillId,
-    },
     ToolCall {
         call_id: String,
         name: String,

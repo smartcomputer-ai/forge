@@ -361,13 +361,7 @@ api_methods! {
     METHOD_SESSION_RUNS_STEER => steer_run(RunSteerParams) -> RunSteerResponse =>
         ["Steer the active run", "Injects input into the named active run; the model sees it at the next turn boundary without interrupting the in-flight turn. Accepted while the run is running or parked on an await; rejected for queued, cancelling, or finished runs."],
     METHOD_SESSION_SKILLS_LIST => list_skills(SkillListParams) -> SkillListResponse =>
-        ["List available session skills", "Refreshes the session's configured VFS skill catalog and reports which discovered skills are enabled and active. An absent catalog yields an empty result."],
-    METHOD_SESSION_SKILLS_ACTIVE => active_skills(SkillActiveParams) -> SkillActiveResponse =>
-        ["List active session skills", "Returns skill instructions currently injected into context, including activation scope and source."],
-    METHOD_SESSION_SKILLS_ACTIVATE => activate_skill(SkillActivateParams) -> SkillActivateResponse =>
-        ["Activate a session skill", "Loads an enabled skill from the current catalog and injects its instructions into an open idle session. Run-scoped activation is the default."],
-    METHOD_SESSION_SKILLS_DEACTIVATE => deactivate_skill(SkillDeactivateParams) -> SkillDeactivateResponse =>
-        ["Deactivate a session skill", "Removes an active skill's injected context from an open idle session; the skill must currently be active."],
+        ["List available session skills", "Lists discovered skills with their VFS document and directory paths. Refreshes the catalog only while the session is open with no active or queued run. An absent catalog yields an empty result."],
     METHOD_SESSION_PROFILES_APPLY => apply_profile(ProfileApplyParams) -> ProfileApplyResponse =>
         ["Apply a profile to a session", "Applies a named or inline profile's config, instructions, and environment setup to an existing session; mutating profile sections require it to be open and idle. Pass current revisions to guard concurrent changes."],
     METHOD_SESSION_ENVIRONMENTS_ACTIVATE => activate_session_environment(SessionEnvironmentActivateParams) -> SessionEnvironmentActivateResponse =>

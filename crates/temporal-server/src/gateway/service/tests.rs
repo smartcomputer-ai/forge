@@ -447,7 +447,7 @@ fn run_terminal_notification_derives_destination_from_controller() {
 }
 
 #[test]
-fn skill_list_response_marks_active_catalog_entries() {
+fn skill_list_response_exposes_readable_locations() {
     let catalog_ref = BlobRef::from_bytes(b"catalog");
     let catalog = test_skill_catalog(
         &catalog_ref,
@@ -456,118 +456,21 @@ fn skill_list_response_marks_active_catalog_entries() {
             test_skill_metadata("skill:deploy", "deploy", false),
         ],
     );
-    let activation = direct_activation(
-        "skill:review",
-        &catalog_ref,
-        &BlobRef::from_bytes(b"review-body"),
-        ApiSkillActivationScope::Run,
-    );
-
-    let response = skill_list_response(Some(&catalog_ref), Some(&catalog), &[&activation]);
+    let response = skill_list_response(Some(&catalog_ref), Some(&catalog));
 
     assert_eq!(response.catalog_ref.as_deref(), Some(catalog_ref.as_str()));
     assert_eq!(response.skills.len(), 2);
     assert_eq!(response.skills[0].skill_id, "skill:review");
     assert!(response.skills[0].enabled);
-    assert!(response.skills[0].active);
-    assert_eq!(response.skills[1].skill_id, "skill:deploy");
-    assert!(!response.skills[1].enabled);
-    assert!(!response.skills[1].active);
-}
-
-#[test]
-fn skill_active_response_exposes_activation_sources_and_metadata() {
-    let catalog_ref = BlobRef::from_bytes(b"catalog");
-    let context_ref = BlobRef::from_bytes(b"direct-body");
-    let catalog = test_skill_catalog(
-        &catalog_ref,
-        vec![
-            test_skill_metadata("skill:review", "review", true),
-            test_skill_metadata("skill:deploy", "deploy", true),
-        ],
-    );
-    let direct = direct_activation(
-        "skill:review",
-        &catalog_ref,
-        &context_ref,
-        ApiSkillActivationScope::Session,
-    );
-    let run_scoped = direct_activation(
-        "skill:deploy",
-        &catalog_ref,
-        &BlobRef::from_bytes(b"deploy-body"),
-        ApiSkillActivationScope::Run,
-    );
-
-    let response =
-        skill_active_response(Some(&catalog_ref), Some(&catalog), &[&direct, &run_scoped]);
-
-    assert_eq!(response.catalog_ref.as_deref(), Some(catalog_ref.as_str()));
-    assert_eq!(response.activations.len(), 2);
-    assert_eq!(response.activations[0].name.as_deref(), Some("review"));
     assert_eq!(
-        response.activations[0].source,
-        ApiSkillActivationSource::DirectContext {
-            context_ref: context_ref.as_str().to_owned()
+        response.skills[0].location,
+        SkillLocationView::Vfs {
+            skill_dir_path: "/skills/system/review".into(),
+            skill_doc_path: "/skills/system/review/SKILL.md".into(),
         }
     );
-    assert_eq!(
-        response.activations[0].scope,
-        ApiSkillActivationScope::Session
-    );
-    assert_eq!(response.activations[1].name.as_deref(), Some("deploy"));
-    assert_eq!(response.activations[1].scope, ApiSkillActivationScope::Run);
-}
-
-#[test]
-fn active_skill_ids_after_upsert_replaces_same_skill_only() {
-    let catalog_ref = BlobRef::from_bytes(b"catalog");
-    let other = direct_activation(
-        "skill:deploy",
-        &catalog_ref,
-        &BlobRef::from_bytes(b"deploy-body"),
-        ApiSkillActivationScope::Run,
-    );
-    let mut state = engine::CoreAgentState::new();
-    state.context.entries = vec![
-        direct_activation(
-            "skill:review",
-            &catalog_ref,
-            &BlobRef::from_bytes(b"old-body"),
-            ApiSkillActivationScope::Run,
-        ),
-        other,
-    ];
-
-    let ids = active_skill_ids_after_upsert(&state, SkillId::new("skill:review"));
-
-    assert_eq!(
-        ids,
-        vec![SkillId::new("skill:deploy"), SkillId::new("skill:review")]
-    );
-}
-
-#[test]
-fn active_skill_ids_after_remove_drops_selected_skill() {
-    let catalog_ref = BlobRef::from_bytes(b"catalog");
-    let review = direct_activation(
-        "skill:review",
-        &catalog_ref,
-        &BlobRef::from_bytes(b"review-body"),
-        ApiSkillActivationScope::Run,
-    );
-    let deploy = direct_activation(
-        "skill:deploy",
-        &catalog_ref,
-        &BlobRef::from_bytes(b"deploy-body"),
-        ApiSkillActivationScope::Session,
-    );
-    let mut state = engine::CoreAgentState::new();
-    state.context.entries = vec![review, deploy];
-
-    let remaining = active_skill_ids_after_remove(&state, &SkillId::new("skill:review"));
-
-    assert_eq!(remaining, vec![SkillId::new("skill:deploy")]);
+    assert_eq!(response.skills[1].skill_id, "skill:deploy");
+    assert!(!response.skills[1].enabled);
 }
 
 #[test]
@@ -2315,7 +2218,7 @@ fn test_skill_metadata_with_snapshot(
     snapshot_ref: BlobRef,
 ) -> SkillMetadata {
     SkillMetadata {
-        skill_id: SkillId::new(skill_id),
+        skill_id: tools::skills::SkillId::new(skill_id),
         name: name.to_owned(),
         description: format!("Use when testing {name}."),
         short_description: Some(format!("{name} skill")),
@@ -2334,39 +2237,6 @@ fn test_skill_metadata_with_snapshot(
             skill_dir_path: VfsPath::parse(format!("/skills/system/{name}")).unwrap(),
             skill_doc_path: VfsPath::parse(format!("/skills/system/{name}/SKILL.md")).unwrap(),
         },
-        skill_doc_ref: None,
-    }
-}
-
-fn direct_activation(
-    skill_id: &str,
-    catalog_ref: &BlobRef,
-    context_ref: &BlobRef,
-    scope: ApiSkillActivationScope,
-) -> ContextEntry {
-    let skill_id = SkillId::new(skill_id);
-    let input = skill_activation_context_input(
-        tools::skills::VFS_SKILL_CATALOG_ID.to_owned(),
-        skill_id.clone(),
-        catalog_ref.clone(),
-        context_ref.clone(),
-        scope,
-        None,
-    );
-    ContextEntry {
-        entry_id: engine::ContextEntryId::new(1),
-        key: Some(skill_activation_context_key(
-            tools::skills::VFS_SKILL_CATALOG_ID,
-            &skill_id,
-        )),
-        kind: input.kind,
-        source: engine::ContextEntrySource::ContextEdit,
-        content: input.content,
-        preview: input.preview,
-        origin: input.origin,
-        provenance_ref: input.provenance_ref,
-        token_estimate: input.token_estimate,
-        supersedes: None,
     }
 }
 

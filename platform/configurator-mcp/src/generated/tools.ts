@@ -3299,7 +3299,7 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
     "name": "lightspeed_session_skills_list",
     "method": "session/skills/list",
     "summary": "List available session skills",
-    "description": "Refreshes the session's configured VFS skill catalog and reports which discovered skills are enabled and active. An absent catalog yields an empty result.",
+    "description": "Lists discovered skills with their VFS document and directory paths. Refreshes the catalog only while the session is open with no active or queued run. An absent catalog yields an empty result.",
     "paramsType": "SkillListParams",
     "resultType": "AgentApiOutcome<SkillListResponse>",
     "inputSchema": {
@@ -3311,91 +3311,6 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
       },
       "required": [
         "sessionId"
-      ],
-      "type": "object"
-    }
-  },
-  {
-    "name": "lightspeed_session_skills_active",
-    "method": "session/skills/active",
-    "summary": "List active session skills",
-    "description": "Returns skill instructions currently injected into context, including activation scope and source.",
-    "paramsType": "SkillActiveParams",
-    "resultType": "AgentApiOutcome<SkillActiveResponse>",
-    "inputSchema": {
-      "$schema": "http://json-schema.org/draft-07/schema#",
-      "properties": {
-        "sessionId": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "sessionId"
-      ],
-      "type": "object"
-    }
-  },
-  {
-    "name": "lightspeed_session_skills_activate",
-    "method": "session/skills/activate",
-    "summary": "Activate a session skill",
-    "description": "Loads an enabled skill from the current catalog and injects its instructions into an open idle session. Run-scoped activation is the default.",
-    "paramsType": "SkillActivateParams",
-    "resultType": "AgentApiOutcome<SkillActivateResponse>",
-    "inputSchema": {
-      "$schema": "http://json-schema.org/draft-07/schema#",
-      "properties": {
-        "scope": {
-          "allOf": [
-            {
-              "$ref": "#/definitions/SkillActivationScope"
-            }
-          ],
-          "default": "run"
-        },
-        "sessionId": {
-          "type": "string"
-        },
-        "skillId": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "sessionId",
-        "skillId"
-      ],
-      "type": "object",
-      "definitions": {
-        "SkillActivationScope": {
-          "enum": [
-            "run",
-            "session"
-          ],
-          "type": "string"
-        }
-      }
-    }
-  },
-  {
-    "name": "lightspeed_session_skills_deactivate",
-    "method": "session/skills/deactivate",
-    "summary": "Deactivate a session skill",
-    "description": "Removes an active skill's injected context from an open idle session; the skill must currently be active.",
-    "paramsType": "SkillDeactivateParams",
-    "resultType": "AgentApiOutcome<SkillDeactivateResponse>",
-    "inputSchema": {
-      "$schema": "http://json-schema.org/draft-07/schema#",
-      "properties": {
-        "sessionId": {
-          "type": "string"
-        },
-        "skillId": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "sessionId",
-        "skillId"
       ],
       "type": "object"
     }

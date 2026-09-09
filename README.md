@@ -102,7 +102,8 @@ Lightspeed covers the table stakes of a modern agent harness. Everything below w
 - [x] **Web access**: provider-hosted search/fetch for Anthropic Messages,
   hosted search for OpenAI Responses, and guarded local fetch/extraction on
   non-Anthropic routes
-- [x] **Skills**, automatically discovered and loaded from the virtual filesystem
+- [x] **Skills**: a discovered VFS catalog with ordinary file reads; CLI and
+  chat selection ask the agent to read and use the selected skill
 - [x] **Hosted and native MCP**: connect local or remote servers with API keys
   or OAuth; Lightspeed handles tool discovery and approvals
 - [x] **Sub-agents**: delegate work to supervised child agents with configurable
@@ -199,7 +200,7 @@ payload, preserving native provider data for replay. API message and reasoning
 views include full visible text; detailed run reads also include the terminal
 output independently of active context. Tool payloads retain bounded previews
 and can be expanded through raw blob reads. Optional provenance links
-an entry to its source audio, prompt assembly report, or skill catalog.
+an entry to its source audio or prompt assembly report.
 
 The [architecture walkthrough](docs/documentation/how-it-works/architecture.md)
 introduces the system. Continue with the

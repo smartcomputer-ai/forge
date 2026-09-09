@@ -36,7 +36,6 @@ use api::{
     METHOD_SESSION_ENVIRONMENTS_DEACTIVATE, METHOD_SESSION_EVENTS_READ, METHOD_SESSION_LIST,
     METHOD_SESSION_PROFILES_APPLY, METHOD_SESSION_READ, METHOD_SESSION_RUNS_APPROVALS_DECIDE,
     METHOD_SESSION_RUNS_CANCEL, METHOD_SESSION_RUNS_START, METHOD_SESSION_RUNS_STEER,
-    METHOD_SESSION_SKILLS_ACTIVATE, METHOD_SESSION_SKILLS_ACTIVE, METHOD_SESSION_SKILLS_DEACTIVATE,
     METHOD_SESSION_SKILLS_LIST, METHOD_SESSION_START, METHOD_VFS_SNAPSHOTS_COMMIT,
     METHOD_VFS_SNAPSHOTS_READ, METHOD_VFS_WORKSPACES_CREATE, METHOD_VFS_WORKSPACES_DELETE,
     METHOD_VFS_WORKSPACES_LIST, METHOD_VFS_WORKSPACES_READ, METHOD_VFS_WORKSPACES_UPDATE,
@@ -51,13 +50,11 @@ use api::{
     SessionEnvironmentDeactivateParams, SessionEnvironmentDeactivateResponse,
     SessionEventsReadParams, SessionEventsReadResponse, SessionListParams, SessionListResponse,
     SessionReadParams, SessionReadResponse, SessionStartParams, SessionStartResponse,
-    SkillActivateParams, SkillActivateResponse, SkillActiveParams, SkillActiveResponse,
-    SkillDeactivateParams, SkillDeactivateResponse, SkillListParams, SkillListResponse,
-    VfsSnapshotCommitParams, VfsSnapshotCommitResponse, VfsSnapshotReadParams,
-    VfsSnapshotReadResponse, VfsWorkspaceCreateParams, VfsWorkspaceCreateResponse,
-    VfsWorkspaceDeleteParams, VfsWorkspaceDeleteResponse, VfsWorkspaceListParams,
-    VfsWorkspaceListResponse, VfsWorkspaceReadParams, VfsWorkspaceReadResponse,
-    VfsWorkspaceUpdateParams, VfsWorkspaceUpdateResponse,
+    SkillListParams, SkillListResponse, VfsSnapshotCommitParams, VfsSnapshotCommitResponse,
+    VfsSnapshotReadParams, VfsSnapshotReadResponse, VfsWorkspaceCreateParams,
+    VfsWorkspaceCreateResponse, VfsWorkspaceDeleteParams, VfsWorkspaceDeleteResponse,
+    VfsWorkspaceListParams, VfsWorkspaceListResponse, VfsWorkspaceReadParams,
+    VfsWorkspaceReadResponse, VfsWorkspaceUpdateParams, VfsWorkspaceUpdateResponse,
 };
 use serde::{Serialize, de::DeserializeOwned};
 
@@ -267,27 +264,6 @@ impl HttpAgentApi {
         params: SkillListParams,
     ) -> Result<AgentApiOutcome<SkillListResponse>, AgentApiError> {
         self.request(METHOD_SESSION_SKILLS_LIST, params).await
-    }
-
-    pub(crate) async fn active_skills(
-        &self,
-        params: SkillActiveParams,
-    ) -> Result<AgentApiOutcome<SkillActiveResponse>, AgentApiError> {
-        self.request(METHOD_SESSION_SKILLS_ACTIVE, params).await
-    }
-
-    pub(crate) async fn activate_skill(
-        &self,
-        params: SkillActivateParams,
-    ) -> Result<AgentApiOutcome<SkillActivateResponse>, AgentApiError> {
-        self.request(METHOD_SESSION_SKILLS_ACTIVATE, params).await
-    }
-
-    pub(crate) async fn deactivate_skill(
-        &self,
-        params: SkillDeactivateParams,
-    ) -> Result<AgentApiOutcome<SkillDeactivateResponse>, AgentApiError> {
-        self.request(METHOD_SESSION_SKILLS_DEACTIVATE, params).await
     }
 
     pub(crate) async fn put_blobs(

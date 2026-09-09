@@ -155,11 +155,6 @@ export type ContextEntryKindView =
       type: "catalog";
     }
   | {
-      catalogId: string;
-      skillId: string;
-      type: "skillActivation";
-    }
-  | {
       callId: string;
       name: string;
       type: "toolCall";
@@ -674,10 +669,6 @@ export type SessionEventKindView =
   | {
       catalogRef?: string | null;
       type: "skillCatalogSet";
-    }
-  | {
-      skillIds: string[];
-      type: "skillActivationsSet";
     }
   | {
       baseRevision: number;
@@ -1566,23 +1557,16 @@ export type ApprovalDecisionFailureKind =
  */
 export type ApprovalDecisionStatus = "decided" | "failed";
 /**
+ * The filesystem domain and paths needed for ordinary skill use.
+ *
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "SkillActivationScope".
+ * via the `definition` "SkillLocationView".
  */
-export type SkillActivationScope = "run" | "session";
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "SkillActivationSource".
- */
-export type SkillActivationSource =
-  | {
-      callId: string;
-      type: "toolResult";
-    }
-  | {
-      contextRef: string;
-      type: "directContext";
-    };
+export type SkillLocationView = {
+  skillDirPath: string;
+  skillDocPath: string;
+  type: "vfs";
+};
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "AuthProviderConfigInput".
@@ -5853,68 +5837,6 @@ export interface SessionStartResponse {
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "AgentApiOutcomeOfSkillActivateResponse".
- */
-export interface AgentApiOutcomeOfSkillActivateResponse {
-  notifications?: AgentNotification[];
-  result: SkillActivateResponse;
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "SkillActivateResponse".
- */
-export interface SkillActivateResponse {
-  activation: SkillActivationView;
-  active?: SkillActivationView[];
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "SkillActivationView".
- */
-export interface SkillActivationView {
-  catalogId: string;
-  catalogRef: string;
-  description?: string | null;
-  name?: string | null;
-  scope: SkillActivationScope;
-  shortDescription?: string | null;
-  skillId: string;
-  source: SkillActivationSource;
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "AgentApiOutcomeOfSkillActiveResponse".
- */
-export interface AgentApiOutcomeOfSkillActiveResponse {
-  notifications?: AgentNotification[];
-  result: SkillActiveResponse;
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "SkillActiveResponse".
- */
-export interface SkillActiveResponse {
-  activations?: SkillActivationView[];
-  catalogRef?: string | null;
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "AgentApiOutcomeOfSkillDeactivateResponse".
- */
-export interface AgentApiOutcomeOfSkillDeactivateResponse {
-  notifications?: AgentNotification[];
-  result: SkillDeactivateResponse;
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "SkillDeactivateResponse".
- */
-export interface SkillDeactivateResponse {
-  active?: SkillActivationView[];
-  skillId: string;
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "AgentApiOutcomeOfSkillListResponse".
  */
 export interface AgentApiOutcomeOfSkillListResponse {
@@ -5934,9 +5856,12 @@ export interface SkillListResponse {
  * via the `definition` "SkillListItem".
  */
 export interface SkillListItem {
-  active: boolean;
   description: string;
   enabled: boolean;
+  /**
+   * Where to read the instructions and resolve supporting files.
+   */
+  location: SkillLocationView;
   name: string;
   shortDescription?: string | null;
   skillId: string;
@@ -7686,30 +7611,6 @@ export interface SessionStartParams {
   };
   profile?: ProfileSource | null;
   sessionId?: string | null;
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "SkillActivateParams".
- */
-export interface SkillActivateParams {
-  scope?: SkillActivationScope & string;
-  sessionId: string;
-  skillId: string;
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "SkillActiveParams".
- */
-export interface SkillActiveParams {
-  sessionId: string;
-}
-/**
- * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
- * via the `definition` "SkillDeactivateParams".
- */
-export interface SkillDeactivateParams {
-  sessionId: string;
-  skillId: string;
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema

@@ -2077,57 +2077,6 @@
       ],
       "type": "object"
     },
-    "AgentApiOutcomeOfSkillActivateResponse": {
-      "properties": {
-        "notifications": {
-          "items": {
-            "$ref": "#/definitions/AgentNotification"
-          },
-          "type": "array"
-        },
-        "result": {
-          "$ref": "#/definitions/SkillActivateResponse"
-        }
-      },
-      "required": [
-        "result"
-      ],
-      "type": "object"
-    },
-    "AgentApiOutcomeOfSkillActiveResponse": {
-      "properties": {
-        "notifications": {
-          "items": {
-            "$ref": "#/definitions/AgentNotification"
-          },
-          "type": "array"
-        },
-        "result": {
-          "$ref": "#/definitions/SkillActiveResponse"
-        }
-      },
-      "required": [
-        "result"
-      ],
-      "type": "object"
-    },
-    "AgentApiOutcomeOfSkillDeactivateResponse": {
-      "properties": {
-        "notifications": {
-          "items": {
-            "$ref": "#/definitions/AgentNotification"
-          },
-          "type": "array"
-        },
-        "result": {
-          "$ref": "#/definitions/SkillDeactivateResponse"
-        }
-      },
-      "required": [
-        "result"
-      ],
-      "type": "object"
-    },
     "AgentApiOutcomeOfSkillListResponse": {
       "properties": {
         "notifications": {
@@ -7373,26 +7322,6 @@
           "required": [
             "type",
             "title"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
-            "catalogId": {
-              "type": "string"
-            },
-            "skillId": {
-              "type": "string"
-            },
-            "type": {
-              "const": "skillActivation",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "catalogId",
-            "skillId"
           ],
           "type": "object"
         },
@@ -14391,25 +14320,6 @@
         },
         {
           "properties": {
-            "skillIds": {
-              "items": {
-                "type": "string"
-              },
-              "type": "array"
-            },
-            "type": {
-              "const": "skillActivationsSet",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "skillIds"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
             "baseRevision": {
               "format": "uint64",
               "minimum": 0,
@@ -15833,207 +15743,21 @@
       ],
       "type": "object"
     },
-    "SkillActivateParams": {
-      "properties": {
-        "scope": {
-          "allOf": [
-            {
-              "$ref": "#/definitions/SkillActivationScope"
-            }
-          ],
-          "default": "run"
-        },
-        "sessionId": {
-          "type": "string"
-        },
-        "skillId": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "sessionId",
-        "skillId"
-      ],
-      "type": "object"
-    },
-    "SkillActivateResponse": {
-      "properties": {
-        "activation": {
-          "$ref": "#/definitions/SkillActivationView"
-        },
-        "active": {
-          "default": [],
-          "items": {
-            "$ref": "#/definitions/SkillActivationView"
-          },
-          "type": "array"
-        }
-      },
-      "required": [
-        "activation"
-      ],
-      "type": "object"
-    },
-    "SkillActivationScope": {
-      "enum": [
-        "run",
-        "session"
-      ],
-      "type": "string"
-    },
-    "SkillActivationSource": {
-      "oneOf": [
-        {
-          "properties": {
-            "callId": {
-              "type": "string"
-            },
-            "type": {
-              "const": "toolResult",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "callId"
-          ],
-          "type": "object"
-        },
-        {
-          "properties": {
-            "contextRef": {
-              "type": "string"
-            },
-            "type": {
-              "const": "directContext",
-              "type": "string"
-            }
-          },
-          "required": [
-            "type",
-            "contextRef"
-          ],
-          "type": "object"
-        }
-      ]
-    },
-    "SkillActivationView": {
-      "properties": {
-        "catalogId": {
-          "type": "string"
-        },
-        "catalogRef": {
-          "type": "string"
-        },
-        "description": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "name": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "scope": {
-          "$ref": "#/definitions/SkillActivationScope"
-        },
-        "shortDescription": {
-          "type": [
-            "string",
-            "null"
-          ]
-        },
-        "skillId": {
-          "type": "string"
-        },
-        "source": {
-          "$ref": "#/definitions/SkillActivationSource"
-        }
-      },
-      "required": [
-        "catalogId",
-        "skillId",
-        "catalogRef",
-        "scope",
-        "source"
-      ],
-      "type": "object"
-    },
-    "SkillActiveParams": {
-      "properties": {
-        "sessionId": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "sessionId"
-      ],
-      "type": "object"
-    },
-    "SkillActiveResponse": {
-      "properties": {
-        "activations": {
-          "default": [],
-          "items": {
-            "$ref": "#/definitions/SkillActivationView"
-          },
-          "type": "array"
-        },
-        "catalogRef": {
-          "type": [
-            "string",
-            "null"
-          ]
-        }
-      },
-      "type": "object"
-    },
-    "SkillDeactivateParams": {
-      "properties": {
-        "sessionId": {
-          "type": "string"
-        },
-        "skillId": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "sessionId",
-        "skillId"
-      ],
-      "type": "object"
-    },
-    "SkillDeactivateResponse": {
-      "properties": {
-        "active": {
-          "default": [],
-          "items": {
-            "$ref": "#/definitions/SkillActivationView"
-          },
-          "type": "array"
-        },
-        "skillId": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "skillId"
-      ],
-      "type": "object"
-    },
     "SkillListItem": {
       "properties": {
-        "active": {
-          "type": "boolean"
-        },
         "description": {
           "type": "string"
         },
         "enabled": {
           "type": "boolean"
+        },
+        "location": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/SkillLocationView"
+            }
+          ],
+          "description": "Where to read the instructions and resolve supporting files."
         },
         "name": {
           "type": "string"
@@ -16053,7 +15777,7 @@
         "name",
         "description",
         "enabled",
-        "active"
+        "location"
       ],
       "type": "object"
     },
@@ -16085,6 +15809,31 @@
         }
       },
       "type": "object"
+    },
+    "SkillLocationView": {
+      "description": "The filesystem domain and paths needed for ordinary skill use.",
+      "oneOf": [
+        {
+          "properties": {
+            "skillDirPath": {
+              "type": "string"
+            },
+            "skillDocPath": {
+              "type": "string"
+            },
+            "type": {
+              "const": "vfs",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type",
+            "skillDirPath",
+            "skillDocPath"
+          ],
+          "type": "object"
+        }
+      ]
     },
     "SubagentAgentPin": {
       "description": "The profile a sub-agent was spawned from, pinned at its revision.",

@@ -1,4 +1,5 @@
-use engine::{BlobRef, SkillId};
+use super::SkillId;
+use engine::BlobRef;
 use serde::{Deserialize, Serialize};
 use vfs::{VfsPath, VfsWorkspaceId};
 
@@ -101,7 +102,6 @@ pub struct SkillMetadata {
     pub interface: Option<SkillInterface>,
     pub dependencies: SkillDependencies,
     pub location: SkillLocation,
-    pub skill_doc_ref: Option<BlobRef>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

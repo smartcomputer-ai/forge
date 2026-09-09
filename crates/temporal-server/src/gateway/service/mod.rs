@@ -68,12 +68,10 @@ use parse::*;
 use provider_controllers::{
     ProviderControllerConnector, WebSocketProviderControllerConnector, finish_provider_controller,
 };
-use skills::{
-    active_skill_catalog_ref, active_skill_ids, active_skill_ids_after_remove,
-    active_skill_ids_after_upsert, skill_activation_context_input,
-};
 #[cfg(test)]
-use skills::{skill_active_response, skill_list_response};
+use skills::skill_list_response;
+#[cfg(test)]
+use tools::skills::SkillMetadata;
 use vfs_api::{commit_vfs_snapshot, read_vfs_snapshot, vfs_workspace_view};
 
 use std::{
@@ -84,10 +82,6 @@ use std::{
 };
 
 use api::*;
-use api::{
-    SkillActivationScope as ApiSkillActivationScope,
-    SkillActivationSource as ApiSkillActivationSource,
-};
 use api_projection::{
     CoreAgentProjector, ProjectRun, ProjectSession, api_kind_from_str, api_run_id, api_steering_id,
     core_run_status_to_api_status, decode_stored_entry, event_cursor, event_page_limit,
@@ -106,12 +100,10 @@ use engine::{
     ApprovalId, BlobRef, BoundWorkflowToolDispatch, CompactionPolicy, ContextEntry,
     ContextEntryInput, ContextEntryKey, ContextEntryKind, ContextMessageRole, CoreAgentCommand,
     CoreAgentStatus, FunctionToolSpec, ManagedSessionWorkflowTools, ModelSelection,
-    ProviderApiKind, RunConfig, RunId, RunStatus, SKILL_ACTIVATION_PROVIDER_KIND_RUN,
-    SKILL_ACTIVATION_PROVIDER_KIND_SESSION, SKILL_CATALOG_CONTEXT_KEY, SessionConfig, SessionId,
-    SkillId, SubmissionId, ToolChoice, ToolKind, ToolName, ToolParallelism, ToolSpec,
+    ProviderApiKind, RunConfig, RunId, RunStatus, SKILL_CATALOG_CONTEXT_KEY, SessionConfig,
+    SessionId, SubmissionId, ToolChoice, ToolKind, ToolName, ToolParallelism, ToolSpec,
     WorkflowEndpointRef, WorkflowStartRef, WorkflowToolCompletion, WorkflowToolCompletionKeySource,
     WorkflowToolDeclaration, WorkflowToolDefinition, WorkflowToolId, WorkflowToolTarget,
-    skill_activation_context_key,
     storage::{BlobStore, BlobStoreError, ReadSessionEvents, SessionStore},
 };
 use llm_clients::{anthropic::messages as anthropic, openai::responses as openai};
@@ -130,7 +122,7 @@ use tools::{
         JOB_SUBMIT_WORKFLOW_SEMANTIC_TYPE, JOB_SUBMIT_WORKFLOW_TOOL_ID,
     },
     skills::{
-        SkillCatalogSnapshot, SkillMetadata, configured_vfs_skill_root_specs,
+        SkillCatalogSnapshot, SkillLocation, configured_vfs_skill_root_specs,
         resolve_linked_vfs_skill_roots, skill_catalog_context_input,
     },
     toolset::{
@@ -3860,153 +3852,6 @@ impl AgentApiService for GatewayAgentApi {
         Ok(AgentApiOutcome::new(
             self.project_skill_list(&loaded).await?,
         ))
-    }
-
-    async fn active_skills(
-        &self,
-        params: SkillActiveParams,
-    ) -> Result<AgentApiOutcome<SkillActiveResponse>, AgentApiError> {
-        let session_id = SessionId::try_new(params.session_id).map_err(|error| {
-            AgentApiError::invalid_request(format!("invalid session id: {error}"))
-        })?;
-        let loaded = self
-            .load_session_state_with_current_skill_catalog(&session_id)
-            .await?;
-        Ok(AgentApiOutcome::new(
-            self.project_active_skills(&loaded).await?,
-        ))
-    }
-
-    async fn activate_skill(
-        &self,
-        params: SkillActivateParams,
-    ) -> Result<AgentApiOutcome<SkillActivateResponse>, AgentApiError> {
-        let session_id = SessionId::try_new(params.session_id).map_err(|error| {
-            AgentApiError::invalid_request(format!("invalid session id: {error}"))
-        })?;
-        let skill_id = SkillId::try_new(params.skill_id).map_err(|error| {
-            AgentApiError::invalid_request(format!("invalid skill id: {error}"))
-        })?;
-        let loaded = self
-            .load_session_state_with_current_skill_catalog(&session_id)
-            .await?;
-        self.require_open_idle_session(&session_id, &loaded, "skill activation")?;
-
-        let catalog_ref = active_skill_catalog_ref(&loaded.state).ok_or_else(|| {
-            AgentApiError::not_found(format!("no skill catalog is available for {session_id}"))
-        })?;
-        let catalog = self.read_skill_catalog(&catalog_ref).await?;
-        let skill = catalog
-            .skills
-            .iter()
-            .find(|skill| skill.skill_id == skill_id)
-            .ok_or_else(|| AgentApiError::not_found(format!("skill not found: {skill_id}")))?;
-        if !skill.enabled {
-            return Err(AgentApiError::rejected(format!(
-                "skill is disabled: {skill_id}"
-            )));
-        }
-
-        let skill_doc = self
-            .read_skill_doc_for_activation(&session_id, skill)
-            .await?;
-        let context_ref = self
-            .store
-            .put_bytes(skill_doc.into_bytes())
-            .await
-            .map_err(map_blob_store_error)?;
-        let entry = skill_activation_context_input(
-            catalog.catalog_id.clone(),
-            skill_id.clone(),
-            catalog_ref.clone(),
-            context_ref.clone(),
-            params.scope,
-            Some(skill),
-        );
-        let target_active_ids = active_skill_ids_after_upsert(&loaded.state, skill_id.clone());
-        let baseline_failures = self
-            .query_status_optional(&session_id)
-            .await?
-            .map(|status| status.admission_failures.len())
-            .unwrap_or(0);
-        self.submit_core_command(
-            &session_id,
-            CoreAgentCommand::UpsertContext {
-                expected_revision: None,
-                key: skill_activation_context_key(&catalog.catalog_id, &skill_id),
-                entry,
-            },
-        )
-        .await?;
-        self.wait_for_skill_activations(&session_id, target_active_ids, baseline_failures)
-            .await?;
-
-        let loaded = self.load_session_state(&session_id).await?;
-        let active = self.project_active_skills(&loaded).await?.activations;
-        let activation = active
-            .iter()
-            .find(|active| active.skill_id == skill_id.as_str())
-            .cloned()
-            .unwrap_or_else(|| SkillActivationView {
-                catalog_id: catalog.catalog_id.clone(),
-                skill_id: skill_id.as_str().to_owned(),
-                name: Some(skill.name.clone()),
-                description: Some(skill.description.clone()),
-                short_description: skill.short_description.clone(),
-                catalog_ref: catalog_ref.as_str().to_owned(),
-                scope: params.scope,
-                source: ApiSkillActivationSource::DirectContext {
-                    context_ref: context_ref.as_str().to_owned(),
-                },
-            });
-        Ok(AgentApiOutcome::new(SkillActivateResponse {
-            activation,
-            active,
-        }))
-    }
-
-    async fn deactivate_skill(
-        &self,
-        params: SkillDeactivateParams,
-    ) -> Result<AgentApiOutcome<SkillDeactivateResponse>, AgentApiError> {
-        let session_id = SessionId::try_new(params.session_id).map_err(|error| {
-            AgentApiError::invalid_request(format!("invalid session id: {error}"))
-        })?;
-        let skill_id = SkillId::try_new(params.skill_id).map_err(|error| {
-            AgentApiError::invalid_request(format!("invalid skill id: {error}"))
-        })?;
-        let loaded = self.load_session_state(&session_id).await?;
-        self.require_open_idle_session(&session_id, &loaded, "skill deactivation")?;
-
-        if !active_skill_ids(&loaded.state).contains(&skill_id) {
-            return Err(AgentApiError::not_found(format!(
-                "active skill not found: {skill_id}"
-            )));
-        }
-        let target_active_ids = active_skill_ids_after_remove(&loaded.state, &skill_id);
-
-        let baseline_failures = self
-            .query_status_optional(&session_id)
-            .await?
-            .map(|status| status.admission_failures.len())
-            .unwrap_or(0);
-        self.submit_core_command(
-            &session_id,
-            CoreAgentCommand::RemoveContext {
-                expected_revision: None,
-                key: skill_activation_context_key(tools::skills::VFS_SKILL_CATALOG_ID, &skill_id),
-            },
-        )
-        .await?;
-        self.wait_for_skill_activations(&session_id, target_active_ids, baseline_failures)
-            .await?;
-
-        let loaded = self.load_session_state(&session_id).await?;
-        let active = self.project_active_skills(&loaded).await?.activations;
-        Ok(AgentApiOutcome::new(SkillDeactivateResponse {
-            skill_id: skill_id.as_str().to_owned(),
-            active,
-        }))
     }
 
     async fn create_environment(

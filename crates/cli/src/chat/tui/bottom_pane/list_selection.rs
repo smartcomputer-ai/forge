@@ -52,10 +52,7 @@ pub(crate) enum PickerSelection {
     MaxTokens(Option<u32>),
     SlashCommand(SlashCommandKind),
     Session(String),
-    Skill {
-        skill_id: String,
-        scope: api::SkillActivationScope,
-    },
+    Skill { skill_id: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -124,7 +121,7 @@ impl ListSelectionView {
         Self::new("Select session", rows)
     }
 
-    pub(crate) fn skills(skills: &[api::SkillListItem], scope: api::SkillActivationScope) -> Self {
+    pub(crate) fn skills(skills: &[api::SkillListItem]) -> Self {
         let rows = skills
             .iter()
             .map(|skill| {
@@ -133,7 +130,6 @@ impl ListSelectionView {
                     skill_description(skill),
                     PickerSelection::Skill {
                         skill_id: skill.skill_id.clone(),
-                        scope,
                     },
                 )
                 .with_disabled_reason((!skill.enabled).then(|| "skill is disabled".to_string()))
@@ -148,7 +144,6 @@ impl ListSelectionView {
                         "mount a workspace containing .lightspeed/skills or .agents/skills",
                         PickerSelection::Skill {
                             skill_id: String::new(),
-                            scope,
                         },
                     )
                     .with_disabled_reason(Some("no skills in the current catalog".into())),
@@ -445,9 +440,6 @@ fn session_description(summary: &ChatSessionSummary, current: bool) -> String {
 
 fn skill_description(skill: &api::SkillListItem) -> String {
     let mut parts = Vec::new();
-    if skill.active {
-        parts.push("active".to_string());
-    }
     if !skill.enabled {
         parts.push("disabled".to_string());
     }
@@ -502,40 +494,39 @@ mod tests {
 
     #[test]
     fn skill_picker_confirms_enabled_skill() {
-        let mut picker = ListSelectionView::skills(
-            &[api::SkillListItem {
-                skill_id: "lightspeed:review".into(),
-                name: "Review".into(),
-                description: "Review diffs".into(),
-                short_description: None,
-                enabled: true,
-                active: false,
-            }],
-            api::SkillActivationScope::Session,
-        );
+        let mut picker = ListSelectionView::skills(&[api::SkillListItem {
+            skill_id: "lightspeed:review".into(),
+            name: "Review".into(),
+            description: "Review diffs".into(),
+            short_description: None,
+            enabled: true,
+            location: api::SkillLocationView::Vfs {
+                skill_dir_path: "/skills/review".into(),
+                skill_doc_path: "/skills/review/SKILL.md".into(),
+            },
+        }]);
 
         assert_eq!(
             picker.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
             ListSelectionAction::Selected(PickerSelection::Skill {
                 skill_id: "lightspeed:review".into(),
-                scope: api::SkillActivationScope::Session,
             })
         );
     }
 
     #[test]
     fn skill_picker_rejects_disabled_skill() {
-        let mut picker = ListSelectionView::skills(
-            &[api::SkillListItem {
-                skill_id: "lightspeed:review".into(),
-                name: "Review".into(),
-                description: "Review diffs".into(),
-                short_description: None,
-                enabled: false,
-                active: false,
-            }],
-            api::SkillActivationScope::Run,
-        );
+        let mut picker = ListSelectionView::skills(&[api::SkillListItem {
+            skill_id: "lightspeed:review".into(),
+            name: "Review".into(),
+            description: "Review diffs".into(),
+            short_description: None,
+            enabled: false,
+            location: api::SkillLocationView::Vfs {
+                skill_dir_path: "/skills/review".into(),
+                skill_doc_path: "/skills/review/SKILL.md".into(),
+            },
+        }]);
 
         assert_eq!(
             picker.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),

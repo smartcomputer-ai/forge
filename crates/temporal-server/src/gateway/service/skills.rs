@@ -121,27 +121,7 @@ impl GatewayAgentApi {
             });
         };
         let catalog = self.read_skill_catalog(&catalog_ref).await?;
-        Ok(skill_list_response(
-            Some(&catalog_ref),
-            Some(&catalog),
-            &active_skill_context_entries(&loaded.state),
-        ))
-    }
-
-    pub(super) async fn project_active_skills(
-        &self,
-        loaded: &LoadedSession,
-    ) -> Result<SkillActiveResponse, AgentApiError> {
-        let catalog_ref = active_skill_catalog_ref(&loaded.state);
-        let catalog = match catalog_ref.as_ref() {
-            Some(catalog_ref) => Some(self.read_skill_catalog(catalog_ref).await?),
-            None => None,
-        };
-        Ok(skill_active_response(
-            catalog_ref.as_ref(),
-            catalog.as_ref(),
-            &active_skill_context_entries(&loaded.state),
-        ))
+        Ok(skill_list_response(Some(&catalog_ref), Some(&catalog)))
     }
 
     pub(super) async fn read_skill_catalog(
@@ -155,27 +135,6 @@ impl GatewayAgentApi {
             .map_err(map_blob_read_error)?;
         serde_json::from_slice(&bytes).map_err(|error| {
             AgentApiError::internal(format!("stored skill catalog is invalid JSON: {error}"))
-        })
-    }
-
-    pub(super) async fn read_skill_doc_for_activation(
-        &self,
-        _session_id: &SessionId,
-        skill: &SkillMetadata,
-    ) -> Result<String, AgentApiError> {
-        let skill_doc_ref = skill.skill_doc_ref.as_ref().ok_or_else(|| {
-            AgentApiError::internal(format!(
-                "cataloged skill {} has no pinned skill document",
-                skill.skill_id
-            ))
-        })?;
-        let bytes = self
-            .store
-            .read_bytes(skill_doc_ref)
-            .await
-            .map_err(map_blob_read_error)?;
-        String::from_utf8(bytes).map_err(|error| {
-            AgentApiError::internal(format!("cataloged skill document is not UTF-8: {error}"))
         })
     }
 
@@ -231,39 +190,6 @@ impl GatewayAgentApi {
             tokio::time::sleep(self.poll_interval).await;
         }
     }
-
-    pub(super) async fn wait_for_skill_activations(
-        &self,
-        session_id: &SessionId,
-        target: Vec<SkillId>,
-        baseline_failures: usize,
-    ) -> Result<(), AgentApiError> {
-        let started = Instant::now();
-        loop {
-            if started.elapsed() > self.operation_timeout {
-                return Err(AgentApiError::internal(format!(
-                    "timed out waiting for skill activation update: {session_id}"
-                )));
-            }
-            if let Some(status) = self.query_status_optional(session_id).await? {
-                if status.admission_failures.len() > baseline_failures
-                    && let Some(failure) = status.admission_failures.last()
-                {
-                    return Err(map_admission_failure_to_api_error(failure));
-                }
-                if let Some(error) = status.last_error {
-                    return Err(AgentApiError::internal(format!(
-                        "agent workflow reported error: {error}"
-                    )));
-                }
-            }
-            let loaded = self.load_session_state(session_id).await?;
-            if active_skill_ids(&loaded.state) == target {
-                return Ok(());
-            }
-            tokio::time::sleep(self.poll_interval).await;
-        }
-    }
 }
 
 pub(super) fn clear_skill_catalog_command(
@@ -309,80 +235,9 @@ pub(super) fn active_skill_catalog_ref(state: &engine::CoreAgentState) -> Option
         .map(|entry| entry.content.content_ref.clone())
 }
 
-pub(super) fn active_skill_context_entries(state: &engine::CoreAgentState) -> Vec<&ContextEntry> {
-    state
-        .context
-        .entries
-        .iter()
-        .filter(|entry| matches!(entry.kind, ContextEntryKind::SkillActivation { .. }))
-        .collect()
-}
-
-pub(super) fn active_skill_ids(state: &engine::CoreAgentState) -> Vec<SkillId> {
-    active_skill_context_entries(state)
-        .into_iter()
-        .filter_map(|entry| match &entry.kind {
-            ContextEntryKind::SkillActivation { skill_id, .. } => Some(skill_id.clone()),
-            _ => None,
-        })
-        .collect()
-}
-
-pub(super) fn active_skill_ids_after_upsert(
-    state: &engine::CoreAgentState,
-    skill_id: SkillId,
-) -> Vec<SkillId> {
-    let mut ids = active_skill_ids(state);
-    ids.retain(|active| active != &skill_id);
-    ids.push(skill_id);
-    ids
-}
-
-pub(super) fn active_skill_ids_after_remove(
-    state: &engine::CoreAgentState,
-    skill_id: &SkillId,
-) -> Vec<SkillId> {
-    let mut ids = active_skill_ids(state);
-    ids.retain(|active| active != skill_id);
-    ids
-}
-
-pub(super) fn skill_activation_context_input(
-    catalog_id: String,
-    skill_id: SkillId,
-    catalog_ref: BlobRef,
-    context_ref: BlobRef,
-    scope: ApiSkillActivationScope,
-    skill: Option<&SkillMetadata>,
-) -> ContextEntryInput {
-    ContextEntryInput {
-        kind: ContextEntryKind::SkillActivation {
-            catalog_id,
-            skill_id,
-        },
-        content: engine::ContentRef {
-            content_ref: context_ref,
-            media_type: Some("text/markdown".to_owned()),
-            provider_kind: Some(skill_activation_provider_kind(scope).to_owned()),
-        },
-        preview: skill.map(|skill| format!("skill activated: {}", skill.name)),
-        origin: None,
-        provenance_ref: Some(catalog_ref),
-        token_estimate: None,
-    }
-}
-
-pub(super) fn skill_activation_provider_kind(scope: ApiSkillActivationScope) -> &'static str {
-    match scope {
-        ApiSkillActivationScope::Run => SKILL_ACTIVATION_PROVIDER_KIND_RUN,
-        ApiSkillActivationScope::Session => SKILL_ACTIVATION_PROVIDER_KIND_SESSION,
-    }
-}
-
 pub(super) fn skill_list_response(
     catalog_ref: Option<&BlobRef>,
     catalog: Option<&SkillCatalogSnapshot>,
-    activations: &[&ContextEntry],
 ) -> SkillListResponse {
     let Some(catalog) = catalog else {
         return SkillListResponse {
@@ -390,15 +245,6 @@ pub(super) fn skill_list_response(
             skills: Vec::new(),
         };
     };
-    let active_ids = activations
-        .iter()
-        .filter_map(|entry| match &entry.kind {
-            ContextEntryKind::SkillActivation { skill_id, .. } => {
-                Some(skill_id.as_str().to_owned())
-            }
-            _ => None,
-        })
-        .collect::<BTreeSet<_>>();
     SkillListResponse {
         catalog_ref: catalog_ref.map(|catalog_ref| catalog_ref.as_str().to_owned()),
         skills: catalog
@@ -410,62 +256,22 @@ pub(super) fn skill_list_response(
                 description: skill.description.clone(),
                 short_description: skill.short_description.clone(),
                 enabled: skill.enabled,
-                active: active_ids.contains(skill.skill_id.as_str()),
+                location: match &skill.location {
+                    SkillLocation::LinkedSnapshot {
+                        skill_dir_path,
+                        skill_doc_path,
+                        ..
+                    }
+                    | SkillLocation::LinkedWorkspace {
+                        skill_dir_path,
+                        skill_doc_path,
+                        ..
+                    } => SkillLocationView::Vfs {
+                        skill_dir_path: skill_dir_path.to_string(),
+                        skill_doc_path: skill_doc_path.to_string(),
+                    },
+                },
             })
             .collect(),
     }
-}
-
-pub(super) fn skill_active_response(
-    catalog_ref: Option<&BlobRef>,
-    catalog: Option<&SkillCatalogSnapshot>,
-    activations: &[&ContextEntry],
-) -> SkillActiveResponse {
-    SkillActiveResponse {
-        catalog_ref: catalog_ref.map(|catalog_ref| catalog_ref.as_str().to_owned()),
-        activations: activations
-            .iter()
-            .filter_map(|activation| skill_activation_view(activation, catalog_ref, catalog))
-            .collect(),
-    }
-}
-
-pub(super) fn api_skill_activation_scope(entry: &ContextEntry) -> ApiSkillActivationScope {
-    match entry.content.provider_kind.as_deref() {
-        Some(SKILL_ACTIVATION_PROVIDER_KIND_RUN) => ApiSkillActivationScope::Run,
-        _ => ApiSkillActivationScope::Session,
-    }
-}
-
-pub(super) fn skill_activation_view(
-    activation: &ContextEntry,
-    active_catalog_ref: Option<&BlobRef>,
-    catalog: Option<&SkillCatalogSnapshot>,
-) -> Option<SkillActivationView> {
-    let ContextEntryKind::SkillActivation {
-        catalog_id,
-        skill_id,
-    } = &activation.kind
-    else {
-        return None;
-    };
-    let metadata = catalog.and_then(|catalog| {
-        catalog
-            .skills
-            .iter()
-            .find(|skill| &skill.skill_id == skill_id)
-    });
-    let catalog_ref = activation.provenance_ref.as_ref().or(active_catalog_ref)?;
-    Some(SkillActivationView {
-        catalog_id: catalog_id.clone(),
-        skill_id: skill_id.as_str().to_owned(),
-        name: metadata.map(|skill| skill.name.clone()),
-        description: metadata.map(|skill| skill.description.clone()),
-        short_description: metadata.and_then(|skill| skill.short_description.clone()),
-        catalog_ref: catalog_ref.as_str().to_owned(),
-        scope: api_skill_activation_scope(activation),
-        source: ApiSkillActivationSource::DirectContext {
-            context_ref: activation.content.content_ref.as_str().to_owned(),
-        },
-    })
 }

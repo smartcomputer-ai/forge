@@ -1,8 +1,9 @@
 use std::{cmp::Ordering, collections::BTreeSet};
 
+use super::SkillId;
 use engine::{
     BlobRef, ContextEntryInput, ContextEntryKey, ContextEntryKind, CoreAgentCommand,
-    CoreAgentState, SKILL_CATALOG_CONTEXT_KEY, SkillId,
+    CoreAgentState, SKILL_CATALOG_CONTEXT_KEY,
     storage::{BlobGraphStore, BlobStore, BlobStoreError, record_contains_edges},
 };
 use serde::Serialize;
@@ -91,13 +92,11 @@ pub async fn build_skill_catalog(
     build_skill_catalog_with_warnings(blobs, blob_graph, roots, Vec::new()).await
 }
 
-/// Every blob a catalog document names: skill docs plus the snapshot
-/// manifests skills were read from. The catalog write records one `contains`
-/// edge per ref so they stay reachable while the catalog is.
+/// Retain source snapshots for pinned catalogs. Discovery metadata carries no
+/// skill body references; ordinary file reads retain their own recorded bytes.
 pub fn skill_catalog_blob_refs(catalog: &SkillCatalogSnapshot) -> BTreeSet<BlobRef> {
     let mut refs = BTreeSet::new();
     for skill in &catalog.skills {
-        refs.extend(skill.skill_doc_ref.clone());
         if let SkillSource::Snapshot { snapshot_ref, .. } = &skill.source {
             refs.insert(snapshot_ref.clone());
         }
@@ -125,7 +124,7 @@ pub async fn build_skill_catalog_with_warnings(
     let mut source_inputs = Vec::new();
 
     for input in sorted_roots {
-        let scan = scan_root(blobs, input).await?;
+        let scan = scan_root(input).await?;
         skills.extend(scan.skills);
         warnings.extend(scan.warnings);
         source_inputs.push(scan.source_input);
@@ -211,10 +210,7 @@ fn current_skill_catalog_ref(state: &CoreAgentState) -> Option<BlobRef> {
         .map(|entry| entry.content.content_ref.clone())
 }
 
-async fn scan_root(
-    blobs: &dyn BlobStore,
-    input: &SkillCatalogRootInput<'_>,
-) -> Result<RootScanResult, SkillCatalogError> {
+async fn scan_root(input: &SkillCatalogRootInput<'_>) -> Result<RootScanResult, SkillCatalogError> {
     let mut scan = RootScan::new(input);
     let entries = match input.root.fs_read_directory(input.fs).await {
         Ok(entries) => entries,
@@ -295,14 +291,7 @@ async fn scan_root(
             }
         };
 
-        let skill_doc_ref = blobs.put_bytes(markdown.into_bytes()).await?;
-        match metadata_for_skill(
-            input,
-            &skill_dir_path,
-            &skill_doc_path,
-            frontmatter,
-            skill_doc_ref,
-        ) {
+        match metadata_for_skill(input, &skill_dir_path, &skill_doc_path, frontmatter) {
             Ok(metadata) => scan.skills.push(metadata),
             Err(error) => {
                 scan.warn(
@@ -323,7 +312,6 @@ fn metadata_for_skill(
     skill_dir_path: &FsPath,
     skill_doc_path: &FsPath,
     frontmatter: crate::skills::SkillFrontmatter,
-    skill_doc_ref: BlobRef,
 ) -> Result<SkillMetadata, SkillCatalogError> {
     let skill_id = skill_id_for_path(&input.root, skill_doc_path);
     let location = location_for_skill(&input.root, skill_dir_path, skill_doc_path)?;
@@ -345,7 +333,6 @@ fn metadata_for_skill(
         }),
         dependencies: SkillDependencies::default(),
         location,
-        skill_doc_ref: Some(skill_doc_ref),
     })
 }
 
@@ -630,7 +617,7 @@ mod tests {
     }
 
     /// The recorded edge set must equal every ref the catalog document
-    /// embeds: skill docs and the snapshot manifests they were read from.
+    /// embeds: the immutable source snapshot manifests.
     #[tokio::test]
     async fn catalog_writes_record_an_edge_for_every_embedded_ref() {
         let fs = skill_fs(&[
@@ -684,8 +671,8 @@ mod tests {
         assert!(embedded.contains(&snapshot_ref));
         assert_eq!(
             embedded.len(),
-            3,
-            "two skill docs and the snapshot manifest"
+            1,
+            "only the source snapshot manifest is retained by the catalog"
         );
         assert!(
             BlobRef::parse(&build.build_record.source_fingerprint.digest).is_err(),
@@ -790,7 +777,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn catalog_ref_changes_when_pinned_skill_body_changes() {
+    async fn catalog_ref_stays_stable_when_only_workspace_skill_body_changes() {
         let fs = skill_fs(&[(
             "/skills/review/SKILL.md",
             format!(
@@ -802,11 +789,12 @@ mod tests {
         )])
         .await;
         let blobs = InMemoryBlobStore::new();
-        let root = SkillCatalogRoot {
+        let mut root = SkillCatalogRoot {
             root_id: "vfs".to_owned(),
             root_path: FsPath::new("/skills").unwrap(),
-            source: SkillCatalogRootSource::LinkedSnapshot {
-                snapshot_ref: BlobRef::from_bytes(b"snapshot-1"),
+            source: SkillCatalogRootSource::LinkedWorkspace {
+                workspace_id: VfsWorkspaceId::new("workspace-skills"),
+                workspace_head_ref: BlobRef::from_bytes(b"head-1"),
                 link_path: VfsPath::parse("/skills").unwrap(),
             },
             trust: SkillTrustLevel::User,
@@ -830,12 +818,25 @@ mod tests {
         .await
         .expect("edit body");
 
+        if let SkillCatalogRootSource::LinkedWorkspace {
+            workspace_head_ref, ..
+        } = &mut root.source
+        {
+            *workspace_head_ref = BlobRef::from_bytes(b"head-2");
+        }
         let second = build_skill_catalog(&blobs, None, &[root_input(&fs, root)])
             .await
             .expect("second build");
 
-        assert_ne!(first.catalog_ref, second.catalog_ref);
-        assert_eq!(
+        assert_eq!(first.catalog_ref, second.catalog_ref);
+        assert!(skill_catalog_blob_refs(&second.catalog).is_empty());
+        assert!(
+            fs.read_file_text(&FsPath::new("/skills/review/SKILL.md").unwrap())
+                .await
+                .unwrap()
+                .contains("Second body.")
+        );
+        assert_ne!(
             first.build_record.source_fingerprint.digest,
             second.build_record.source_fingerprint.digest
         );
