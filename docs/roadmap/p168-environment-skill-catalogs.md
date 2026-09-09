@@ -293,12 +293,12 @@ environment, query, and access scope. Still evaluate availability and enabled
 state before publication. VFS discovery and its publication proceed separately;
 a VFS change does not invalidate an environment observation.
 
-Support a bounded fallback using existing environment filesystem operations
-when the helper is unavailable. Missing filesystem capabilities produce an
-explicit unavailable source. Partial scans must report their limits and cannot
-be passed off as complete catalogs. Keep parsing and environment catalog
-construction shared between the helper and fallback paths. Correctness must not
-depend on observing writes through a Lightspeed-specific installer.
+Discover environment skills exclusively through `fs/scan`. An endpoint without
+that capability produces an explicit unavailable source; do not emulate discovery
+with glob, directory listing, individual file reads, or shell commands. Partial
+scans must report their limits and cannot be passed off as complete catalogs.
+Correctness must not depend on observing writes through a Lightspeed-specific
+installer.
 
 Separate scan fingerprints from published catalog content. Body-only changes
 can invalidate a scan without changing the model's menu. File mtimes, last-check
@@ -373,8 +373,9 @@ compaction as it does today; skill file contents receive no special retention.
 1. Add environment source/location and configuration support, fix shared YAML
    parsing, and publish a separate environment model/API catalog without
    activation fields. Preserve the independent VFS catalog and its key.
-2. Integrate the delivered generic conditional scans and the capability-negotiated
-   fallback; close the remaining generic scan interoperability gaps. Verify
+2. Integrate the delivered generic conditional scans; require `fs/scan` and
+   report discovery unavailable when it is absent. Close the remaining generic
+   scan interoperability gaps. Verify
    unchanged results, additions/deletions, same-size edits,
    symlink retargeting, changed queries/access scope, and explicit incomplete
    results. Verify optional file digests against content bytes, hashing limits,
@@ -411,6 +412,6 @@ Progress:
 - [ ] Environment catalog, independent configuration, and shared parser implemented.
 - [ ] Separate model/API publication, source labels, and independent removal implemented.
 - [x] Generic envd conditional scans: roots/patterns, metadata or raw content, optional SHA-256, complete fingerprints and partial diagnostics.
-- [ ] Catalog fallback for environments without the scan capability.
+- [x] Scope narrowed: discovery requires `fs/scan`; endpoints without it report unavailable, with no fallback discovery path.
 - [ ] Shared publication at existing idle refresh boundaries implemented.
 - [ ] Installer-layout, availability, cache, and replay checks pass.
