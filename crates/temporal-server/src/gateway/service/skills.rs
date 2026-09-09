@@ -25,13 +25,47 @@ impl GatewayAgentApi {
         session_id: &SessionId,
         state: &engine::CoreAgentState,
     ) -> Result<(), AgentApiError> {
-        let Some(command) = self
+        if state.runs.active.is_some() || !state.runs.queued.is_empty() {
+            return Ok(());
+        }
+        let mut commands: Vec<_> = self
             .skill_catalog_refresh_command(session_id, state)
             .await?
-        else {
-            return Ok(());
-        };
-        self.apply_catalog_refresh_commands(session_id, vec![command])
+            .into_iter()
+            .collect();
+        let resolver =
+            crate::environment_resolver::EnvironmentResolver::from_pg_store(self.store.clone());
+        let catalogs = engine::current_catalog_inputs(state);
+        if let Some(mut command) = crate::environment_skills::refresh(
+            self.store.as_ref(),
+            Some(&resolver),
+            Some(&self.environment_gateway),
+            session_id,
+            state
+                .lifecycle
+                .config
+                .as_ref()
+                .and_then(|config| config.features.environments.as_ref()),
+            state.environment.active_environment_id.as_ref(),
+            catalogs.get(&ContextEntryKey::new(
+                tools::skills::environment::ENVIRONMENT_SKILL_CATALOG_CONTEXT_KEY,
+            )),
+        )
+        .await
+        .map_err(|error| AgentApiError::internal(error.to_string()))?
+        {
+            match &mut command {
+                CoreAgentCommand::UpsertContext {
+                    expected_revision, ..
+                }
+                | CoreAgentCommand::RemoveContext {
+                    expected_revision, ..
+                } => *expected_revision = Some(state.context.revision),
+                _ => {}
+            }
+            commands.insert(0, command);
+        }
+        self.apply_catalog_refresh_commands(session_id, commands)
             .await
     }
 
@@ -96,7 +130,33 @@ impl GatewayAgentApi {
         &self,
         loaded: &LoadedSession,
     ) -> Result<SkillListResponse, AgentApiError> {
-        skill_list_from_context(self.store.as_ref(), &loaded.state).await
+        let mut response = skill_list_from_context(self.store.as_ref(), &loaded.state).await?;
+        let key =
+            ContextEntryKey::new(tools::skills::environment::ENVIRONMENT_SKILL_CATALOG_CONTEXT_KEY);
+        if let Some(entry) = engine::current_context_entry(&loaded.state, &key)
+            && let Some(reference) = &entry.provenance_ref
+        {
+            let bytes = self
+                .store
+                .read_bytes(reference)
+                .await
+                .map_err(map_blob_read_error)?;
+            let catalog: tools::skills::environment::EnvironmentSkillCatalog =
+                serde_json::from_slice(&bytes)
+                    .map_err(|error| AgentApiError::internal(error.to_string()))?;
+            // Selection can race an API read; never reinterpret a former machine's paths.
+            if loaded
+                .state
+                .environment
+                .active_environment_id
+                .as_ref()
+                .map(|id| id.as_str())
+                == Some(catalog.environment_id.as_str())
+            {
+                response.environment = Some(environment_skill_list_view(reference, catalog));
+            }
+        }
+        Ok(response)
     }
 
     pub(super) fn require_open_idle_session(
@@ -125,11 +185,13 @@ pub(super) fn skill_list_response(
 ) -> SkillListResponse {
     let Some(catalog) = catalog else {
         return SkillListResponse {
+            environment: None,
             catalog_ref: None,
             skills: Vec::new(),
         };
     };
     SkillListResponse {
+        environment: None,
         catalog_ref: catalog_ref.map(|catalog_ref| catalog_ref.as_str().to_owned()),
         skills: catalog
             .skills
@@ -168,6 +230,7 @@ pub(super) async fn skill_list_from_context(
         engine::current_context_entry(state, &ContextEntryKey::new(SKILL_CATALOG_CONTEXT_KEY))
     else {
         return Ok(SkillListResponse {
+            environment: None,
             catalog_ref: None,
             skills: Vec::new(),
         });
@@ -186,4 +249,43 @@ pub(super) async fn skill_list_from_context(
         })?
     };
     Ok(skill_list_response(Some(catalog_ref), Some(&catalog)))
+}
+
+fn environment_skill_list_view(
+    reference: &BlobRef,
+    catalog: tools::skills::environment::EnvironmentSkillCatalog,
+) -> api::EnvironmentSkillCatalogView {
+    use tools::skills::environment::EnvironmentSkillAvailability;
+    api::EnvironmentSkillCatalogView {
+        catalog_id: catalog.catalog_id,
+        context_key: tools::skills::environment::ENVIRONMENT_SKILL_CATALOG_CONTEXT_KEY.into(),
+        environment_id: catalog.environment_id.clone(),
+        catalog_ref: reference.to_string(),
+        availability: match catalog.availability {
+            EnvironmentSkillAvailability::Available => {
+                api::EnvironmentSkillAvailabilityView::Available
+            }
+            EnvironmentSkillAvailability::Stale => api::EnvironmentSkillAvailabilityView::Stale,
+            EnvironmentSkillAvailability::Unavailable => {
+                api::EnvironmentSkillAvailabilityView::Unavailable
+            }
+        },
+        skills: catalog
+            .skills
+            .into_iter()
+            .map(|skill| api::SkillListItem {
+                skill_id: skill.skill_id.to_string(),
+                name: skill.name,
+                description: skill.description,
+                short_description: skill.short_description,
+                enabled: true,
+                location: api::SkillLocationView::Environment {
+                    environment_id: catalog.environment_id.clone(),
+                    skill_dir_path: skill.skill_dir_path,
+                    skill_doc_path: skill.skill_doc_path,
+                },
+            })
+            .collect(),
+        warnings: catalog.warnings,
+    }
 }

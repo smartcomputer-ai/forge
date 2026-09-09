@@ -221,6 +221,13 @@ fn features_from_api(
                 registration_keys: environments.registration_keys,
                 selection_tools: environments.selection_tools,
                 jobs: environments.jobs,
+                skills: environments
+                    .skills
+                    .map(|skills| engine::EnvironmentSkillsFeature {
+                        working_directory: skills.working_directory,
+                        project_root: skills.project_root,
+                        additional_roots: skills.additional_roots,
+                    }),
             }),
         mcp: features.mcp.map(|mcp| engine::McpFeature {
             version: mcp.version,

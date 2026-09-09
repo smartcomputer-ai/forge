@@ -51,6 +51,23 @@ pub(super) async fn refresh_runtime_projection(
         .active_catalogs
         .get(&ContextEntryKey::new(SUBAGENT_CATALOG_CONTEXT_KEY));
     let mut commands = Vec::new();
+    if let Some(command) = crate::environment_skills::refresh(
+        deps.blobs.as_ref(),
+        deps.environment_resolver.as_ref(),
+        deps.environment_gateway.as_ref(),
+        &request.session_id,
+        request.environments.as_ref(),
+        request.active_environment_id.as_ref(),
+        request.active_catalogs.get(&ContextEntryKey::new(
+            tools::skills::environment::ENVIRONMENT_SKILL_CATALOG_CONTEXT_KEY,
+        )),
+    )
+    .await
+    .map_err(activity_error)?
+    {
+        commands.push(command);
+    }
+
     if request.vfs_catalog_enabled {
         let catalog = vfs_catalog_from_workspace_links(&links).map_err(activity_error)?;
         if let Some(command) = prepare_vfs_catalog_publication(

@@ -206,6 +206,7 @@ async fn handle_data(
                 ));
             }
             encode_result(InitializeResponse {
+                home_directory: std::env::var("HOME").ok(),
                 protocol_version: CURRENT_PROTOCOL_VERSION,
                 connection_id: runtime.next_connection_id(),
                 capabilities: runtime.capabilities(),

@@ -131,8 +131,14 @@ cleanup and return no `retiredDirectory`.
 
 `EnvironmentDataClient::scan` sends `fs/scan` when `filesystemScan` is negotiated.
 It accepts roots, include patterns, `readContent`, optional
-`digestAlgorithm: "sha256"`, quotas, and `ifNoneMatch`. This is a generic
+`digestAlgorithm: "sha256"`, `followSymlinks`, quotas, and `ifNoneMatch`. This is a generic
 filesystem operation: filenames such as `SKILL.md` are caller-supplied patterns.
+Entries retain root-relative paths and include `canonicalPath`. Symlink following
+is opt-in and remains confined to the endpoint access scope; loops, dangling
+links, and inaccessible targets produce incomplete observations. A missing root
+is a complete empty observation. Quotas apply across all roots. The data-plane
+handshake also reports the execution user's `homeDirectory` for caller-side root
+resolution, without assigning any skill semantics to the endpoint.
 
 Metadata-only scans do not read file payloads. Content reads or requested
 SHA-256 digests inspect the complete matching files; unrelated files are not

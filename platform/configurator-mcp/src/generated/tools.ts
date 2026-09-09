@@ -253,6 +253,37 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
           },
           "type": "object"
         },
+        "EnvironmentSkillsFeature": {
+          "additionalProperties": {
+            "not": {}
+          },
+          "description": "Discovery scope resolved on the selected machine, never on the worker.",
+          "properties": {
+            "additionalRoots": {
+              "default": [],
+              "description": "Additional absolute or working-directory-relative discovery roots.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "projectRoot": {
+              "description": "Absolute ancestor boundary. Absent scans only the working directory.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "workingDirectory": {
+              "description": "Absolute session working directory; absent uses the endpoint default.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "type": "object"
+        },
         "EnvironmentsFeature": {
           "additionalProperties": {
             "not": {}
@@ -288,6 +319,17 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
               "default": false,
               "description": "Exposes `environment_list`, `environment_activate`, and\n`environment_deactivate` to the model. `environment_read` is available\nwhenever environments are enabled, and external API/profile activation\nremains available when this is false.",
               "type": "boolean"
+            },
+            "skills": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/EnvironmentSkillsFeature"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Independent environment skill discovery. Absent disables discovery."
             },
             "version": {
               "default": 1,
@@ -1474,6 +1516,37 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
           },
           "type": "object"
         },
+        "EnvironmentSkillsFeature": {
+          "additionalProperties": {
+            "not": {}
+          },
+          "description": "Discovery scope resolved on the selected machine, never on the worker.",
+          "properties": {
+            "additionalRoots": {
+              "default": [],
+              "description": "Additional absolute or working-directory-relative discovery roots.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "projectRoot": {
+              "description": "Absolute ancestor boundary. Absent scans only the working directory.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "workingDirectory": {
+              "description": "Absolute session working directory; absent uses the endpoint default.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "type": "object"
+        },
         "EnvironmentsFeature": {
           "additionalProperties": {
             "not": {}
@@ -1509,6 +1582,17 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
               "default": false,
               "description": "Exposes `environment_list`, `environment_activate`, and\n`environment_deactivate` to the model. `environment_read` is available\nwhenever environments are enabled, and external API/profile activation\nremains available when this is false.",
               "type": "boolean"
+            },
+            "skills": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/EnvironmentSkillsFeature"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Independent environment skill discovery. Absent disables discovery."
             },
             "version": {
               "default": 1,
@@ -3526,6 +3610,37 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
           },
           "type": "object"
         },
+        "EnvironmentSkillsFeature": {
+          "additionalProperties": {
+            "not": {}
+          },
+          "description": "Discovery scope resolved on the selected machine, never on the worker.",
+          "properties": {
+            "additionalRoots": {
+              "default": [],
+              "description": "Additional absolute or working-directory-relative discovery roots.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "projectRoot": {
+              "description": "Absolute ancestor boundary. Absent scans only the working directory.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "workingDirectory": {
+              "description": "Absolute session working directory; absent uses the endpoint default.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "type": "object"
+        },
         "EnvironmentsFeature": {
           "additionalProperties": {
             "not": {}
@@ -3561,6 +3676,17 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
               "default": false,
               "description": "Exposes `environment_list`, `environment_activate`, and\n`environment_deactivate` to the model. `environment_read` is available\nwhenever environments are enabled, and external API/profile activation\nremains available when this is false.",
               "type": "boolean"
+            },
+            "skills": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/EnvironmentSkillsFeature"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Independent environment skill discovery. Absent disables discovery."
             },
             "version": {
               "default": 1,
@@ -5506,6 +5632,37 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
           },
           "type": "object"
         },
+        "EnvironmentSkillsFeature": {
+          "additionalProperties": {
+            "not": {}
+          },
+          "description": "Discovery scope resolved on the selected machine, never on the worker.",
+          "properties": {
+            "additionalRoots": {
+              "default": [],
+              "description": "Additional absolute or working-directory-relative discovery roots.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "projectRoot": {
+              "description": "Absolute ancestor boundary. Absent scans only the working directory.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "workingDirectory": {
+              "description": "Absolute session working directory; absent uses the endpoint default.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "type": "object"
+        },
         "EnvironmentsFeature": {
           "additionalProperties": {
             "not": {}
@@ -5541,6 +5698,17 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
               "default": false,
               "description": "Exposes `environment_list`, `environment_activate`, and\n`environment_deactivate` to the model. `environment_read` is available\nwhenever environments are enabled, and external API/profile activation\nremains available when this is false.",
               "type": "boolean"
+            },
+            "skills": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/EnvironmentSkillsFeature"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Independent environment skill discovery. Absent disables discovery."
             },
             "version": {
               "default": 1,
@@ -6697,6 +6865,37 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
           },
           "type": "object"
         },
+        "EnvironmentSkillsFeature": {
+          "additionalProperties": {
+            "not": {}
+          },
+          "description": "Discovery scope resolved on the selected machine, never on the worker.",
+          "properties": {
+            "additionalRoots": {
+              "default": [],
+              "description": "Additional absolute or working-directory-relative discovery roots.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "projectRoot": {
+              "description": "Absolute ancestor boundary. Absent scans only the working directory.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "workingDirectory": {
+              "description": "Absolute session working directory; absent uses the endpoint default.",
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "type": "object"
+        },
         "EnvironmentsFeature": {
           "additionalProperties": {
             "not": {}
@@ -6732,6 +6931,17 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
               "default": false,
               "description": "Exposes `environment_list`, `environment_activate`, and\n`environment_deactivate` to the model. `environment_read` is available\nwhenever environments are enabled, and external API/profile activation\nremains available when this is false.",
               "type": "boolean"
+            },
+            "skills": {
+              "anyOf": [
+                {
+                  "$ref": "#/definitions/EnvironmentSkillsFeature"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Independent environment skill discovery. Absent disables discovery."
             },
             "version": {
               "default": 1,

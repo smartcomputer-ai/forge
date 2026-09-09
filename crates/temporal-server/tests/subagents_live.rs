@@ -987,6 +987,7 @@ async fn run_agent_run_inherit_environment_live_client(
         registration_keys: None,
         selection_tools: false,
         jobs: false,
+        skills: None,
     };
 
     // Child profile: inherits whatever environment its parent has active.

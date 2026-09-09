@@ -368,6 +368,7 @@ async fn scan_fingerprints_content_and_filters_large_unrelated_files() {
     let runtime = runtime(temp.path(), true);
     let fs = runtime.filesystem();
     let mut query = ScanParams {
+        follow_symlinks: false,
         roots: vec![path("skills")],
         include_patterns: vec!["**/SKILL.md".into(), "SKILL.md".into()],
         read_content: true,
@@ -383,16 +384,13 @@ async fn scan_fingerprints_content_and_filters_large_unrelated_files() {
     std::fs::write(temp.path().join("skills/SKILL.md"), b"other").unwrap();
     assert!(!fs.scan(query.clone()).await.unwrap().unchanged);
     query.roots.push(path("missing"));
-    let incomplete = fs.scan(query).await.unwrap();
-    assert!(!incomplete.complete);
-    assert!(!incomplete.unchanged);
-    assert!(incomplete.fingerprint.is_none());
-    assert_eq!(
-        incomplete.diagnostics[0].error.code,
-        EnvironmentProtocolErrorCode::NotFound
-    );
+    let absent = fs.scan(query).await.unwrap();
+    assert!(absent.complete);
+    assert!(!absent.unchanged);
+    assert!(absent.diagnostics.is_empty());
     let metadata = fs
         .scan(ScanParams {
+            follow_symlinks: false,
             roots: vec![path("skills/large")],
             include_patterns: vec![],
             read_content: false,
@@ -413,6 +411,7 @@ async fn scan_fingerprints_content_and_filters_large_unrelated_files() {
     ));
     let hashed = fs
         .scan(ScanParams {
+            follow_symlinks: false,
             roots: vec![path("skills/SKILL.md")],
             include_patterns: vec![],
             read_content: false,
@@ -880,6 +879,7 @@ async fn configured_cwd_aliases_work_under_the_host_root() {
     let fs = crate::filesystem::LocalFileSystem::new(Path::new("/").into(), alias, true);
     let result = fs
         .scan(ScanParams {
+            follow_symlinks: false,
             roots: vec![path("file")],
             include_patterns: vec![],
             read_content: true,
@@ -897,6 +897,7 @@ async fn configured_cwd_aliases_work_under_the_host_root() {
     symlink(&actual, actual.join("user-link")).unwrap();
     let result = fs
         .scan(ScanParams {
+            follow_symlinks: false,
             roots: vec![path("user-link/file")],
             include_patterns: vec![],
             read_content: true,
@@ -907,4 +908,238 @@ async fn configured_cwd_aliases_work_under_the_host_root() {
         .await
         .unwrap();
     assert!(!result.complete, "user-selected symlinks remain rejected");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn scan_installer_layouts_aliases_collisions_and_semantic_publication() {
+    use tools::skills::environment::*;
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path().canonicalize().unwrap();
+    let home = root.join("home");
+    let cwd = root.join("project/subdir");
+    let canonical = root.join("installed/review");
+    for directory in [
+        &home,
+        &cwd,
+        &canonical,
+        &root.join("project/.agents/skills"),
+        &home.join(".codex/skills/copy"),
+    ] {
+        std::fs::create_dir_all(directory).unwrap();
+    }
+    let doc = "---\nname: review\ndescription: >-\n  Review code\n  carefully.\nmetadata:\n  hooks: [ignored]\n---\nbody one";
+    std::fs::write(canonical.join("SKILL.md"), doc).unwrap();
+    std::fs::write(home.join(".codex/skills/copy/SKILL.md"), doc).unwrap();
+    symlink(&canonical, root.join("project/.agents/skills/review")).unwrap();
+    symlink(&canonical, root.join("project/.agents/skills/alias")).unwrap();
+    let config = engine::EnvironmentSkillsFeature {
+        working_directory: Some(cwd.to_string_lossy().into_owned()),
+        project_root: Some(root.join("project").to_string_lossy().into_owned()),
+        additional_roots: vec![],
+    };
+    let runtime = runtime(&root, true);
+    let mut query = environment_skill_scan_query(&config, None, home.to_str()).unwrap();
+    let first = runtime.filesystem().scan(query.clone()).await.unwrap();
+    assert!(first.complete, "{:?}", first.diagnostics);
+    let catalog = environment_skill_catalog("machine-a", &first).unwrap();
+    assert_eq!(
+        catalog.skills.len(),
+        2,
+        "aliases collapse but independent copies remain"
+    );
+    assert!(
+        catalog
+            .skills
+            .iter()
+            .all(|skill| skill.description == "Review code carefully.")
+    );
+    assert_ne!(catalog.skills[0].skill_id, catalog.skills[1].skill_id);
+    let other = environment_skill_catalog("machine-b", &first).unwrap();
+    assert_ne!(catalog.skills[0].skill_id, other.skills[0].skill_id);
+    query.if_none_match = first.fingerprint;
+    assert!(
+        runtime
+            .filesystem()
+            .scan(query.clone())
+            .await
+            .unwrap()
+            .unchanged
+    );
+    std::fs::write(canonical.join("SKILL.md"), doc.replace("one", "two")).unwrap();
+    let body_edit = runtime.filesystem().scan(query.clone()).await.unwrap();
+    assert!(!body_edit.unchanged);
+    assert_eq!(
+        catalog,
+        environment_skill_catalog("machine-a", &body_edit).unwrap()
+    );
+    assert!(
+        String::from_utf8(std::fs::read(canonical.join("SKILL.md")).unwrap())
+            .unwrap()
+            .ends_with("body two")
+    );
+    let blobs = engine::storage::InMemoryBlobStore::new();
+    let Some(engine::CoreAgentCommand::UpsertContext { entry, .. }) =
+        publish_environment_skill_catalog(&blobs, None, &catalog)
+            .await
+            .unwrap()
+    else {
+        panic!("publication");
+    };
+    assert!(
+        publish_environment_skill_catalog(
+            &blobs,
+            Some(&entry),
+            &environment_skill_catalog("machine-a", &body_edit).unwrap()
+        )
+        .await
+        .unwrap()
+        .is_none()
+    );
+    let prefix = blobs.read_bytes(&entry.content.content_ref).await.unwrap();
+    std::fs::write(
+        canonical.join("SKILL.md"),
+        doc.replace("carefully", "thoroughly"),
+    )
+    .unwrap();
+    let edited = runtime.filesystem().scan(query.clone()).await.unwrap();
+    assert!(
+        publish_environment_skill_catalog(
+            &blobs,
+            Some(&entry),
+            &environment_skill_catalog("machine-a", &edited).unwrap()
+        )
+        .await
+        .unwrap()
+        .is_some()
+    );
+    assert_eq!(
+        blobs.read_bytes(&entry.content.content_ref).await.unwrap(),
+        prefix
+    );
+    std::fs::remove_file(canonical.join("SKILL.md")).unwrap();
+    let removed = runtime.filesystem().scan(query.clone()).await.unwrap();
+    assert_eq!(
+        environment_skill_catalog("machine-a", &removed)
+            .unwrap()
+            .skills
+            .len(),
+        1
+    );
+    std::fs::write(
+        canonical.join("SKILL.md"),
+        "---\nname: broken\ndescription: [invalid]\n---",
+    )
+    .unwrap();
+    let invalid = environment_skill_catalog(
+        "machine-a",
+        &runtime.filesystem().scan(query).await.unwrap(),
+    )
+    .unwrap();
+    assert_eq!(invalid.skills.len(), 1);
+    assert_eq!(invalid.warnings.len(), 1);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn scan_retarget_scope_loops_and_aggregate_limits_are_explicit() {
+    let temp = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    for name in ["one", "two"] {
+        std::fs::create_dir(temp.path().join(name)).unwrap();
+        std::fs::write(temp.path().join(name).join("SKILL.md"), "same").unwrap();
+    }
+    symlink(temp.path().join("one"), temp.path().join("alias")).unwrap();
+    let runtime = runtime(temp.path(), true);
+    let mut query = ScanParams {
+        roots: vec![path("alias")],
+        include_patterns: vec!["**/SKILL.md".into(), "SKILL.md".into()],
+        read_content: true,
+        follow_symlinks: true,
+        digest_algorithm: Some(ScanDigestAlgorithm::Sha256),
+        limits: InventoryLimits::default(),
+        if_none_match: None,
+    };
+    let first = runtime.filesystem().scan(query.clone()).await.unwrap();
+    assert!(first.complete);
+    query.if_none_match = first.fingerprint;
+    let parent_scope = environment_daemon_scope_for_test(temp.path());
+    assert!(
+        !parent_scope.scan(query.clone()).await.unwrap().unchanged,
+        "changed access scope cannot authorize reuse"
+    );
+    let mut shallow = query.clone();
+    shallow.limits.max_depth = 0;
+    let truncated = runtime.filesystem().scan(shallow).await.unwrap();
+    assert!(!truncated.complete && !truncated.unchanged);
+    let mut directories = query.clone();
+    directories.include_patterns.clear();
+    directories.read_content = false;
+    directories.digest_algorithm = None;
+    assert!(
+        runtime
+            .filesystem()
+            .scan(directories)
+            .await
+            .unwrap()
+            .entries
+            .iter()
+            .any(|entry| matches!(entry.content, ScanContent::Directory))
+    );
+    std::fs::remove_file(temp.path().join("alias")).unwrap();
+    symlink(temp.path().join("two"), temp.path().join("alias")).unwrap();
+    let retargeted = runtime.filesystem().scan(query.clone()).await.unwrap();
+    assert!(retargeted.complete && !retargeted.unchanged);
+    assert_ne!(
+        first.entries[0].canonical_path,
+        retargeted.entries[0].canonical_path
+    );
+    assert!(
+        matches!(&retargeted.entries[0].content, ScanContent::File { digest: Some(digest), .. } if digest == BlobRef::from_bytes(b"same").as_str())
+    );
+    query.if_none_match = retargeted.fingerprint;
+    query.read_content = false;
+    assert!(
+        !runtime
+            .filesystem()
+            .scan(query.clone())
+            .await
+            .unwrap()
+            .unchanged
+    );
+    query.roots = vec![path("one"), path("two")];
+    query.limits.max_total_bytes = 7;
+    let limited = runtime.filesystem().scan(query.clone()).await.unwrap();
+    assert!(!limited.complete && !limited.unchanged && limited.fingerprint.is_none());
+    assert!(!limited.diagnostics.is_empty());
+    query.limits = InventoryLimits::default();
+    query.roots = vec![path("alias")];
+    symlink(temp.path().join("two"), temp.path().join("two/loop")).unwrap();
+    assert!(
+        !runtime
+            .filesystem()
+            .scan(query.clone())
+            .await
+            .unwrap()
+            .complete
+    );
+    std::fs::remove_file(temp.path().join("two/loop")).unwrap();
+    std::fs::remove_file(temp.path().join("alias")).unwrap();
+    symlink(outside.path(), temp.path().join("alias")).unwrap();
+    let escaped = runtime.filesystem().scan(query.clone()).await.unwrap();
+    assert!(!escaped.complete);
+    assert_eq!(
+        escaped.diagnostics[0].error.code,
+        EnvironmentProtocolErrorCode::Forbidden
+    );
+    std::fs::remove_file(temp.path().join("alias")).unwrap();
+    symlink(temp.path().join("missing"), temp.path().join("alias")).unwrap();
+    let dangling = runtime.filesystem().scan(query).await.unwrap();
+    assert!(!dangling.complete && !dangling.unchanged);
+}
+
+fn environment_daemon_scope_for_test(cwd: &std::path::Path) -> crate::filesystem::LocalFileSystem {
+    crate::filesystem::LocalFileSystem::new(
+        cwd.parent().unwrap().to_path_buf(),
+        cwd.to_path_buf(),
+        false,
+    )
 }

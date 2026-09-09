@@ -23,6 +23,15 @@ export const PROFILE_CONFIG_REFERENCE = `// Every field is optional — omit any
       "registrationKeys": ["string"],
       // Exposes \`environment_list\`, \`environment_activate\`, and \`environment_deactivate\` to the model. \`environment_read\` is available whenever environments are enabled, and external API/profile activation remains available when this is false.
       "selectionTools": true | false,
+      // Independent environment skill discovery. Absent disables discovery.
+      "skills": {
+        // Additional absolute or working-directory-relative discovery roots.
+        "additionalRoots": ["string"],
+        // Absolute ancestor boundary. Absent scans only the working directory.
+        "projectRoot": "string",
+        // Absolute session working directory; absent uses the endpoint default.
+        "workingDirectory": "string",
+      },
       "version": 0,
     },
     // Grants remote MCP tools by declaring linked servers from the universe MCP catalog; must link at least one server, with unique server ids.

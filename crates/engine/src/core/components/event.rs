@@ -7,6 +7,10 @@ use crate::{
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+// These durable, serde-backed domain events deliberately retain direct variant
+// payloads. Boxing the lifecycle variant would change every construction and
+// pattern match for an allocation-only size optimization.
+#[allow(clippy::large_enum_variant)]
 pub enum CoreAgentEvent {
     Lifecycle(CoreAgentLifecycleEvent),
     Run(RunEvent),

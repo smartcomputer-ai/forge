@@ -1548,16 +1548,28 @@ export type ApprovalDecisionFailureKind =
  */
 export type ApprovalDecisionStatus = "decided" | "failed";
 /**
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "EnvironmentSkillAvailabilityView".
+ */
+export type EnvironmentSkillAvailabilityView = "available" | "stale" | "unavailable";
+/**
  * The filesystem domain and paths needed for ordinary skill use.
  *
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "SkillLocationView".
  */
-export type SkillLocationView = {
-  skillDirPath: string;
-  skillDocPath: string;
-  type: "vfs";
-};
+export type SkillLocationView =
+  | {
+      environmentId: string;
+      skillDirPath: string;
+      skillDocPath: string;
+      type: "environment";
+    }
+  | {
+      skillDirPath: string;
+      skillDocPath: string;
+      type: "vfs";
+    };
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
  * via the `definition` "AuthProviderConfigInput".
@@ -2073,7 +2085,31 @@ export interface EnvironmentsFeature {
    * remains available when this is false.
    */
   selectionTools?: boolean;
+  /**
+   * Independent environment skill discovery. Absent disables discovery.
+   */
+  skills?: EnvironmentSkillsFeature | null;
   version?: number;
+}
+/**
+ * Discovery scope resolved on the selected machine, never on the worker.
+ *
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "EnvironmentSkillsFeature".
+ */
+export interface EnvironmentSkillsFeature {
+  /**
+   * Additional absolute or working-directory-relative discovery roots.
+   */
+  additionalRoots?: string[];
+  /**
+   * Absolute ancestor boundary. Absent scans only the working directory.
+   */
+  projectRoot?: string | null;
+  /**
+   * Absolute session working directory; absent uses the endpoint default.
+   */
+  workingDirectory?: string | null;
 }
 /**
  * Grants remote MCP tools by declaring linked servers from the universe MCP
@@ -5840,7 +5876,26 @@ export interface AgentApiOutcomeOfSkillListResponse {
  */
 export interface SkillListResponse {
   catalogRef?: string | null;
+  /**
+   * Independent selected-environment catalog. The top-level fields describe VFS only.
+   */
+  environment?: EnvironmentSkillCatalogView | null;
   skills?: SkillListItem[];
+}
+/**
+ * Independently identified catalog, never merged or deduplicated with VFS skills.
+ *
+ * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema
+ * via the `definition` "EnvironmentSkillCatalogView".
+ */
+export interface EnvironmentSkillCatalogView {
+  availability: EnvironmentSkillAvailabilityView;
+  catalogId: string;
+  catalogRef: string;
+  contextKey: string;
+  environmentId: string;
+  skills: SkillListItem[];
+  warnings: string[];
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema

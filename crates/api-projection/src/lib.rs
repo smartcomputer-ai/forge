@@ -2061,6 +2061,14 @@ fn features_config_to_api(
                 registration_keys: environments.registration_keys.clone(),
                 selection_tools: environments.selection_tools,
                 jobs: environments.jobs,
+                skills: environments
+                    .skills
+                    .as_ref()
+                    .map(|skills| api::EnvironmentSkillsFeature {
+                        working_directory: skills.working_directory.clone(),
+                        project_root: skills.project_root.clone(),
+                        additional_roots: skills.additional_roots.clone(),
+                    }),
             }),
         mcp: features.mcp.as_ref().map(mcp_feature_to_api),
     })
@@ -4067,6 +4075,7 @@ mod tests {
                         registration_keys: None,
                         selection_tools: false,
                         jobs: false,
+                        skills: None,
                     }),
                     mcp: Some(api::McpFeature {
                         version: api::CURRENT_FEATURE_VERSION,

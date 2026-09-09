@@ -1354,6 +1354,7 @@ fn environment_tool_subgrants_are_default_off_and_map_explicit_opt_in() {
                     registration_keys: None,
                     selection_tools: true,
                     jobs: true,
+                    skills: None,
                 }),
                 ..api::FeaturesConfig::default()
             }),

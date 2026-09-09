@@ -171,6 +171,7 @@ async fn temporal_live_vfs_transfers_follow_profile_grants_and_publish_large_fil
             }).await?;
             anyhow::ensure!(initialized.capabilities.filesystem_scan && initialized.capabilities.filesystem_transfer);
             let mut query = ScanParams {
+            follow_symlinks: false,
                 roots: vec![EnvironmentPath::new("./capture-source")?], include_patterns: vec!["new.bin".into()],
                 read_content: false, digest_algorithm: Some(ScanDigestAlgorithm::Sha256), limits: Default::default(), if_none_match: None,
             };

@@ -424,6 +424,7 @@ async fn run_fake_live_client(
         registration_keys: None,
         selection_tools: false,
         jobs: false,
+        skills: None,
     });
     enabled_config.features = Some(enabled_features);
     let enabled = api

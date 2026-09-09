@@ -1595,7 +1595,7 @@ mod tests {
         .as_ref()
         .expect("structured skill source");
         let catalog: SkillCatalogSnapshot =
-            serde_json::from_slice(&blobs.read_bytes(&catalog_ref).await.expect("read catalog"))
+            serde_json::from_slice(&blobs.read_bytes(catalog_ref).await.expect("read catalog"))
                 .expect("decode catalog");
 
         assert_eq!(catalog.skills.len(), 1);

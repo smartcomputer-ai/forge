@@ -66,6 +66,8 @@ pub struct ToolActivityDeps {
 
 #[derive(Clone)]
 pub struct RuntimeProjectionActivityDeps {
+    pub(super) environment_resolver: Option<crate::environment_resolver::EnvironmentResolver>,
+    pub(super) environment_gateway: Option<EnvironmentGatewayClientConfig>,
     pub(super) blobs: Arc<dyn BlobStore>,
     /// Records catalog-, report-, and projection-to-child edges.
     pub(super) blob_graph: Option<Arc<dyn BlobGraphStore>>,
@@ -163,6 +165,8 @@ impl ActivityState {
         workspace_store: Arc<dyn VfsWorkspaceStore>,
     ) -> Self {
         self.runtime_projection = Some(RuntimeProjectionActivityDeps {
+            environment_resolver: None,
+            environment_gateway: None,
             blobs: self.storage.blobs.clone(),
             blob_graph: self.storage.blob_graph.clone(),
             workspace_store,
@@ -225,6 +229,11 @@ impl ActivityState {
         let mut state = state
             .with_runtime_projection_deps(workspace_store)
             .with_profile_store(profile_store);
+        if let Some(projection) = state.runtime_projection.as_mut() {
+            projection.environment_resolver = Some(
+                crate::environment_resolver::EnvironmentResolver::from_pg_store(store.clone()),
+            );
+        }
         state.environment_jobs = Some(EnvironmentJobActivityDeps {
             blobs: environment_job_blobs,
             blob_graph: Some(blob_graph),
@@ -390,6 +399,9 @@ impl ActivityState {
             .with_workflow_tool_executions(temporal_client_for_workflow_tools);
         if let Some(subagent_runtime) = subagent_runtime {
             state = state.with_subagent_runtime(subagent_runtime);
+        }
+        if let Some(projection) = state.runtime_projection.as_mut() {
+            projection.environment_gateway = Some(gateway.clone());
         }
         if let Some(environment_jobs) = state.environment_jobs.as_mut() {
             environment_jobs.gateway = Some(gateway);

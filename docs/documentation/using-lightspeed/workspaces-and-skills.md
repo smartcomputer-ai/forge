@@ -127,8 +127,8 @@ release-notes/
 ```
 
 The filename must be `SKILL.md`. Both `name` and `description` are required
-frontmatter fields. Use simple, single-line values as shown; the parser
-supports a small frontmatter format rather than the whole YAML language.
+frontmatter fields. Frontmatter is YAML: multiline descriptions and nested optional
+metadata are supported. Unknown metadata does not grant permissions or execute hooks.
 Discovery checks skill directories immediately inside each root rather than
 recursively searching arbitrary directory trees.
 
@@ -161,7 +161,7 @@ target/debug/lightspeed skills use --session "<session-id>" "<skill-id>"
 ```
 
 This starts an ordinary run when idle, or steers the current run. The instruction
-includes the VFS document path and base directory for supporting files. In the
+includes the source domain, document path, and base directory for supporting files. In the
 chat TUI, `/skills` lists entries, `/skill` opens the picker, and
 `/skill <skill-id>` selects an entry directly, including during an active run.
 
@@ -174,6 +174,68 @@ Skill reads and any skill text inserted as ordinary conversation content can be
 compacted like other messages and tool results. The current catalog remains
 available; the agent can reread a skill if needed. Mandatory persistent guidance
 belongs in the existing instruction mechanism.
+
+## Discover skills installed on a machine
+
+Enable environment discovery independently from VFS in the session or profile:
+
+```json
+{
+  "features": {
+    "environments": {
+      "skills": {
+        "workingDirectory": "/workspace/project/src",
+        "projectRoot": "/workspace/project",
+        "additionalRoots": ["/opt/team-skills"]
+      }
+    }
+  }
+}
+```
+
+An empty `skills: {}` uses the selected endpoint's default working directory.
+Omitting `skills` disables environment discovery. `workingDirectory` and
+`projectRoot` must be absolute machine paths. Without `projectRoot`, only the
+working directory is searched for project roots; with it, each ancestor through
+that boundary is included. A shell command's temporary `cd` does not change
+this scope. Additional roots may be absolute or relative to `workingDirectory`.
+
+Discovery checks `.agents/skills/`, `.lightspeed/skills/`, `.claude/skills/`, and
+`.codex/skills/` beneath the project directories and the execution user's home
+reported by the endpoint. This supports ordinary installer output and manually
+copied directories. Directory symlinks may point to canonical installations
+inside the endpoint's filesystem access scope. Aliases to one canonical skill
+directory collapse within that environment; independent copies and equal names
+remain separate entries.
+
+The environment catalog has the stable context key
+`runtime.catalog.skills.environment`; VFS retains `runtime.catalog.skills.vfs`.
+`session/skills/list` keeps the VFS `catalogRef` and `skills` fields and returns an
+independent `environment` section with its own catalog reference, environment
+identity, availability, skills, and parsing warnings. The CLI prints both
+sections and can select either by its distinct skill ID. Environment skills are
+read with environment file tools and their scripts run with process tools on
+that machine. VFS skills continue to use VFS tools. Copies in both domains are
+advertised independently, with no deduplication or automatic fallback.
+
+The runtime scans only at an eligible idle refresh (including idle API reads and
+preparation before new work), with no active or queued run. Installing a skill,
+finishing a tool/job, or continuing a model turn does not trigger discovery.
+Direct file reads always see the current machine file. Selecting another
+machine invalidates the former machine's catalog before the next model call;
+discovering the new machine waits for the next eligible idle boundary.
+
+Discovery never wakes an offline or paused machine. It requires `fs/scan`,
+filesystem read access, and endpoint home/default-directory metadata; there is
+no shell or per-file discovery fallback. A scan is bounded to 32 roots, 4,096
+visited entries, depth 8, 64 KiB per document, 2 MiB of inspected content, and a
+2-second local scan budget. Network discovery is bounded to four seconds.
+Missing roots are successful empty observations; inaccessible roots, dangling
+links, loops, or limits make the source incomplete. A failed/incomplete refresh
+retains the last catalog for that same environment as stale; it never publishes
+a partial list as a complete replacement. Scan diagnostics appear in runtime
+debug logs. A changed body without changed catalog metadata causes no context
+update. Changed metadata appends the usual bounded catalog successor.
 
 ## Update files and handle concurrent edits
 

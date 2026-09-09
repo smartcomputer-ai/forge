@@ -73,10 +73,35 @@ async fn list(args: SkillsListArgs) -> Result<()> {
         let enabled = if skill.enabled { "enabled" } else { "disabled" };
         println!("{} {} {}", skill.skill_id, enabled, skill.name);
         println!("  {}", skill.description);
-        let api::SkillLocationView::Vfs { skill_doc_path, .. } = &skill.location;
-        println!("  VFS {skill_doc_path}");
+        println!("  {}", skill_location_label(&skill.location));
+    }
+    if let Some(environment) = &response.environment {
+        println!(
+            "Environment {} {:?} catalogRef {}",
+            environment.environment_id, environment.availability, environment.catalog_ref
+        );
+        for skill in &environment.skills {
+            println!(
+                "{} {}\n  {}\n  {}",
+                skill.skill_id,
+                skill.name,
+                skill.description,
+                skill_location_label(&skill.location)
+            );
+        }
     }
     Ok(())
+}
+
+pub(crate) fn skill_location_label(location: &api::SkillLocationView) -> String {
+    match location {
+        api::SkillLocationView::Vfs { skill_doc_path, .. } => format!("VFS {skill_doc_path}"),
+        api::SkillLocationView::Environment {
+            environment_id,
+            skill_doc_path,
+            ..
+        } => format!("Environment {environment_id} {skill_doc_path}"),
+    }
 }
 
 async fn use_skill(args: SkillsUseArgs) -> Result<()> {
@@ -143,12 +168,36 @@ pub(crate) fn skill_selection_input(
         .skills
         .iter()
         .find(|skill| skill.skill_id == skill_id)
+        .or_else(|| {
+            catalog.environment.as_ref().and_then(|catalog| {
+                catalog
+                    .skills
+                    .iter()
+                    .find(|skill| skill.skill_id == skill_id)
+            })
+        })
         .ok_or_else(|| anyhow!("skill {skill_id:?} is not in the session catalog"))?;
     ensure!(skill.enabled, "skill {skill_id:?} is disabled");
-    let api::SkillLocationView::Vfs {
-        skill_dir_path,
-        skill_doc_path,
-    } = &skill.location;
+    let (skill_dir_path, skill_doc_path) = match &skill.location {
+        api::SkillLocationView::Vfs {
+            skill_dir_path,
+            skill_doc_path,
+        } => (skill_dir_path, skill_doc_path),
+        api::SkillLocationView::Environment {
+            environment_id,
+            skill_dir_path,
+            skill_doc_path,
+        } => {
+            return Ok(format!(
+                "Use the {} skill ({}), on environment {}. Read its SKILL.md with the environment file tool at {}. Resolve supporting files relative to {} and run bundled scripts there with process tools.",
+                serde_json::to_string(&skill.name)?,
+                serde_json::to_string(&skill.skill_id)?,
+                serde_json::to_string(environment_id)?,
+                serde_json::to_string(skill_doc_path)?,
+                serde_json::to_string(skill_dir_path)?,
+            ));
+        }
+    };
     Ok(format!(
         "Use the {} skill ({}). Read its SKILL.md through the VFS file tool at {} before following its instructions. Resolve supporting files relative to the VFS directory {}.",
         serde_json::to_string(&skill.name)?,
@@ -164,6 +213,7 @@ mod tests {
 
     fn catalog() -> api::SkillListResponse {
         api::SkillListResponse {
+            environment: None,
             catalog_ref: Some("sha256:catalog".into()),
             skills: vec![api::SkillListItem {
                 skill_id: "skill:review".into(),
@@ -236,10 +286,10 @@ mod tests {
                         if line == "\r\n" {
                             break;
                         }
-                        if let Some((name, value)) = line.split_once(':') {
-                            if name.eq_ignore_ascii_case("content-length") {
-                                content_length = Some(value.trim().parse::<usize>().unwrap());
-                            }
+                        if let Some((name, value)) = line.split_once(':')
+                            && name.eq_ignore_ascii_case("content-length")
+                        {
+                            content_length = Some(value.trim().parse::<usize>().unwrap());
                         }
                     }
                     let mut body = vec![0; content_length.expect("JSON body length")];

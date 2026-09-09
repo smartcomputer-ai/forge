@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use serde_yaml::{Mapping, Value};
 
 use thiserror::Error;
 
@@ -18,8 +18,8 @@ pub enum SkillParseError {
     #[error("SKILL.md frontmatter is not terminated")]
     UnterminatedFrontmatter,
 
-    #[error("invalid frontmatter line {line}: expected 'key: value'")]
-    InvalidFrontmatterLine { line: usize },
+    #[error("invalid YAML frontmatter: {message}")]
+    InvalidYaml { message: String },
 
     #[error("frontmatter field '{field}' is missing or empty")]
     MissingRequiredField { field: &'static str },
@@ -35,11 +35,9 @@ pub fn parse_skill_frontmatter(markdown: &str) -> Result<SkillFrontmatter, Skill
     }
 
     let mut raw_frontmatter = String::new();
-    let mut values = BTreeMap::<String, String>::new();
     let mut terminated = false;
 
-    for (index, line) in lines.enumerate() {
-        let line_number = index + 2;
+    for line in lines {
         if line.trim() == "---" {
             terminated = true;
             break;
@@ -47,37 +45,24 @@ pub fn parse_skill_frontmatter(markdown: &str) -> Result<SkillFrontmatter, Skill
 
         raw_frontmatter.push_str(line);
         raw_frontmatter.push('\n');
-
-        let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed.starts_with('#') {
-            continue;
-        }
-        if line.starts_with(char::is_whitespace) || trimmed.starts_with("- ") {
-            continue;
-        }
-
-        let Some((key, value)) = trimmed.split_once(':') else {
-            return Err(SkillParseError::InvalidFrontmatterLine { line: line_number });
-        };
-        let key = key.trim();
-        let value = unquote_scalar(value.trim());
-        if key.is_empty() {
-            return Err(SkillParseError::InvalidFrontmatterLine { line: line_number });
-        }
-        values.insert(key.to_owned(), value.to_owned());
     }
 
     if !terminated {
         return Err(SkillParseError::UnterminatedFrontmatter);
     }
 
+    let values: Mapping =
+        serde_yaml::from_str(&raw_frontmatter).map_err(|error| SkillParseError::InvalidYaml {
+            message: error.to_string(),
+        })?;
     let name = required_string(&values, "name")?;
     let description = required_string(&values, "description")?;
     let short_description = values
         .get("short_description")
         .or_else(|| values.get("short-description"))
-        .filter(|value| !value.is_empty())
-        .cloned();
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_owned);
 
     Ok(SkillFrontmatter {
         name,
@@ -87,31 +72,28 @@ pub fn parse_skill_frontmatter(markdown: &str) -> Result<SkillFrontmatter, Skill
     })
 }
 
-fn required_string(
-    values: &BTreeMap<String, String>,
-    field: &'static str,
-) -> Result<String, SkillParseError> {
+fn required_string(values: &Mapping, field: &'static str) -> Result<String, SkillParseError> {
     values
         .get(field)
-        .filter(|value| !value.is_empty())
-        .cloned()
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_owned)
         .ok_or(SkillParseError::MissingRequiredField { field })
-}
-
-fn unquote_scalar(value: &str) -> &str {
-    if value.len() >= 2 {
-        let first = value.as_bytes()[0];
-        let last = value.as_bytes()[value.len() - 1];
-        if (first == b'"' && last == b'"') || (first == b'\'' && last == b'\'') {
-            return &value[1..value.len() - 1];
-        }
-    }
-    value
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_multiline_and_nested_optional_metadata() {
+        let parsed = parse_skill_frontmatter("---\nname: review\ndescription: >-\n  Review code\n  carefully.\nmetadata:\n  hooks: [ignored]\n  nested: {flag: true}\n---\nbody").unwrap();
+        assert_eq!(parsed.description, "Review code carefully.");
+        assert!(matches!(
+            parse_skill_frontmatter("---\nname: []\ndescription: ok\n---"),
+            Err(SkillParseError::MissingRequiredField { field: "name" })
+        ));
+    }
 
     #[test]
     fn parses_required_skill_frontmatter() {
@@ -167,6 +149,6 @@ description
         )
         .expect_err("invalid line");
 
-        assert_eq!(error, SkillParseError::InvalidFrontmatterLine { line: 3 });
+        assert!(matches!(error, SkillParseError::InvalidYaml { .. }));
     }
 }

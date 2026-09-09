@@ -5,7 +5,7 @@ use crate::skills::{SkillCatalogSnapshot, SkillLocation, SkillMetadata};
 pub(crate) fn skill_catalog_text(catalog: &SkillCatalogSnapshot) -> String {
     let mut text = String::new();
     if catalog.skills.is_empty() {
-        text.push_str("No Lightspeed skills are currently available.");
+        text.push_str("No VFS skills are currently available.");
         return text;
     }
 

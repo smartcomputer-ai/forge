@@ -8907,6 +8907,85 @@
         "description": "A freshly minted registration secret. `Debug` output is redacted so the\nplaintext cannot leak through derived logging; it is shown once.",
         "type": "string"
       },
+      "EnvironmentSkillAvailabilityView": {
+        "enum": [
+          "available",
+          "stale",
+          "unavailable"
+        ],
+        "type": "string"
+      },
+      "EnvironmentSkillCatalogView": {
+        "description": "Independently identified catalog, never merged or deduplicated with VFS skills.",
+        "properties": {
+          "availability": {
+            "$ref": "#/components/schemas/EnvironmentSkillAvailabilityView"
+          },
+          "catalogId": {
+            "type": "string"
+          },
+          "catalogRef": {
+            "type": "string"
+          },
+          "contextKey": {
+            "type": "string"
+          },
+          "environmentId": {
+            "type": "string"
+          },
+          "skills": {
+            "items": {
+              "$ref": "#/components/schemas/SkillListItem"
+            },
+            "type": "array"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "catalogId",
+          "contextKey",
+          "environmentId",
+          "catalogRef",
+          "availability",
+          "skills",
+          "warnings"
+        ],
+        "type": "object"
+      },
+      "EnvironmentSkillsFeature": {
+        "additionalProperties": false,
+        "description": "Discovery scope resolved on the selected machine, never on the worker.",
+        "properties": {
+          "additionalRoots": {
+            "default": [],
+            "description": "Additional absolute or working-directory-relative discovery roots.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "projectRoot": {
+            "description": "Absolute ancestor boundary. Absent scans only the working directory.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "workingDirectory": {
+            "description": "Absolute session working directory; absent uses the endpoint default.",
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "type": "object"
+      },
       "EnvironmentSourceView": {
         "oneOf": [
           {
@@ -9196,6 +9275,17 @@
             "default": false,
             "description": "Exposes `environment_list`, `environment_activate`, and\n`environment_deactivate` to the model. `environment_read` is available\nwhenever environments are enabled, and external API/profile activation\nremains available when this is false.",
             "type": "boolean"
+          },
+          "skills": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EnvironmentSkillsFeature"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Independent environment skill discovery. Absent disables discovery."
           },
           "version": {
             "default": 1,
@@ -15764,6 +15854,17 @@
               "null"
             ]
           },
+          "environment": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/EnvironmentSkillCatalogView"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Independent selected-environment catalog. The top-level fields describe VFS only."
+          },
           "skills": {
             "default": [],
             "items": {
@@ -15777,6 +15878,30 @@
       "SkillLocationView": {
         "description": "The filesystem domain and paths needed for ordinary skill use.",
         "oneOf": [
+          {
+            "properties": {
+              "environmentId": {
+                "type": "string"
+              },
+              "skillDirPath": {
+                "type": "string"
+              },
+              "skillDocPath": {
+                "type": "string"
+              },
+              "type": {
+                "const": "environment",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "environmentId",
+              "skillDirPath",
+              "skillDocPath"
+            ],
+            "type": "object"
+          },
           {
             "properties": {
               "skillDirPath": {

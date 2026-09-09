@@ -110,6 +110,7 @@ async fn run_profile_provision_live_client(
                     registration_keys: None,
                     selection_tools: false,
                     jobs: false,
+                    skills: None,
                 }),
                 ..api::FeaturesConfig::default()
             }),

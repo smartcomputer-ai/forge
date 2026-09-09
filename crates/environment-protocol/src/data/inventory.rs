@@ -83,6 +83,9 @@ pub struct ScanParams {
     pub include_patterns: Vec<String>,
     #[serde(default)]
     pub read_content: bool,
+    /// Follow aliases only inside the endpoint filesystem access scope.
+    #[serde(default)]
+    pub follow_symlinks: bool,
     #[serde(default)]
     pub digest_algorithm: Option<ScanDigestAlgorithm>,
     #[serde(default)]
@@ -92,6 +95,8 @@ pub struct ScanParams {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ScanEntry {
+    /// Resolved absolute identity, while root/path retain the requested spelling.
+    pub canonical_path: EnvironmentPath,
     pub root: EnvironmentPath,
     pub path: String,
     pub content: ScanContent,

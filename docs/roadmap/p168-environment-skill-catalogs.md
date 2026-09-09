@@ -1,6 +1,6 @@
 # P168 — Environment Skill Catalogs and Catalog Refresh
 
-Status: generic conditional envd scans implemented, 2026-09-09. Environment skill catalog integration proposed, with separate VFS and environment catalogs and idle-boundary discovery. Within-run refresh, catalog merging, and automatic workspace materialization are deferred.
+Status: implemented, 2026-09-09. Separate VFS and environment catalogs use idle-boundary discovery. Within-run refresh, catalog merging, and automatic workspace materialization remain deferred.
 
 ## Scope
 
@@ -409,9 +409,54 @@ running npm against public registries is not a prerequisite for discovery tests.
 Progress:
 
 - [x] Scope revised: keep workspaces, publish two separate catalogs, and defer within-run refresh, merging, and automatic workspace materialization.
-- [ ] Environment catalog, independent configuration, and shared parser implemented.
-- [ ] Separate model/API publication, source labels, and independent removal implemented.
+- [x] Environment catalog, independent configuration, and shared parser implemented.
+- [x] Separate model/API publication, source labels, and independent removal implemented.
 - [x] Generic envd conditional scans: roots/patterns, metadata or raw content, optional SHA-256, complete fingerprints and partial diagnostics.
 - [x] Scope narrowed: discovery requires `fs/scan`; endpoints without it report unavailable, with no fallback discovery path.
-- [ ] Shared publication at existing idle refresh boundaries implemented.
-- [ ] Installer-layout, availability, cache, and replay checks pass.
+- [x] Shared publication at existing idle refresh boundaries implemented.
+- [x] Installer-layout, availability, cache, and replay checks pass.
+
+### Implementation notes
+
+- `features.environments.skills` independently configures the session discovery
+  working directory, project ancestry boundary, and additional roots. The
+  endpoint handshake supplies its execution-user home directory; conventional
+  `.agents`, `.lightspeed`, `.claude`, and `.codex` roots are resolved there.
+- Gateway and workflow idle refreshes share one environment discovery adapter
+  and the existing immutable catalog publisher. Conditional observations use a
+  bounded process-local cache scoped by universe, session, environment, query,
+  connection, and environment grants; cache loss simply causes a complete scan.
+  Semantic snapshots remain durable context provenance. Failed scans retain
+  only the same environment's last observation as stale; revoked access drops
+  its advertised paths. Inspection does not request power changes.
+- Generic scans now report canonical paths, support opt-in confined symlink
+  traversal, distinguish missing roots from inspection failures, and enforce
+  aggregate quotas. Transfer operations keep their existing secure backend and
+  publication semantics. No skill parsing moved into envd or the protocol.
+- Workflow source invalidation appends ordinary keyed removal commands after
+  recorded selection/configuration changes. It performs no scan. Gateway
+  publications carry context revision checks and are rejected if work has been
+  admitted or the selected source has changed in the meantime.
+- The API and CLI preserve the VFS section and add an independent environment
+  section with source locations, catalog reference, and availability. Installer
+  copies in the two domains remain distinct; no combined menu is published.
+
+### Verification
+
+Local fixtures cover installer directories, canonical aliases, equal names,
+YAML multiline/nested metadata, malformed skills, additions/removals, same-size
+and body-only edits, unchanged responses, changed queries/access scope,
+symlink retargeting/loops/escapes, directory inventory entries, SHA-256 identity,
+aggregate limits, missing capabilities, stale recovery, denied grants, and a
+bounded unresponsive endpoint. Workflow tests replay source removal, preserve
+VFS entries, and retain the existing idle/queued admission boundary. Existing
+catalog retention and compaction checks remain applicable to both generic
+catalog keys.
+
+Relevant Rust library, CLI, and protocol suites pass. API and workflow exporters
+were run, and all affected TypeScript consumers regenerated; a second generation
+produced identical artifacts. TypeScript typechecks, consumer tests, and builds
+pass. The root `npm run check` stops at its `git diff --exit-code` generated-file
+check because the requested generated updates are intentionally uncommitted;
+regeneration stability and the remaining check stages were verified separately.
+No live or credentialed suites were run.

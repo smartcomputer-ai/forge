@@ -11,6 +11,7 @@ pub(crate) mod credential_injection;
 pub mod environment;
 pub mod environment_gateway;
 pub(crate) mod environment_resolver;
+mod environment_skills;
 pub mod gateway;
 pub mod roles;
 pub(crate) mod session_deletion;

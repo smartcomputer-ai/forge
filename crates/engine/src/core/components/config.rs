@@ -416,6 +416,9 @@ pub struct EnvironmentsFeature {
     /// execution remains gated by active environment capabilities.
     #[serde(default)]
     pub jobs: bool,
+    /// Independent environment skill discovery. Absent disables discovery.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skills: Option<EnvironmentSkillsFeature>,
 }
 
 impl Default for EnvironmentsFeature {
@@ -426,8 +429,23 @@ impl Default for EnvironmentsFeature {
             registration_keys: None,
             selection_tools: false,
             jobs: false,
+            skills: None,
         }
     }
+}
+
+/// Discovery scope resolved on the selected machine, never on the worker.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EnvironmentSkillsFeature {
+    /// Absolute session working directory; absent uses the endpoint default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub working_directory: Option<String>,
+    /// Absolute ancestor boundary. Absent scans only the working directory.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_root: Option<String>,
+    /// Additional absolute or working-directory-relative discovery roots.
+    #[serde(default)]
+    pub additional_roots: Vec<String>,
 }
 
 /// Grants remote MCP tools by declaring linked servers from the universe MCP

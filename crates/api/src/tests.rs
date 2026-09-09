@@ -2137,6 +2137,7 @@ impl AgentApiService for TestService {
         _params: SkillListParams,
     ) -> Result<AgentApiOutcome<SkillListResponse>, AgentApiError> {
         Ok(AgentApiOutcome::new(SkillListResponse {
+            environment: None,
             catalog_ref: Some(format!("sha256:{}", "5".repeat(64))),
             skills: vec![SkillListItem {
                 skill_id: "skill:one".to_owned(),

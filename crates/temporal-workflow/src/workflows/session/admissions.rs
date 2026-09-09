@@ -286,7 +286,7 @@ pub(super) fn preprocess_failure_to_admission_failure(
     }
 }
 
-fn should_refresh_runtime_projection_before_admitting(
+pub(super) fn should_refresh_runtime_projection_before_admitting(
     state: &CoreAgentState,
     command: &CoreAgentCommand,
 ) -> bool {
@@ -318,6 +318,13 @@ async fn refresh_runtime_projection_before_run(
         .start_activity(
             WorkflowActivities::runtime_projection_refresh,
             RuntimeProjectionRefreshActivityRequest {
+                environments: drive
+                    .state()
+                    .lifecycle
+                    .config
+                    .as_ref()
+                    .and_then(|config| config.features.environments.clone()),
+                active_environment_id: drive.state().environment.active_environment_id.clone(),
                 session_id: drive.session_id().clone(),
                 workspace_links: vfs
                     .map(|vfs| vfs.workspace_links.clone())

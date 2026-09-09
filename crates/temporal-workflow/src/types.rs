@@ -826,6 +826,10 @@ pub struct ToolPreparePromiseControlsActivityRequest {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RuntimeProjectionRefreshActivityRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environments: Option<engine::EnvironmentsFeature>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_environment_id: Option<engine::EnvironmentId>,
     pub session_id: SessionId,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub workspace_links: Vec<engine::WorkspaceLink>,
