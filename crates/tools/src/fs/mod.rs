@@ -227,9 +227,34 @@ pub struct FsRangedRead {
     pub truncated: bool,
 }
 
+/// Prepared workspace publication. Preparation captures the expected revision before
+/// any environment bytes move; commit never merges concurrent workspace edits.
+#[async_trait]
+pub trait VfsCaptureTarget: Send + Sync {
+    fn blob_graph(&self) -> Option<Arc<dyn engine::storage::BlobGraphStore>> {
+        None
+    }
+    async fn commit(&self, entry: ::vfs::VfsEntry) -> FsResult<()>;
+}
+
 #[async_trait]
 pub trait FileSystem: Send + Sync {
     fn access_policy(&self) -> FileAccessPolicy;
+
+    async fn export_vfs(&self, _path: &FsPath) -> FsResult<::vfs::VfsEntry> {
+        Err(FsError::Unsupported {
+            message: "filesystem is not a VFS source".into(),
+        })
+    }
+    async fn prepare_vfs_capture(
+        &self,
+        _path: &FsPath,
+        _replace: bool,
+    ) -> FsResult<Box<dyn VfsCaptureTarget>> {
+        Err(FsError::Unsupported {
+            message: "filesystem is not a writable VFS target".into(),
+        })
+    }
 
     async fn read_file(&self, path: &FsPath) -> FsResult<Vec<u8>>;
 

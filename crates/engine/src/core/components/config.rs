@@ -169,6 +169,8 @@ pub struct VfsFeature {
     /// `edit` adds the write tools. Per-path writability is defined and
     /// enforced by each workspace link's own access — this field shapes which tools
     /// exist, not path permissions.
+    /// With environments granted, read-only tools also expose materialize;
+    /// editing tools additionally expose capture into writable workspace links.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tools: Option<VfsToolSurface>,
     /// Prompt-instruction sourcing from the VFS; absent = prompts are not

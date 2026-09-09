@@ -415,8 +415,46 @@ impl LinkedVfsFileSystem {
     }
 }
 
+fn selected_entry(
+    manifest: &::vfs::VfsSnapshotManifest,
+    path: &FsPath,
+) -> FsResult<::vfs::VfsEntry> {
+    Ok(
+        match ::vfs::lookup_snapshot_path(manifest, &fs_path_to_vfs_path(path)?)
+            .map_err(|e| map_vfs_error(e, path))?
+        {
+            ::vfs::VfsNode::File(file) => ::vfs::VfsEntry::File(file.clone()),
+            ::vfs::VfsNode::Directory(directory) => ::vfs::VfsEntry::Directory(directory.clone()),
+        },
+    )
+}
+struct WorkspaceCaptureTarget {
+    filesystem: VfsWorkspaceFileSystem,
+    current: ::vfs::VfsWorkspaceRecord,
+    manifest: ::vfs::VfsSnapshotManifest,
+    path: FsPath,
+}
+#[async_trait]
+impl crate::fs::VfsCaptureTarget for WorkspaceCaptureTarget {
+    fn blob_graph(&self) -> Option<Arc<dyn BlobGraphStore>> {
+        self.filesystem.blob_graph.clone()
+    }
+    async fn commit(&self, entry: ::vfs::VfsEntry) -> FsResult<()> {
+        let mut manifest = self.manifest.clone();
+        ::vfs::replace_manifest_entry(&mut manifest, &fs_path_to_vfs_path(&self.path)?, entry)
+            .map_err(|e| map_vfs_error(e, &self.path))?;
+        self.filesystem
+            .commit_head(self.current.clone(), manifest)
+            .await
+    }
+}
+
 #[async_trait]
 impl FileSystem for VfsSnapshotFileSystem {
+    async fn export_vfs(&self, path: &FsPath) -> FsResult<::vfs::VfsEntry> {
+        selected_entry(&self.manifest, path)
+    }
+
     fn access_policy(&self) -> FileAccessPolicy {
         FileAccessPolicy::FullReadOnly
     }
@@ -485,6 +523,46 @@ impl FileSystem for VfsSnapshotFileSystem {
 
 #[async_trait]
 impl FileSystem for VfsWorkspaceFileSystem {
+    async fn export_vfs(&self, path: &FsPath) -> FsResult<::vfs::VfsEntry> {
+        let (_, manifest) = self.read_head().await?;
+        selected_entry(&manifest, path)
+    }
+    async fn prepare_vfs_capture(
+        &self,
+        path: &FsPath,
+        replace: bool,
+    ) -> FsResult<Box<dyn crate::fs::VfsCaptureTarget>> {
+        let (current, manifest) = self.read_head().await?;
+        let vfs_path = fs_path_to_vfs_path(path)?;
+        match ::vfs::lookup_snapshot_path(&manifest, &vfs_path) {
+            Ok(_) if !replace => return Err(FsError::AlreadyExists { path: path.clone() }),
+            Ok(_) | Err(::vfs::VfsError::NotFound { .. }) => (),
+            Err(e) => return Err(map_vfs_error(e, path)),
+        }
+        if !vfs_path.components().is_empty() {
+            let components = vfs_path.components();
+            let parent =
+                ::vfs::VfsPath::parse(format!("/{}", components[..components.len() - 1].join("/")))
+                    .map_err(|e| map_vfs_error(e.into(), path))?;
+            match ::vfs::lookup_snapshot_path(&manifest, &parent)
+                .map_err(|e| map_vfs_error(e, path))?
+            {
+                ::vfs::VfsNode::Directory(_) => (),
+                _ => {
+                    return Err(FsError::InvalidInput {
+                        message: "capture parent is not a directory".into(),
+                    });
+                }
+            }
+        }
+        Ok(Box::new(WorkspaceCaptureTarget {
+            filesystem: self.clone(),
+            current,
+            manifest,
+            path: path.clone(),
+        }))
+    }
+
     fn access_policy(&self) -> FileAccessPolicy {
         FileAccessPolicy::FullReadWrite
     }
@@ -589,6 +667,32 @@ impl FileSystem for VfsWorkspaceFileSystem {
 
 #[async_trait]
 impl FileSystem for LinkedVfsFileSystem {
+    async fn export_vfs(&self, path: &FsPath) -> FsResult<::vfs::VfsEntry> {
+        let route = self
+            .route_link(path)?
+            .ok_or_else(|| FsError::InvalidInput {
+                message: "select one linked VFS workspace or snapshot".into(),
+            })?;
+        self.file_system_for_link(&route.link, path)
+            .await?
+            .export_vfs(&route.inner_path)
+            .await
+    }
+    async fn prepare_vfs_capture(
+        &self,
+        path: &FsPath,
+        replace: bool,
+    ) -> FsResult<Box<dyn crate::fs::VfsCaptureTarget>> {
+        let route = self
+            .route_link(path)?
+            .ok_or_else(|| FsError::InvalidInput {
+                message: "select one linked VFS workspace".into(),
+            })?;
+        self.writable_workspace_for_link(&route.link, path)?
+            .prepare_vfs_capture(&route.inner_path, replace)
+            .await
+    }
+
     fn access_policy(&self) -> FileAccessPolicy {
         if self.links.iter().any(|link| link.is_writable()) {
             FileAccessPolicy::FullReadWrite
@@ -1038,6 +1142,66 @@ mod tests {
                     id: workspace_id.to_string(),
                 })
         }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn capture_publication_replaces_boundary_and_rejects_concurrent_workspace_edits() {
+        let store = Arc::new(TestWorkspaceStore::default());
+        let (blobs, fs, _, _) = test_workspace_fs(
+            store,
+            vec![
+                ::vfs::InlineFile::new("selected/old", b"old".to_vec()).unwrap(),
+                ::vfs::InlineFile::new("sibling", b"keep".to_vec()).unwrap(),
+            ],
+        )
+        .await;
+        let blob = blobs.put_bytes(b"captured".to_vec()).await.unwrap();
+        let entry = ::vfs::VfsEntry::File(::vfs::VfsFile {
+            blob_ref: blob,
+            size_bytes: 8,
+            executable: true,
+            media_type: None,
+        });
+        let selected = FsPath::new("/selected").unwrap();
+        assert!(matches!(
+            fs.prepare_vfs_capture(&selected, false).await,
+            Err(FsError::AlreadyExists { .. })
+        ));
+        let target = fs.prepare_vfs_capture(&selected, true).await.unwrap();
+        fs.write_file(&FsPath::new("/sibling").unwrap(), b"concurrent".to_vec())
+            .await
+            .unwrap();
+        assert!(target.commit(entry.clone()).await.is_err());
+        assert_eq!(
+            fs.read_file(&FsPath::new("/selected/old").unwrap())
+                .await
+                .unwrap(),
+            b"old"
+        );
+        fs.prepare_vfs_capture(&selected, true)
+            .await
+            .unwrap()
+            .commit(entry.clone())
+            .await
+            .unwrap();
+        assert_eq!(fs.export_vfs(&selected).await.unwrap(), entry);
+        assert_eq!(
+            fs.read_file(&FsPath::new("/sibling").unwrap())
+                .await
+                .unwrap(),
+            b"concurrent"
+        );
+        let read_only = crate::fs::read_only::ReadOnlyFileSystem::new(fs.clone());
+        assert!(matches!(
+            read_only.prepare_vfs_capture(&selected, true).await,
+            Err(FsError::PermissionDenied { .. })
+        ));
+        assert_eq!(read_only.export_vfs(&selected).await.unwrap(), entry);
+        let root = fs.prepare_vfs_capture(&FsPath::root(), true).await.unwrap();
+        assert!(
+            root.commit(entry).await.is_err(),
+            "a workspace root cannot become a file"
+        );
     }
 
     async fn test_fs() -> VfsSnapshotFileSystem {

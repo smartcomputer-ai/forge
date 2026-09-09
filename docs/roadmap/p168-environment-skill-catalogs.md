@@ -1,6 +1,6 @@
 # P168 — Environment Skill Catalogs and Catalog Refresh
 
-Status: proposed, 2026-09-08. Design only; not implemented.
+Status: catalog integration proposed; generic conditional envd scans implemented, 2026-09-09.
 
 Discover skills installed inside the selected environment, including files
 written by external installers, and make them available to the model alongside
@@ -235,6 +235,15 @@ use the transfer facility's bounded streaming instead of expanding the small
 scan response into a mandatory transfer transport. File reuse preserves full
 replacement semantics, including removals; it does not introduce merging.
 
+Provide bounded inventory batching/streaming for the
+[large-tree transfer path](p166-vfs-environment-transfer.md#large-trees-and-one-logical-transfer),
+sharing traversal and entry semantics with small catalog scans. Operation
+completion must establish whether the entire selected inventory was observed;
+independent truncated scans cannot be combined into a supposedly complete
+tree. Transfer operations own any retained inventory and byte state needed
+across requests. This does not require persistent watches or scan handles for
+ordinary small per-turn skill discovery.
+
 ### Conditional scans and cache correctness
 
 A fingerprint identifies a complete observed result for the same query and
@@ -394,6 +403,7 @@ Progress:
 
 - [ ] Source-aware catalogs, configuration, and shared parser implemented.
 - [ ] Effective catalog composition and managed-copy preference implemented.
-- [ ] Generic envd conditional filesystem scans and fallback implemented.
+- [x] Generic envd conditional scans: roots/patterns, metadata or raw content, optional SHA-256, complete fingerprints and partial diagnostics.
+- [ ] Catalog fallback for environments without the scan capability.
 - [ ] Shared publication and within-run refresh implemented.
 - [ ] Installer-layout, availability, cache, and replay checks pass.

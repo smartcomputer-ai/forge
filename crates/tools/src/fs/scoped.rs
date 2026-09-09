@@ -79,6 +79,18 @@ impl ScopedFileSystem {
 
 #[async_trait]
 impl FileSystem for ScopedFileSystem {
+    async fn export_vfs(&self, path: &FsPath) -> FsResult<::vfs::VfsEntry> {
+        self.inner.export_vfs(&self.resolved_path(path)?).await
+    }
+    async fn prepare_vfs_capture(
+        &self,
+        path: &FsPath,
+        replace: bool,
+    ) -> FsResult<Box<dyn crate::fs::VfsCaptureTarget>> {
+        let resolved = self.resolved_path(path)?;
+        self.ensure_write_allowed(path, &resolved)?;
+        self.inner.prepare_vfs_capture(&resolved, replace).await
+    }
     fn access_policy(&self) -> FileAccessPolicy {
         if self.writable && !self.inner.access_policy().is_read_only() {
             FileAccessPolicy::ScopedReadWrite {

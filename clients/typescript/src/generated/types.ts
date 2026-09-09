@@ -2193,6 +2193,9 @@ export interface VfsFeature {
   /**
    * Agent-facing filesystem tool surface; absent = no fs tools. Per-path
    * writability is defined by each workspace link's own access.
+   * With the environments feature granted, `readOnly` also exposes
+   * `vfs_materialize`; `edit` additionally exposes `vfs_capture`.
+   * Prompt/skill sourcing alone does not grant transfer tools.
    */
   tools?: VfsToolSurface | null;
   version?: number;

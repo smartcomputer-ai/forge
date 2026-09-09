@@ -1,7 +1,6 @@
 # P166 — VFS–Environment Transfer: Materialize and Capture
 
-Status: initial bounded environment endpoint slice implemented, 2026-09-08.
-VFS/storage and runtime integration remain proposed.
+Status: generic scans, incremental transfer sessions, streaming CAS, and VFS model tools implemented, 2026-09-09. Environment-owned mappings and their UI remain proposed.
 
 Provide explicit transfer between Lightspeed's VFS and an
 execution environment. The same operations should handle source trees, scripts,
@@ -483,6 +482,56 @@ bidirectional synchronization protocol; a changed large file transfers in full.
 Report observed, reused, and transferred totals separately so savings can be
 verified without claiming that a reused file was never read.
 
+### Large trees and one logical transfer
+
+Treat 2 GB and 20 GB selected trees as normal supported workloads, including
+individual files larger than an RPC payload. A logical materialize/capture
+operation spans bounded protocol exchanges; it must not require holding or
+sending the entire tree, or the largest file, in one request or response.
+Whole-file reuse and large-transfer support are requirements of the transfer
+foundation, not optional optimizations after integrating VFS and mappings.
+
+The transfer sequence is:
+
+1. Establish an operation identity and its fixed source/destination scope.
+   Materialization resolves a VFS snapshot; capture observes a selected
+   environment tree without claiming an atomic filesystem snapshot.
+2. Enumerate paths, kinds, sizes, executable flags, and file digests using the
+   shared scan/inventory machinery. Read large inventories in bounded batches
+   or streams, with completion and mutation diagnostics for the full inventory.
+3. Compare content identities against verified environment reuse candidates
+   or available CAS blobs, then negotiate only missing file content.
+4. Transfer missing content in bounded chunks with bounded concurrency and
+   backpressure. Large files are streamed and hashed incrementally; their
+   identity remains SHA-256 of the complete raw bytes. Network chunking does
+   not require a new chunk-addressed CAS format or block-level delta algorithm.
+5. Verify the complete intended result, then publish the selected target or
+   capture reference. Record completion so a lost response can be recovered
+   without repeating a successful replacement. Clean up or expire abandoned
+   staging and retain reusable content through completion.
+
+The model or UI starts one operation and receives progress/completion through
+the existing runtime facilities. It does not enumerate files or drive byte
+chunks through model context. Retrying interrupted transfer work should reuse
+verified completed blobs; a retry may restart an incomplete file in the first
+version. A scan fingerprint alone does not retain bytes or make separately
+observed inventory pages consistent. Bind transfer reads to expected digests,
+and fail or restart a capture observation when detected mutations invalidate it.
+
+Bound message size and memory independently of configurable operation quotas
+for total bytes, entries, staging disk, and lifetime. Do not extend the current
+8 MiB inline endpoint by simply raising its constant or splitting the selected
+tree into independently published replacements. Stage the full intended result
+and remove destination-only entries only as part of its successful publication.
+On filesystems without copy-on-write cloning, staging can require local copying
+and space for both the old and new trees even when few network bytes change.
+
+Streaming must extend through the runtime and CAS/object-store adapters. The
+current `BlobStore::put_bytes(Vec<u8>)` and `read_bytes() -> Vec<u8>` paths buffer
+a complete blob; using them unchanged would still buffer a large individual
+file even if environment transport is chunked. Provide a bounded storage path
+and spool large inventories where needed, with all I/O outside the engine.
+
 ## Environment support
 
 Put efficient transfer helpers in envd and describe their capability and wire
@@ -619,90 +668,94 @@ system packages, external tools, or credentials.
 9. Regenerate API and workflow contracts when their wire surfaces change.
    Update the workspace/environment guides and README when the feature ships.
 
-### Delivered first endpoint slice
+### Delivered transfer foundation
 
-`environment-protocol::data::transfer` defines `fs/materialize` and `fs/capture`,
-with typed daemon dispatch and `EnvironmentDataClient` methods. These are
-standalone environment-side file/tree primitives, not yet VFS operations.
-Inputs/results contain raw `ByteChunk` bytes and executable flags, with explicit
-root and directory entries (including empty directories). No VFS IDs, storage
-access, model tools, API schemas, or workflow history changes are involved.
+The implementation now uses `fs/scan` and `fs/transfer`, typed protocol/client
+DTOs, bounded inventories, whole-file SHA-256 identities and missing-content
+negotiation. File chunks are 256 KiB; scan/staging advances hash or copy at most
+4 MiB. Tree/file quotas are independent of these transport bounds. Filesystem
+and PostgreSQL/object CAS support bounded range reads and streamed verified
+writes; reused CAS refs renew admission grace. Full capture inventories are
+spooled for receipt recovery, and completed operations release payload buffers
+and open descriptors.
 
-The initial transport is a **single bounded inline payload**, not streaming or
-missing-content negotiation. Mandatory caller limits cannot exceed 1,024 entries
-(including the root), depth 32 (root depth zero), 8 MiB per file and in total,
-and 30 seconds. Relative inventory paths are at most 4,096 UTF-8 bytes. Zero byte
-limits allow empty content; zero entries or duration are invalid. Limit failures
-return errors, never partial capture results. Bounds apply to accepted decoded
-content; JSON/base64 framing and transport decoding are additional memory costs.
-The cooperative deadline is checked during traversal, validation, byte chunks,
-and immediately before publication; it cannot interrupt a blocking kernel syscall
-or guarantee hard wall-clock completion of failure cleanup.
+`vfs_materialize` and `vfs_capture` are available through the existing VFS and
+environment grants on every provider surface. Their logical IDs are
+`vfs.materialize` and `vfs.capture`. Explicit built-in resource requirements
+load both VFS links and the selected environment and govern readiness and
+selection-related batch rules. Tool family names do not determine runtime
+resource dependencies. Capture saves a snapshot before revision-checked
+workspace publication and returns its reference if publication conflicts.
+The stored tool result records a containment edge to retain the capture even
+when workspace publication fails.
+Profiles and sessions share the existing VFS/environment feature grants; no
+transfer-specific setting is added. Their shared editor explains the derived
+materialize/capture availability beside VFS file tools. Transfer orchestration
+receives both contexts directly, outside either filesystem domain's ownership.
+Transfer tools use the generic bulk execution budget, not an interactive RPC
+budget. Ordinary file-reading tools and their result storage remain unchanged.
 
-The implementation requires Linux `openat2`, `renameat2`, and mounted `/proc`.
-Other platforms return `Unsupported` and do not advertise transfer capabilities.
-Unsupported Linux kernels/filesystems fail explicitly without an unsafe fallback.
-Separate capability flags default false for older endpoints; read-only daemons
-advertise capture only and reject materialization. Clients must consult the
-handshake capability flags before relying on the new operations.
+VFS tool composition now assembles ordinary file tools and eligible transfers
+in one method; the shared registrar consumes that complete family. Built-in
+operations use `Materialize` and `Capture`, with their VFS domain supplied
+separately. Tool identities and names are handled alongside other VFS tools;
+public names, compatibility aliases, and profile/session grants are unchanged.
 
-Selected environment paths retain ordinary absolute-host-path / relative-to-cwd
-semantics and must fall within the configured filesystem root. Root establishment
-rejects symlinks; subsequent traversal uses descriptor-relative no-follow,
-beneath-root opens and rejects mount crossings. Open descriptors pin directories
-and objects against pathname substitution; external directory renames can change
-the pathname of a pinned directory during an operation. This does not isolate
-against privileged processes or other processes with access to daemon-private
-staging directories. Symlinks at the selected root, ancestors, or inside a capture
-are conservatively rejected, including dangling links. Device nodes, sockets,
-FIFOs, and non-UTF8 filenames are explicitly unsupported. Symlink expansion as
-specified above remains deferred. Regular-file bytes can be arbitrary binary data;
-only the executable boolean is preserved (materialized files use 0644 or 0755).
+Linux and macOS share the transfer state machine and descriptor-relative
+traversal. Only publication and native metadata access differ inside the OS
+backend. Staging is private at creation; replacement does not require reading
+old content; file/directory swaps are atomic. The old inline methods are retained
+as small-copy adapters. There is no `/proc` or `openat2` dependency. Windows has
+no implementation yet, but the protocol and shared state machine contain no
+Unix descriptor or permission-bit types.
 
-Materialization requires existing destination parents and cannot replace the
-configured filesystem root. Inventory parents must precede children; duplicate,
-absolute, traversal, and malformed relative entry paths fail validation. Content
-is built in a private sibling staging directory before publication. Atomic
-`RENAME_NOREPLACE` implements `error`; `RENAME_EXCHANGE` implements replacement
-of existing files or nonempty directories, including file/directory transitions.
-There is no deletion gap or overlay. Destination-only entries disappear from the
-selected target; siblings remain untouched. Pre-publication failures preserve the
-old target and clean up staging. Publication is atomic visibility, not crash-durable
-storage: this slice does not fsync content or provide crash recovery/receipts.
+Operation IDs bind retries. The daemon persists completion receipts, rejects
+re-execution of interrupted operations after restart, cleans retired trees in
+the background and expires abandoned operations. Partial file uploads can be
+retried within a live daemon; transparent restart/resume of in-flight file
+staging is deliberately not claimed. There is no block-level delta protocol.
 
-**Replacement retains the previous complete target** as `tree` in a private
-sibling directory returned in `retiredDirectory`. The caller owns its cleanup;
-this avoids deleting an arbitrarily large old tree within the transfer deadline.
-Repeated replacements without cleanup consume disk. This is an explicit endpoint
-resource obligation, not a durable transfer receipt or VFS storage owner. A lost
-response can leave an undiscovered retirement directory; automatic reclamation
-and retry-safe operation identities remain deferred. No post-publication cleanup
-error is misreported as a failed transfer.
+The current behavior and exact limits are documented in
+[the transfer guide](../documentation/environments/vfs-transfer.md). Configured
+root aliases and mounted directories are supported; user-selected symlinks and
+special files are rejected. Symlink expansion remains deferred. Capture remains
+a checked live observation rather than an atomic OS snapshot.
 
-Capture reads pinned regular files and directories, checks metadata before/after
-reading, and reopens all observed entries from the root for a final metadata
-comparison. Observable changes, missing entries, unsupported objects, and exceeded
-limits fail the whole response. It remains a live observation, not an atomic
-snapshot; callers requiring consistency must stabilize the source.
+Tests exercise the serialized RPC client/daemon/VFS/CAS path, files above the old
+inline limit, empty directories, rename/mode/delete reuse, same-ID page/chunk
+retries, lost completion responses, restart receipts, changed capture sources,
+read-only routes, staging permissions, write-only replacement targets, malformed
+inputs, overlapping destinations, and workspace publication conflicts. A sparse
+20 GiB file verifies bounded scan advancement without a whole-file allocation;
+this is not a full 20 GiB throughput benchmark.
 
-Focused tests cover binary file/tree round trips, empty directories, executable
-flags, read-only capability/dispatch behavior, selected-target collision and full
-replacement, sibling preservation, destination-only removal, unsafe paths/links,
-special entries, limits, deadline checks, metadata change detection, and a staging
-I/O failure that leaves the old tree intact. CAS ownership/retention, VFS subtree
-publication, actual concurrent mutation stress, transport interruption/retry
-receipts, reuse, streaming, runtime grants, mappings, propagation, profiles, and UI
-are not delivered by this slice. Larger progress items below remain unchecked.
+Hosted dispatch tests additionally exercise standalone transfer calls through
+the per-call and batch paths on every provider surface, including workspace
+publication, result retention, completed retries, missing resources and read-only
+links. Profile/session grant tests cover absent, sourcing-only, read-only and
+editing VFS configurations, and environment readiness/batch tests include both
+transfer tools.
+
+The live transfer suite runs named profiles through a real Temporal worker,
+PostgreSQL/MinIO storage, and a registered daemon behind the environment
+gateway. It exercises all three provider tool surfaces, the VFS/environment
+grant matrix, multi-page inventories, executable files, replacement, content
+reuse, and capture of 10 MiB binary files into object storage. Conditional
+scans use the same registered route. A separate PostgreSQL live test covers
+inline and multipart stream ingestion, bounded range reads, deduplicated
+admission, and rejection of corrupt streams.
+Mixed small/large file regressions verify that every scan and staging read
+fits the remaining step allowance, including a partially consumed read buffer.
 
 Progress:
 
-- [x] Bounded inline environment endpoint primitive and typed client, with focused file/tree tests.
-
-- [ ] Transfer contracts and storage ownership settled.
-- [ ] Environment helpers and runtime operations implemented.
-- [ ] Whole-file reuse and missing-content transfer verified in both directions.
-- [ ] Environment materializations, automatic updates, and edit-then-use ordering implemented.
-- [ ] Profile provisioning defaults and environment settings UI implemented.
-- [ ] API/tool surfaces and workspace integration implemented.
-- [ ] Capability derivation and file/subtree transfer behavior verified.
-- [ ] Focused integration, retry, and retention checks pass.
+- [x] Generic filesystem scan and bounded transfer session contracts.
+- [x] Linux/macOS environment helpers and typed client operations.
+- [x] Whole-file reuse and missing-content transfer in both directions.
+- [x] Streaming filesystem/object CAS and bounded large-file processing.
+- [x] Completion receipts, interruption handling, cleanup and expiry.
+- [x] VFS model tools, file/subtree selection and revision-checked publication.
+- [ ] Environment materializations, automatic updates, and edit-then-use ordering.
+- [ ] Profile provisioning defaults and environment settings UI.
+- [ ] Dedicated public management-API transfer methods and transfer UI.
+- [ ] Full multi-GB throughput and disk-pressure benchmarking.

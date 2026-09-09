@@ -109,6 +109,12 @@ pub struct EnvironmentCapabilities {
     /// Bounded inline capture; absent on older endpoints.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub filesystem_capture: bool,
+    /// Paged transfer sessions with whole-file digests and bounded byte exchanges.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub filesystem_transfer: bool,
+    /// Bounded filesystem inventory observations with conditional fingerprints.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub filesystem_scan: bool,
     /// Bounded staged materialization; false for read-only endpoints.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub filesystem_materialize: bool,

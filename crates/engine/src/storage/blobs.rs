@@ -117,9 +117,73 @@ impl BlobEdge {
     }
 }
 
+/// Pull-based raw byte source. Implementations honor the requested bound and return
+/// an empty chunk at EOF; transport framing never contributes to CAS identity.
+#[async_trait]
+pub trait BlobSource: Send {
+    async fn read_chunk(&mut self, max_bytes: usize) -> Result<Vec<u8>, BlobStoreError>;
+}
+
 #[async_trait]
 pub trait BlobStore: Send + Sync {
     async fn put_bytes(&self, bytes: Vec<u8>) -> Result<BlobRef, BlobStoreError>;
+
+    /// Bounded range access for transfer. Ranges are verified by the receiving whole-file
+    /// hasher. The fallback deliberately rejects large blobs instead of buffering them.
+    async fn read_blob_range(
+        &self,
+        blob_ref: &BlobRef,
+        offset: u64,
+        max_bytes: usize,
+    ) -> Result<Vec<u8>, BlobStoreError> {
+        if max_bytes > 1024 * 1024 || self.stat_blob(blob_ref).await?.byte_len > 8 * 1024 * 1024 {
+            return Err(BlobStoreError::Store {
+                message: "streaming blob reads unsupported by this store".into(),
+            });
+        }
+        let bytes = self.read_bytes(blob_ref).await?;
+        let start = offset.min(bytes.len() as u64) as usize;
+        Ok(bytes[start..start.saturating_add(max_bytes).min(bytes.len())].to_vec())
+    }
+
+    /// Publish only after length and raw SHA-256 verification. Persistent stores stream
+    /// to a temporary file or multipart object; they never buffer the whole payload.
+    async fn put_stream(
+        &self,
+        expected: &BlobRef,
+        size: u64,
+        source: &mut dyn BlobSource,
+    ) -> Result<BlobRef, BlobStoreError> {
+        if size > 8 * 1024 * 1024 {
+            return Err(BlobStoreError::Store {
+                message: "streaming blob writes unsupported by this store".into(),
+            });
+        }
+        let mut bytes = Vec::new();
+        loop {
+            let chunk = source.read_chunk(256 * 1024).await?;
+            if chunk.is_empty() {
+                break;
+            }
+            if chunk.len() > 256 * 1024 || bytes.len() as u64 + chunk.len() as u64 > size {
+                return Err(BlobStoreError::Store {
+                    message: "blob stream exceeded declared size/chunk bound".into(),
+                });
+            }
+            bytes.extend(chunk);
+        }
+        if bytes.len() as u64 != size || BlobRef::from_bytes(&bytes) != *expected {
+            return Err(BlobStoreError::Store {
+                message: "blob stream length/digest mismatch".into(),
+            });
+        }
+        self.put_bytes(bytes).await
+    }
+
+    /// Renew admission grace for reused content before publishing a new reference.
+    async fn retain_blob(&self, blob_ref: &BlobRef) -> Result<(), BlobStoreError> {
+        self.stat_blob(blob_ref).await.map(|_| ())
+    }
 
     /// Stores a batch of blobs and returns one ref per input blob, preserving
     /// input order.
@@ -200,6 +264,28 @@ where
 {
     async fn put_bytes(&self, bytes: Vec<u8>) -> Result<BlobRef, BlobStoreError> {
         self.as_ref().put_bytes(bytes).await
+    }
+
+    async fn read_blob_range(
+        &self,
+        blob_ref: &BlobRef,
+        offset: u64,
+        max_bytes: usize,
+    ) -> Result<Vec<u8>, BlobStoreError> {
+        self.as_ref()
+            .read_blob_range(blob_ref, offset, max_bytes)
+            .await
+    }
+    async fn put_stream(
+        &self,
+        expected: &BlobRef,
+        size: u64,
+        source: &mut dyn BlobSource,
+    ) -> Result<BlobRef, BlobStoreError> {
+        self.as_ref().put_stream(expected, size, source).await
+    }
+    async fn retain_blob(&self, blob_ref: &BlobRef) -> Result<(), BlobStoreError> {
+        self.as_ref().retain_blob(blob_ref).await
     }
 
     async fn put_many(&self, blobs: Vec<Vec<u8>>) -> Result<Vec<BlobRef>, BlobStoreError> {
@@ -483,6 +569,28 @@ where
         Ok(blob_ref)
     }
 
+    async fn read_blob_range(
+        &self,
+        blob_ref: &BlobRef,
+        offset: u64,
+        max_bytes: usize,
+    ) -> Result<Vec<u8>, BlobStoreError> {
+        self.inner
+            .read_blob_range(blob_ref, offset, max_bytes)
+            .await
+    }
+    async fn put_stream(
+        &self,
+        expected: &BlobRef,
+        size: u64,
+        source: &mut dyn BlobSource,
+    ) -> Result<BlobRef, BlobStoreError> {
+        self.inner.put_stream(expected, size, source).await
+    }
+    async fn retain_blob(&self, blob_ref: &BlobRef) -> Result<(), BlobStoreError> {
+        self.inner.retain_blob(blob_ref).await
+    }
+
     async fn put_many(&self, blobs: Vec<Vec<u8>>) -> Result<Vec<BlobRef>, BlobStoreError> {
         let mut expected = Vec::with_capacity(blobs.len());
         let mut cache_bytes = Vec::with_capacity(blobs.len());
@@ -727,6 +835,18 @@ impl BlobStore for InMemoryBlobStore {
             });
         }
         Ok(bytes)
+    }
+
+    async fn retain_blob(&self, blob_ref: &BlobRef) -> Result<(), BlobStoreError> {
+        let mut inner = self.inner.write().expect("blob store lock poisoned");
+        if !inner.bytes_by_ref.contains_key(blob_ref) {
+            return Err(BlobStoreError::NotFound {
+                blob_ref: blob_ref.clone(),
+            });
+        }
+        let touched = inner.touched_at_ms.entry(blob_ref.clone()).or_default();
+        *touched = (*touched).max((self.clock)());
+        Ok(())
     }
 
     async fn has_blob(&self, blob_ref: &BlobRef) -> Result<bool, BlobStoreError> {

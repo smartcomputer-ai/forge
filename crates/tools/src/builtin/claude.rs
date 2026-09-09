@@ -64,7 +64,9 @@ pub(super) fn description(tool: BuiltinTool, scoped_paths: bool) -> ToolResult<S
             "Kills a running background command by its ID and returns the output it produced since the last call."
         }
         (
-            BuiltinToolOperation::ListDir
+            BuiltinToolOperation::Materialize
+            | BuiltinToolOperation::Capture
+            | BuiltinToolOperation::ListDir
             | BuiltinToolOperation::JobSubmit
             | BuiltinToolOperation::JobRun
             | BuiltinToolOperation::JobRead,
@@ -280,7 +282,9 @@ pub(super) fn input_schema(tool: BuiltinTool) -> ToolResult<Value> {
             ["shell_id"],
         ),
         (
-            BuiltinToolOperation::ListDir
+            BuiltinToolOperation::Materialize
+            | BuiltinToolOperation::Capture
+            | BuiltinToolOperation::ListDir
             | BuiltinToolOperation::JobSubmit
             | BuiltinToolOperation::JobRun
             | BuiltinToolOperation::JobRead,
@@ -396,7 +400,9 @@ pub(super) async fn invoke_json(
             encode_output(&result, visible)
         }
         (
-            BuiltinToolOperation::ListDir
+            BuiltinToolOperation::Materialize
+            | BuiltinToolOperation::Capture
+            | BuiltinToolOperation::ListDir
             | BuiltinToolOperation::JobSubmit
             | BuiltinToolOperation::JobRun
             | BuiltinToolOperation::JobRead,

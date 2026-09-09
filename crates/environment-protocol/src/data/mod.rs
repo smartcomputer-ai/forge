@@ -8,3 +8,6 @@ pub mod jobs;
 pub mod methods;
 pub mod process;
 pub mod transfer;
+
+pub mod inventory;
+pub mod transfer_session;

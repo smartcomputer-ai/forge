@@ -31,3 +31,6 @@ pub const ENV_IDLE_METHOD: &str = "env/idle";
 
 pub const FS_MATERIALIZE_METHOD: &str = "fs/materialize";
 pub const FS_CAPTURE_METHOD: &str = "fs/capture";
+
+pub const FS_SCAN_METHOD: &str = "fs/scan";
+pub const FS_TRANSFER_METHOD: &str = "fs/transfer";

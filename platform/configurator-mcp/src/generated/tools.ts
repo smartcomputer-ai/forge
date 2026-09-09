@@ -1082,7 +1082,7 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                   "type": "null"
                 }
               ],
-              "description": "Agent-facing filesystem tool surface; absent = no fs tools. Per-path\nwritability is defined by each workspace link's own access."
+              "description": "Agent-facing filesystem tool surface; absent = no fs tools. Per-path\nwritability is defined by each workspace link's own access.\nWith the environments feature granted, `readOnly` also exposes\n`vfs_materialize`; `edit` additionally exposes `vfs_capture`.\nPrompt/skill sourcing alone does not grant transfer tools."
             },
             "version": {
               "default": 1,
@@ -1967,7 +1967,7 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                   "type": "null"
                 }
               ],
-              "description": "Agent-facing filesystem tool surface; absent = no fs tools. Per-path\nwritability is defined by each workspace link's own access."
+              "description": "Agent-facing filesystem tool surface; absent = no fs tools. Per-path\nwritability is defined by each workspace link's own access.\nWith the environments feature granted, `readOnly` also exposes\n`vfs_materialize`; `edit` additionally exposes `vfs_capture`.\nPrompt/skill sourcing alone does not grant transfer tools."
             },
             "version": {
               "default": 1,
@@ -4401,7 +4401,7 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                   "type": "null"
                 }
               ],
-              "description": "Agent-facing filesystem tool surface; absent = no fs tools. Per-path\nwritability is defined by each workspace link's own access."
+              "description": "Agent-facing filesystem tool surface; absent = no fs tools. Per-path\nwritability is defined by each workspace link's own access.\nWith the environments feature granted, `readOnly` also exposes\n`vfs_materialize`; `edit` additionally exposes `vfs_capture`.\nPrompt/skill sourcing alone does not grant transfer tools."
             },
             "version": {
               "default": 1,
@@ -6279,7 +6279,7 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                   "type": "null"
                 }
               ],
-              "description": "Agent-facing filesystem tool surface; absent = no fs tools. Per-path\nwritability is defined by each workspace link's own access."
+              "description": "Agent-facing filesystem tool surface; absent = no fs tools. Per-path\nwritability is defined by each workspace link's own access.\nWith the environments feature granted, `readOnly` also exposes\n`vfs_materialize`; `edit` additionally exposes `vfs_capture`.\nPrompt/skill sourcing alone does not grant transfer tools."
             },
             "version": {
               "default": 1,
@@ -7470,7 +7470,7 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
                   "type": "null"
                 }
               ],
-              "description": "Agent-facing filesystem tool surface; absent = no fs tools. Per-path\nwritability is defined by each workspace link's own access."
+              "description": "Agent-facing filesystem tool surface; absent = no fs tools. Per-path\nwritability is defined by each workspace link's own access.\nWith the environments feature granted, `readOnly` also exposes\n`vfs_materialize`; `edit` additionally exposes `vfs_capture`.\nPrompt/skill sourcing alone does not grant transfer tools."
             },
             "version": {
               "default": 1,

@@ -1242,6 +1242,7 @@ version = "0.2.0"
 dependencies = [
  "anyhow",
  "api",
+ "async-trait",
  "clap",
  "dotenvy",
  "ed25519-dalek",
@@ -1264,12 +1265,14 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "store-fs",
  "tar",
  "tempfile",
  "thiserror 1.0.69",
  "tokio",
  "tokio-tungstenite 0.26.2",
  "tools",
+ "vfs",
  "webpki-roots 1.0.6",
 ]
 
@@ -4595,6 +4598,7 @@ dependencies = [
  "engine",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
  "tokio",
  "vfs",

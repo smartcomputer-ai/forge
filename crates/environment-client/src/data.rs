@@ -74,6 +74,28 @@ where
         self.rpc.notify(INITIALIZED_METHOD, params).await
     }
 
+    pub async fn scan(
+        &mut self,
+        params: &environment_protocol::data::inventory::ScanParams,
+    ) -> EnvironmentClientResult<environment_protocol::data::inventory::ScanResponse> {
+        self.rpc
+            .request(environment_protocol::data::methods::FS_SCAN_METHOD, params)
+            .await
+    }
+
+    pub async fn transfer(
+        &mut self,
+        params: &environment_protocol::data::transfer_session::TransferRequest,
+    ) -> EnvironmentClientResult<environment_protocol::data::transfer_session::TransferResponse>
+    {
+        self.rpc
+            .request(
+                environment_protocol::data::methods::FS_TRANSFER_METHOD,
+                params,
+            )
+            .await
+    }
+
     pub async fn capture(
         &mut self,
         params: &CaptureParams,

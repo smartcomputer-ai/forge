@@ -194,6 +194,7 @@ pub fn tool_call_operation_timeout(class: ToolExecutionClass) -> Duration {
         ToolExecutionClass::Interactive => TOOL_INTERACTIVE_OPERATION_TIMEOUT,
         ToolExecutionClass::RemoteInteractive => TOOL_REMOTE_OPERATION_TIMEOUT,
         ToolExecutionClass::Process => PROCESS_TIMEOUT_CEILING + TOOL_PROCESS_GRACE,
+        ToolExecutionClass::Bulk => Duration::from_secs(24 * 60 * 60),
     }
 }
 
@@ -208,12 +209,20 @@ pub fn tool_call_activity_options(execution: ToolExecutionSpec) -> ActivityOptio
         ToolExecutionClass::RemoteInteractive => {
             (TOOL_REMOTE_START_TO_CLOSE, TOOL_REMOTE_SCHEDULE_TO_CLOSE)
         }
+        ToolExecutionClass::Bulk => {
+            let start_to_close = Duration::from_secs(24 * 60 * 60) + TOOL_PROCESS_GRACE;
+            (start_to_close, start_to_close + TOOL_PROCESS_GRACE)
+        }
         ToolExecutionClass::Process => {
             let start_to_close = PROCESS_TIMEOUT_CEILING + TOOL_PROCESS_GRACE * 2;
             (start_to_close, start_to_close + TOOL_PROCESS_GRACE * 2)
         }
     };
-    let max_attempts = if execution.retry_safe && execution.class != ToolExecutionClass::Process {
+    let max_attempts = if execution.retry_safe
+        && !matches!(
+            execution.class,
+            ToolExecutionClass::Process | ToolExecutionClass::Bulk
+        ) {
         TOOL_RETRY_SAFE_MAX_ATTEMPTS
     } else {
         1
@@ -273,6 +282,7 @@ mod tests {
             ToolExecutionClass::Interactive,
             ToolExecutionClass::RemoteInteractive,
             ToolExecutionClass::Process,
+            ToolExecutionClass::Bulk,
         ]
         .into_iter()
         .flat_map(|class| {
@@ -336,8 +346,11 @@ mod tests {
             let retry = tool_call_activity_options(execution)
                 .retry_policy
                 .expect("tool call options declare a retry policy");
-            let expected = if execution.retry_safe && execution.class != ToolExecutionClass::Process
-            {
+            let expected = if execution.retry_safe
+                && !matches!(
+                    execution.class,
+                    ToolExecutionClass::Process | ToolExecutionClass::Bulk
+                ) {
                 TOOL_RETRY_SAFE_MAX_ATTEMPTS
             } else {
                 1

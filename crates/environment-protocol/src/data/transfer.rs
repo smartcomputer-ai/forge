@@ -63,9 +63,8 @@ pub struct MaterializeResponse {
     pub destination: EnvironmentPath,
     pub entries: u32,
     pub bytes: u64,
-    /// On replacement, private directory holding the complete previous target as `tree`.
-    /// Caller owns cleanup; keeping it avoids unbounded deletion on the operation deadline.
-    /// This is not a retry receipt. A repeated call performs a new replacement.
+    /// Reserved for compatibility with early daemons. Current daemons clean retired
+    /// staging trees asynchronously and return None.
     pub retired_directory: Option<EnvironmentPath>,
 }
 

@@ -809,6 +809,107 @@ async fn pg_live_blobs_use_inline_and_object_storage() {
 
 #[tokio::test(flavor = "current_thread")]
 #[ignore = "requires ./dev.sh infra or compatible Postgres + MinIO env"]
+async fn pg_live_streamed_blobs_verify_ranges_reuse_and_reject_corruption() {
+    use engine::storage::{BlobSource, BlobStoreError};
+
+    struct Source {
+        bytes: Vec<u8>,
+        offset: usize,
+        reads: usize,
+    }
+    #[async_trait::async_trait]
+    impl BlobSource for Source {
+        async fn read_chunk(&mut self, max_bytes: usize) -> Result<Vec<u8>, BlobStoreError> {
+            assert!(max_bytes <= 256 * 1024, "stream reads must stay bounded");
+            self.reads += 1;
+            let end = (self.offset + max_bytes).min(self.bytes.len());
+            let chunk = self.bytes[self.offset..end].to_vec();
+            self.offset = end;
+            Ok(chunk)
+        }
+    }
+
+    let store = live_store("streamed-blobs", 64).await;
+    // Exercise PostgreSQL inline slicing and a real multipart MinIO upload.
+    for size in [31, 10 * 1024 * 1024 + 13] {
+        let bytes: Vec<u8> = (0..size).map(|i| (i % 251) as u8).collect();
+        let expected = BlobRef::from_bytes(&bytes);
+        let mut source = Source {
+            bytes: bytes.clone(),
+            offset: 0,
+            reads: 0,
+        };
+        assert_eq!(
+            store
+                .put_stream(&expected, size as u64, &mut source)
+                .await
+                .unwrap(),
+            expected
+        );
+        assert_eq!(source.offset, size);
+        let layout = blob_layout(&store, &expected).await;
+        assert_eq!(
+            layout.storage_kind,
+            if size <= 64 { "inline" } else { "object" }
+        );
+        for offset in [0, 17, size.saturating_sub(7), size, size + 1] {
+            let range = store
+                .read_blob_range(&expected, offset as u64, 256 * 1024)
+                .await
+                .unwrap();
+            assert_eq!(
+                range,
+                bytes[offset.min(size)..(offset + 256 * 1024).min(size)]
+            );
+        }
+        assert_eq!(store.read_bytes(&expected).await.unwrap(), bytes);
+
+        age_all_blobs(&store, 1_000).await;
+        let mut unused = Source {
+            bytes: Vec::new(),
+            offset: 0,
+            reads: 0,
+        };
+        assert_eq!(
+            store
+                .put_stream(&expected, size as u64, &mut unused)
+                .await
+                .unwrap(),
+            expected
+        );
+        assert_eq!(
+            unused.reads, 0,
+            "existing content must not be uploaded again"
+        );
+        assert_eq!(
+            blob_layout(&store, &expected).await.object_key,
+            layout.object_key
+        );
+        assert!(store.blob_timestamps(&expected).await.unwrap().unwrap().1 > 1_000);
+        assert_eq!(store.put_bytes(bytes.clone()).await.unwrap(), expected);
+
+        // Use an absent digest so both inline and multipart paths must verify
+        // the input, rather than returning an already stored blob.
+        let bad_ref = BlobRef::from_bytes(format!("wrong digest for {size}").as_bytes());
+        let mut corrupted = Source {
+            bytes,
+            offset: 0,
+            reads: 0,
+        };
+        assert!(matches!(
+            store
+                .put_stream(&bad_ref, size as u64, &mut corrupted)
+                .await,
+            Err(BlobStoreError::Store { .. })
+        ));
+        assert!(!store.has_blob(&bad_ref).await.unwrap());
+        assert!(matches!(store.read_blob_range(&bad_ref, 0, 16).await,
+            Err(BlobStoreError::NotFound { blob_ref }) if blob_ref == bad_ref));
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires ./dev.sh infra or compatible Postgres + MinIO env"]
 async fn pg_live_event_appends_record_roots_and_reject_missing_blobs() {
     let store = live_store("graph", 1024).await;
     let session_id = SessionId::new("session-graph");

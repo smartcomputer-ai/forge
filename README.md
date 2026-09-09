@@ -138,6 +138,9 @@ Lightspeed covers the table stakes of a modern agent harness. Everything below w
   Kubernetes pods, and benchmark sandboxes need no inbound address
 - [x] **Power states and idle policy**: environments pause, suspend, or stop when
   idle, then wake automatically when needed
+- [x] **VFS–environment transfer**: materialize and capture files or trees on Linux
+  and macOS, with whole-file reuse, bounded streaming, and atomic replacement;
+  see [VFS transfer](docs/documentation/environments/vfs-transfer.md)
 - [x] **Environment jobs**: run downloads, experiments, or delegated coding work
   in the background and check the results later
 

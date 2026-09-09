@@ -530,6 +530,7 @@ export function SessionConfigEditor({
                 {name === "vfs" && (
                   <VfsFields
                     feature={record(features.vfs)}
+                    environmentsGranted={"environments" in features}
                     workspaces={workspaces}
                     workspacesLoading={workspacesLoading}
                     patch={(fn) => patchFeature("vfs", fn)}
@@ -1159,11 +1160,13 @@ function FeaturePanel({
 
 function VfsFields({
   feature,
+  environmentsGranted,
   workspaces,
   workspacesLoading,
   patch,
 }: {
   feature: RecordValue;
+  environmentsGranted: boolean;
   workspaces: WorkspaceOption[];
   workspacesLoading: boolean;
   patch: (fn: (feature: RecordValue) => void) => void;
@@ -1218,6 +1221,15 @@ function VfsFields({
               <SelectItem value="edit">Edit files</SelectItem>
             </SelectContent>
           </Select>
+          <FieldDescription>
+            {!environmentsGranted
+              ? "Enable Environments to also transfer files between linked workspaces and a selected environment."
+              : feature.tools === "edit"
+                ? "Includes materialize to the selected environment and capture into writable workspace links."
+                : feature.tools === "readOnly"
+                  ? "Includes materialize to the selected environment. Linked VFS files remain read only through these tools."
+                  : "Choose Read only or Edit files to enable workspace transfer tools. Prompt and skill sourcing alone does not enable transfers."}
+          </FieldDescription>
         </Field>
         <Field>
           <FieldLabel>Prompt roots</FieldLabel>

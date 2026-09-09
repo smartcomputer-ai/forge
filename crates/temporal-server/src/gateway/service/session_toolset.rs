@@ -38,7 +38,7 @@ impl GatewayAgentApi {
         let expose_environment_jobs = jobs_granted;
         let expose_subagents = subagents_granted;
         let mut config =
-            self.session_toolset_config(session_config, environments_granted, jobs_granted);
+            Self::session_toolset_config(session_config, environments_granted, jobs_granted);
         let materialized_workflow_tools = loaded
             .state
             .workflow_tools

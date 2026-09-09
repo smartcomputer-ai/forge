@@ -356,6 +356,8 @@ pub enum ToolExecutionClass {
     /// Environment process execution; its deadline derives from the validated
     /// process timeout clamped to the deployment-owned ceiling.
     Process,
+    /// Bounded bulk data movement; progress and cancellation stay outside engine state.
+    Bulk,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

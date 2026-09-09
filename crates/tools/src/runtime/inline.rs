@@ -96,6 +96,33 @@ impl InlineToolRuntime {
             Ok(ctx) => ctx,
             Err(error) => return self.target_error_result(call, error).await,
         };
+        let operation_id = match ctx {
+            BuiltinToolContext::Transfer { environment, .. } => {
+                let identity = format!(
+                    "{}:{}:{}",
+                    environment.session_id.as_deref().unwrap_or("local"),
+                    call.call_id,
+                    call.arguments_ref
+                );
+                Some(format!(
+                    "tool-{}",
+                    engine::BlobRef::from_bytes(identity.as_bytes())
+                        .as_str()
+                        .trim_start_matches("sha256:")
+                ))
+            }
+            _ => None,
+        };
+        let ctx = match ctx {
+            BuiltinToolContext::Transfer {
+                vfs, environment, ..
+            } => BuiltinToolContext::Transfer {
+                vfs,
+                environment,
+                operation_id: operation_id.as_deref(),
+            },
+            other => other,
+        };
         ctx.drain_tool_effects();
         let arguments = match self.read_arguments(ctx, call).await {
             Ok(arguments) => arguments,
@@ -146,6 +173,25 @@ impl InlineToolRuntime {
         .ok_or_else(|| ToolError::UnsupportedCapability {
             message: format!("unsupported tool binding: {}", binding.logical_id),
         })?;
+        let requirements = tool.requirements();
+        let vfs = if requirements.vfs {
+            Some(self.vfs.as_ref().ok_or_else(|| ToolError::InvalidRequest {
+                message: "no_vfs_workspace_links".into(),
+            })?)
+        } else {
+            None
+        };
+        if requirements.vfs && requirements.active_environment {
+            return Ok(BuiltinToolContext::Transfer {
+                vfs: vfs.unwrap(),
+                environment: self.environment.as_ref().ok_or_else(|| {
+                    ToolError::InvalidRequest {
+                        message: "no_active_environment".into(),
+                    }
+                })?,
+                operation_id: None,
+            });
+        }
         match tool.domain() {
             BuiltinToolDomain::Vfs => {
                 self.vfs

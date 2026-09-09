@@ -1611,6 +1611,79 @@ fn vfs_feature_grant_maps_tool_surfaces() {
     assert_eq!(config.features.vfs.expect("vfs feature").tools, None);
 }
 
+#[test]
+fn profile_and_session_grants_derive_vfs_transfer_tools() {
+    for environments in [false, true] {
+        for surface in [None, Some("none"), Some("readOnly"), Some("edit")] {
+            let mut features = serde_json::json!({});
+            if let Some(surface) = surface {
+                features["vfs"] = serde_json::json!({});
+                if surface != "none" {
+                    features["vfs"]["tools"] = serde_json::json!(surface);
+                }
+            }
+            if environments {
+                // Selection tools and jobs are independent of transfer availability.
+                features["environments"] = serde_json::json!({});
+            }
+            let profile: api::ProfileDocument =
+                serde_json::from_value(serde_json::json!({"config": {"features": features}}))
+                    .unwrap();
+            let config =
+                engine_session_config_from_api(profile.config.unwrap(), openai_model()).unwrap();
+            let toolset_config =
+                GatewayAgentApi::session_toolset_config(&config, environments, false);
+            let registered = tools::toolset::register_toolset(&toolset_config).unwrap();
+            for (id, expected) in [
+                (
+                    "vfs.materialize",
+                    environments && matches!(surface, Some("readOnly" | "edit")),
+                ),
+                ("vfs.capture", environments && surface == Some("edit")),
+            ] {
+                assert_eq!(
+                    registered.tools.contains_key(&ToolName::new(id)),
+                    expected,
+                    "surface={surface:?}, environments={environments}, tool={id}"
+                );
+            }
+            assert!(
+                !registered
+                    .tools
+                    .contains_key(&ToolName::new("env.vfs_materialize"))
+            );
+            assert!(
+                !registered
+                    .tools
+                    .contains_key(&ToolName::new("env.vfs_capture"))
+            );
+            for api_kind in [
+                ProviderApiKind::OpenAiResponses,
+                ProviderApiKind::AnthropicMessages,
+                ProviderApiKind::OpenAiCompletions,
+            ] {
+                let visible = tools::runtime::ToolCatalog::from_registrations(
+                    &registered.tools,
+                    &tools::runtime::ToolTarget::api_kind(api_kind),
+                )
+                .unwrap();
+                for (name, id) in [
+                    ("vfs_materialize", "vfs.materialize"),
+                    ("vfs_capture", "vfs.capture"),
+                ] {
+                    assert_eq!(
+                        visible.get(&ToolName::new(name)).is_some(),
+                        registered.tools.contains_key(&ToolName::new(id))
+                    );
+                    if let Some(binding) = visible.get(&ToolName::new(name)) {
+                        assert_eq!(binding.logical_id, id);
+                    }
+                }
+            }
+        }
+    }
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn context_entry_input_from_api_stores_text_as_user_message() {
     let store = engine::storage::InMemoryBlobStore::new();

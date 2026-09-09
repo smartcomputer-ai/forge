@@ -203,3 +203,12 @@ Transfer files explicitly when a process needs them; see
 | A skill is absent from the catalog | Check the explicit root, direct child directory, exact `SKILL.md` name, and required frontmatter. |
 | A discovered skill has not affected the answer | Inspect whether the agent read it, or explicitly activate it for an idle session. Discovery alone loads only its catalog entry. |
 | Saving reports a revision conflict | Reload and reconcile with the intervening edit; do not assume the save was merged. |
+
+## Copy files to or from a machine
+
+Linking a VFS workspace does not put it on an execution environment. With both
+VFS tools and environment access enabled, use `vfs_materialize` for a file,
+subtree or whole workspace, and `vfs_capture` to save machine outputs into an
+editable workspace. These tools handle binary files and executable scripts
+without passing their bytes through the model. See
+[VFS transfer](../environments/vfs-transfer.md) for replacement and retry behavior.

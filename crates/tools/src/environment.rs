@@ -20,6 +20,7 @@ pub mod tools;
 pub struct EnvironmentToolContext {
     pub environment_id: Option<String>,
     pub filesystem: Option<FsToolContext>,
+    pub transfer: Option<crate::transfer::SharedEnvironmentTransfer>,
     pub process: Option<Arc<dyn ProcessExecutor>>,
     pub jobs: Option<Arc<dyn JobExecutor>>,
     pub blobs: Arc<dyn BlobStore>,
@@ -33,6 +34,7 @@ impl EnvironmentToolContext {
         Self {
             environment_id: None,
             filesystem: None,
+            transfer: None,
             process,
             jobs: None,
             blobs,

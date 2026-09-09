@@ -71,6 +71,12 @@ from that feature. Enabling one can require further choices, such as which
 workspace to link, which child profiles can be called, or which MCP server
 to expose.
 
+VFS file tools and Environments together also grant
+[VFS transfer tools](../environments/vfs-transfer.md). **Read only** VFS tools
+enable materialize into the selected environment; **Edit files** additionally
+enable capture into writable workspace links. Prompt or skill sourcing without
+file tools does not enable transfers. These rules also apply in session settings.
+
 Apply the same reasoning to delegated work. A parent that can call a powerful
 child profile can ask that child to use its capabilities. The child's setup
 is independent; it is not automatically reduced to the parent's grants.

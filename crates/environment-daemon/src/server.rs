@@ -249,6 +249,15 @@ async fn handle_data(
                 .remove(decode_params::<RemoveParams>(params)?)
                 .await?,
         ),
+        environment_protocol::data::methods::FS_SCAN_METHOD => {
+            encode_result(runtime.filesystem().scan(decode_params(params)?).await?)
+        }
+        environment_protocol::data::methods::FS_TRANSFER_METHOD => encode_result(
+            runtime
+                .filesystem()
+                .transfer(decode_params(params)?)
+                .await?,
+        ),
         FS_CAPTURE_METHOD => encode_result(
             runtime
                 .filesystem()
@@ -341,7 +350,7 @@ pub(crate) fn tracing_line(message: &str) {
     eprintln!("lightspeed-envd {message}");
 }
 
-#[cfg(all(test, target_os = "linux"))]
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
 mod transfer_tests {
     use super::*;
     use crate::config::DaemonConfig;
@@ -416,3 +425,7 @@ mod transfer_tests {
         }
     }
 }
+
+#[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+#[path = "transfer/tests.rs"]
+mod streaming_transfer_tests;

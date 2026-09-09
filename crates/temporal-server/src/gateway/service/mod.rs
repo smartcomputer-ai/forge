@@ -873,8 +873,7 @@ impl GatewayAgentApi {
     /// Materialize the session's granted features into the provider-aware
     /// toolset. Absent feature = no tools: capability semantics need no
     /// effective-default resolution here.
-    fn session_toolset_config(
-        &self,
+    pub(crate) fn session_toolset_config(
         session_config: &SessionConfig,
         include_environment_tools: bool,
         include_job_read_tool: bool,
@@ -1682,7 +1681,7 @@ impl GatewayAgentApi {
             .filter(|binding| !is_core_environment_job_binding(binding))
             .collect::<Vec<_>>();
 
-        let mut config = self.session_toolset_config(session_config, false, false);
+        let mut config = Self::session_toolset_config(session_config, false, false);
         enable_concurrency_for_workflow_tools(&mut config, materialized_bindings.iter().copied());
         let mut toolset = register_toolset(&config).map_err(|error| {
             AgentApiError::invalid_request(format!("build session tools: {error}"))
