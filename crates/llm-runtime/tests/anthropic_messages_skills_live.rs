@@ -407,9 +407,14 @@ fn session_config(model: ModelSelection, workspace_links: Vec<WorkspaceLink>) ->
         context: ContextConfig { compaction: None },
         features: engine::FeaturesConfig {
             vfs: Some(engine::VfsFeature {
+                skills: Some(engine::VfsSkillsConfig {
+                    roots: workspace_links
+                        .iter()
+                        .map(|link| link.path.clone())
+                        .collect(),
+                }),
                 workspace_links,
                 tools: Some(engine::VfsToolSurface::ReadOnly),
-                skills: Some(engine::VfsSkillsConfig::default()),
                 ..engine::VfsFeature::default()
             }),
             ..engine::FeaturesConfig::default()

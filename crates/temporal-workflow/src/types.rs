@@ -839,9 +839,8 @@ pub struct RuntimeProjectionRefreshActivityRequest {
     pub vfs_prompt_roots: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub active_instruction_inputs: BTreeMap<engine::ContextEntryKey, engine::ContextEntryInput>,
-    pub vfs_skills_enabled: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub vfs_skill_roots: Option<Vec<String>>,
+    pub vfs_skills: Option<engine::VfsSkillsConfig>,
     /// Current keyed catalogs, including source provenance, for publication comparison.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub active_catalogs: BTreeMap<engine::ContextEntryKey, engine::ContextEntryInput>,

@@ -76,6 +76,9 @@ impl GatewayAgentApi {
     ) -> Result<Option<CoreAgentCommand>, AgentApiError> {
         let catalogs = engine::current_catalog_inputs(state);
         let current = catalogs.get(&ContextEntryKey::new(SKILL_CATALOG_CONTEXT_KEY));
+        if current.is_some_and(|entry| entry.origin.as_deref() != Some("runtime.vfs.skills")) {
+            return Ok(None);
+        }
         let skills_config = state
             .lifecycle
             .config
@@ -89,7 +92,7 @@ impl GatewayAgentApi {
             ));
         };
         let links = self.resolve_session_workspace_links(state).await?;
-        let specs = configured_vfs_skill_root_specs(&links, skills_config.roots.as_deref())
+        let specs = configured_vfs_skill_root_specs(&links, &skills_config.roots)
             .map_err(|error| AgentApiError::invalid_request(error.to_string()))?;
         if specs.is_empty() {
             return Ok(tools::catalog::clear_catalog_command(
@@ -229,6 +232,19 @@ async fn vfs_skill_list_from_context(
             catalogs: Vec::new(),
         });
     };
+    if entry.origin.as_deref() == Some("runtime.vfs.skills")
+        && !state
+            .lifecycle
+            .config
+            .as_ref()
+            .and_then(|config| config.features.vfs.as_ref())
+            .and_then(|vfs| vfs.skills.as_ref())
+            .is_some_and(|skills| !skills.roots.is_empty())
+    {
+        return Ok(SkillListResponse {
+            catalogs: Vec::new(),
+        });
+    }
     let catalog_ref = entry
         .provenance_ref
         .as_ref()

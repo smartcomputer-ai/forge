@@ -330,6 +330,7 @@ export function normalizeSessionConfig(value: unknown): SessionConfig | undefine
       if (providers.length) next.providers = providers;
       if (feature.selectionTools === true) next.selectionTools = true;
       if (feature.jobs === true) next.jobs = true;
+      if ("skills" in feature) next.skills = record(feature.skills);
     }
     if (name === "mcp") {
       const servers = Array.isArray(feature.servers)
@@ -1246,7 +1247,7 @@ function VfsFields({
           <FieldDescription className="text-xs">Comma-separated paths.</FieldDescription>
         </Field>
         <Field>
-          <FieldLabel>Skill roots</FieldLabel>
+          <FieldLabel>VFS skill roots</FieldLabel>
           <Input
             className="font-mono"
             value={commaList(skills.roots)}
@@ -1257,7 +1258,7 @@ function VfsFields({
             })}
             placeholder="/skills, /team/skills"
           />
-          <FieldDescription className="text-xs">Comma-separated paths.</FieldDescription>
+          <FieldDescription className="text-xs">Comma-separated absolute paths inside workspace links. Empty disables VFS skill discovery; environment skills are configured separately.</FieldDescription>
         </Field>
       </div>
 

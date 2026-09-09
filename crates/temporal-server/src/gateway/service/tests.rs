@@ -2696,6 +2696,22 @@ async fn skill_list_reads_latest_structured_provenance() {
             supersedes: (id == 2).then(|| engine::ContextEntryId::new(1)),
         });
     }
+    assert!(
+        super::skills::skill_list_from_context(&blobs, &state)
+            .await
+            .unwrap()
+            .catalogs
+            .is_empty()
+    );
+    let mut config =
+        engine_session_config_from_api(api::SessionConfig::default(), openai_model()).unwrap();
+    config.features.vfs = Some(engine::VfsFeature {
+        skills: Some(engine::VfsSkillsConfig {
+            roots: vec!["/skills/system".into()],
+        }),
+        ..Default::default()
+    });
+    state.lifecycle.config = Some(config);
     let response = super::skills::skill_list_from_context(&blobs, &state)
         .await
         .unwrap();
@@ -2769,6 +2785,26 @@ async fn skill_list_reads_latest_structured_provenance() {
         );
     }
     state.environment.active_environment_id = Some(engine::EnvironmentId::new("machine"));
+    state
+        .lifecycle
+        .config
+        .as_mut()
+        .unwrap()
+        .features
+        .vfs
+        .as_mut()
+        .unwrap()
+        .skills = None;
+    let disabled = super::skills::skill_list_from_context(&blobs, &state)
+        .await
+        .unwrap();
+    assert_eq!(disabled.catalogs.len(), 1);
+    assert_eq!(
+        disabled.catalogs[0].source,
+        api::SkillCatalogSource::Environment {
+            environment_id: "machine".into()
+        }
+    );
     state.context.entries.retain(|entry| {
         entry.key.as_ref().unwrap().as_str() == ENVIRONMENT_SKILL_CATALOG_CONTEXT_KEY
     });

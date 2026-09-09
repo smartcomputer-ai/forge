@@ -71,9 +71,10 @@ export const PROFILE_CONFIG_REFERENCE = `// Every field is optional — omit any
         // Absent means the conventional roots; an explicit list must be non-empty.
         "roots": ["string"],
       },
-      // Skill discovery sourcing from the VFS.
+      // Independent VFS skill discovery. Absent disables discovery and removes its runtime catalog; enabling it requires explicit linked roots.
       "skills": {
-        // Absent means the conventional roots; an explicit list must be non-empty.
+        // Explicit absolute discovery roots in the linked VFS namespace. Must be non-empty and contained in workspace links; no roots are inferred.
+        // (required when this object is present)
         "roots": ["string"],
       },
       // Agent-facing filesystem tool surface; absent = no fs tools. Per-path writability is defined by each workspace link's own access. With the environments feature granted, \`readOnly\` also exposes \`vfs_materialize\`; \`edit\` additionally exposes \`vfs_capture\`. Prompt/skill sourcing alone does not grant transfer tools.

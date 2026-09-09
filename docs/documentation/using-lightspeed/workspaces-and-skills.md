@@ -108,7 +108,7 @@ Ask before editing either file.
 *The walkthrough's skill file, entered in demo mode. The file tree shows its
 workspace-relative path; the instructions use session paths under `/workspace`.*
 
-Set **Skill roots** in the profile to `/workspace/.lightspeed/skills`, keeping
+Set **VFS skill roots** in the profile to `/workspace/.lightspeed/skills`, keeping
 readable file tools and the workspace link enabled. Save the profile and
 start a session from it. The resulting workspace layout is:
 
@@ -174,6 +174,42 @@ Skill reads and any skill text inserted as ordinary conversation content can be
 compacted like other messages and tool results. The current catalog remains
 available; the agent can reread a skill if needed. Mandatory persistent guidance
 belongs in the existing instruction mechanism.
+
+## Configure VFS discovery explicitly
+
+VFS skill discovery is independently opt-in through the session or profile's
+`features.vfs.skills` block. Supply a nonempty list of absolute roots inside
+existing workspace links, for example:
+
+```json
+{
+  "features": {
+    "vfs": {
+      "workspaceLinks": [{
+        "path": "/workspace",
+        "target": { "type": "workspace", "workspaceId": "release-notes" },
+        "access": "readOnly"
+      }],
+      "tools": "readOnly",
+      "skills": { "roots": ["/workspace/.lightspeed/skills"] }
+    }
+  }
+}
+```
+
+Omitting `features.vfs.skills` disables discovery and removes its runtime
+catalog. Empty blocks, null roots, empty root lists, and paths outside links
+are invalid. Workspace links, filesystem tools, prompt sourcing, and CLI chat
+defaults do not enable skill discovery. There are no inferred VFS roots: even
+`/skills/system` or `.agents/skills` must be listed explicitly. The profile
+editor's **VFS skill roots** field configures this block; clearing it disables
+VFS discovery. CLI profile documents use the same configuration.
+
+Changes are discovered at eligible idle boundaries, including preparation for
+new work when no run is active or queued. There are no within-run refresh
+hooks. Disabling VFS discovery removes only its catalog; independently
+configured environment discovery and its catalog are unchanged. Catalogs keep
+separate identities with no cross-domain merging, deduplication, or fallback.
 
 ## Discover skills installed on a machine
 

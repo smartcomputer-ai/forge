@@ -9,8 +9,7 @@ use api::{
     ModelConfig, ProfileId, ProfileSource, RunStartConfig, RunStartParams, RunStartResponse,
     RunStartSource, SessionEventKindView, SessionEventView, SessionEventsReadParams,
     SessionReadParams, SessionStartParams, SessionView, TimersFeature, ToolCallEventView,
-    VfsFeature, VfsPromptsConfig, VfsSkillsConfig, VfsToolSurface, WebFeature, WebFetchFeature,
-    WebSearchFeature,
+    VfsFeature, VfsPromptsConfig, VfsToolSurface, WebFeature, WebFetchFeature, WebSearchFeature,
 };
 #[cfg(test)]
 use api::{ContextEntryKindView, ContextEntryView, ToolBatchView, ToolCallView, ToolItemStatus};
@@ -1548,7 +1547,8 @@ fn session_start_config(settings: &ChatDraftSettings) -> api::SessionConfig {
 
 /// The CLI's development defaults: features are secure-by-default on the
 /// server (absent = off), so the chat client grants a usable dev surface
-/// explicitly — VFS with fs tools and prompt/skill sourcing, web, timers.
+/// explicitly — VFS with fs tools and prompt sourcing, web, timers. Skill discovery
+/// requires an explicit profile/session configuration.
 fn dev_features(settings: &ChatDraftSettings) -> FeaturesConfig {
     let vfs_tools = match settings.filesystem_tools {
         None => Some(VfsToolSurface::Edit),
@@ -1568,7 +1568,7 @@ fn dev_features(settings: &ChatDraftSettings) -> FeaturesConfig {
             workspace_links: Vec::new(),
             tools: vfs_tools,
             prompts: Some(VfsPromptsConfig::default()),
-            skills: Some(VfsSkillsConfig::default()),
+            skills: None,
         }),
         web: (web_fetch || web_search).then(|| WebFeature {
             version: api::CURRENT_FEATURE_VERSION,
@@ -1978,7 +1978,7 @@ mod tests {
         let vfs = features.vfs.expect("vfs");
         assert_eq!(vfs.tools, Some(VfsToolSurface::Edit));
         assert!(vfs.prompts.is_some());
-        assert!(vfs.skills.is_some());
+        assert!(vfs.skills.is_none());
         let web = features.web.expect("web");
         assert!(web.fetch.is_some());
         assert!(web.search.is_some());

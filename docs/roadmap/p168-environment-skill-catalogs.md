@@ -476,3 +476,26 @@ transfer and bounded-scan coverage after moving the shared backend. API and
 TypeScript/Configurator generation reproduces all 13 checked artifacts exactly;
 TypeScript checks, consumer/Configurator tests, and builds pass. The root check's
 uncommitted-generated-file limitation described above still applies.
+
+### Explicit VFS discovery follow-up
+
+VFS discovery now requires `features.vfs.skills.roots`, a nonempty list of
+absolute paths inside declared workspace links. Absent `skills` disables the
+source. There are no conventional-root defaults or CLI chat enablement.
+The workflow refresh request carries the optional VFS discovery config as a
+single value. Runtime publication is marked with its source ownership so
+revocation can remove the VFS menu without touching environment or controller
+catalogs. Discovery remains at eligible idle boundaries; revocation performs
+no scan. The homogeneous source-oriented catalog API and environment discovery
+configuration remain unchanged.
+
+Validation: targeted engine, tools, runtime gateway, workflow, runner, API,
+projection, profile, and CLI/TUI tests pass, including explicit-root validation,
+revocation replay, source independence, and late-publication rejection. API and
+workflow exporters ran; all 16 generated contract/consumer artifacts reproduce
+byte-for-byte. TypeScript checks, consumer/Configurator/web tests, and production
+and demo builds pass. The editor now preserves environment skill configuration
+when VFS settings are edited. The root `npm run check` still stops at its
+committed-file diff guard while generated changes remain intentionally
+uncommitted; generation reproducibility and the remaining checks ran separately.
+Live/credentialed suites were not run.

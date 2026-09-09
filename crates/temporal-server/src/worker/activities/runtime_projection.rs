@@ -157,16 +157,19 @@ pub(super) async fn refresh_runtime_projection(
         });
     }
 
-    if !request.vfs_skills_enabled {
+    if current_skills.is_some_and(|entry| entry.origin.as_deref() != Some("runtime.vfs.skills")) {
+        return Ok(RuntimeProjectionRefreshActivityResult { commands });
+    }
+    let Some(skills_config) = request.vfs_skills.as_ref() else {
         return Ok(RuntimeProjectionRefreshActivityResult {
             commands: append_optional(
                 commands,
                 clear_catalog_command(current_skills, SKILL_CATALOG_CONTEXT_KEY),
             ),
         });
-    }
-    let specs = configured_vfs_skill_root_specs(&links, request.vfs_skill_roots.as_deref())
-        .map_err(activity_error)?;
+    };
+    let specs =
+        configured_vfs_skill_root_specs(&links, &skills_config.roots).map_err(activity_error)?;
     if specs.is_empty() {
         return Ok(RuntimeProjectionRefreshActivityResult {
             commands: append_optional(

@@ -3975,7 +3975,9 @@ mod tests {
                     prompts: Some(engine::VfsPromptsConfig {
                         roots: Some(vec!["/prompts".to_owned()]),
                     }),
-                    skills: Some(engine::VfsSkillsConfig { roots: None }),
+                    skills: Some(engine::VfsSkillsConfig {
+                        roots: vec!["/workspace/skills".into()],
+                    }),
                 }),
                 web: Some(engine::WebFeature {
                     version: engine::CURRENT_FEATURE_VERSION,
@@ -4045,7 +4047,9 @@ mod tests {
                         prompts: Some(api::VfsPromptsConfig {
                             roots: Some(vec!["/prompts".to_owned()]),
                         }),
-                        skills: Some(api::VfsSkillsConfig { roots: None }),
+                        skills: Some(api::VfsSkillsConfig {
+                            roots: vec!["/workspace/skills".into()]
+                        }),
                     }),
                     web: Some(api::WebFeature {
                         version: api::CURRENT_FEATURE_VERSION,

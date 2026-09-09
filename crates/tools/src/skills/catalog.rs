@@ -181,13 +181,15 @@ pub async fn skill_catalog_context_input(
     catalog: &SkillCatalogSnapshot,
     catalog_ref: BlobRef,
 ) -> Result<ContextEntryInput, BlobStoreError> {
-    catalog_context_input(
+    let mut entry = catalog_context_input(
         blobs,
         "VFS skill catalog",
         super::catalog_text::skill_catalog_text(catalog),
         catalog_ref,
     )
-    .await
+    .await?;
+    entry.origin = Some("runtime.vfs.skills".to_owned());
+    Ok(entry)
 }
 
 async fn scan_root(input: &SkillCatalogRootInput<'_>) -> Result<RootScanResult, SkillCatalogError> {

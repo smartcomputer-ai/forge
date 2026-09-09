@@ -306,14 +306,11 @@ async fn refresh_runtime_projection_before_run(
         .as_ref()
         .and_then(|config| config.features.vfs.as_ref());
     let vfs_catalog_enabled = vfs.is_some();
-    let vfs_skills_enabled = vfs.is_some_and(|vfs| vfs.skills.is_some());
     let vfs_prompts_enabled = vfs.is_some_and(|vfs| vfs.prompts.is_some());
     let vfs_prompt_roots = vfs
         .and_then(|vfs| vfs.prompts.as_ref())
         .and_then(|prompts| prompts.roots.clone());
-    let vfs_skill_roots = vfs
-        .and_then(|vfs| vfs.skills.as_ref())
-        .and_then(|skills| skills.roots.clone());
+    let vfs_skills = vfs.and_then(|vfs| vfs.skills.clone());
     let result = ctx
         .start_activity(
             WorkflowActivities::runtime_projection_refresh,
@@ -333,8 +330,7 @@ async fn refresh_runtime_projection_before_run(
                 vfs_prompts_enabled,
                 vfs_prompt_roots,
                 active_instruction_inputs: active_instruction_inputs(drive.state()),
-                vfs_skills_enabled,
-                vfs_skill_roots,
+                vfs_skills,
                 active_catalogs: engine::current_catalog_inputs(drive.state()),
                 subagents: drive
                     .state()

@@ -366,3 +366,19 @@ describe("MCP feature config", () => {
     });
   });
 });
+
+describe("independent skill discovery configuration", () => {
+  it("requires explicit VFS roots without changing the environment scope", () => {
+    const environments = { skills: { workingDirectory: "/project", additionalRoots: ["/team"] } };
+    for (const skills of [undefined, {}, { roots: [] }]) {
+      const normalized = normalizeSessionConfig({ features: {
+        vfs: { tools: "edit", skills }, environments,
+      } });
+      expect(normalized).toEqual({ features: { vfs: { tools: "edit" }, environments } });
+    }
+    const normalized = normalizeSessionConfig({ features: {
+      vfs: { skills: { roots: ["/workspace/skills"] } }, environments,
+    } });
+    expect(normalized).toEqual({ features: { vfs: { skills: { roots: ["/workspace/skills"] } }, environments } });
+  });
+});

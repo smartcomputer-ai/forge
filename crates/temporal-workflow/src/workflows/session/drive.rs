@@ -34,10 +34,12 @@ pub(super) async fn admit_and_append_command(
     correlation_token: Option<String>,
 ) -> anyhow::Result<CommandAdmissionResult> {
     let submission_id = command_submission_id(&command);
-    if environment_catalog_publication_is_obsolete(drive.state(), &command) {
+    if environment_catalog_publication_is_obsolete(drive.state(), &command)
+        || vfs_skill_catalog_publication_is_obsolete(drive.state(), &command)
+    {
         let rejection = engine::CommandRejection::new(
             engine::CommandRejectionKind::ActiveWork,
-            "environment catalog observation no longer matches an idle selected source",
+            "skill catalog observation no longer matches an idle configured source",
         );
         return Ok(CommandAdmissionResult::Rejected(AgentAdmissionFailure {
             submission_id,
@@ -349,6 +351,9 @@ pub(super) async fn append_events(
     if let Some(command) = invalid_environment_catalog_command(drive.state()) {
         Box::pin(append_command(ctx, drive, command)).await?;
     }
+    if let Some(command) = invalid_vfs_skill_catalog_command(drive.state()) {
+        Box::pin(append_command(ctx, drive, command)).await?;
+    }
     queue_detached_promise_followups(ctx, &entries).await?;
     Ok(entries)
 }
@@ -538,6 +543,44 @@ fn apply_entries(
     *state = reduced.core_state;
     *run_submissions = reduced.run_submissions;
     Ok(())
+}
+
+fn vfs_skill_discovery_enabled(state: &CoreAgentState) -> bool {
+    state
+        .lifecycle
+        .config
+        .as_ref()
+        .and_then(|config| config.features.vfs.as_ref())
+        .and_then(|feature| feature.skills.as_ref())
+        .is_some_and(|skills| !skills.roots.is_empty())
+}
+
+pub(super) fn invalid_vfs_skill_catalog_command(
+    state: &CoreAgentState,
+) -> Option<CoreAgentCommand> {
+    let key = ContextEntryKey::new("runtime.catalog.skills.vfs");
+    let entry = engine::current_context_entry(state, &key)?;
+    (state.lifecycle.status == CoreAgentStatus::Open
+        && entry.origin.as_deref() == Some("runtime.vfs.skills")
+        && !vfs_skill_discovery_enabled(state))
+    .then_some(CoreAgentCommand::RemoveContext {
+        expected_revision: None,
+        key,
+    })
+}
+
+pub(super) fn vfs_skill_catalog_publication_is_obsolete(
+    state: &CoreAgentState,
+    command: &CoreAgentCommand,
+) -> bool {
+    let CoreAgentCommand::UpsertContext { key, entry, .. } = command else {
+        return false;
+    };
+    key.as_str() == "runtime.catalog.skills.vfs"
+        && entry.origin.as_deref() == Some("runtime.vfs.skills")
+        && (state.runs.active.is_some()
+            || !state.runs.queued.is_empty()
+            || !vfs_skill_discovery_enabled(state))
 }
 
 pub(super) fn invalid_environment_catalog_command(

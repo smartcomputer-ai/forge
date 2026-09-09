@@ -2192,7 +2192,8 @@ export interface VfsFeature {
    */
   prompts?: VfsPromptsConfig | null;
   /**
-   * Skill discovery sourcing from the VFS.
+   * Independent VFS skill discovery. Absent disables discovery and removes
+   * its runtime catalog; enabling it requires explicit linked roots.
    */
   skills?: VfsSkillsConfig | null;
   /**
@@ -2226,10 +2227,12 @@ export interface VfsPromptsConfig {
  */
 export interface VfsSkillsConfig {
   /**
-   * Absent means the conventional roots; an explicit list must be
-   * non-empty.
+   * Explicit absolute discovery roots in the linked VFS namespace. Must be
+   * non-empty and contained in workspace links; no roots are inferred.
+   *
+   * @minItems 1
    */
-  roots?: string[] | null;
+  roots: [string, ...string[]];
 }
 /**
  * This interface was referenced by `LightspeedAgentAPI`'s JSON-Schema

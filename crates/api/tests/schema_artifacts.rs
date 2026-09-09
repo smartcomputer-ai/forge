@@ -179,3 +179,25 @@ fn compaction_schema_exposes_editor_field_names() {
         }),
     );
 }
+
+#[test]
+fn vfs_skills_require_explicit_roots_in_wire_and_schema() {
+    let bundle = api::export_schemas().schema_bundle;
+    let schema = json!({
+        "$ref": "#/definitions/VfsSkillsConfig",
+        "definitions": bundle["definitions"].clone(),
+    });
+    let validator = jsonschema::validator_for(&schema).unwrap();
+    for invalid in [json!({}), json!({"roots": null}), json!({"roots": []})] {
+        assert!(!validator.is_valid(&invalid), "{invalid}");
+    }
+    for invalid in [json!({}), json!({"roots": null})] {
+        assert!(serde_json::from_value::<api::VfsSkillsConfig>(invalid).is_err());
+    }
+    let enabled = json!({"roots": ["/workspace/team-skills"]});
+    assert!(validator.is_valid(&enabled));
+    let config: api::VfsSkillsConfig = serde_json::from_value(enabled.clone()).unwrap();
+    assert_eq!(serde_json::to_value(config).unwrap(), enabled);
+    let feature: api::VfsFeature = serde_json::from_value(json!({"tools": "edit"})).unwrap();
+    assert!(feature.skills.is_none());
+}

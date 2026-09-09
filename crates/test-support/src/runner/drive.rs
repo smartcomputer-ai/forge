@@ -369,6 +369,9 @@ impl SessionRunner {
     ) -> Result<Option<CoreAgentCommand>, RunnerError> {
         let catalogs = engine::current_catalog_inputs(state);
         let current = catalogs.get(&engine::ContextEntryKey::new(SKILL_CATALOG_CONTEXT_KEY));
+        if current.is_some_and(|entry| entry.origin.as_deref() != Some("runtime.vfs.skills")) {
+            return Ok(None);
+        }
         let skills_config = state
             .lifecycle
             .config
@@ -382,9 +385,11 @@ impl SessionRunner {
             return Ok(clear_catalog_command(current, SKILL_CATALOG_CONTEXT_KEY));
         };
         let links = self.resolve_workspace_links(state).await?;
-        let specs = configured_vfs_skill_root_specs(&links, skills_config.roots.as_deref())
-            .map_err(|error| RunnerError::InvalidRequest {
-                message: format!("configure VFS skill roots: {error}"),
+        let specs =
+            configured_vfs_skill_root_specs(&links, &skills_config.roots).map_err(|error| {
+                RunnerError::InvalidRequest {
+                    message: format!("configure VFS skill roots: {error}"),
+                }
             })?;
         if specs.is_empty() {
             return Ok(clear_catalog_command(current, SKILL_CATALOG_CONTEXT_KEY));
@@ -1199,7 +1204,9 @@ mod tests {
         let mut config = config();
         config.features.vfs = Some(engine::VfsFeature {
             prompts: prompts.then_some(engine::VfsPromptsConfig::default()),
-            skills: skills.then_some(engine::VfsSkillsConfig::default()),
+            skills: skills.then_some(engine::VfsSkillsConfig {
+                roots: vec!["/skills/system".into()],
+            }),
             ..engine::VfsFeature::default()
         });
         config
@@ -1528,7 +1535,66 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn request_run_refreshes_conventional_vfs_skill_catalog_before_planning() {
+    async fn disabled_vfs_skills_clear_only_the_runtime_skill_catalog_without_storage() {
+        let stores = RunnerStores::new(
+            Arc::new(InMemorySessionStore::new()),
+            Arc::new(InMemoryBlobStore::new()),
+        );
+        let runner = SessionRunner::new(stores, Arc::new(CaptureFinalLlm::default()));
+        let mut state = CoreAgentState::new();
+        state.lifecycle.config = Some(config());
+        let session_id = SessionId::new("disabled-skills");
+        assert!(
+            runner
+                .refresh_skill_catalog_command(&session_id, &state)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        state.context.entries.push(engine::ContextEntry {
+            entry_id: engine::ContextEntryId::new(1),
+            key: Some(engine::ContextEntryKey::new(SKILL_CATALOG_CONTEXT_KEY)),
+            origin: Some("runtime.vfs.skills".into()),
+            kind: ContextEntryKind::Catalog {
+                title: "Skills".into(),
+            },
+            source: engine::ContextEntrySource::ContextEdit,
+            content: engine::ContentRef::text(BlobRef::from_bytes(b"menu")),
+            preview: None,
+            provenance_ref: None,
+            token_estimate: None,
+            supersedes: None,
+        });
+        for vfs in [
+            None,
+            Some(engine::VfsFeature {
+                tools: Some(engine::VfsToolSurface::Edit),
+                prompts: Some(Default::default()),
+                ..Default::default()
+            }),
+        ] {
+            state.lifecycle.config.as_mut().unwrap().features.vfs = vfs;
+            let command = runner
+                .refresh_skill_catalog_command(&session_id, &state)
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(
+                matches!(command, CoreAgentCommand::RemoveContext { key, .. } if key.as_str() == SKILL_CATALOG_CONTEXT_KEY)
+            );
+        }
+        state.context.entries[0].origin = Some("controller".into());
+        assert!(
+            runner
+                .refresh_skill_catalog_command(&session_id, &state)
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn request_run_refreshes_configured_vfs_skill_catalog_before_planning() {
         let sessions = Arc::new(InMemorySessionStore::new());
         let blobs = Arc::new(InMemoryBlobStore::new());
         let vfs = Arc::new(TestVfsCatalog::default());
