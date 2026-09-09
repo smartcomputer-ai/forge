@@ -400,10 +400,7 @@ pub enum ContextEntryKindView {
         role: ContextMessageRoleView,
     },
     Instructions,
-    VfsCatalog,
-    SkillCatalog,
-    SubagentCatalog,
-    /// A client-owned catalog published through `session/context/append`.
+    /// Runtime or client catalog with a stored text body and independent key.
     Catalog {
         title: String,
     },

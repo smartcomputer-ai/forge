@@ -3,18 +3,17 @@
 use std::collections::BTreeSet;
 
 use engine::{
-    BlobRef, ContextEntryInput, ContextEntryKey, ContextEntryKind, CoreAgentCommand,
-    CoreAgentState, VFS_CATALOG_CONTEXT_KEY, WorkspaceLinkAccess, WorkspaceLinkTarget,
+    BlobRef, ContextEntryInput, CoreAgentCommand, WorkspaceLinkAccess, WorkspaceLinkTarget,
     storage::{BlobGraphStore, BlobStore, BlobStoreError, record_contains_edges},
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use vfs::{ResolvedWorkspaceLink, ResolvedWorkspaceLinkTarget};
 
+use crate::catalog::{VFS_CATALOG_CONTEXT_KEY, catalog_context_input, catalog_publication_command};
 use crate::fs::FsPath;
 
 pub const VFS_CATALOG_SCHEMA_VERSION: &str = "lightspeed.environment.vfs_catalog.v1";
-pub const ENVIRONMENT_PROJECTION_MEDIA_TYPE: &str = "application/json";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VfsCatalog {
@@ -96,19 +95,20 @@ pub enum EnvironmentProjectionError {
 pub async fn prepare_vfs_catalog_publication(
     blobs: &dyn BlobStore,
     blob_graph: Option<&dyn BlobGraphStore>,
-    state: &CoreAgentState,
+    current: Option<&ContextEntryInput>,
     catalog: VfsCatalog,
 ) -> Result<EnvironmentProjectionPublication<VfsCatalog>, EnvironmentProjectionError> {
-    prepare_projection_publication(
-        blobs,
-        blob_graph,
-        state,
-        catalog,
-        VFS_CATALOG_CONTEXT_KEY,
-        vfs_catalog_context_input,
-        vfs_catalog_blob_refs,
-    )
-    .await
+    let snapshot_bytes = encode_json(&catalog)?;
+    let snapshot_ref = blobs.put_bytes(snapshot_bytes.clone()).await?;
+    record_contains_edges(blob_graph, &snapshot_ref, vfs_catalog_blob_refs(&catalog)).await?;
+    let entry = vfs_catalog_context_input(blobs, &catalog, snapshot_ref.clone()).await?;
+    let command = catalog_publication_command(current, VFS_CATALOG_CONTEXT_KEY, entry);
+    Ok(EnvironmentProjectionPublication {
+        snapshot_ref,
+        snapshot: catalog,
+        snapshot_bytes,
+        command,
+    })
 }
 
 /// Every snapshot manifest a catalog routes to. The catalog write records one
@@ -137,45 +137,18 @@ pub fn vfs_catalog_from_workspace_links(
     Ok(VfsCatalog::new(revision, routes))
 }
 
-pub fn vfs_catalog_context_input(catalog_ref: BlobRef) -> ContextEntryInput {
-    projection_context_input(ContextEntryKind::VfsCatalog, catalog_ref, "VFS catalog")
-}
-
-pub fn current_vfs_catalog_ref(state: &CoreAgentState) -> Option<BlobRef> {
-    current_context_ref(state, VFS_CATALOG_CONTEXT_KEY, ContextEntryKind::VfsCatalog)
-}
-
-async fn prepare_projection_publication<T>(
+pub async fn vfs_catalog_context_input(
     blobs: &dyn BlobStore,
-    blob_graph: Option<&dyn BlobGraphStore>,
-    state: &CoreAgentState,
-    snapshot: T,
-    key: &'static str,
-    context_input: fn(BlobRef) -> ContextEntryInput,
-    embedded_refs: fn(&T) -> BTreeSet<BlobRef>,
-) -> Result<EnvironmentProjectionPublication<T>, EnvironmentProjectionError>
-where
-    T: Clone + PartialEq + Serialize,
-{
-    let snapshot_bytes = encode_json(&snapshot)?;
-    let snapshot_ref = blobs.put_bytes(snapshot_bytes.clone()).await?;
-    record_contains_edges(blob_graph, &snapshot_ref, embedded_refs(&snapshot)).await?;
-    let command = if current_key_ref(state, key).as_ref() == Some(&snapshot_ref) {
-        None
-    } else {
-        Some(CoreAgentCommand::UpsertContext {
-            expected_revision: None,
-            key: ContextEntryKey::new(key),
-            entry: context_input(snapshot_ref.clone()),
-        })
-    };
-
-    Ok(EnvironmentProjectionPublication {
+    catalog: &VfsCatalog,
+    snapshot_ref: BlobRef,
+) -> Result<ContextEntryInput, BlobStoreError> {
+    catalog_context_input(
+        blobs,
+        "Virtual filesystem (VFS)",
+        super::catalog_text::vfs_catalog_text(catalog),
         snapshot_ref,
-        snapshot,
-        snapshot_bytes,
-        command,
-    })
+    )
+    .await
 }
 
 fn fs_route_from_workspace_link(
@@ -233,60 +206,6 @@ fn fs_route_from_workspace_link(
     })
 }
 
-fn projection_context_input(
-    kind: ContextEntryKind,
-    content_ref: BlobRef,
-    preview: &'static str,
-) -> ContextEntryInput {
-    ContextEntryInput {
-        kind,
-        content: engine::ContentRef {
-            content_ref,
-            media_type: Some(ENVIRONMENT_PROJECTION_MEDIA_TYPE.to_owned()),
-            provider_kind: None,
-        },
-        preview: Some(preview.to_owned()),
-        origin: None,
-        provenance_ref: None,
-        token_estimate: None,
-    }
-}
-
-fn current_context_ref(
-    state: &CoreAgentState,
-    key: &'static str,
-    kind: ContextEntryKind,
-) -> Option<BlobRef> {
-    state
-        .context
-        .entries
-        .iter()
-        .rev()
-        .find(|entry| {
-            entry
-                .key
-                .as_ref()
-                .is_some_and(|entry_key| entry_key.as_str() == key)
-                && entry.kind == kind
-        })
-        .map(|entry| entry.content.content_ref.clone())
-}
-
-fn current_key_ref(state: &CoreAgentState, key: &'static str) -> Option<BlobRef> {
-    state
-        .context
-        .entries
-        .iter()
-        .rev()
-        .find(|entry| {
-            entry
-                .key
-                .as_ref()
-                .is_some_and(|entry_key| entry_key.as_str() == key)
-        })
-        .map(|entry| entry.content.content_ref.clone())
-}
-
 fn encode_json<T: Serialize>(value: &T) -> Result<Vec<u8>, EnvironmentProjectionError> {
     serde_json::to_vec(value).map_err(|error| EnvironmentProjectionError::Encode {
         message: error.to_string(),
@@ -316,34 +235,16 @@ mod tests {
     async fn vfs_catalog_publication_skips_unchanged_catalog() {
         let blobs = InMemoryBlobStore::new();
         let catalog = VfsCatalog::new(0, Vec::new());
-        let state = CoreAgentState::new();
 
-        let first = prepare_vfs_catalog_publication(&blobs, None, &state, catalog.clone())
+        let first = prepare_vfs_catalog_publication(&blobs, None, None, catalog.clone())
             .await
             .expect("first publication");
         assert!(first.command.is_some());
 
-        let mut state = CoreAgentState::new();
-        state.context.entries = vec![engine::ContextEntry {
-            entry_id: engine::ContextEntryId::new(1),
-            key: Some(ContextEntryKey::new(VFS_CATALOG_CONTEXT_KEY)),
-            kind: ContextEntryKind::VfsCatalog,
-            source: engine::ContextEntrySource::Runtime {
-                label: "environment.projection".to_owned(),
-            },
-            content: engine::ContentRef {
-                content_ref: first.snapshot_ref.clone(),
-                media_type: Some(ENVIRONMENT_PROJECTION_MEDIA_TYPE.to_owned()),
-                provider_kind: None,
-            },
-            preview: Some("VFS catalog".to_owned()),
-            origin: None,
-            provenance_ref: None,
-            token_estimate: None,
-            supersedes: None,
-        }];
-
-        let second = prepare_vfs_catalog_publication(&blobs, None, &state, catalog)
+        let Some(CoreAgentCommand::UpsertContext { entry, .. }) = &first.command else {
+            panic!("catalog publication");
+        };
+        let second = prepare_vfs_catalog_publication(&blobs, None, Some(entry), catalog)
             .await
             .expect("second publication");
         assert!(second.command.is_none());
@@ -380,10 +281,9 @@ mod tests {
                 },
             ],
         );
-        let publication =
-            prepare_vfs_catalog_publication(&blobs, Some(&blobs), &CoreAgentState::new(), catalog)
-                .await
-                .expect("publication");
+        let publication = prepare_vfs_catalog_publication(&blobs, Some(&blobs), None, catalog)
+            .await
+            .expect("publication");
 
         let embedded = engine::storage::collect_blob_refs(
             &serde_json::from_slice(&publication.snapshot_bytes).expect("catalog json"),

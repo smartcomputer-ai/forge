@@ -838,13 +838,12 @@ pub struct RuntimeProjectionRefreshActivityRequest {
     pub vfs_skills_enabled: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vfs_skill_roots: Option<Vec<String>>,
-    pub active_catalog_ref: Option<BlobRef>,
-    pub active_vfs_catalog_ref: Option<BlobRef>,
+    /// Current keyed catalogs, including source provenance, for publication comparison.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub active_catalogs: BTreeMap<engine::ContextEntryKey, engine::ContextEntryInput>,
     /// The admitted sub-agent grant; the catalog entry follows it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subagents: Option<engine::SubagentsFeature>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub active_subagent_catalog_ref: Option<BlobRef>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

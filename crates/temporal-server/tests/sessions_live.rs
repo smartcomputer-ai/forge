@@ -403,7 +403,10 @@ async fn run_fake_live_client(
             .active_context
             .entries
             .iter()
-            .any(|entry| matches!(entry.kind, ContextEntryKindView::VfsCatalog))
+            .any(
+                |entry| entry.key.as_deref() == Some(tools::catalog::VFS_CATALOG_CONTEXT_KEY)
+                    && matches!(entry.kind, ContextEntryKindView::Catalog { .. })
+            )
     );
 
     let mut enabled_config = started_view.config.clone().expect("started session config");
@@ -436,7 +439,10 @@ async fn run_fake_live_client(
             .active_context
             .entries
             .iter()
-            .any(|entry| entry.kind == ContextEntryKindView::VfsCatalog)
+            .any(
+                |entry| entry.key.as_deref() == Some(tools::catalog::VFS_CATALOG_CONTEXT_KEY)
+                    && matches!(entry.kind, ContextEntryKindView::Catalog { .. })
+            )
     );
     let selection_tool_ids = [
         "environment.list",
@@ -508,7 +514,10 @@ async fn run_fake_live_client(
             .active_context
             .entries
             .iter()
-            .any(|entry| matches!(entry.kind, ContextEntryKindView::VfsCatalog))
+            .any(
+                |entry| entry.key.as_deref() == Some(tools::catalog::VFS_CATALOG_CONTEXT_KEY)
+                    && matches!(entry.kind, ContextEntryKindView::Catalog { .. })
+            )
     );
 
     let first = api

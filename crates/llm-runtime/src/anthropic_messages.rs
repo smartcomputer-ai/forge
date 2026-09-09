@@ -788,43 +788,10 @@ async fn materialize_block(
         ContextEntryKind::Instructions => Err(LlmAdapterError::InvalidProviderRequest {
             message: "instruction context entries must materialize as the system prompt".to_owned(),
         }),
-        ContextEntryKind::VfsCatalog => {
-            let catalog =
-                crate::environment_prompts::read_vfs_catalog(blobs, &entry.content.content_ref).await?;
-            Ok((
-                am::MessageRole::User,
-                am::ContentBlockParam::text(crate::catalog_prompts::catalog_text(
-                    entry,
-                    crate::environment_prompts::vfs_catalog_text(&catalog),
-                )),
-            ))
-        }
-        ContextEntryKind::SkillCatalog => {
-            let catalog =
-                crate::skill_prompts::read_skill_catalog(blobs, &entry.content.content_ref).await?;
-            Ok((
-                am::MessageRole::User,
-                am::ContentBlockParam::text(crate::catalog_prompts::catalog_text(
-                    entry,
-                    crate::skill_prompts::skill_catalog_text(&catalog),
-                )),
-            ))
-        }
-        ContextEntryKind::SubagentCatalog => {
-            let catalog =
-                crate::subagent_prompts::read_subagent_catalog(blobs, &entry.content.content_ref).await?;
-            Ok((
-                am::MessageRole::User,
-                am::ContentBlockParam::text(crate::catalog_prompts::catalog_text(
-                    entry,
-                    crate::subagent_prompts::subagent_catalog_text(&catalog),
-                )),
-            ))
-        }
         ContextEntryKind::Catalog { .. } => Ok((
             am::MessageRole::User,
             am::ContentBlockParam::text(
-                crate::catalog_prompts::external_catalog_text(blobs, entry, &entry.content.content_ref)
+                crate::catalog_prompts::stored_catalog_text(blobs, entry, &entry.content.content_ref)
                     .await?,
             ),
         )),

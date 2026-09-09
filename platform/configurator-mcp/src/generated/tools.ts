@@ -2418,7 +2418,7 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
               "$ref": "#/definitions/InputItem"
             },
             "key": {
-              "description": "Stable client-chosen context key. Re-sending the same key with the\nsame content is a no-op, so the key doubles as the idempotency handle.",
+              "description": "Stable client-chosen context key. Re-sending the same key with the\nsame content is a no-op, so the key doubles as the idempotency handle.\n`run`, `run.*`, `runtime`, and `runtime.*` are reserved for the runtime.",
               "type": "string"
             }
           },
@@ -2560,7 +2560,7 @@ export const GENERATED_TOOLS: readonly GeneratedToolDescriptor[] = [
       "$schema": "http://json-schema.org/draft-07/schema#",
       "properties": {
         "keys": {
-          "description": "Active context keys to remove. Removing a key that is already absent\nis a per-key no-op (`absent`), so retries are idempotent. Keys under\nreserved runtime namespaces (`run.`) are rejected request-level.",
+          "description": "Active context keys to remove. Removing a key that is already absent\nis a per-key no-op (`absent`), so retries are idempotent. Keys under\nreserved namespaces (`run`, `run.*`, `runtime`, `runtime.*`) are rejected\nrequest-level.",
           "items": {
             "type": "string"
           },

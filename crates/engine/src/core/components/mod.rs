@@ -35,10 +35,9 @@ pub use context::{
     OPENAI_COMPLETIONS_COMPACTION_PROVIDER_KIND, OPENAI_RESPONSES_COMPACTION_PROVIDER_KIND,
     OPENAI_RESPONSES_MCP_APPROVAL_REQUEST_PROVIDER_KIND, OPENAI_RESPONSES_MCP_CALL_PROVIDER_KIND,
     OPENAI_RESPONSES_MCP_LIST_TOOLS_PROVIDER_KIND, OPENAI_RESPONSES_MESSAGE_PROVIDER_KIND,
-    OPENAI_RESPONSES_WEB_SEARCH_CALL_PROVIDER_KIND, SKILL_CATALOG_CONTEXT_KEY,
-    SUBAGENT_CATALOG_CONTEXT_KEY, SUPERSEDED_CATALOG_CAP, TokenEstimate, TokenEstimateQuality,
-    VFS_CATALOG_CONTEXT_KEY, current_context_entry, is_supersedable_catalog_kind,
-    is_superseded_context_entry, validate_external_context_key,
+    OPENAI_RESPONSES_WEB_SEARCH_CALL_PROVIDER_KIND, SUPERSEDED_CATALOG_CAP, TokenEstimate,
+    TokenEstimateQuality, current_catalog_inputs, current_context_entry,
+    is_supersedable_catalog_kind, is_superseded_context_entry, validate_external_context_key,
 };
 pub use environment::{
     ENVIRONMENT_ACTIVATE_EFFECT_KIND, ENVIRONMENT_DEACTIVATE_EFFECT_KIND, EnvironmentEvent,

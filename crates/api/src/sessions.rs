@@ -760,6 +760,7 @@ pub struct ContextAppendParams {
 pub struct ContextAppendEntry {
     /// Stable client-chosen context key. Re-sending the same key with the
     /// same content is a no-op, so the key doubles as the idempotency handle.
+    /// `run`, `run.*`, `runtime`, and `runtime.*` are reserved for the runtime.
     pub key: String,
     pub item: InputItem,
 }
@@ -823,7 +824,8 @@ pub struct ContextRemoveParams {
     pub session_id: SessionId,
     /// Active context keys to remove. Removing a key that is already absent
     /// is a per-key no-op (`absent`), so retries are idempotent. Keys under
-    /// reserved runtime namespaces (`run.`) are rejected request-level.
+    /// reserved namespaces (`run`, `run.*`, `runtime`, `runtime.*`) are rejected
+    /// request-level.
     pub keys: Vec<String>,
 }
 

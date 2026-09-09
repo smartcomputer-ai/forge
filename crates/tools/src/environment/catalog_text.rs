@@ -1,19 +1,9 @@
-//! Provider-neutral prompt text for the VFS catalog context entry.
+//! Catalog text rendered once by the publisher.
 
-use engine::{BlobRef, storage::BlobStore};
-use tools::environment::projection::{FsRoute, FsRouteAccess, FsRouteSource, VfsCatalog};
-
-use crate::error::{LlmAdapterError, LlmAdapterResult};
-
-pub(crate) async fn read_vfs_catalog(
-    blobs: &dyn BlobStore,
-    blob_ref: &BlobRef,
-) -> LlmAdapterResult<VfsCatalog> {
-    read_projection(blobs, blob_ref).await
-}
+use crate::environment::projection::{FsRoute, FsRouteAccess, FsRouteSource, VfsCatalog};
 
 pub(crate) fn vfs_catalog_text(catalog: &VfsCatalog) -> String {
-    let mut text = String::from("Virtual filesystem (VFS):\n");
+    let mut text = String::new();
     if catalog.routes.is_empty() {
         text.push_str("  No VFS routes are currently mounted.\n");
     } else {
@@ -25,17 +15,6 @@ pub(crate) fn vfs_catalog_text(catalog: &VfsCatalog) -> String {
         "\nUse vfs_* tools for these paths. VFS files are not visible to environment file tools or commands. Ordinary file and command tools operate only on the active environment.",
     );
     text
-}
-
-async fn read_projection<T>(blobs: &dyn BlobStore, blob_ref: &BlobRef) -> LlmAdapterResult<T>
-where
-    T: serde::de::DeserializeOwned,
-{
-    let bytes = blobs.read_bytes(blob_ref).await?;
-    serde_json::from_slice(&bytes).map_err(|error| LlmAdapterError::InvalidJson {
-        blob_ref: blob_ref.clone(),
-        message: error.to_string(),
-    })
 }
 
 fn route_line(route: &FsRoute) -> String {
@@ -67,7 +46,7 @@ fn route_source(source: &FsRouteSource) -> String {
 
 #[cfg(test)]
 mod tests {
-    use tools::environment::projection::{
+    use crate::environment::projection::{
         FsRoute, FsRouteAccess, FsRouteAvailability, FsRouteSource, VfsCatalog,
     };
 
@@ -78,7 +57,7 @@ mod tests {
         let catalog = VfsCatalog::new(
             0,
             vec![FsRoute {
-                path: tools::fs::FsPath::new("/workspace").unwrap(),
+                path: crate::fs::FsPath::new("/workspace").unwrap(),
                 source_path: None,
                 access: FsRouteAccess::ReadWrite,
                 source: FsRouteSource::VfsWorkspace {

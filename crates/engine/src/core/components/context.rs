@@ -11,11 +11,6 @@ use crate::{
 
 const RESERVED_RUN_CONTEXT_KEY_PREFIX: &str = "run";
 const INSTRUCTIONS_KEY_PREFIX: &str = "instructions.";
-pub const VFS_CATALOG_CONTEXT_KEY: &str = "environment.vfs_catalog";
-pub const SKILL_CATALOG_CONTEXT_KEY: &str = "skills.catalog.vfs";
-/// The sub-agent catalog: the grant's agent menu with profile
-/// descriptions, refreshed like the skill catalog.
-pub const SUBAGENT_CATALOG_CONTEXT_KEY: &str = "subagents.catalog";
 /// Superseded catalog versions kept per key before the oldest is removed.
 /// A superseded catalog stays rendered so the provider prefix cache holds;
 /// the cap bounds how many stale versions a churning catalog can accumulate
@@ -230,13 +225,10 @@ pub enum ContextEntryKind {
         role: ContextMessageRole,
     },
     Instructions,
-    VfsCatalog,
-    SkillCatalog,
-    SubagentCatalog,
-    /// A client-owned catalog: an opaque text document under a client key
+    /// A catalog: an opaque text document under a stable key
     /// that tells the model what it may pick from (a directory, a roster, a
-    /// menu). Published through `session/context/append`; supersedes rather
-    /// than replaces on change, like the runtime catalogs.
+    /// menu). Runtime publishers and clients use the same representation.
+    /// A changed catalog supersedes its previous version.
     Catalog {
         title: String,
     },
@@ -261,13 +253,7 @@ pub enum ContextEntryKind {
 /// them mid-context would invalidate the provider prefix cache from that
 /// position for every session that outlives a catalog edit.
 pub fn is_supersedable_catalog_kind(kind: &ContextEntryKind) -> bool {
-    matches!(
-        kind,
-        ContextEntryKind::VfsCatalog
-            | ContextEntryKind::SkillCatalog
-            | ContextEntryKind::SubagentCatalog
-            | ContextEntryKind::Catalog { .. }
-    )
+    matches!(kind, ContextEntryKind::Catalog { .. })
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -681,35 +667,6 @@ fn validate_external_context_edit_entry(
         };
     }
 
-    if key.as_str() == SUBAGENT_CATALOG_CONTEXT_KEY {
-        return match &entry.kind {
-            ContextEntryKind::SubagentCatalog => Ok(()),
-            _ => Err(DomainError::InvariantViolation(format!(
-                "subagent catalog context key {} cannot supply context entry kind {:?}",
-                key, entry.kind
-            ))),
-        };
-    }
-    if key.as_str() == SKILL_CATALOG_CONTEXT_KEY {
-        return match &entry.kind {
-            ContextEntryKind::SkillCatalog => Ok(()),
-            _ => Err(DomainError::InvariantViolation(format!(
-                "skill catalog context key {} cannot supply context entry kind {:?}",
-                key, entry.kind
-            ))),
-        };
-    }
-
-    if key.as_str() == VFS_CATALOG_CONTEXT_KEY {
-        return match &entry.kind {
-            ContextEntryKind::VfsCatalog => Ok(()),
-            _ => Err(DomainError::InvariantViolation(format!(
-                "VFS catalog context key {} cannot supply context entry kind {:?}",
-                key, entry.kind
-            ))),
-        };
-    }
-
     match &entry.kind {
         ContextEntryKind::ProviderOpaque => Ok(()),
         ContextEntryKind::McpApprovalResponse { .. } => Err(DomainError::InvariantViolation(
@@ -725,10 +682,6 @@ fn validate_external_context_edit_entry(
         ContextEntryKind::Instructions => Err(DomainError::InvariantViolation(format!(
             "instruction context entry requires an {}* key, got {}",
             INSTRUCTIONS_KEY_PREFIX, key
-        ))),
-        ContextEntryKind::VfsCatalog => Err(DomainError::InvariantViolation(format!(
-            "VFS catalog context entry requires key {}, got {}",
-            VFS_CATALOG_CONTEXT_KEY, key
         ))),
         _ => Err(DomainError::InvariantViolation(format!(
             "context edit cannot supply context entry kind {:?}",
@@ -1064,6 +1017,25 @@ pub fn is_superseded_context_entry(state: &CoreAgentState, entry_id: ContextEntr
         .entries
         .iter()
         .any(|entry| entry.supersedes == Some(entry_id))
+}
+
+/// Current keyed catalog inputs, independent of the publishing subsystem.
+/// Later versions replace earlier ones in the map; history remains in context.
+pub fn current_catalog_inputs(
+    state: &CoreAgentState,
+) -> std::collections::BTreeMap<ContextEntryKey, ContextEntryInput> {
+    state
+        .context
+        .entries
+        .iter()
+        .filter(|entry| matches!(entry.kind, ContextEntryKind::Catalog { .. }))
+        .filter_map(|entry| {
+            entry
+                .key
+                .clone()
+                .map(|key| (key, context_entry_input_from_active(entry)))
+        })
+        .collect()
 }
 
 fn entries_applied_proposal(

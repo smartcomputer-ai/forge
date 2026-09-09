@@ -1,23 +1,9 @@
-//! Provider-neutral prompt text for the sub-agent catalog context entry.
+//! Catalog text rendered once by the publisher.
 
-use engine::{BlobRef, storage::BlobStore};
-use tools::subagents::{AGENT_RUN_TOOL_NAME, AGENT_SPAWN_TOOL_NAME, SubagentCatalogSnapshot};
-
-use crate::error::{LlmAdapterError, LlmAdapterResult};
-
-pub(crate) async fn read_subagent_catalog(
-    blobs: &dyn BlobStore,
-    blob_ref: &BlobRef,
-) -> LlmAdapterResult<SubagentCatalogSnapshot> {
-    let bytes = blobs.read_bytes(blob_ref).await?;
-    serde_json::from_slice(&bytes).map_err(|error| LlmAdapterError::InvalidJson {
-        blob_ref: blob_ref.clone(),
-        message: error.to_string(),
-    })
-}
+use crate::subagents::{AGENT_RUN_TOOL_NAME, AGENT_SPAWN_TOOL_NAME, SubagentCatalogSnapshot};
 
 pub(crate) fn subagent_catalog_text(catalog: &SubagentCatalogSnapshot) -> String {
-    let mut text = String::from("Sub-agent catalog:\n\n");
+    let mut text = String::new();
     if catalog.agents.is_empty() {
         text.push_str("No sub-agents are currently available.");
         return text;
@@ -60,7 +46,7 @@ pub(crate) fn subagent_catalog_text(catalog: &SubagentCatalogSnapshot) -> String
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tools::subagents::SubagentCatalogAgent;
+    use crate::subagents::SubagentCatalogAgent;
 
     #[test]
     fn catalog_text_lists_agents_descriptions_and_limits() {

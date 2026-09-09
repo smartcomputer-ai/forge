@@ -1,25 +1,9 @@
-//! Provider-neutral prompt text for skill catalog context
-//! entries. Adapters lower these entries into whatever message shape their
-//! provider expects, but the visible text is identical across providers.
+//! Catalog text rendered once by the publisher.
 
-use engine::{BlobRef, storage::BlobStore};
-use tools::skills::{SkillCatalogSnapshot, SkillLocation, SkillMetadata};
-
-use crate::error::{LlmAdapterError, LlmAdapterResult};
-
-pub(crate) async fn read_skill_catalog(
-    blobs: &dyn BlobStore,
-    blob_ref: &BlobRef,
-) -> LlmAdapterResult<SkillCatalogSnapshot> {
-    let bytes = blobs.read_bytes(blob_ref).await?;
-    serde_json::from_slice(&bytes).map_err(|error| LlmAdapterError::InvalidJson {
-        blob_ref: blob_ref.clone(),
-        message: error.to_string(),
-    })
-}
+use crate::skills::{SkillCatalogSnapshot, SkillLocation, SkillMetadata};
 
 pub(crate) fn skill_catalog_text(catalog: &SkillCatalogSnapshot) -> String {
-    let mut text = String::from("VFS skill catalog:\n\n");
+    let mut text = String::new();
     if catalog.skills.is_empty() {
         text.push_str("No Lightspeed skills are currently available.");
         return text;

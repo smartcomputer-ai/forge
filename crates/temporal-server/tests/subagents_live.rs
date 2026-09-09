@@ -759,7 +759,9 @@ async fn run_agent_run_inline_live_client(
             .active_context
             .entries
             .iter()
-            .any(|entry| matches!(entry.kind, ContextEntryKindView::SubagentCatalog)),
+            .any(|entry| entry.key.as_deref()
+                == Some(tools::catalog::SUBAGENT_CATALOG_CONTEXT_KEY)
+                && matches!(entry.kind, ContextEntryKindView::Catalog { .. })),
         "expected a sub-agent catalog context entry on the parent"
     );
 

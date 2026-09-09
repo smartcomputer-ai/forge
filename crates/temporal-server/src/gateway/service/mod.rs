@@ -4,6 +4,7 @@ mod api_config;
 mod auth_api;
 mod blobs;
 mod bots_api;
+mod catalogs;
 pub(crate) mod channels_api;
 mod common;
 mod environment_credentials;
@@ -42,6 +43,7 @@ use auth_api::{
     registry_auth_grant_status_for_filter, require_retrievable_grant,
 };
 use blobs::{has_blobs, put_blobs, read_blob};
+use catalogs::parse_client_context_key;
 use common::now_ms;
 pub use environment_lifecycle::ReconcileFailureLog;
 use environment_lifecycle::parse_registry_environment_id;
@@ -100,9 +102,9 @@ use engine::{
     ApprovalId, BlobRef, BoundWorkflowToolDispatch, CompactionPolicy, ContextEntry,
     ContextEntryInput, ContextEntryKey, ContextEntryKind, ContextMessageRole, CoreAgentCommand,
     CoreAgentStatus, FunctionToolSpec, ManagedSessionWorkflowTools, ModelSelection,
-    ProviderApiKind, RunConfig, RunId, RunStatus, SKILL_CATALOG_CONTEXT_KEY, SessionConfig,
-    SessionId, SubmissionId, ToolChoice, ToolKind, ToolName, ToolParallelism, ToolSpec,
-    WorkflowEndpointRef, WorkflowStartRef, WorkflowToolCompletion, WorkflowToolCompletionKeySource,
+    ProviderApiKind, RunConfig, RunId, RunStatus, SessionConfig, SessionId, SubmissionId,
+    ToolChoice, ToolKind, ToolName, ToolParallelism, ToolSpec, WorkflowEndpointRef,
+    WorkflowStartRef, WorkflowToolCompletion, WorkflowToolCompletionKeySource,
     WorkflowToolDeclaration, WorkflowToolDefinition, WorkflowToolId, WorkflowToolTarget,
     storage::{BlobStore, BlobStoreError, ReadSessionEvents, SessionStore},
 };
@@ -117,13 +119,14 @@ use temporalio_client::{
 use temporalio_common::protos::temporal::api::enums::v1::WorkflowExecutionStatus;
 use tools::{
     builtin::{BuiltinTool, BuiltinToolOperation},
+    catalog::{SKILL_CATALOG_CONTEXT_KEY, SUBAGENT_CATALOG_CONTEXT_KEY, VFS_CATALOG_CONTEXT_KEY},
     environment::jobs::{
         JOB_RUN_DEADLINE_AFTER_MS, JOB_RUN_WORKFLOW_SEMANTIC_TYPE, JOB_RUN_WORKFLOW_TOOL_ID,
         JOB_SUBMIT_WORKFLOW_SEMANTIC_TYPE, JOB_SUBMIT_WORKFLOW_TOOL_ID,
     },
     skills::{
         SkillCatalogSnapshot, SkillLocation, configured_vfs_skill_root_specs,
-        resolve_linked_vfs_skill_roots, skill_catalog_context_input,
+        resolve_linked_vfs_skill_roots,
     },
     toolset::{
         RegisteredToolset, ToolsetConfig, enable_concurrency_for_workflow_tools, register_toolset,
@@ -3209,9 +3212,7 @@ impl AgentApiService for GatewayAgentApi {
         let mut prepared = Vec::with_capacity(params.entries.len());
         let mut seen_keys = BTreeSet::new();
         for entry in &params.entries {
-            let key = ContextEntryKey::try_new(entry.key.clone()).map_err(|error| {
-                AgentApiError::invalid_request(format!("invalid context key: {error}"))
-            })?;
+            let key = parse_client_context_key(entry.key.clone())?;
             if !seen_keys.insert(key.clone()) {
                 return Err(AgentApiError::invalid_request(format!(
                     "duplicate context key in append batch: {key}"
@@ -3356,12 +3357,7 @@ impl AgentApiService for GatewayAgentApi {
         let mut keys = Vec::with_capacity(params.keys.len());
         let mut seen_keys = BTreeSet::new();
         for key in params.keys {
-            let key = ContextEntryKey::try_new(key).map_err(|error| {
-                AgentApiError::invalid_request(format!("invalid context key: {error}"))
-            })?;
-            engine::validate_external_context_key(&key).map_err(|error| {
-                AgentApiError::invalid_request(format!("invalid context key: {error}"))
-            })?;
+            let key = parse_client_context_key(key)?;
             if !seen_keys.insert(key.clone()) {
                 return Err(AgentApiError::invalid_request(format!(
                     "duplicate context key in remove batch: {key}"

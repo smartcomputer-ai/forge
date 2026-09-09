@@ -1,14 +1,14 @@
-use engine::{
-    BlobRef, ContextEntry, ContextEntryId, ContextEntryKey, ContextEntryKind, ContextEntrySource,
-    CoreAgentCommand, CoreAgentState, SKILL_CATALOG_CONTEXT_KEY, VFS_CATALOG_CONTEXT_KEY,
-};
+use engine::{ContextEntryKey, ContextEntryKind, CoreAgentCommand};
 use temporal_workflow::{
     RuntimeProjectionRefreshActivityRequest, RuntimeProjectionRefreshActivityResult,
 };
 use temporalio_sdk::activities::ActivityError;
+use tools::catalog::{
+    SKILL_CATALOG_CONTEXT_KEY, SUBAGENT_CATALOG_CONTEXT_KEY, VFS_CATALOG_CONTEXT_KEY,
+    clear_catalog_command,
+};
 use tools::subagents::{
-    SubagentCatalogAgent, SubagentCatalogSnapshot, clear_subagent_catalog_command,
-    prepare_subagent_catalog_publication,
+    SubagentCatalogAgent, SubagentCatalogSnapshot, prepare_subagent_catalog_publication,
 };
 use tools::{
     environment::projection::{prepare_vfs_catalog_publication, vfs_catalog_from_workspace_links},
@@ -18,7 +18,7 @@ use tools::{
     },
     skills::{
         configured_vfs_skill_root_specs, prepare_skill_catalog_publication_with_warnings,
-        resolve_linked_vfs_skill_roots, skill_catalog_context_input,
+        resolve_linked_vfs_skill_roots,
     },
 };
 
@@ -41,26 +41,22 @@ pub(super) async fn refresh_runtime_projection(
     )
     .await
     .map_err(activity_error)?;
-    let mut state = CoreAgentState::new();
-    if let Some(catalog_ref) = request.active_catalog_ref.clone() {
-        state
-            .context
-            .entries
-            .push(active_catalog_entry(catalog_ref));
-    }
-    if let Some(catalog_ref) = request.active_vfs_catalog_ref.clone() {
-        state
-            .context
-            .entries
-            .push(active_vfs_catalog_entry(catalog_ref));
-    }
+    let current_vfs = request
+        .active_catalogs
+        .get(&ContextEntryKey::new(VFS_CATALOG_CONTEXT_KEY));
+    let current_skills = request
+        .active_catalogs
+        .get(&ContextEntryKey::new(SKILL_CATALOG_CONTEXT_KEY));
+    let current_subagents = request
+        .active_catalogs
+        .get(&ContextEntryKey::new(SUBAGENT_CATALOG_CONTEXT_KEY));
     let mut commands = Vec::new();
     if request.vfs_catalog_enabled {
         let catalog = vfs_catalog_from_workspace_links(&links).map_err(activity_error)?;
         if let Some(command) = prepare_vfs_catalog_publication(
             deps.blobs.as_ref(),
             deps.blob_graph.as_deref(),
-            &state,
+            current_vfs,
             catalog,
         )
         .await
@@ -69,7 +65,7 @@ pub(super) async fn refresh_runtime_projection(
         {
             commands.push(command);
         }
-    } else if request.active_vfs_catalog_ref.is_some() {
+    } else if current_vfs.is_some() {
         commands.push(CoreAgentCommand::RemoveContext {
             expected_revision: None,
             key: ContextEntryKey::new(VFS_CATALOG_CONTEXT_KEY),
@@ -83,7 +79,7 @@ pub(super) async fn refresh_runtime_projection(
             let snapshot = subagent_catalog_snapshot(deps.profiles.as_deref(), subagents).await;
             if let Some(command) = prepare_subagent_catalog_publication(
                 deps.blobs.as_ref(),
-                request.active_subagent_catalog_ref.as_ref(),
+                current_subagents,
                 &snapshot,
             )
             .await
@@ -94,7 +90,7 @@ pub(super) async fn refresh_runtime_projection(
         }
         None => {
             if let Some(command) =
-                clear_subagent_catalog_command(request.active_subagent_catalog_ref.as_ref())
+                clear_catalog_command(current_subagents, SUBAGENT_CATALOG_CONTEXT_KEY)
             {
                 commands.push(command);
             }
@@ -148,7 +144,7 @@ pub(super) async fn refresh_runtime_projection(
         return Ok(RuntimeProjectionRefreshActivityResult {
             commands: append_optional(
                 commands,
-                clear_catalog_command(request.active_catalog_ref.as_ref()),
+                clear_catalog_command(current_skills, SKILL_CATALOG_CONTEXT_KEY),
             ),
         });
     }
@@ -158,7 +154,7 @@ pub(super) async fn refresh_runtime_projection(
         return Ok(RuntimeProjectionRefreshActivityResult {
             commands: append_optional(
                 commands,
-                clear_catalog_command(request.active_catalog_ref.as_ref()),
+                clear_catalog_command(current_skills, SKILL_CATALOG_CONTEXT_KEY),
             ),
         });
     }
@@ -179,7 +175,7 @@ pub(super) async fn refresh_runtime_projection(
         return Ok(RuntimeProjectionRefreshActivityResult {
             commands: append_optional(
                 commands,
-                clear_catalog_command(request.active_catalog_ref.as_ref()),
+                clear_catalog_command(current_skills, SKILL_CATALOG_CONTEXT_KEY),
             ),
         });
     }
@@ -187,7 +183,7 @@ pub(super) async fn refresh_runtime_projection(
     let publication = prepare_skill_catalog_publication_with_warnings(
         deps.blobs.as_ref(),
         deps.blob_graph.as_deref(),
-        &state,
+        current_skills,
         &inputs,
         resolved.warnings().to_vec(),
     )
@@ -248,63 +244,6 @@ fn append_optional(
         commands.push(command);
     }
     commands
-}
-
-fn clear_catalog_command(active_catalog_ref: Option<&BlobRef>) -> Option<CoreAgentCommand> {
-    active_catalog_ref.map(|_| CoreAgentCommand::RemoveContext {
-        expected_revision: None,
-        key: ContextEntryKey::new(SKILL_CATALOG_CONTEXT_KEY),
-    })
-}
-
-fn active_catalog_entry(catalog_ref: BlobRef) -> ContextEntry {
-    let input = skill_catalog_context_input(catalog_ref);
-    ContextEntry {
-        entry_id: ContextEntryId::new(1),
-        key: Some(ContextEntryKey::new(SKILL_CATALOG_CONTEXT_KEY)),
-        kind: ContextEntryKind::SkillCatalog,
-        source: ContextEntrySource::Runtime {
-            label: "skills.catalog.vfs".to_owned(),
-        },
-        content: input.content,
-        preview: input.preview,
-        origin: input.origin,
-        provenance_ref: input.provenance_ref,
-        token_estimate: input.token_estimate,
-        supersedes: None,
-    }
-}
-
-fn active_vfs_catalog_entry(catalog_ref: BlobRef) -> ContextEntry {
-    let input = tools::environment::projection::vfs_catalog_context_input(catalog_ref);
-    active_projection_entry(
-        ContextEntryKey::new(VFS_CATALOG_CONTEXT_KEY),
-        ContextEntryKind::VfsCatalog,
-        input,
-        "environment.vfs_catalog",
-    )
-}
-
-fn active_projection_entry(
-    key: ContextEntryKey,
-    kind: ContextEntryKind,
-    input: engine::ContextEntryInput,
-    label: &'static str,
-) -> ContextEntry {
-    ContextEntry {
-        entry_id: ContextEntryId::new(1),
-        key: Some(key),
-        kind,
-        source: ContextEntrySource::Runtime {
-            label: label.to_owned(),
-        },
-        content: input.content,
-        preview: input.preview,
-        origin: input.origin,
-        provenance_ref: input.provenance_ref,
-        token_estimate: input.token_estimate,
-        supersedes: None,
-    }
 }
 
 /// Join the grant's allowlist with the current profile records. A missing

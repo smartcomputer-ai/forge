@@ -142,15 +142,6 @@ export type ContextEntryKindView =
       type: "instructions";
     }
   | {
-      type: "vfsCatalog";
-    }
-  | {
-      type: "skillCatalog";
-    }
-  | {
-      type: "subagentCatalog";
-    }
-  | {
       title: string;
       type: "catalog";
     }
@@ -6645,6 +6636,7 @@ export interface ContextAppendEntry {
   /**
    * Stable client-chosen context key. Re-sending the same key with the
    * same content is a no-op, so the key doubles as the idempotency handle.
+   * `run`, `run.*`, `runtime`, and `runtime.*` are reserved for the runtime.
    */
   key: string;
 }
@@ -6671,7 +6663,8 @@ export interface ContextRemoveParams {
   /**
    * Active context keys to remove. Removing a key that is already absent
    * is a per-key no-op (`absent`), so retries are idempotent. Keys under
-   * reserved runtime namespaces (`run.`) are rejected request-level.
+   * reserved namespaces (`run`, `run.*`, `runtime`, `runtime.*`) are rejected
+   * request-level.
    */
   keys: string[];
   sessionId: string;

@@ -2641,3 +2641,52 @@ async fn input_origin_rejects_blank_and_oversized_values() {
         );
     }
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn skill_list_reads_latest_structured_provenance() {
+    let blobs = engine::storage::InMemoryBlobStore::new();
+    let mut state = engine::CoreAgentState::new();
+    assert!(
+        super::skills::skill_list_from_context(&blobs, &state)
+            .await
+            .unwrap()
+            .catalog_ref
+            .is_none()
+    );
+    for (id, name) in [(1, "old"), (2, "current")] {
+        let catalog = SkillCatalogSnapshot::new(
+            vec![test_skill_metadata("skill:review", name, true)],
+            Vec::new(),
+        );
+        let source_ref = blobs
+            .put_bytes(serde_json::to_vec(&catalog).unwrap())
+            .await
+            .unwrap();
+        let input = tools::skills::skill_catalog_context_input(&blobs, &catalog, source_ref)
+            .await
+            .unwrap();
+        state.context.entries.push(ContextEntry {
+            entry_id: engine::ContextEntryId::new(id),
+            key: Some(ContextEntryKey::new(SKILL_CATALOG_CONTEXT_KEY)),
+            kind: input.kind,
+            source: engine::ContextEntrySource::ContextEdit,
+            content: input.content,
+            preview: input.preview,
+            origin: input.origin,
+            provenance_ref: input.provenance_ref,
+            token_estimate: input.token_estimate,
+            supersedes: (id == 2).then(|| engine::ContextEntryId::new(1)),
+        });
+    }
+    let response = super::skills::skill_list_from_context(&blobs, &state)
+        .await
+        .unwrap();
+    assert_eq!(response.skills[0].name, "current");
+    assert_eq!(
+        response.catalog_ref.as_deref(),
+        state.context.entries[1]
+            .provenance_ref
+            .as_ref()
+            .map(BlobRef::as_str)
+    );
+}

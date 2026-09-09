@@ -118,6 +118,12 @@ async fn openai_completions_runtime_live_skill_catalog_exposes_relevant_skill_pa
         .put_bytes(serde_json::to_vec(&catalog).expect("catalog JSON"))
         .await
         .expect("store catalog");
+    let catalog_input =
+        tools::skills::skill_catalog_context_input(blobs.as_ref(), &catalog, catalog_ref)
+            .await
+            .expect("render catalog");
+    let mut catalog_entry = entry(1, catalog_input.kind, catalog_input.content.content_ref);
+    catalog_entry.provenance_ref = catalog_input.provenance_ref;
     let user = blobs
         .insert_text(
             "I need to check a release for missing migration and changelog work. Which skill should I read, and at what exact path?",
@@ -127,7 +133,7 @@ async fn openai_completions_runtime_live_skill_catalog_exposes_relevant_skill_pa
     let output = answer(
         blobs.clone(),
         request(vec![
-            entry(1, ContextEntryKind::SkillCatalog, catalog_ref),
+            catalog_entry,
             entry(
                 2,
                 ContextEntryKind::Message {

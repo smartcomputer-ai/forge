@@ -120,8 +120,8 @@ skill lifecycle.
 
 ## Implementation boundaries
 
-Keep `SkillCatalog` and its source-neutral context handling where useful. The
-engine need not interpret individual skill identities, paths, or instructions.
+Use the generic `Catalog { title }` context kind for skill menus. The engine
+need not interpret individual skill identities, paths, or instructions.
 Move any remaining catalog-only identifiers out of engine ownership if removing
 activation leaves them with no deterministic branching role.
 
@@ -188,3 +188,28 @@ checks passed. API and workflow exporters ran; the workflow export was unchanged
 TypeScript and Configurator outputs were regenerated and a second generation
 was byte-identical. The npm generated-file gate reports the intentional
 uncommitted diff against HEAD; its remaining checks passed separately.
+
+
+## Shared catalog representation
+
+Follow-up simplification before environment skill discovery:
+
+- [x] Replace specialized VFS, skill, and sub-agent context kinds with `Catalog { title }`.
+- [x] Render text at publication and retain each structured source in provenance.
+- [x] Share publication comparison, clearing, and gateway acknowledgement handling.
+- [x] Carry current keyed catalog inputs through workflow refresh instead of per-domain references.
+- [x] Reserve `runtime.*` context keys at the public API boundary; keep engine handling generic.
+- [x] Verify independent supersession, replay, source retention, provider rendering, and regenerated consumers.
+
+The VFS route, skill metadata, and sub-agent snapshots remain distinct source
+models. Environment discovery, within-run refresh, catalog merging, and
+workspace materialization remain deferred.
+
+Verification: 1,287 Rust tests passed across engine, tools, provider adapters,
+API/projection, gateway/workflow, CLI, and the test runner; 121 live tests stayed
+ignored. The final publisher text/provenance assertion also passed in a focused
+run. All 362 TypeScript consumer tests, typechecks, web/demo builds, and docs
+checks passed. API and workflow exporters ran; the workflow export was
+unchanged. Repeating consumer generation was byte-identical. The npm
+generated-file gate reports the intentional uncommitted diff against HEAD;
+its remaining checks passed separately.

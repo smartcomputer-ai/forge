@@ -9,7 +9,8 @@ impl GatewayAgentApi {
         session_id: &SessionId,
         state: &engine::CoreAgentState,
     ) -> Result<(), AgentApiError> {
-        let active_ref = active_subagent_catalog_ref(state);
+        let catalogs = engine::current_catalog_inputs(state);
+        let current = catalogs.get(&ContextEntryKey::new(SUBAGENT_CATALOG_CONTEXT_KEY));
         let subagents = state
             .lifecycle
             .config
@@ -23,54 +24,19 @@ impl GatewayAgentApi {
                         .await;
                 tools::subagents::prepare_subagent_catalog_publication(
                     self.store.as_ref(),
-                    active_ref.as_ref(),
+                    current,
                     &snapshot,
                 )
                 .await
                 .map_err(|error| AgentApiError::internal(error.to_string()))?
             }
-            None => tools::subagents::clear_subagent_catalog_command(active_ref.as_ref()),
+            None => tools::catalog::clear_catalog_command(current, SUBAGENT_CATALOG_CONTEXT_KEY),
         };
         let Some(command) = command else {
             return Ok(());
         };
-        let target_ref = match &command {
-            CoreAgentCommand::UpsertContext { entry, .. } => {
-                Some(entry.content.content_ref.clone())
-            }
-            _ => None,
-        };
-        let baseline_failures = self
-            .query_status_optional(session_id)
-            .await?
-            .map(|status| status.admission_failures.len())
-            .unwrap_or(0);
-        self.submit_core_command(session_id, command).await?;
-        let started = Instant::now();
-        loop {
-            if started.elapsed() > self.operation_timeout {
-                return Err(AgentApiError::internal(format!(
-                    "timed out waiting for subagent catalog update: {session_id}"
-                )));
-            }
-            if let Some(status) = self.query_status_optional(session_id).await? {
-                if status.admission_failures.len() > baseline_failures
-                    && let Some(failure) = status.admission_failures.last()
-                {
-                    return Err(map_admission_failure_to_api_error(failure));
-                }
-                if let Some(error) = status.last_error {
-                    return Err(AgentApiError::internal(format!(
-                        "agent workflow reported error: {error}"
-                    )));
-                }
-            }
-            let loaded = self.load_session_state(session_id).await?;
-            if active_subagent_catalog_ref(&loaded.state) == target_ref {
-                return Ok(());
-            }
-            tokio::time::sleep(self.poll_interval).await;
-        }
+        self.apply_catalog_refresh_commands(session_id, vec![command])
+            .await
     }
 
     /// `ProfileEnvironment::Inherit`: the delegating parent's active
@@ -178,20 +144,4 @@ impl GatewayAgentApi {
             .await?;
         Ok(true)
     }
-}
-
-pub(super) fn active_subagent_catalog_ref(state: &engine::CoreAgentState) -> Option<BlobRef> {
-    state
-        .context
-        .entries
-        .iter()
-        .rev()
-        .find(|entry| {
-            entry
-                .key
-                .as_ref()
-                .is_some_and(|key| key.as_str() == engine::SUBAGENT_CATALOG_CONTEXT_KEY)
-                && matches!(entry.kind, ContextEntryKind::SubagentCatalog)
-        })
-        .map(|entry| entry.content.content_ref.clone())
 }

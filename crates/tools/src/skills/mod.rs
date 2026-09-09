@@ -1,6 +1,7 @@
 //! Skill discovery and catalog construction.
 
 pub mod catalog;
+pub(crate) mod catalog_text;
 mod id;
 pub mod model;
 pub mod parser;

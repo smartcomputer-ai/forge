@@ -64,8 +64,8 @@ Publish two separately identified catalogs to the model and API:
 
 | Catalog | Context key | Locations and tools |
 | --- | --- | --- |
-| VFS skills | `skills.catalog.vfs` (existing) | Linked workspace/snapshot paths, read with `vfs_*` tools. |
-| Selected environment skills | `skills.catalog.environment` | Paths on the selected environment, read with environment file tools; bundled scripts run there through process tools. |
+| VFS skills | `runtime.catalog.skills.vfs` (existing) | Linked workspace/snapshot paths, read with `vfs_*` tools. |
+| Selected environment skills | `runtime.catalog.skills.environment` | Paths on the selected environment, read with environment file tools; bundled scripts run there through process tools. |
 
 Keep the existing VFS key. The environment key is stable across environment
 switches; its envelope and entries identify the concrete environment. A skill
@@ -96,8 +96,9 @@ identical names or contents. This local alias handling does not link catalogs.
 
 ### Publication and environment changes
 
-Use the existing `SkillCatalog` context kind, stable keys, and supersession
-rules for each catalog independently. An environment-only change must not
+Use the shared `Catalog { title }` context kind, stable keys, and supersession
+rules for each catalog independently. Publishers store model-facing text and
+retain structured source snapshots through provenance. An environment-only change must not
 rewrite, supersede, or clear the VFS catalog. A VFS-only change must not mutate
 the environment catalog. No third combined catalog is published.
 

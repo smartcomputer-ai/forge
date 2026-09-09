@@ -4,12 +4,12 @@ use engine::{
     BlobRef, ContextCompactionRequest, ContextCompactionResult, ContextCompactionStatus,
     CoreAgentAction, CoreAgentCommand, CoreAgentDrive, CoreAgentDriveError, CoreAgentIoError,
     CoreAgentLlm, CoreAgentState, CoreAgentTools, EventSeq, LlmFinish, LlmGenerationFacts,
-    LlmGenerationRequest, LlmGenerationResult, LlmGenerationStatus, SKILL_CATALOG_CONTEXT_KEY,
-    SessionId, ToolBatchOutcome, ToolCallStatus, ToolInvocationBatchRequest,
-    ToolInvocationBatchResult, ToolInvocationResult,
+    LlmGenerationRequest, LlmGenerationResult, LlmGenerationStatus, SessionId, ToolBatchOutcome,
+    ToolCallStatus, ToolInvocationBatchRequest, ToolInvocationBatchResult, ToolInvocationResult,
     storage::{AppendSessionEvents, BlobStore, ReadSessionEvents},
 };
 use tools::{
+    catalog::{SKILL_CATALOG_CONTEXT_KEY, VFS_CATALOG_CONTEXT_KEY, clear_catalog_command},
     environment::projection::{prepare_vfs_catalog_publication, vfs_catalog_from_workspace_links},
     prompts::{
         PromptAssemblyLimits, configured_vfs_prompt_root_specs,
@@ -308,10 +308,15 @@ impl SessionRunner {
                 .context
                 .entries
                 .iter()
-                .any(|entry| entry.kind == engine::ContextEntryKind::VfsCatalog)
+                .any(|entry| {
+                    entry
+                        .key
+                        .as_ref()
+                        .is_some_and(|key| key.as_str() == VFS_CATALOG_CONTEXT_KEY)
+                })
                 .then(|| CoreAgentCommand::RemoveContext {
                     expected_revision: None,
-                    key: engine::ContextEntryKey::new(engine::VFS_CATALOG_CONTEXT_KEY),
+                    key: engine::ContextEntryKey::new(VFS_CATALOG_CONTEXT_KEY),
                 })
                 .into_iter()
                 .collect());
@@ -321,12 +326,17 @@ impl SessionRunner {
                 message: format!("prepare VFS catalog: {error}"),
             }
         })?;
-        let publication =
-            prepare_vfs_catalog_publication(self.stores.blobs.as_ref(), None, state, catalog)
-                .await
-                .map_err(|error| RunnerError::InvalidRequest {
-                    message: format!("prepare VFS catalog publication: {error}"),
-                })?;
+        let publication = prepare_vfs_catalog_publication(
+            self.stores.blobs.as_ref(),
+            None,
+            engine::current_catalog_inputs(state)
+                .get(&engine::ContextEntryKey::new(VFS_CATALOG_CONTEXT_KEY)),
+            catalog,
+        )
+        .await
+        .map_err(|error| RunnerError::InvalidRequest {
+            message: format!("prepare VFS catalog publication: {error}"),
+        })?;
         Ok(publication.command.into_iter().collect())
     }
 
@@ -357,6 +367,8 @@ impl SessionRunner {
         _session_id: &SessionId,
         state: &CoreAgentState,
     ) -> Result<Option<CoreAgentCommand>, RunnerError> {
+        let catalogs = engine::current_catalog_inputs(state);
+        let current = catalogs.get(&engine::ContextEntryKey::new(SKILL_CATALOG_CONTEXT_KEY));
         let skills_config = state
             .lifecycle
             .config
@@ -364,14 +376,10 @@ impl SessionRunner {
             .and_then(|config| config.features.vfs.as_ref())
             .and_then(|vfs| vfs.skills.as_ref());
         let Some(skills_config) = skills_config else {
-            return Ok(clear_catalog_command(
-                active_skill_catalog_ref(state).as_ref(),
-            ));
+            return Ok(clear_catalog_command(current, SKILL_CATALOG_CONTEXT_KEY));
         };
         let Some(workspace_store) = self.stores.vfs_workspace_store.as_ref() else {
-            return Ok(clear_catalog_command(
-                active_skill_catalog_ref(state).as_ref(),
-            ));
+            return Ok(clear_catalog_command(current, SKILL_CATALOG_CONTEXT_KEY));
         };
         let links = self.resolve_workspace_links(state).await?;
         let specs = configured_vfs_skill_root_specs(&links, skills_config.roots.as_deref())
@@ -379,9 +387,7 @@ impl SessionRunner {
                 message: format!("configure VFS skill roots: {error}"),
             })?;
         if specs.is_empty() {
-            return Ok(clear_catalog_command(
-                active_skill_catalog_ref(state).as_ref(),
-            ));
+            return Ok(clear_catalog_command(current, SKILL_CATALOG_CONTEXT_KEY));
         }
 
         let resolved = resolve_linked_vfs_skill_roots(
@@ -401,15 +407,13 @@ impl SessionRunner {
                 message: format!("filter VFS skill roots: {error}"),
             })?;
         if inputs.is_empty() && resolved.warnings().is_empty() {
-            return Ok(clear_catalog_command(
-                active_skill_catalog_ref(state).as_ref(),
-            ));
+            return Ok(clear_catalog_command(current, SKILL_CATALOG_CONTEXT_KEY));
         }
 
         let publication = prepare_skill_catalog_publication_with_warnings(
             self.stores.blobs.as_ref(),
             None,
-            state,
+            current,
             &inputs,
             resolved.warnings().to_vec(),
         )
@@ -676,28 +680,6 @@ fn context_key_is_in_prefix(key: &engine::ContextEntryKey, prefix: &str) -> bool
             .as_str()
             .strip_prefix(prefix)
             .is_some_and(|suffix| suffix.starts_with('.'))
-}
-
-fn clear_catalog_command(active_catalog_ref: Option<&BlobRef>) -> Option<CoreAgentCommand> {
-    active_catalog_ref.map(|_| CoreAgentCommand::RemoveContext {
-        expected_revision: None,
-        key: engine::ContextEntryKey::new(SKILL_CATALOG_CONTEXT_KEY),
-    })
-}
-
-fn active_skill_catalog_ref(state: &CoreAgentState) -> Option<BlobRef> {
-    state
-        .context
-        .entries
-        .iter()
-        .find(|entry| {
-            entry
-                .key
-                .as_ref()
-                .is_some_and(|key| key.as_str() == SKILL_CATALOG_CONTEXT_KEY)
-                && matches!(entry.kind, engine::ContextEntryKind::SkillCatalog)
-        })
-        .map(|entry| entry.content.content_ref.clone())
 }
 
 fn resolve_max_steps(max_steps: Option<u32>) -> Result<usize, RunnerError> {
@@ -1432,11 +1414,21 @@ mod tests {
             .context
             .entries
             .iter()
-            .find(|entry| matches!(entry.kind, ContextEntryKind::VfsCatalog))
+            .find(|entry| {
+                entry
+                    .key
+                    .as_ref()
+                    .is_some_and(|key| key.as_str() == VFS_CATALOG_CONTEXT_KEY)
+            })
             .expect("VFS catalog context entry");
         let vfs_catalog: tools::environment::projection::VfsCatalog = serde_json::from_slice(
             &blobs
-                .read_bytes(&vfs_entry.content.content_ref)
+                .read_bytes(
+                    vfs_entry
+                        .provenance_ref
+                        .as_ref()
+                        .expect("VFS snapshot provenance"),
+                )
                 .await
                 .unwrap(),
         )
@@ -1446,11 +1438,12 @@ mod tests {
 
         let requests = llm.requests.lock().expect("requests lock");
         let planned = &requests[0].request.context.entries;
-        assert!(
-            planned
-                .iter()
-                .any(|entry| matches!(entry.kind, ContextEntryKind::VfsCatalog))
-        );
+        assert!(planned.iter().any(|entry| {
+            entry
+                .key
+                .as_ref()
+                .is_some_and(|key| key.as_str() == VFS_CATALOG_CONTEXT_KEY)
+        }));
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -1516,14 +1509,12 @@ mod tests {
         assert_eq!(outcome.state.lifecycle.config, Some(session_config));
         assert!(outcome.state.runs.active.is_none());
         assert_eq!(outcome.state.runs.completed.len(), 1);
-        assert!(
-            !outcome
-                .state
-                .context
-                .entries
-                .iter()
-                .any(|entry| matches!(entry.kind, ContextEntryKind::VfsCatalog))
-        );
+        assert!(!outcome.state.context.entries.iter().any(|entry| {
+            entry
+                .key
+                .as_ref()
+                .is_some_and(|key| key.as_str() == VFS_CATALOG_CONTEXT_KEY)
+        }));
         assert_eq!(
             outcome
                 .emitted_entries
@@ -1595,7 +1586,14 @@ mod tests {
             .await
             .expect("drive request");
 
-        let catalog_ref = active_skill_catalog_ref(&outcome.state).expect("skill catalog");
+        let catalog_ref = engine::current_context_entry(
+            &outcome.state,
+            &engine::ContextEntryKey::new(SKILL_CATALOG_CONTEXT_KEY),
+        )
+        .expect("skill catalog")
+        .provenance_ref
+        .as_ref()
+        .expect("structured skill source");
         let catalog: SkillCatalogSnapshot =
             serde_json::from_slice(&blobs.read_bytes(&catalog_ref).await.expect("read catalog"))
                 .expect("decode catalog");
@@ -1618,7 +1616,7 @@ mod tests {
                 &entry.event,
                 CoreAgentEvent::Context(engine::ContextEvent::EntriesApplied { entries, .. })
                     if entries.iter().any(|entry| {
-                        matches!(entry.kind, ContextEntryKind::SkillCatalog)
+                        matches!(entry.kind, ContextEntryKind::Catalog { .. }) && entry.key.as_ref().is_some_and(|key| key.as_str() == SKILL_CATALOG_CONTEXT_KEY)
                     })
             )
         }));

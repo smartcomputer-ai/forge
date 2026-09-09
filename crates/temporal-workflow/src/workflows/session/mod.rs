@@ -26,8 +26,8 @@ use engine::{
     BlobRef, CommandError, ContextEntryInput, ContextEntryKey, ContextEntryKind,
     ContextMessageRole, CoreAgentAction, CoreAgentCommand, CoreAgentDrive, CoreAgentDriveError,
     CoreAgentEntry, CoreAgentEvent, CoreAgentState, CoreAgentStatus, EmissionEnvelope,
-    LlmGenerationRequest, RunConfig, RunEvent, RunStatus, SKILL_CATALOG_CONTEXT_KEY, SessionId,
-    SessionPosition, SubmissionId, ToolInvocationBatchRequest, VFS_CATALOG_CONTEXT_KEY,
+    LlmGenerationRequest, RunConfig, RunEvent, RunStatus, SessionId, SessionPosition, SubmissionId,
+    ToolInvocationBatchRequest,
 };
 use futures::{FutureExt, pin_mut, select};
 use temporalio_macros::{workflow, workflow_methods};

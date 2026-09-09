@@ -2343,9 +2343,6 @@ fn context_entry_kind_to_api(kind: &ContextEntryKind) -> ContextEntryKindView {
             role: context_message_role_to_api(role),
         },
         ContextEntryKind::Instructions => ContextEntryKindView::Instructions,
-        ContextEntryKind::VfsCatalog => ContextEntryKindView::VfsCatalog,
-        ContextEntryKind::SkillCatalog => ContextEntryKindView::SkillCatalog,
-        ContextEntryKind::SubagentCatalog => ContextEntryKindView::SubagentCatalog,
         ContextEntryKind::Catalog { title } => ContextEntryKindView::Catalog {
             title: title.clone(),
         },

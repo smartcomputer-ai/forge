@@ -2042,9 +2042,9 @@ mod tests {
         ContextRewriteReason, CoreAgentCommand, FunctionToolSpec, LlmGenerationFacts,
         ModelSelection, OPENAI_RESPONSES_COMPACTION_PROVIDER_KIND, ObservedToolCall,
         ProviderApiKind, RunConfig, RunFailureKind, RunId, RunRequestCommand, RunRequestSource,
-        RunStatus, SKILL_CATALOG_CONTEXT_KEY, SessionConfig, TokenEstimate, TokenEstimateQuality,
-        ToolBatchOutcome, ToolChoice, ToolEffect, ToolInvocationResult, ToolKind, ToolName,
-        ToolParallelism, ToolSpec, WorkflowEndpointRef, WorkflowToolDefinition, WorkflowToolId,
+        RunStatus, SessionConfig, TokenEstimate, TokenEstimateQuality, ToolBatchOutcome,
+        ToolChoice, ToolEffect, ToolInvocationResult, ToolKind, ToolName, ToolParallelism,
+        ToolSpec, WorkflowEndpointRef, WorkflowToolDefinition, WorkflowToolId,
         WorkflowToolInvocation,
     };
 
@@ -2336,9 +2336,13 @@ mod tests {
         }
     }
 
-    fn skill_catalog_input(content_ref: BlobRef) -> ContextEntryInput {
+    const TEST_CATALOG_KEY: &str = "test.catalog";
+
+    fn catalog_input(content_ref: BlobRef) -> ContextEntryInput {
         ContextEntryInput {
-            kind: ContextEntryKind::SkillCatalog,
+            kind: ContextEntryKind::Catalog {
+                title: "Test catalog".to_owned(),
+            },
             content: crate::ContentRef {
                 content_ref,
                 media_type: None,
@@ -2995,8 +2999,8 @@ mod tests {
         open_session(&mut drive);
         upsert(
             &mut drive,
-            SKILL_CATALOG_CONTEXT_KEY,
-            skill_catalog_input(BlobRef::from_bytes(b"v1")),
+            TEST_CATALOG_KEY,
+            catalog_input(BlobRef::from_bytes(b"v1")),
             20,
         );
         upsert(
@@ -3007,8 +3011,8 @@ mod tests {
         );
         upsert(
             &mut drive,
-            SKILL_CATALOG_CONTEXT_KEY,
-            skill_catalog_input(BlobRef::from_bytes(b"v2")),
+            TEST_CATALOG_KEY,
+            catalog_input(BlobRef::from_bytes(b"v2")),
             30,
         );
 
@@ -3022,7 +3026,7 @@ mod tests {
         assert!(crate::is_superseded_context_entry(state, v1.entry_id));
         assert!(!crate::is_superseded_context_entry(state, v2.entry_id));
         assert_eq!(
-            crate::current_context_entry(state, &ContextEntryKey::new(SKILL_CATALOG_CONTEXT_KEY))
+            crate::current_context_entry(state, &ContextEntryKey::new(TEST_CATALOG_KEY))
                 .map(|entry| entry.entry_id),
             Some(v2.entry_id)
         );
@@ -3042,13 +3046,82 @@ mod tests {
             .admit_command(
                 CoreAgentCommand::UpsertContext {
                     expected_revision: None,
-                    key: ContextEntryKey::new(SKILL_CATALOG_CONTEXT_KEY),
-                    entry: skill_catalog_input(BlobRef::from_bytes(b"v2")),
+                    key: ContextEntryKey::new(TEST_CATALOG_KEY),
+                    entry: catalog_input(BlobRef::from_bytes(b"v2")),
                 },
                 40,
             )
             .expect("no-op upsert");
         assert!(matches!(noop, CoreAgentAction::Idle));
+    }
+
+    #[test]
+    fn catalog_keys_supersede_independently_and_replay_text_and_provenance() {
+        let mut drive =
+            CoreAgentDrive::from_replayed(SessionId::new("catalogs"), CoreAgentState::new(), None);
+        open_session(&mut drive);
+        let checkpoint = drive.state().clone();
+        let mut first = client_catalog_input("Menu", BlobRef::from_bytes(b"old text"));
+        first.provenance_ref = Some(BlobRef::from_bytes(b"old source"));
+        let mut second = client_catalog_input("Menu", BlobRef::from_bytes(b"new text"));
+        second.provenance_ref = Some(BlobRef::from_bytes(b"new source"));
+        let mut log = Vec::new();
+        for (index, (key, entry)) in [
+            ("runtime.catalog.a", first.clone()),
+            ("client.catalog", first.clone()),
+            ("runtime.catalog.a", second.clone()),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let action = drive
+                .admit_command(
+                    CoreAgentCommand::UpsertContext {
+                        expected_revision: None,
+                        key: ContextEntryKey::new(key),
+                        entry,
+                    },
+                    20 + index as u64,
+                )
+                .unwrap();
+            log.extend(commit_action(&mut drive, action));
+        }
+        let expected = std::collections::BTreeMap::from([
+            (ContextEntryKey::new("runtime.catalog.a"), second),
+            (ContextEntryKey::new("client.catalog"), first.clone()),
+        ]);
+        assert_eq!(crate::current_catalog_inputs(drive.state()), expected);
+        let entries = &drive.state().context.entries;
+        assert_eq!(entries[1].supersedes, None);
+        assert_eq!(entries[2].supersedes, Some(entries[0].entry_id));
+        assert_eq!(entries[0].content, first.content);
+        assert_eq!(entries[0].provenance_ref, first.provenance_ref);
+
+        let mut replayed = checkpoint;
+        for entry in &log {
+            let stored = CoreAgentCodec.encode_entry(entry).unwrap();
+            crate::apply_event(
+                &mut replayed,
+                &CoreAgentCodec.decode_entry(&stored).unwrap(),
+            )
+            .unwrap();
+        }
+        assert_eq!(&replayed, drive.state());
+        assert_eq!(crate::current_catalog_inputs(&replayed), expected);
+        let action = drive
+            .admit_command(
+                CoreAgentCommand::RemoveContext {
+                    expected_revision: None,
+                    key: ContextEntryKey::new("runtime.catalog.a"),
+                },
+                30,
+            )
+            .unwrap();
+        commit_action(&mut drive, action);
+        assert_eq!(
+            crate::current_catalog_inputs(drive.state()),
+            std::collections::BTreeMap::from([(ContextEntryKey::new("client.catalog"), first)])
+        );
     }
 
     #[test]
@@ -3142,7 +3215,7 @@ mod tests {
     }
 
     #[test]
-    fn client_catalog_is_context_only_and_needs_a_client_key() {
+    fn catalog_is_context_only_and_needs_a_title() {
         let mut drive =
             CoreAgentDrive::from_replayed(SessionId::new("session-a"), CoreAgentState::new(), None);
         open_session(&mut drive);
@@ -3154,16 +3227,6 @@ mod tests {
                 20,
             )
             .expect_err("a catalog is not run input");
-        drive
-            .admit_command(
-                CoreAgentCommand::UpsertContext {
-                    expected_revision: None,
-                    key: ContextEntryKey::new(SKILL_CATALOG_CONTEXT_KEY),
-                    entry: input.clone(),
-                },
-                21,
-            )
-            .expect_err("a runtime catalog key only carries its own kind");
         drive
             .admit_command(
                 CoreAgentCommand::UpsertContext {
@@ -3183,12 +3246,14 @@ mod tests {
     }
 
     #[test]
-    fn planned_context_includes_the_subagent_catalog_at_its_position() {
+    fn planned_context_includes_catalogs_at_their_positions() {
         let mut drive =
             CoreAgentDrive::from_replayed(SessionId::new("session-a"), CoreAgentState::new(), None);
         open_session(&mut drive);
         let catalog = ContextEntryInput {
-            kind: ContextEntryKind::SubagentCatalog,
+            kind: ContextEntryKind::Catalog {
+                title: "Agents".to_owned(),
+            },
             content: crate::ContentRef {
                 content_ref: BlobRef::from_bytes(b"agents"),
                 media_type: Some("application/json".to_owned()),
@@ -3199,7 +3264,7 @@ mod tests {
             provenance_ref: None,
             token_estimate: None,
         };
-        upsert(&mut drive, crate::SUBAGENT_CATALOG_CONTEXT_KEY, catalog, 20);
+        upsert(&mut drive, "agents.menu", catalog, 20);
         upsert(
             &mut drive,
             "client.native",
@@ -3221,8 +3286,8 @@ mod tests {
         open_session_with_config(&mut drive, standalone_compaction_config(None, Some(256)));
         upsert(
             &mut drive,
-            SKILL_CATALOG_CONTEXT_KEY,
-            skill_catalog_input(BlobRef::from_bytes(b"v1")),
+            TEST_CATALOG_KEY,
+            catalog_input(BlobRef::from_bytes(b"v1")),
             20,
         );
         upsert(
@@ -3233,8 +3298,8 @@ mod tests {
         );
         upsert(
             &mut drive,
-            SKILL_CATALOG_CONTEXT_KEY,
-            skill_catalog_input(BlobRef::from_bytes(b"v2")),
+            TEST_CATALOG_KEY,
+            catalog_input(BlobRef::from_bytes(b"v2")),
             22,
         );
         assert_eq!(entry_ids(&drive), vec![1, 2, 3]);
@@ -3284,7 +3349,7 @@ mod tests {
         assert_eq!(ids, vec![3, 4]);
         assert!(matches!(
             drive.state().context.entries[0].kind,
-            ContextEntryKind::SkillCatalog
+            ContextEntryKind::Catalog { .. }
         ));
     }
 
@@ -3973,8 +4038,8 @@ mod tests {
         );
         upsert(
             &mut drive,
-            SKILL_CATALOG_CONTEXT_KEY,
-            skill_catalog_input(BlobRef::from_bytes(b"Skill menu")),
+            TEST_CATALOG_KEY,
+            catalog_input(BlobRef::from_bytes(b"Skill menu")),
             13,
         );
         install_test_tool(&mut drive, "vfs.read_file");
@@ -4066,7 +4131,7 @@ mod tests {
         );
         assert!(entries.iter().all(|entry| !matches!(
             entry.kind,
-            ContextEntryKind::SkillCatalog | ContextEntryKind::Instructions
+            ContextEntryKind::Catalog { .. } | ContextEntryKind::Instructions
         )));
         let action = drive
             .resume_context_compaction(

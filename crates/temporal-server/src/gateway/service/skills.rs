@@ -31,31 +31,7 @@ impl GatewayAgentApi {
         else {
             return Ok(());
         };
-        let target_catalog_ref = match &command {
-            CoreAgentCommand::UpsertContext { key, entry, .. }
-                if key.as_str() == SKILL_CATALOG_CONTEXT_KEY
-                    && matches!(entry.kind, ContextEntryKind::SkillCatalog) =>
-            {
-                Some(entry.content.content_ref.clone())
-            }
-            CoreAgentCommand::RemoveContext { key, .. }
-                if key.as_str() == SKILL_CATALOG_CONTEXT_KEY =>
-            {
-                None
-            }
-            _ => {
-                return Err(AgentApiError::internal(
-                    "skill catalog refresh produced non-catalog context command",
-                ));
-            }
-        };
-        let baseline_failures = self
-            .query_status_optional(session_id)
-            .await?
-            .map(|status| status.admission_failures.len())
-            .unwrap_or(0);
-        self.submit_core_command(session_id, command).await?;
-        self.wait_for_skill_catalog(session_id, target_catalog_ref, baseline_failures)
+        self.apply_catalog_refresh_commands(session_id, vec![command])
             .await
     }
 
@@ -64,7 +40,8 @@ impl GatewayAgentApi {
         _session_id: &SessionId,
         state: &engine::CoreAgentState,
     ) -> Result<Option<CoreAgentCommand>, AgentApiError> {
-        let active_catalog_ref = active_skill_catalog_ref(state);
+        let catalogs = engine::current_catalog_inputs(state);
+        let current = catalogs.get(&ContextEntryKey::new(SKILL_CATALOG_CONTEXT_KEY));
         let skills_config = state
             .lifecycle
             .config
@@ -72,13 +49,19 @@ impl GatewayAgentApi {
             .and_then(|config| config.features.vfs.as_ref())
             .and_then(|vfs| vfs.skills.as_ref());
         let Some(skills_config) = skills_config else {
-            return Ok(clear_skill_catalog_command(active_catalog_ref.as_ref()));
+            return Ok(tools::catalog::clear_catalog_command(
+                current,
+                SKILL_CATALOG_CONTEXT_KEY,
+            ));
         };
         let links = self.resolve_session_workspace_links(state).await?;
         let specs = configured_vfs_skill_root_specs(&links, skills_config.roots.as_deref())
             .map_err(|error| AgentApiError::invalid_request(error.to_string()))?;
         if specs.is_empty() {
-            return Ok(clear_skill_catalog_command(active_catalog_ref.as_ref()));
+            return Ok(tools::catalog::clear_catalog_command(
+                current,
+                SKILL_CATALOG_CONTEXT_KEY,
+            ));
         }
 
         let blobs: Arc<dyn BlobStore> = self.store.clone();
@@ -91,17 +74,16 @@ impl GatewayAgentApi {
             .await
             .map_err(|error| AgentApiError::internal(error.to_string()))?;
         if inputs.is_empty() && resolved.warnings().is_empty() {
-            return Ok(clear_skill_catalog_command(active_catalog_ref.as_ref()));
+            return Ok(tools::catalog::clear_catalog_command(
+                current,
+                SKILL_CATALOG_CONTEXT_KEY,
+            ));
         }
 
-        let mut state = engine::CoreAgentState::new();
-        if let Some(catalog_ref) = active_catalog_ref {
-            state.context.entries = vec![active_catalog_entry(catalog_ref)];
-        }
         let publication = tools::skills::prepare_skill_catalog_publication_with_warnings(
             self.store.as_ref(),
             Some(self.store.as_ref()),
-            &state,
+            current,
             &inputs,
             resolved.warnings().to_vec(),
         )
@@ -114,28 +96,7 @@ impl GatewayAgentApi {
         &self,
         loaded: &LoadedSession,
     ) -> Result<SkillListResponse, AgentApiError> {
-        let Some(catalog_ref) = active_skill_catalog_ref(&loaded.state) else {
-            return Ok(SkillListResponse {
-                catalog_ref: None,
-                skills: Vec::new(),
-            });
-        };
-        let catalog = self.read_skill_catalog(&catalog_ref).await?;
-        Ok(skill_list_response(Some(&catalog_ref), Some(&catalog)))
-    }
-
-    pub(super) async fn read_skill_catalog(
-        &self,
-        catalog_ref: &BlobRef,
-    ) -> Result<SkillCatalogSnapshot, AgentApiError> {
-        let bytes = self
-            .store
-            .read_bytes(catalog_ref)
-            .await
-            .map_err(map_blob_read_error)?;
-        serde_json::from_slice(&bytes).map_err(|error| {
-            AgentApiError::internal(format!("stored skill catalog is invalid JSON: {error}"))
-        })
+        skill_list_from_context(self.store.as_ref(), &loaded.state).await
     }
 
     pub(super) fn require_open_idle_session(
@@ -156,83 +117,6 @@ impl GatewayAgentApi {
         }
         Ok(())
     }
-
-    pub(super) async fn wait_for_skill_catalog(
-        &self,
-        session_id: &SessionId,
-        target_catalog_ref: Option<BlobRef>,
-        baseline_failures: usize,
-    ) -> Result<(), AgentApiError> {
-        let started = Instant::now();
-        loop {
-            if started.elapsed() > self.operation_timeout {
-                return Err(AgentApiError::internal(format!(
-                    "timed out waiting for skill catalog update: {session_id}"
-                )));
-            }
-            if let Some(status) = self.query_status_optional(session_id).await? {
-                if status.admission_failures.len() > baseline_failures
-                    && let Some(failure) = status.admission_failures.last()
-                {
-                    return Err(map_admission_failure_to_api_error(failure));
-                }
-                if let Some(error) = status.last_error {
-                    return Err(AgentApiError::internal(format!(
-                        "agent workflow reported error: {error}"
-                    )));
-                }
-            }
-            let loaded = self.load_session_state(session_id).await?;
-            let actual = active_skill_catalog_ref(&loaded.state);
-            if actual == target_catalog_ref {
-                return Ok(());
-            }
-            tokio::time::sleep(self.poll_interval).await;
-        }
-    }
-}
-
-pub(super) fn clear_skill_catalog_command(
-    active_catalog_ref: Option<&BlobRef>,
-) -> Option<CoreAgentCommand> {
-    active_catalog_ref.map(|_| CoreAgentCommand::RemoveContext {
-        expected_revision: None,
-        key: ContextEntryKey::new(SKILL_CATALOG_CONTEXT_KEY),
-    })
-}
-
-pub(super) fn active_catalog_entry(catalog_ref: BlobRef) -> ContextEntry {
-    let input = skill_catalog_context_input(catalog_ref);
-    ContextEntry {
-        entry_id: engine::ContextEntryId::new(1),
-        key: Some(ContextEntryKey::new(SKILL_CATALOG_CONTEXT_KEY)),
-        kind: ContextEntryKind::SkillCatalog,
-        source: engine::ContextEntrySource::Runtime {
-            label: "skills.catalog.vfs".to_owned(),
-        },
-        content: input.content,
-        preview: input.preview,
-        origin: input.origin,
-        provenance_ref: input.provenance_ref,
-        token_estimate: input.token_estimate,
-        supersedes: None,
-    }
-}
-
-pub(super) fn active_skill_catalog_ref(state: &engine::CoreAgentState) -> Option<BlobRef> {
-    state
-        .context
-        .entries
-        .iter()
-        .rev()
-        .find(|entry| {
-            entry
-                .key
-                .as_ref()
-                .is_some_and(|key| key.as_str() == SKILL_CATALOG_CONTEXT_KEY)
-                && matches!(entry.kind, ContextEntryKind::SkillCatalog)
-        })
-        .map(|entry| entry.content.content_ref.clone())
 }
 
 pub(super) fn skill_list_response(
@@ -274,4 +158,32 @@ pub(super) fn skill_list_response(
             })
             .collect(),
     }
+}
+
+pub(super) async fn skill_list_from_context(
+    blobs: &dyn BlobStore,
+    state: &engine::CoreAgentState,
+) -> Result<SkillListResponse, AgentApiError> {
+    let Some(entry) =
+        engine::current_context_entry(state, &ContextEntryKey::new(SKILL_CATALOG_CONTEXT_KEY))
+    else {
+        return Ok(SkillListResponse {
+            catalog_ref: None,
+            skills: Vec::new(),
+        });
+    };
+    let catalog_ref = entry
+        .provenance_ref
+        .as_ref()
+        .ok_or_else(|| AgentApiError::internal("skill catalog is missing its structured source"))?;
+    let catalog = {
+        let bytes = blobs
+            .read_bytes(catalog_ref)
+            .await
+            .map_err(map_blob_read_error)?;
+        serde_json::from_slice(&bytes).map_err(|error| {
+            AgentApiError::internal(format!("stored skill catalog is invalid JSON: {error}"))
+        })?
+    };
+    Ok(skill_list_response(Some(catalog_ref), Some(&catalog)))
 }

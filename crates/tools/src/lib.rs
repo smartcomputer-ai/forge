@@ -5,6 +5,7 @@
 //! independent from this crate.
 
 pub mod builtin;
+pub mod catalog;
 pub mod concurrency;
 pub mod definitions;
 pub mod environment;
@@ -15,6 +16,7 @@ pub mod limits;
 pub mod prompts;
 pub mod runtime;
 pub mod skills;
+mod subagent_catalog_text;
 pub mod subagents;
 pub mod toolset;
 pub mod transfer;

@@ -328,23 +328,13 @@ async fn refresh_runtime_projection_before_run(
                 active_instruction_inputs: active_instruction_inputs(drive.state()),
                 vfs_skills_enabled,
                 vfs_skill_roots,
-                active_catalog_ref: active_skill_catalog_ref(drive.state()),
-                active_vfs_catalog_ref: active_context_ref(
-                    drive.state(),
-                    VFS_CATALOG_CONTEXT_KEY,
-                    ContextEntryKind::VfsCatalog,
-                ),
+                active_catalogs: engine::current_catalog_inputs(drive.state()),
                 subagents: drive
                     .state()
                     .lifecycle
                     .config
                     .as_ref()
                     .and_then(|config| config.features.subagents.clone()),
-                active_subagent_catalog_ref: active_context_ref(
-                    drive.state(),
-                    engine::SUBAGENT_CATALOG_CONTEXT_KEY,
-                    ContextEntryKind::SubagentCatalog,
-                ),
             },
             activity_options(),
         )
@@ -360,14 +350,6 @@ async fn refresh_runtime_projection_before_run(
         }
     }
     Ok(())
-}
-
-fn active_skill_catalog_ref(state: &CoreAgentState) -> Option<BlobRef> {
-    active_context_ref(
-        state,
-        SKILL_CATALOG_CONTEXT_KEY,
-        ContextEntryKind::SkillCatalog,
-    )
 }
 
 fn active_instruction_inputs(
@@ -397,26 +379,6 @@ fn active_instruction_inputs(
             )
         })
         .collect()
-}
-
-fn active_context_ref(
-    state: &CoreAgentState,
-    key: &'static str,
-    kind: ContextEntryKind,
-) -> Option<BlobRef> {
-    state
-        .context
-        .entries
-        .iter()
-        .rev()
-        .find(|entry| {
-            entry
-                .key
-                .as_ref()
-                .is_some_and(|entry_key| entry_key.as_str() == key)
-                && entry.kind == kind
-        })
-        .map(|entry| entry.content.content_ref.clone())
 }
 
 #[cfg(test)]

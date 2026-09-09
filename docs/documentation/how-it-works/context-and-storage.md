@@ -122,6 +122,20 @@ Prompt caching rewards repeated request material, but an agent's context also
 needs to evolve. Lightspeed makes ordering and updates deliberate so changes
 need not disturb more of the request than necessary.
 
+VFS, skill, sub-agent, and client catalogs share one `Catalog { title }`
+context kind. Each runtime publisher stores the rendered text in CAS and keeps
+its structured snapshot in `provenance_ref` for API reads and source retention.
+Provider adapters read that stored text and add only the title and, for a
+successor, an update header. Replaying an old entry does not rerender its source
+with newer publisher code.
+
+Catalog identity comes from its key. The runtime owns `runtime.catalog.vfs`,
+`runtime.catalog.skills.vfs`, and `runtime.catalog.subagents`. Public context
+append and remove reject `runtime` and `runtime.*`, as well as `run` and `run.*`.
+Client catalogs use other keys. Source discovery and refresh policy remain
+specific to each publisher; publishing compares both text and provenance.
+The executable tool registry remains separate from catalog context documents.
+
 A changed keyed catalog is appended as the current version at the context
 tail. Earlier versions remain in their original positions, with their bytes
 unchanged. The new entry identifies which catalog it supersedes. This lets a
@@ -266,7 +280,9 @@ Bot events, reducer checkpoints, and VFS records also retain the content they
 own.
 
 Nested formats record edges. A snapshot manifest retains its file blobs; a
-snapshot-backed skill catalog retains its source snapshots; an instruction
+snapshot-backed skill catalog retains its source snapshots. Its published text
+and structured catalog are both retained by the context event, through content
+and provenance references. An instruction
 assembly report retains its sources. Merely placing a hash-shaped string inside arbitrary payload
 bytes does not create a retention relationship. The writer of a format must
 declare the edges that make its embedded references meaningful to collection.
