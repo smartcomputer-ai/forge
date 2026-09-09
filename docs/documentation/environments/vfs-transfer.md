@@ -22,7 +22,11 @@ Each destination is exact: the source's basename is not appended. The default
 is **replace**. Replacing a directory removes destination-only entries within
 that selected directory, preserves siblings, and publishes the complete new
 tree at once. Set `on_existing` to `error` to reject an existing destination.
-Destination parents must already exist. There is no merging or automatic sync.
+Missing destination parents are created where permitted. Existing non-directory
+ancestors and environment symlinks are rejected. Environment parents are created
+during preparation and may remain if a transfer fails; VFS parents are published
+with the captured content in one workspace commit. There is no merging or
+automatic sync.
 
 The session needs both environment access and VFS tools. Materialize requires
 read access to its VFS source; capture requires an editable workspace link.

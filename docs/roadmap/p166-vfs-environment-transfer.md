@@ -701,6 +701,13 @@ operations use `Materialize` and `Capture`, with their VFS domain supplied
 separately. Tool identities and names are handled alongside other VFS tools;
 public names, compatibility aliases, and profile/session grants are unchanged.
 
+Missing destination parents are created in both directions. The OS backend
+creates environment parents through pinned directory descriptors without
+following symlinks; these parents may remain after failed transfers. Capture
+prepares missing VFS parents in its private manifest and publishes them with
+the captured selection in one revision-checked workspace commit. Non-directory
+ancestors and read-only destinations remain errors.
+
 Linux and macOS share the transfer state machine and descriptor-relative
 traversal. Only publication and native metadata access differ inside the OS
 backend. Staging is private at creation; replacement does not require reading

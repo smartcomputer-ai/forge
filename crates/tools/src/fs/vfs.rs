@@ -532,7 +532,7 @@ impl FileSystem for VfsWorkspaceFileSystem {
         path: &FsPath,
         replace: bool,
     ) -> FsResult<Box<dyn crate::fs::VfsCaptureTarget>> {
-        let (current, manifest) = self.read_head().await?;
+        let (current, mut manifest) = self.read_head().await?;
         let vfs_path = fs_path_to_vfs_path(path)?;
         match ::vfs::lookup_snapshot_path(&manifest, &vfs_path) {
             Ok(_) if !replace => return Err(FsError::AlreadyExists { path: path.clone() }),
@@ -544,16 +544,10 @@ impl FileSystem for VfsWorkspaceFileSystem {
             let parent =
                 ::vfs::VfsPath::parse(format!("/{}", components[..components.len() - 1].join("/")))
                     .map_err(|e| map_vfs_error(e.into(), path))?;
-            match ::vfs::lookup_snapshot_path(&manifest, &parent)
-                .map_err(|e| map_vfs_error(e, path))?
-            {
-                ::vfs::VfsNode::Directory(_) => (),
-                _ => {
-                    return Err(FsError::InvalidInput {
-                        message: "capture parent is not a directory".into(),
-                    });
-                }
-            }
+            // Prepare parents in the private manifest; publish them together with
+            // captured content under the original workspace revision check.
+            ::vfs::create_manifest_directory(&mut manifest, &parent, true)
+                .map_err(|e| map_vfs_error(e, path))?;
         }
         Ok(Box::new(WorkspaceCaptureTarget {
             filesystem: self.clone(),
@@ -1142,6 +1136,78 @@ mod tests {
                     id: workspace_id.to_string(),
                 })
         }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn capture_creates_missing_parents_only_with_successful_publication() {
+        let store = Arc::new(TestWorkspaceStore::default());
+        let (blobs, fs, _, _) = test_workspace_fs(
+            store,
+            vec![::vfs::InlineFile::new("sibling", b"keep".to_vec()).unwrap()],
+        )
+        .await;
+        let entry = ::vfs::VfsEntry::File(::vfs::VfsFile {
+            blob_ref: blobs.put_bytes(b"captured".to_vec()).await.unwrap(),
+            size_bytes: 8,
+            executable: true,
+            media_type: None,
+        });
+        let selected = FsPath::new("/created/nested/file").unwrap();
+        let parent = FsPath::new("/created").unwrap();
+        let before = fs.read_head().await.unwrap().0;
+        let target = fs.prepare_vfs_capture(&selected, false).await.unwrap();
+        assert_eq!(fs.read_head().await.unwrap().0.revision, before.revision);
+        assert!(matches!(
+            fs.get_metadata(&parent).await,
+            Err(FsError::NotFound { .. })
+        ));
+        fs.write_file(&FsPath::new("/sibling").unwrap(), b"concurrent".to_vec())
+            .await
+            .unwrap();
+        assert!(target.commit(entry.clone()).await.is_err());
+        assert!(matches!(
+            fs.get_metadata(&parent).await,
+            Err(FsError::NotFound { .. })
+        ));
+
+        let before = fs.read_head().await.unwrap().0;
+        fs.prepare_vfs_capture(&selected, false)
+            .await
+            .unwrap()
+            .commit(entry.clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            fs.read_head().await.unwrap().0.revision,
+            before.revision + 1
+        );
+        assert_eq!(fs.export_vfs(&selected).await.unwrap(), entry);
+        assert_eq!(
+            fs.read_file(&FsPath::new("/sibling").unwrap())
+                .await
+                .unwrap(),
+            b"concurrent"
+        );
+        assert!(matches!(
+            fs.prepare_vfs_capture(&selected, false).await,
+            Err(FsError::AlreadyExists { .. })
+        ));
+        assert!(matches!(
+            fs.prepare_vfs_capture(&FsPath::new("/sibling/missing/file").unwrap(), true)
+                .await,
+            Err(FsError::InvalidInput { .. })
+        ));
+        let read_only = crate::fs::read_only::ReadOnlyFileSystem::new(fs.clone());
+        assert!(matches!(
+            read_only
+                .prepare_vfs_capture(&FsPath::new("/denied/missing/file").unwrap(), true)
+                .await,
+            Err(FsError::PermissionDenied { .. })
+        ));
+        assert!(matches!(
+            fs.get_metadata(&FsPath::new("/denied").unwrap()).await,
+            Err(FsError::NotFound { .. })
+        ));
     }
 
     #[tokio::test(flavor = "current_thread")]

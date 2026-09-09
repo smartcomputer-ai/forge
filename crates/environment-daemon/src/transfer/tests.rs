@@ -428,28 +428,114 @@ async fn scan_fingerprints_content_and_filters_large_unrelated_files() {
     );
 }
 #[tokio::test(flavor = "current_thread")]
+async fn rpc_materialize_creates_missing_parents_for_files_and_trees() {
+    let environment = tempfile::tempdir().unwrap();
+    std::fs::write(environment.path().join("sibling"), b"preserved").unwrap();
+    let (remote, _, _) = remote(runtime(environment.path(), false));
+    let store = engine::storage::InMemoryBlobStore::new();
+    let entry = vfs::VfsEntry::File(vfs::VfsFile {
+        blob_ref: store.put_bytes(b"content".to_vec()).await.unwrap(),
+        size_bytes: 7,
+        executable: true,
+        media_type: None,
+    });
+    let mut directory = vfs::VfsDirectory::default();
+    directory.entries.insert("file".into(), entry.clone());
+    for (id, entry, on_existing) in [
+        ("file", entry, TransferOnExisting::Error),
+        (
+            "tree",
+            vfs::VfsEntry::Directory(directory),
+            TransferOnExisting::Replace,
+        ),
+    ] {
+        let destination = path(&format!("created/{id}/nested/selected"));
+        let status = transfer::materialize(
+            &remote,
+            &store,
+            id,
+            &entry,
+            destination.clone(),
+            on_existing,
+        )
+        .await
+        .unwrap();
+        assert_eq!(status.phase, TransferPhase::Complete);
+        let captured =
+            transfer::capture(&remote, &store, None, &format!("capture-{id}"), destination)
+                .await
+                .unwrap();
+        assert_eq!(captured.entry, entry);
+    }
+    assert_eq!(
+        std::fs::read(environment.path().join("sibling")).unwrap(),
+        b"preserved"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn secure_replacement_rejects_links_and_uses_private_staging_without_reading_write_only_targets()
  {
     let temp = tempfile::tempdir().unwrap();
     let outside = tempfile::tempdir().unwrap();
     std::fs::write(outside.path().join("secret"), b"untouched").unwrap();
     symlink(outside.path(), temp.path().join("escape")).unwrap();
+    symlink("absent", temp.path().join("dangling")).unwrap();
+    std::fs::write(temp.path().join("blocked"), b"not a directory").unwrap();
+    let read_only = runtime(temp.path(), true);
     let runtime = runtime(temp.path(), false);
     let fs = runtime.filesystem();
+    for (index, destination) in [
+        "escape/secret",
+        "escape/missing/secret",
+        "dangling/missing/secret",
+        "blocked/missing/secret",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        assert_eq!(
+            fs.transfer(TransferRequest::Begin {
+                operation_id: format!("invalid-parent-{index}"),
+                selection: TransferSelection::Materialize {
+                    destination: path(destination),
+                    on_existing: TransferOnExisting::Replace
+                },
+                limits: Default::default()
+            })
+            .await
+            .unwrap_err()
+            .code,
+            EnvironmentProtocolErrorCode::Forbidden
+        );
+    }
+    assert!(!outside.path().join("missing").exists());
+    assert!(!temp.path().join("absent").exists());
     assert_eq!(
-        fs.transfer(TransferRequest::Begin {
-            operation_id: "escape".into(),
-            selection: TransferSelection::Materialize {
-                destination: path("escape/secret"),
-                on_existing: TransferOnExisting::Replace
-            },
-            limits: Default::default()
-        })
-        .await
-        .unwrap_err()
-        .code,
-        EnvironmentProtocolErrorCode::Forbidden
+        std::fs::read(outside.path().join("secret")).unwrap(),
+        b"untouched"
     );
+    assert_eq!(
+        std::fs::read(temp.path().join("blocked")).unwrap(),
+        b"not a directory"
+    );
+    assert_eq!(
+        read_only
+            .filesystem()
+            .transfer(TransferRequest::Begin {
+                operation_id: "read-only-parents".into(),
+                selection: TransferSelection::Materialize {
+                    destination: path("read-only/missing/target"),
+                    on_existing: TransferOnExisting::Replace
+                },
+                limits: Default::default()
+            })
+            .await
+            .unwrap_err()
+            .code,
+        EnvironmentProtocolErrorCode::CapabilityUnavailable
+    );
+    assert!(!temp.path().join("read-only").exists());
     std::fs::write(temp.path().join("target"), b"old").unwrap();
     std::fs::set_permissions(
         temp.path().join("target"),

@@ -3197,7 +3197,7 @@ mod tests {
                         .with_environment(environment);
                     let args = serde_json::to_vec(&serde_json::json!({
                         "source_vfs_path": "/workspace/README.md",
-                        "destination_environment_path": "./README.md",
+                        "destination_environment_path": "./created/nested/README.md",
                     }))
                     .unwrap();
                     let mut request = per_call_request("vfs_materialize", &args, &[]);
@@ -3213,16 +3213,20 @@ mod tests {
                     let result = dispatch(&tools, request.clone(), batch).await;
                     succeeded(&blobs, &result).await;
                     assert_eq!(
-                        std::fs::read(root.path().join("README.md")).unwrap(),
+                        std::fs::read(root.path().join("created/nested/README.md")).unwrap(),
                         b"hello\n"
                     );
 
                     // A completed retry through the hosted path must keep its operation
                     // identity and preserve edits made after publication.
-                    std::fs::write(root.path().join("README.md"), b"environment edit").unwrap();
+                    std::fs::write(
+                        root.path().join("created/nested/README.md"),
+                        b"environment edit",
+                    )
+                    .unwrap();
                     succeeded(&blobs, &dispatch(&tools, request.clone(), batch).await).await;
                     assert_eq!(
-                        std::fs::read(root.path().join("README.md")).unwrap(),
+                        std::fs::read(root.path().join("created/nested/README.md")).unwrap(),
                         b"environment edit"
                     );
 
@@ -3233,8 +3237,8 @@ mod tests {
                     capture.call.arguments_ref = blobs
                         .put_bytes(
                             serde_json::to_vec(&serde_json::json!({
-                                "source_environment_path":"./README.md",
-                                "destination_vfs_path":"/workspace/captured.txt",
+                                "source_environment_path":"./created/nested/README.md",
+                                "destination_vfs_path":"/workspace/results/nested/captured.txt",
                             }))
                             .unwrap(),
                         )
@@ -3256,7 +3260,7 @@ mod tests {
                         vfs::read_snapshot_file(
                             blobs.as_ref(),
                             &manifest,
-                            &vfs::VfsPath::parse("/captured.txt").unwrap()
+                            &vfs::VfsPath::parse("/results/nested/captured.txt").unwrap()
                         )
                         .await
                         .unwrap(),

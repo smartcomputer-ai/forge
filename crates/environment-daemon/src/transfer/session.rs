@@ -633,7 +633,7 @@ impl TransferManager {
                             ));
                         }
                     }
-                    let (parent, target) = anchor.parent(&path).map_err(io)?;
+                    let (parent, target) = anchor.ensure_parent(&path).map_err(io)?;
                     if parent.target_exists(&target).map_err(io)?
                         && *on_existing == TransferOnExisting::Error
                     {

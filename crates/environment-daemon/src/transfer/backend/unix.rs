@@ -176,11 +176,34 @@ impl Directory {
         Ok(Self(file))
     }
     pub fn parent(&self, path: &str) -> io::Result<(Self, String)> {
+        self.parent_with_creation(path, false)
+    }
+    /// Prepare a destination without following symlinks in existing or raced-in parents.
+    pub fn ensure_parent(&self, path: &str) -> io::Result<(Self, String)> {
+        self.parent_with_creation(path, true)
+    }
+    fn parent_with_creation(&self, path: &str, create_missing: bool) -> io::Result<(Self, String)> {
         let mut parts = path.split('/').collect::<Vec<_>>();
         let name = parts.pop().unwrap_or("").to_owned();
         let mut dir = self.clone_dir()?;
         for part in parts {
-            dir = dir.child(part)?;
+            dir = match dir.child(part) {
+                Ok(child) => child,
+                Err(error) if create_missing && error.kind() == io::ErrorKind::NotFound => {
+                    let child = match dir.mkdir(part, false) {
+                        Ok(child) => child,
+                        // Another creator may win the mkdir race. Reopen with the same
+                        // directory-only, no-follow checks used for existing parents.
+                        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
+                            dir.child(part)?
+                        }
+                        Err(error) => return Err(error),
+                    };
+                    dir.sync()?;
+                    child
+                }
+                Err(error) => return Err(error),
+            };
         }
         Ok((dir, if name.is_empty() { ".".into() } else { name }))
     }
