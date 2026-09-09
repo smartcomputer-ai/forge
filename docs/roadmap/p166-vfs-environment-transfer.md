@@ -1,26 +1,23 @@
 # P166 — VFS–Environment Transfer: Materialize and Capture
 
-Status: generic scans, incremental transfer sessions, streaming CAS, and VFS model tools implemented, 2026-09-09. Further VFS expansion frozen, 2026-09-09; environment-owned workspace mappings and their UI must not proceed.
+Status: generic scans, incremental transfer sessions, streaming CAS, and VFS model tools implemented, 2026-09-09. Existing workspaces remain supported. Automatic workspace materialization and its UI are parked; VFS retirement and the artifact replacement are also parked.
 
 ## VFS expansion freeze
 
-Freeze new workspace/mount capabilities and further integrations that depend on
-them while evaluating retirement of the agent-facing VFS. This includes
-automatic workspace propagation, environment-owned workspace mappings, their
-profile/UI surfaces, and mapping-dependent skill selection and deduplication.
-Existing behavior remains available; correctness fixes are within scope.
+Keep the existing workspace model, session links, and explicit capture and
+materialize tools. Park VFS retirement and the artifact replacement until a
+concrete continuation is chosen. No workspace migration or replacement resource
+model is part of the current work.
 
-Retain CAS, immutable file/tree representations, and the generic environment
-capture/materialize primitives. The direction under evaluation is explicit
-transfer of uploaded or captured artifacts without a session-mounted namespace
-or a mutable workspace head. Artifact access and durable retention must replace
-the ownership currently supplied by workspace records and session links where
-applicable. Removing VFS also requires a plan for existing prompt and skill
-sources and persisted data; this freeze does not implement that removal.
+Automatic workspace propagation, environment-owned workspace mappings, and
+their profile/UI surfaces remain frozen. Do not merge VFS and environment skill
+catalogs or use mappings to select a preferred copy or provide a fallback.
+[Environment skill discovery](p168-environment-skill-catalogs.md) proceeds with
+its own catalog, independently of the existing VFS skill catalog.
 
-This decision takes precedence over the pre-freeze proposal below. Its
-unimplemented workspace expansion is retained as design context, not an active
-implementation plan. The delivered transfer foundation remains reusable.
+The delivered generic scans and explicit transfer primitives remain useful and
+supported. This decision takes precedence over the proposal below; its
+unimplemented automatic workspace materialization remains parked design context.
 
 ## Original scope
 
@@ -243,6 +240,9 @@ make separate transfers.
   reads the environment again and may produce different VFS content.
 
 ## Environment materializations
+
+**Parked:** this section and its subsections describe a possible future design,
+not current implementation work or a prerequisite for environment skills.
 
 The persistent configuration belongs to the **environment**, not the session.
 An environment is a shared, independently lived filesystem: several sessions,
@@ -633,13 +633,13 @@ the model previously read or printed the source.
 
 ## Skill use as an example
 
-A skill saved in a library workspace can be read directly through VFS. An
-environment can register that workspace or its skill subtree as a materialization
-for initial setup and automatic propagation of later workspace edits. A one-off
-transfer can also materialize the selected skill directory when its scripts are
-needed. Preserve the whole directory so relative links to scripts, references, and assets work
-together. Environment skill discovery reads the resulting directory through
-its configured roots; transfer does not infer or register skill roots.
+A skill saved in a library workspace can be read directly through VFS. A one-off
+transfer can materialize the selected skill directory when its scripts are
+needed. Preserve the whole directory so relative links to scripts, references,
+and assets work together. Environment skill discovery reads the resulting
+directory through its configured roots; transfer does not infer or register
+skill roots. The two catalogs keep their entries independently, including after
+an explicit copy. Automatic propagation and catalog merging remain parked.
 
 A skill installed directly into an environment can be captured into a library
 for reuse elsewhere. Discovery and execution do not require that capture to
@@ -653,13 +653,13 @@ system packages, external tools, or credentials.
 2. Implement bounded capture and materialization, including executable metadata,
    file inventories/digests, missing-content negotiation, whole-file reuse,
    staging, operation receipts, and cleanup after failure.
-3. Add environment-owned materialization settings/results, automatic workspace
+3. **Parked:** add environment-owned materialization settings/results, automatic workspace
    change propagation, explicit Capture, and creation-time profile defaults.
    Reuse the transfer primitives and existing environment runtime coordination.
 4. Connect runtime tools and API operations, workspace source resolution, and
    result retention. Derive the transfer tool pair from VFS/environment grants
    and validate both filesystem domains during execution. Keep all I/O outside
-   the engine. Expose workspace-first
+   the engine. **Parked UI portion:** expose workspace-first
    configuration with replacement as the UI default and update status in
    environment details; keep `error | replace` distinct in the API.
 5. Verify binary and text round trips, relative paths, executable scripts,
@@ -673,11 +673,11 @@ system packages, external tools, or credentials.
    executable-only changes produce the correct tree. Cover environment edits
    invalidating reuse candidates, mutation between inventory and byte reads,
    missing/collected blobs, incomplete inventories, and staging isolation.
-6. Verify all workspace commit paths trigger updates, rapid edits coalesce,
+6. **Parked:** verify all workspace commit paths trigger updates, rapid edits coalesce,
    unrelated subtree edits are skipped, missed notifications/restarts converge,
    and offline environments catch up on use without being woken by every save.
    Verify VFS write followed by environment execution waits for the new content.
-7. Verify shared-session initialization, overlapping mapping rejection,
+7. **Parked:** verify shared-session initialization, overlapping mapping rejection,
    configuration/source revision races, stale retry fencing, removal during a
    transfer, source access, capture coordination, and profile creation defaults.
    Reattachment, profile reapply, and reboot must not replay a completed

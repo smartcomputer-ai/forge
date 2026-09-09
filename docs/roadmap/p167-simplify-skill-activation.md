@@ -3,9 +3,11 @@
 Status: proposed, 2026-09-08. Design only; not implemented.
 
 The [VFS expansion freeze](p166-vfs-environment-transfer.md#vfs-expansion-freeze)
-does not block removing the activation lifecycle. References below to preserving
-existing VFS discovery describe current behavior during that simplification,
-not a commitment to retain workspaces or mounts in the eventual artifact design.
+does not block removing the activation lifecycle. The existing workspace model
+and VFS discovery remain supported; VFS retirement and the artifact replacement
+are parked. Environment discovery publishes a separate catalog as described in
+[environment skill catalogs](p168-environment-skill-catalogs.md), with no catalog
+merging or dependency on automatic workspace materialization.
 
 Make skill support a catalog plus ordinary file access. Remove the dedicated
 activation lifecycle from the engine, API, and clients. The model finds a skill,
