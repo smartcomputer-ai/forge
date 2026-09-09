@@ -1,6 +1,28 @@
 # P166 — VFS–Environment Transfer: Materialize and Capture
 
-Status: generic scans, incremental transfer sessions, streaming CAS, and VFS model tools implemented, 2026-09-09. Environment-owned mappings and their UI remain proposed.
+Status: generic scans, incremental transfer sessions, streaming CAS, and VFS model tools implemented, 2026-09-09. Further VFS expansion frozen, 2026-09-09; environment-owned workspace mappings and their UI must not proceed.
+
+## VFS expansion freeze
+
+Freeze new workspace/mount capabilities and further integrations that depend on
+them while evaluating retirement of the agent-facing VFS. This includes
+automatic workspace propagation, environment-owned workspace mappings, their
+profile/UI surfaces, and mapping-dependent skill selection and deduplication.
+Existing behavior remains available; correctness fixes are within scope.
+
+Retain CAS, immutable file/tree representations, and the generic environment
+capture/materialize primitives. The direction under evaluation is explicit
+transfer of uploaded or captured artifacts without a session-mounted namespace
+or a mutable workspace head. Artifact access and durable retention must replace
+the ownership currently supplied by workspace records and session links where
+applicable. Removing VFS also requires a plan for existing prompt and skill
+sources and persisted data; this freeze does not implement that removal.
+
+This decision takes precedence over the pre-freeze proposal below. Its
+unimplemented workspace expansion is retained as design context, not an active
+implementation plan. The delivered transfer foundation remains reusable.
+
+## Original scope
 
 Provide explicit transfer between Lightspeed's VFS and an
 execution environment. The same operations should handle source trees, scripts,

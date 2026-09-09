@@ -1,6 +1,21 @@
 # P168 — Environment Skill Catalogs and Catalog Refresh
 
-Status: catalog integration proposed; generic conditional envd scans implemented, 2026-09-09.
+Status: generic conditional envd scans implemented, 2026-09-09. Catalog integration remains proposed; VFS expansion and mapping-dependent integration frozen, 2026-09-09.
+
+## VFS expansion freeze
+
+The [VFS expansion freeze](p166-vfs-environment-transfer.md#vfs-expansion-freeze)
+takes precedence over the proposal below. Do not implement automatic workspace
+materialization ordering, managed VFS/environment duplicate selection, or new
+VFS fallback integration. These depend on workspace/mount expansion that is
+now frozen.
+
+Environment skill discovery and generic scans remain useful independently of
+VFS. Before implementing catalog integration, revise this proposal around that
+independent behavior and the chosen replacement for current VFS skill sources.
+The mixed-catalog and mapping rules below remain pre-freeze design context.
+
+## Original scope
 
 Discover skills installed inside the selected environment, including files
 written by external installers, and make them available to the model alongside
